@@ -21,8 +21,9 @@ defmodule SymphonyElixir.EnvFile do
 
   defp load_file(path) do
     lines = File.stream!(path, :line, []) |> Enum.to_list()
+    env_assignment? = Enum.reduce(lines, false, fn line, found? -> put_env_line(line) or found? end)
 
-    if Enum.any?(lines, &put_env_line/1) do
+    if env_assignment? do
       :ok
     else
       put_raw_linear_api_key(lines)

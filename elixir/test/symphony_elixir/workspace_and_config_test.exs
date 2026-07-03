@@ -1115,6 +1115,42 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
     assert settings.workspace.root == Path.join(System.tmp_dir!(), "symphony_workspaces")
   end
 
+  test "env file loader reads every assignment before falling back to raw token format" do
+    workflow_path = Workflow.workflow_file_path()
+    env_path = Path.join(Path.dirname(workflow_path), ".env.local")
+
+    previous_linear_api_key = System.get_env("LINEAR_API_KEY")
+    previous_source_repo_url = System.get_env("SOURCE_REPO_URL")
+    previous_codex_default_model = System.get_env("CODEX_DEFAULT_MODEL")
+    previous_linear_assignee = System.get_env("LINEAR_ASSIGNEE")
+
+    on_exit(fn ->
+      restore_env("LINEAR_API_KEY", previous_linear_api_key)
+      restore_env("SOURCE_REPO_URL", previous_source_repo_url)
+      restore_env("CODEX_DEFAULT_MODEL", previous_codex_default_model)
+      restore_env("LINEAR_ASSIGNEE", previous_linear_assignee)
+    end)
+
+    System.delete_env("LINEAR_API_KEY")
+    System.delete_env("SOURCE_REPO_URL")
+    System.delete_env("CODEX_DEFAULT_MODEL")
+    System.delete_env("LINEAR_ASSIGNEE")
+
+    File.write!(env_path, """
+    LINEAR_API_KEY=linear-token
+    SOURCE_REPO_URL=https://github.com/aroakpm-svg/aroak-central-brain.git
+    CODEX_DEFAULT_MODEL=gpt-5.5
+    export LINEAR_ASSIGNEE=dmtriumphs@example.com
+    """)
+
+    assert :ok = SymphonyElixir.EnvFile.load_local(workflow_path)
+
+    assert System.get_env("LINEAR_API_KEY") == "linear-token"
+    assert System.get_env("SOURCE_REPO_URL") == "https://github.com/aroakpm-svg/aroak-central-brain.git"
+    assert System.get_env("CODEX_DEFAULT_MODEL") == "gpt-5.5"
+    assert System.get_env("LINEAR_ASSIGNEE") == "dmtriumphs@example.com"
+  end
+
   test "schema resolves sandbox policies from explicit and default workspaces" do
     explicit_policy = %{"type" => "workspaceWrite", "writableRoots" => ["/tmp/explicit"]}
 

@@ -60,7 +60,7 @@ codex:
     MODEL_LABELS=""
     BODY_MODEL_HINTS=""
     if [ -n "$LINEAR_API_KEY" ] && [ -n "$ISSUE_IDENTIFIER" ] && ! printf '%s' "$ISSUE_IDENTIFIER" | grep -q '{{'; then
-      MODEL_ROUTING_RESULT="$(ISSUE_IDENTIFIER="$ISSUE_IDENTIFIER" DEFAULT_CODEX_MODEL="$DEFAULT_CODEX_MODEL" LINEAR_API_KEY="$LINEAR_API_KEY" python - <<'PY'
+      if MODEL_ROUTING_RESULT="$(ISSUE_IDENTIFIER="$ISSUE_IDENTIFIER" DEFAULT_CODEX_MODEL="$DEFAULT_CODEX_MODEL" LINEAR_API_KEY="$LINEAR_API_KEY" python - <<'PY'
     import json
     import os
     import re
@@ -151,7 +151,14 @@ codex:
     print("model_labels=" + ",".join(model_labels))
     print("body_model_hints=" + ",".join(body_hints))
     PY
-    )"
+    )"; then
+        :
+      else
+        ROUTING_STATUS="$?"
+        echo "Blocked before Codex dispatch because model routing failed with exit status $ROUTING_STATUS." >&2
+        printf '%s\n' "$MODEL_ROUTING_RESULT" >&2
+        exit "$ROUTING_STATUS"
+      fi
       ROUTING_CONFLICT="$(printf '%s\n' "$MODEL_ROUTING_RESULT" | sed -n 's/^conflict=//p' | tail -n 1)"
       if [ -n "$ROUTING_CONFLICT" ]; then
         echo "Blocked before Codex dispatch because model routing reported: $ROUTING_CONFLICT" >&2
