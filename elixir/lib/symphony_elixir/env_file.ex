@@ -21,7 +21,11 @@ defmodule SymphonyElixir.EnvFile do
 
   defp load_file(path) do
     lines = File.stream!(path, :line, []) |> Enum.to_list()
-    env_assignment? = Enum.reduce(lines, false, fn line, found? -> put_env_line(line) or found? end)
+    env_assignment? =
+      Enum.reduce(lines, false, fn line, found? ->
+        {assignment?, _written?} = put_env_line(line)
+        assignment? or found?
+      end)
 
     if env_assignment? do
       :ok
@@ -35,7 +39,7 @@ defmodule SymphonyElixir.EnvFile do
 
     cond do
       line == "" or String.starts_with?(line, "#") ->
-        false
+        {false, false}
 
       true ->
         line
@@ -50,13 +54,13 @@ defmodule SymphonyElixir.EnvFile do
 
     if valid_key?(key) and is_nil(System.get_env(key)) do
       System.put_env(key, normalize_value(value))
-      true
+      {true, true}
     else
-      false
+      {valid_key?(key), false}
     end
   end
 
-  defp put_env_pair(_line), do: false
+  defp put_env_pair(_line), do: {false, false}
 
   defp put_raw_linear_api_key(lines) do
     raw_value =

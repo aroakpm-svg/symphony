@@ -1151,6 +1151,32 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
     assert System.get_env("LINEAR_ASSIGNEE") == "dmtriumphs@example.com"
   end
 
+  test "env file loader treats existing env assignments as env-style files" do
+    workflow_path = Workflow.workflow_file_path()
+    env_path = Path.join(Path.dirname(workflow_path), ".env.local")
+
+    previous_linear_api_key = System.get_env("LINEAR_API_KEY")
+    previous_source_repo_url = System.get_env("SOURCE_REPO_URL")
+
+    on_exit(fn ->
+      restore_env("LINEAR_API_KEY", previous_linear_api_key)
+      restore_env("SOURCE_REPO_URL", previous_source_repo_url)
+    end)
+
+    System.put_env("LINEAR_API_KEY", "existing-token")
+    System.delete_env("SOURCE_REPO_URL")
+
+    File.write!(env_path, """
+    LINEAR_API_KEY=file-token-that-should-not-overwrite
+    SOURCE_REPO_URL=https://github.com/aroakpm-svg/aroak-central-brain.git
+    """)
+
+    assert :ok = SymphonyElixir.EnvFile.load_local(workflow_path)
+
+    assert System.get_env("LINEAR_API_KEY") == "existing-token"
+    assert System.get_env("SOURCE_REPO_URL") == "https://github.com/aroakpm-svg/aroak-central-brain.git"
+  end
+
   test "schema resolves sandbox policies from explicit and default workspaces" do
     explicit_policy = %{"type" => "workspaceWrite", "writableRoots" => ["/tmp/explicit"]}
 
