@@ -110,7 +110,7 @@ codex:
     issue = data.get("issue")
     if not issue:
         print(f"error=Linear issue {issue_identifier} was not found")
-        sys.exit(0)
+        sys.exit(1)
 
     labels = [node["name"] for node in issue["labels"]["nodes"]]
     model_labels = [label for label in labels if label in supported]
