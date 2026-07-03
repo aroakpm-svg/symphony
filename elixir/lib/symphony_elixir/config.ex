@@ -28,6 +28,8 @@ defmodule SymphonyElixir.Config do
 
   @spec settings() :: {:ok, Schema.t()} | {:error, term()}
   def settings do
+    SymphonyElixir.EnvFile.load_local(Workflow.workflow_file_path())
+
     case Workflow.current() do
       {:ok, %{config: config}} when is_map(config) ->
         Schema.parse(config)

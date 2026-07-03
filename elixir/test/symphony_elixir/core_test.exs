@@ -99,18 +99,21 @@ defmodule SymphonyElixir.CoreTest do
     tracker = Map.get(config, "tracker", %{})
     assert is_map(tracker)
     assert Map.get(tracker, "kind") == "linear"
-    assert is_binary(Map.get(tracker, "project_slug"))
-    assert is_list(Map.get(tracker, "active_states"))
-    assert is_list(Map.get(tracker, "terminal_states"))
+    assert Map.get(tracker, "api_key") == "$LINEAR_API_KEY"
+    assert Map.get(tracker, "project_slug") == "central-brain-7ccfadd2fa3c"
+    assert Map.get(tracker, "active_states") == ["Todo", "In Progress"]
+    assert Map.get(tracker, "terminal_states") == ["Done", "Canceled", "Cancelled", "Duplicate"]
+    assert Map.get(tracker, "required_labels", []) == []
 
     hooks = Map.get(config, "hooks", %{})
     assert is_map(hooks)
-    assert Map.get(hooks, "after_create") =~ "git clone --depth 1 https://github.com/openai/symphony ."
-    assert Map.get(hooks, "after_create") =~ "cd elixir && mise trust"
-    assert Map.get(hooks, "after_create") =~ "mise exec -- mix deps.get"
-    assert Map.get(hooks, "before_remove") =~ "cd elixir && mise exec -- mix workspace.before_remove"
+    assert Map.get(hooks, "after_create") =~ "SOURCE_REPO_URL"
+    assert Map.get(hooks, "after_create") =~ "aroakpm-svg/aroak-central-brain.git"
+    assert Map.get(hooks, "after_create") =~ "git clone"
 
     assert String.trim(prompt) != ""
+    assert prompt =~ "AROAK Central Brain Symphony Workflow"
+    assert prompt =~ "Todo: ready for agent work"
     assert is_binary(Config.workflow_prompt())
     assert Config.workflow_prompt() == prompt
   end

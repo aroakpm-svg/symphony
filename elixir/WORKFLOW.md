@@ -1,328 +1,462 @@
 ---
 tracker:
   kind: linear
-  project_slug: "symphony-0c79b11b75ea"
-  required_labels: []
+  api_key: "$LINEAR_API_KEY"
+  project_slug: "central-brain-7ccfadd2fa3c"
   active_states:
-    - Todo
-    - In Progress
-    - Merging
-    - Rework
+    - "Todo"
+    - "In Progress"
   terminal_states:
-    - Closed
-    - Cancelled
-    - Canceled
-    - Duplicate
-    - Done
-polling:
-  interval_ms: 5000
+    - "Done"
+    - "Canceled"
+    - "Cancelled"
+    - "Duplicate"
 workspace:
-  root: ~/code/symphony-workspaces
+  root: "C:/Users/aroak/Desktop/codex/symphony-workspaces"
 hooks:
   after_create: |
-    git clone --depth 1 https://github.com/openai/symphony .
-    if command -v mise >/dev/null 2>&1; then
-      cd elixir && mise trust && mise exec -- mix deps.get
+    ENV_FILE="C:/Users/aroak/Desktop/codex/symphony/elixir/.env.local"
+    if [ ! -f "$ENV_FILE" ] && [ -f "${ENV_FILE}.txt" ]; then
+      ENV_FILE="${ENV_FILE}.txt"
     fi
-  before_remove: |
-    cd elixir && mise exec -- mix workspace.before_remove
+    if [ -f "$ENV_FILE" ]; then
+      set -a
+      . "$ENV_FILE"
+      set +a
+    fi
+    : "${SOURCE_REPO_URL:=https://github.com/aroakpm-svg/aroak-central-brain.git}"
+    : "${SOURCE_REPO_DEFAULT_BRANCH:=}"
+    if [ -n "$SOURCE_REPO_DEFAULT_BRANCH" ]; then
+      git clone --branch "$SOURCE_REPO_DEFAULT_BRANCH" "$SOURCE_REPO_URL" .
+    else
+      git clone "$SOURCE_REPO_URL" .
+    fi
+    git checkout -b "codex/init-$(date +%s)"
 agent:
-  max_concurrent_agents: 10
-  max_turns: 20
+  max_concurrent_agents: 2
+  max_turns: 5
 codex:
-  command: codex --config shell_environment_policy.inherit=all --config 'model="gpt-5.5"' --config model_reasoning_effort=xhigh app-server
-  approval_policy: never
-  thread_sandbox: workspace-write
+  command: |
+    ENV_FILE="C:/Users/aroak/Desktop/codex/symphony/elixir/.env.local"
+    if [ ! -f "$ENV_FILE" ] && [ -f "${ENV_FILE}.txt" ]; then
+      ENV_FILE="${ENV_FILE}.txt"
+    fi
+    if [ -f "$ENV_FILE" ]; then
+      set -a
+      . "$ENV_FILE"
+      set +a
+    fi
+    : "${CLAUDE_BIN:=/c/Users/aroak/AppData/Local/Microsoft/WinGet/Packages/Anthropic.ClaudeCode_Microsoft.Winget.Source_8wekyb3d8bbwe/claude.exe}"
+    if [ -x "$CLAUDE_BIN" ]; then
+      export PATH="$(dirname "$CLAUDE_BIN"):$PATH"
+    fi
+    : "${CODEX_BIN:=/c/Users/aroak/.codex/plugins/.plugin-appserver/codex.exe}"
+    : "${LINEAR_API_KEY:?Set LINEAR_API_KEY with permission to read issues, create comments, and update issue status}"
+    : "${SOURCE_REPO_URL:=https://github.com/aroakpm-svg/aroak-central-brain.git}"
+    ISSUE_IDENTIFIER="{{ issue.identifier }}"
+    DEFAULT_CODEX_MODEL="${CODEX_DEFAULT_MODEL:-gpt-5.4-mini}"
+    SELECTED_CODEX_MODEL="$DEFAULT_CODEX_MODEL"
+    MODEL_SOURCE="workflow default"
+    MODEL_LABELS=""
+    BODY_MODEL_HINTS=""
+    if [ -n "$LINEAR_API_KEY" ] && [ -n "$ISSUE_IDENTIFIER" ] && ! printf '%s' "$ISSUE_IDENTIFIER" | grep -q '{{'; then
+      MODEL_ROUTING_RESULT="$(ISSUE_IDENTIFIER="$ISSUE_IDENTIFIER" DEFAULT_CODEX_MODEL="$DEFAULT_CODEX_MODEL" LINEAR_API_KEY="$LINEAR_API_KEY" python - <<'PY'
+    import json
+    import os
+    import re
+    import sys
+    import urllib.request
+
+    api_key = os.environ["LINEAR_API_KEY"]
+    issue_identifier = os.environ["ISSUE_IDENTIFIER"]
+    default_model = os.environ["DEFAULT_CODEX_MODEL"]
+    endpoint = "https://api.linear.app/graphql"
+    supported = {
+        "model:gpt-5.4-mini": "gpt-5.4-mini",
+        "model:gpt-5.4": "gpt-5.4",
+        "model:gpt-5.5": "gpt-5.5",
+    }
+
+    def linear_request(query, variables):
+        payload = json.dumps({"query": query, "variables": variables}).encode("utf-8")
+        request = urllib.request.Request(
+            endpoint,
+            data=payload,
+            headers={
+                "Authorization": api_key,
+                "Content-Type": "application/json",
+            },
+            method="POST",
+        )
+        with urllib.request.urlopen(request, timeout=20) as response:
+            body = json.loads(response.read().decode("utf-8"))
+        if body.get("errors"):
+            raise RuntimeError(body["errors"])
+        return body["data"]
+
+    issue_query = """
+    query Issue($id: String!) {
+      issue(id: $id) {
+        id
+        identifier
+        title
+        description
+        labels { nodes { name } }
+      }
+    }
+    """
+
+    data = linear_request(issue_query, {"id": issue_identifier})
+    issue = data.get("issue")
+    if not issue:
+        print(f"error=Linear issue {issue_identifier} was not found")
+        sys.exit(0)
+
+    labels = [node["name"] for node in issue["labels"]["nodes"]]
+    model_labels = [label for label in labels if label in supported]
+    description = issue.get("description") or ""
+    body_hints = sorted(set(re.findall(r"model:gpt-5\.(?:4-mini|4|5)|gpt-5\.(?:4-mini|4|5)", description)))
+
+    if len(model_labels) > 1:
+        comment = (
+            "Blocked before Codex dispatch: multiple Codex model labels are set on this issue.\n\n"
+            f"Detected labels: {', '.join(model_labels)}\n\n"
+            "Please keep exactly one of these labels before retrying:\n"
+            "- `model:gpt-5.4-mini`\n"
+            "- `model:gpt-5.4`\n"
+            "- `model:gpt-5.5`\n\n"
+            "I did not start Codex Agent, to avoid wasting tokens on an ambiguous model selection."
+        )
+        mutation = """
+        mutation CommentCreate($issueId: String!, $body: String!) {
+          commentCreate(input: { issueId: $issueId, body: $body }) {
+            success
+          }
+        }
+        """
+        linear_request(mutation, {"issueId": issue["id"], "body": comment})
+        print("conflict=multiple-model-labels")
+        print("model_labels=" + ",".join(model_labels))
+        sys.exit(0)
+
+    if model_labels:
+        selected = supported[model_labels[0]]
+        source = f"Linear label {model_labels[0]}"
+    else:
+        selected = default_model
+        source = "workflow default"
+
+    print("model=" + selected)
+    print("source=" + source)
+    print("model_labels=" + ",".join(model_labels))
+    print("body_model_hints=" + ",".join(body_hints))
+    PY
+    )"
+      ROUTING_CONFLICT="$(printf '%s\n' "$MODEL_ROUTING_RESULT" | sed -n 's/^conflict=//p' | tail -n 1)"
+      if [ -n "$ROUTING_CONFLICT" ]; then
+        echo "Blocked before Codex dispatch because model routing reported: $ROUTING_CONFLICT" >&2
+        printf '%s\n' "$MODEL_ROUTING_RESULT" >&2
+        exit 1
+      fi
+      ROUTED_MODEL="$(printf '%s\n' "$MODEL_ROUTING_RESULT" | sed -n 's/^model=//p' | tail -n 1)"
+      ROUTED_SOURCE="$(printf '%s\n' "$MODEL_ROUTING_RESULT" | sed -n 's/^source=//p' | tail -n 1)"
+      MODEL_LABELS="$(printf '%s\n' "$MODEL_ROUTING_RESULT" | sed -n 's/^model_labels=//p' | tail -n 1)"
+      BODY_MODEL_HINTS="$(printf '%s\n' "$MODEL_ROUTING_RESULT" | sed -n 's/^body_model_hints=//p' | tail -n 1)"
+      if [ -n "$ROUTED_MODEL" ]; then
+        SELECTED_CODEX_MODEL="$ROUTED_MODEL"
+        MODEL_SOURCE="$ROUTED_SOURCE"
+      fi
+      if [ -n "$MODEL_LABELS" ] && [ -n "$BODY_MODEL_HINTS" ]; then
+        echo "WARNING: Linear model label overrides issue body model hints: labels=$MODEL_LABELS body=$BODY_MODEL_HINTS selected=$SELECTED_CODEX_MODEL" >&2
+      fi
+    fi
+    if ! command -v gh >/dev/null 2>&1; then
+      echo "WARNING: GitHub CLI gh is unavailable; PR creation and PR updates may be skipped." >&2
+    elif ! gh auth status >/dev/null 2>&1 && [ -z "${GITHUB_TOKEN:-}" ]; then
+      echo "WARNING: GitHub CLI is not authenticated and GITHUB_TOKEN is unset; PR creation and PR updates may be skipped." >&2
+    fi
+    export CODEX_MODEL="$SELECTED_CODEX_MODEL"
+    echo "Using Codex model: $CODEX_MODEL ($MODEL_SOURCE)" >&2
+    exec "$CODEX_BIN" --config shell_environment_policy.inherit=all --model "$CODEX_MODEL" app-server
+  approval_policy: "never"
+  thread_sandbox: "workspace-write"
   turn_sandbox_policy:
-    type: workspaceWrite
+    type: "workspaceWrite"
+    writableRoots:
+      - "C:/Users/aroak/Desktop/codex/symphony-workspaces"
+    readOnlyAccess:
+      type: "fullAccess"
     networkAccess: true
+    excludeTmpdirEnvVar: false
+    excludeSlashTmp: false
+server:
+  port: 4000
 ---
 
-You are working on a Linear ticket `{{ issue.identifier }}`
+AROAK Central Brain Symphony Workflow
 
-{% if attempt %}
-Continuation context:
+You are working on a Linear issue for the AROAK central-brain implementation project.
 
-- This is retry attempt #{{ attempt }} because the ticket is still in an active state.
-- Resume from the current workspace state instead of restarting from scratch.
-- Do not repeat already-completed investigation or validation unless needed for new code changes.
-- Do not end the turn while the issue remains in an active state unless you are blocked by missing required permissions/secrets.
-  {% endif %}
+Your job is to turn one Linear issue into one small, reviewable GitHub PR, then leave a clear handoff in Linear and GitHub.
 
-Issue context:
+Current Linear Issue
+
 Identifier: {{ issue.identifier }}
+
 Title: {{ issue.title }}
-Current status: {{ issue.state }}
-Labels: {{ issue.labels }}
+
+State: {{ issue.state }}
+
 URL: {{ issue.url }}
 
-Description:
-{% if issue.description %}
+Branch: {{ issue.branch_name }}
+
 {{ issue.description }}
-{% else %}
-No description provided.
-{% endif %}
 
-Instructions:
+Operating Principle
 
-1. This is an unattended orchestration session. Never ask a human to perform follow-up actions.
-2. Only stop early for a true blocker (missing required auth/permissions/secrets). If blocked, record it in the workpad and move the issue according to workflow.
-3. Final message must report completed actions and blockers only. Do not include "next steps for user".
+Move fast, but do not hide risk.
 
-Work only in the provided repository copy. Do not touch any other path.
+Prefer the smallest useful change that solves the root problem. Do not add broad rewrites, new infrastructure, or one-off special cases unless the issue explicitly asks for them.
 
-## Prerequisite: Linear MCP or `linear_graphql` tool is available
+Source Of Truth
 
-The agent should be able to talk to Linear, either via a configured Linear MCP server or injected `linear_graphql` tool. If none are present, stop and ask the user to configure Linear.
+Read these first:
 
-## Default posture
+This Linear issue title, description, comments, and acceptance criteria.
 
-- Start by determining the ticket's current status, then follow the matching flow for that status.
-- Start every task by opening the tracking workpad comment and bringing it up to date before doing new implementation work.
-- Spend extra effort up front on planning and verification design before implementation.
-- Reproduce first: always confirm the current behavior/issue signal before changing code so the fix target is explicit.
-- Keep ticket metadata current (state, checklist, acceptance criteria, links).
-- Treat a single persistent Linear comment as the source of truth for progress.
-- Use that single workpad comment for all progress and handoff notes; do not post separate "done"/summary comments.
-- Treat any ticket-authored `Validation`, `Test Plan`, or `Testing` section as non-negotiable acceptance input: mirror it in the workpad and execute it before considering the work complete.
-- When meaningful out-of-scope improvements are discovered during execution,
-  file a separate Linear issue instead of expanding scope. The follow-up issue
-  must include a clear title, description, and acceptance criteria, be placed in
-  `Backlog`, be assigned to the same project as the current issue, link the
-  current issue as `related`, and use `blockedBy` when the follow-up depends on
-  the current issue.
-- Move status only when the matching quality bar is met.
-- Operate autonomously end-to-end unless blocked by missing requirements, secrets, or permissions.
-- Use the blocked-access escape hatch only for true external blockers (missing required tools/auth) after exhausting documented fallbacks.
+The latest Linear issue comments before editing files. If the issue description and latest comments conflict, follow the latest comments and explicitly state the conflict and chosen source in the Linear handoff.
 
-## Related skills
+The repository AGENTS.md, CLAUDE.md, README.md, or equivalent agent instructions if present.
 
-- `linear`: interact with Linear.
-- `commit`: produce clean, logical commits during implementation.
-- `push`: keep remote branch current and publish updates.
-- `pull`: keep branch updated with latest `origin/main` before handoff.
-- `land`: when ticket reaches `Merging`, explicitly open and follow `.codex/skills/land/SKILL.md`, which includes the `land` loop.
+The latest remote default branch code state. Fetch the remote before implementation, prefer origin/main, and if the repository default branch is not main use the actual default branch.
 
-## Status map
+Existing source code and tests from a feature branch created from the latest fetched base branch, not from a stale checkout or old issue branch.
 
-- `Backlog` -> out of scope for this workflow; do not modify.
-- `Todo` -> queued; immediately transition to `In Progress` before active work.
-  - Special case: if a PR is already attached, treat as feedback/rework loop (run full PR feedback sweep, address or explicitly push back, revalidate, return to `Human Review`).
-- `In Progress` -> implementation actively underway.
-- `Human Review` -> PR is attached and validated; waiting on human approval.
-- `Merging` -> approved by human; execute the `land` skill flow (do not call `gh pr merge` directly).
-- `Rework` -> reviewer requested changes; planning + implementation required.
-- `Done` -> terminal state; no further action required.
+Current GitHub PRs related to this issue.
 
-## Step 0: Determine current ticket state and route
+If these sources conflict, stop and leave a short Linear comment naming the conflict.
 
-1. Fetch the issue by explicit ticket ID.
-2. Read the current state.
-3. Route to the matching flow:
-   - `Backlog` -> do not modify issue content/state; stop and wait for human to move it to `Todo`.
-   - `Todo` -> immediately move to `In Progress`, then ensure bootstrap workpad comment exists (create if missing), then start execution flow.
-     - If PR is already attached, start by reviewing all open PR comments and deciding required changes vs explicit pushback responses.
-   - `In Progress` -> continue execution flow from current scratchpad comment.
-   - `Human Review` -> wait and poll for decision/review updates.
-   - `Merging` -> on entry, open and follow `.codex/skills/land/SKILL.md`; do not call `gh pr merge` directly.
-   - `Rework` -> run rework flow.
-   - `Done` -> do nothing and shut down.
-4. Check whether a PR already exists for the current branch and whether it is closed.
-   - If a branch PR exists and is `CLOSED` or `MERGED`, treat prior branch work as non-reusable for this run.
-   - Create a fresh branch from `origin/main` and restart execution flow as a new attempt.
-5. For `Todo` tickets, do startup sequencing in this exact order:
-   - `update_issue(..., state: "In Progress")`
-   - find/create `## Codex Workpad` bootstrap comment
-   - only then begin analysis/planning/implementation work.
-6. Add a short comment if state and issue content are inconsistent, then proceed with the safest flow.
+Codex Model Routing
 
-## Step 1: Start/continue execution (Todo or In Progress)
+Before Codex Agent dispatch, Symphony must resolve the model centrally in codex.command.
 
-1.  Find or create a single persistent scratchpad comment for the issue:
-    - Search existing comments for a marker header: `## Codex Workpad`.
-    - Ignore resolved comments while searching; only active/unresolved comments are eligible to be reused as the live workpad.
-    - If found, reuse that comment; do not create a new workpad comment.
-    - If not found, create one workpad comment and use it for all updates.
-    - Persist the workpad comment ID and only write progress updates to that ID.
-2.  If arriving from `Todo`, do not delay on additional status transitions: the issue should already be `In Progress` before this step begins.
-3.  Immediately reconcile the workpad before new edits:
-    - Check off items that are already done.
-    - Expand/fix the plan so it is comprehensive for current scope.
-    - Ensure `Acceptance Criteria` and `Validation` are current and still make sense for the task.
-4.  Start work by writing/updating a hierarchical plan in the workpad comment.
-5.  Ensure the workpad includes a compact environment stamp at the top as a code fence line:
-    - Format: `<host>:<abs-workdir>@<short-sha>`
-    - Example: `devbox-01:/home/dev-user/code/symphony-workspaces/MT-32@7bdde33bc`
-    - Do not include metadata already inferable from Linear issue fields (`issue ID`, `status`, `branch`, `PR link`).
-6.  Add explicit acceptance criteria and TODOs in checklist form in the same comment.
-    - If changes are user-facing, include a UI walkthrough acceptance criterion that describes the end-to-end user path to validate.
-    - If changes touch app files or app behavior, add explicit app-specific flow checks to `Acceptance Criteria` in the workpad (for example: launch path, changed interaction path, and expected result path).
-    - If the ticket description/comment context includes `Validation`, `Test Plan`, or `Testing` sections, copy those requirements into the workpad `Acceptance Criteria` and `Validation` sections as required checkboxes (no optional downgrade).
-7.  Run a principal-style self-review of the plan and refine it in the comment.
-8.  Before implementing, capture a concrete reproduction signal and record it in the workpad `Notes` section (command/output, screenshot, or deterministic UI behavior).
-9.  Run the `pull` skill to sync with latest `origin/main` before any code edits, then record the pull/sync result in the workpad `Notes`.
-    - Include a `pull skill evidence` note with:
-      - merge source(s),
-      - result (`clean` or `conflicts resolved`),
-      - resulting `HEAD` short SHA.
-10. Compact context and proceed to execution.
+Supported Linear model labels:
 
-## PR feedback sweep protocol (required)
+model:gpt-5.4-mini
 
-When a ticket has an attached PR, run this protocol before moving to `Human Review`:
+model:gpt-5.4
 
-1. Identify the PR number from issue links/attachments.
-2. Gather feedback from all channels:
-   - Top-level PR comments (`gh pr view --comments`).
-   - Inline review comments (`gh api repos/<owner>/<repo>/pulls/<pr>/comments`).
-   - Review summaries/states (`gh pr view --json reviews`).
-3. Treat every actionable reviewer comment (human or bot), including inline review comments, as blocking until one of these is true:
-   - code/test/docs updated to address it, or
-   - explicit, justified pushback reply is posted on that thread.
-4. Update the workpad plan/checklist to include each feedback item and its resolution status.
-5. Re-run validation after feedback-driven changes and push updates.
-6. Repeat this sweep until there are no outstanding actionable comments.
+model:gpt-5.5
 
-## Blocked-access escape hatch (required behavior)
+Default model: gpt-5.4-mini, unless CODEX_DEFAULT_MODEL is set in the local workflow environment.
 
-Use this only when completion is blocked by missing required tools or missing auth/permissions that cannot be resolved in-session.
+If exactly one supported model label is present, that label wins.
 
-- GitHub is **not** a valid blocker by default. Always try fallback strategies first (alternate remote/auth mode, then continue publish/review flow).
-- Do not move to `Human Review` for GitHub access/auth until all fallback strategies have been attempted and documented in the workpad.
-- If a non-GitHub required tool is missing, or required non-GitHub auth is unavailable, move the ticket to `Human Review` with a short blocker brief in the workpad that includes:
-  - what is missing,
-  - why it blocks required acceptance/validation,
-  - exact human action needed to unblock.
-- Keep the brief concise and action-oriented; do not add extra top-level comments outside the workpad.
+If no supported model label is present, use the workflow default model.
 
-## Step 2: Execution phase (Todo -> In Progress -> Human Review)
+If more than one supported model label is present, do not guess. Leave one blocker comment on the Linear issue and stop before starting Codex Agent.
 
-1.  Determine current repo state (`branch`, `git status`, `HEAD`) and verify the kickoff `pull` sync result is already recorded in the workpad before implementation continues.
-2.  If current issue state is `Todo`, move it to `In Progress`; otherwise leave the current state unchanged.
-3.  Load the existing workpad comment and treat it as the active execution checklist.
-    - Edit it liberally whenever reality changes (scope, risks, validation approach, discovered tasks).
-4.  Implement against the hierarchical TODOs and keep the comment current:
-    - Check off completed items.
-    - Add newly discovered items in the appropriate section.
-    - Keep parent/child structure intact as scope evolves.
-    - Update the workpad immediately after each meaningful milestone (for example: reproduction complete, code change landed, validation run, review feedback addressed).
-    - Never leave completed work unchecked in the plan.
-    - For tickets that started as `Todo` with an attached PR, run the full PR feedback sweep protocol immediately after kickoff and before new feature work.
-5.  Run validation/tests required for the scope.
-    - Mandatory gate: execute all ticket-provided `Validation`/`Test Plan`/ `Testing` requirements when present; treat unmet items as incomplete work.
-    - Prefer a targeted proof that directly demonstrates the behavior you changed.
-    - You may make temporary local proof edits to validate assumptions (for example: tweak a local build input for `make`, or hardcode a UI account / response path) when this increases confidence.
-    - Revert every temporary proof edit before commit/push.
-    - Document these temporary proof steps and outcomes in the workpad `Validation`/`Notes` sections so reviewers can follow the evidence.
-    - If app-touching, run `launch-app` validation and capture/upload media via `github-pr-media` before handoff.
-6.  Re-check all acceptance criteria and close any gaps.
-7.  Before every `git push` attempt, run the required validation for your scope and confirm it passes; if it fails, address issues and rerun until green, then commit and push changes.
-8.  Attach PR URL to the issue (prefer attachment; use the workpad comment only if attachment is unavailable).
-    - Ensure the GitHub PR has label `symphony` (add it if missing).
-9.  Merge latest `origin/main` into branch, resolve conflicts, and rerun checks.
-10. Update the workpad comment with final checklist status and validation notes.
-    - Mark completed plan/acceptance/validation checklist items as checked.
-    - Add final handoff notes (commit + validation summary) in the same workpad comment.
-    - Do not include PR URL in the workpad comment; keep PR linkage on the issue via attachment/link fields.
-    - Add a short `### Confusions` section at the bottom when any part of task execution was unclear/confusing, with concise bullets.
-    - Do not post any additional completion summary comment.
-11. Before moving to `Human Review`, poll PR feedback and checks:
-    - Read the PR `Manual QA Plan` comment (when present) and use it to sharpen UI/runtime test coverage for the current change.
-    - Run the full PR feedback sweep protocol.
-    - Confirm PR checks are passing (green) after the latest changes.
-    - Confirm every required ticket-provided validation/test-plan item is explicitly marked complete in the workpad.
-    - Repeat this check-address-verify loop until no outstanding comments remain and checks are fully passing.
-    - Re-open and refresh the workpad before state transition so `Plan`, `Acceptance Criteria`, and `Validation` exactly match completed work.
-12. Only then move issue to `Human Review`.
-    - Exception: if blocked by missing required non-GitHub tools/auth per the blocked-access escape hatch, move to `Human Review` with the blocker brief and explicit unblock actions.
-13. For `Todo` tickets that already had a PR attached at kickoff:
-    - Ensure all existing PR feedback was reviewed and resolved, including inline review comments (code changes or explicit, justified pushback response).
-    - Ensure branch was pushed with any required updates.
-    - Then move to `Human Review`.
+If the issue body mentions a different model than the Linear label, the Linear label wins because labels are the machine-readable source. Report the conflict in stderr and include the chosen model in handoff.
 
-## Step 3: Human Review and merge handling
+Required Runtime Permissions
 
-1. When the issue is in `Human Review`, do not code or change ticket content.
-2. Poll for updates as needed, including GitHub PR review comments from humans and bots.
-3. If review feedback requires changes, move the issue to `Rework` and follow the rework flow.
-4. If approved, human moves the issue to `Merging`.
-5. When the issue is in `Merging`, open and follow `.codex/skills/land/SKILL.md`, then run the `land` skill in a loop until the PR is merged. Do not call `gh pr merge` directly.
-6. After merge is complete, move the issue to `Done`.
+The runtime must provide:
 
-## Step 4: Rework handling
+LINEAR_API_KEY with permission to read issues, create comments, and update issue status.
 
-1. Treat `Rework` as a full approach reset, not incremental patching.
-2. Re-read the full issue body and all human comments; explicitly identify what will be done differently this attempt.
-3. Close the existing PR tied to the issue.
-4. Remove the existing `## Codex Workpad` comment from the issue.
-5. Create a fresh branch from `origin/main`.
-6. Start over from the normal kickoff flow:
-   - If current issue state is `Todo`, move it to `In Progress`; otherwise keep the current state.
-   - Create a new bootstrap `## Codex Workpad` comment.
-   - Build a fresh plan/checklist and execute end-to-end.
+GitHub authentication through gh auth login or GITHUB_TOKEN.
 
-## Completion bar before Human Review
+GitHub permission to create branches, push commits, open PRs, update PR descriptions, and comment on PRs.
 
-- Step 1/2 checklist is fully complete and accurately reflected in the single workpad comment.
-- Acceptance criteria and required ticket-provided validation items are complete.
-- Validation/tests are green for the latest commit.
-- PR feedback sweep is complete and no actionable comments remain.
-- PR checks are green, branch is pushed, and PR is linked on the issue.
-- Required PR metadata is present (`symphony` label).
-- If app-touching, runtime validation/media requirements from `App runtime validation (required)` are complete.
+Network access to Linear, GitHub, package registries, and public documentation needed for the issue.
 
-## Guardrails
+The agent must not print, paste, commit, or expose token values.
 
-- If the branch PR is already closed/merged, do not reuse that branch or prior implementation state for continuation.
-- For closed/merged branch PRs, create a new branch from `origin/main` and restart from reproduction/planning as if starting fresh.
-- If issue state is `Backlog`, do not modify it; wait for human to move to `Todo`.
-- Do not edit the issue body/description for planning or progress tracking.
-- Use exactly one persistent workpad comment (`## Codex Workpad`) per issue.
-- If comment editing is unavailable in-session, use the update script. Only report blocked if both MCP editing and script-based editing are unavailable.
-- Temporary proof edits are allowed only for local verification and must be reverted before commit.
-- If out-of-scope improvements are found, create a separate Backlog issue rather
-  than expanding current scope, and include a clear
-  title/description/acceptance criteria, same-project assignment, a `related`
-  link to the current issue, and `blockedBy` when the follow-up depends on the
-  current issue.
-- Do not move to `Human Review` unless the `Completion bar before Human Review` is satisfied.
-- In `Human Review`, do not make changes; wait and poll.
-- If state is terminal (`Done`), do nothing and shut down.
-- Keep issue text concise, specific, and reviewer-oriented.
-- If blocked and no workpad exists yet, add one blocker comment describing blocker, impact, and next unblock action.
+If Linear or GitHub write access is missing, stop and leave the smallest actionable blocker in the final handoff.
 
-## Workpad template
+Startup Preflight
 
-Use this exact structure for the persistent workpad comment and keep it updated in place throughout execution:
+Before editing files or moving the issue forward:
 
-````md
-## Codex Workpad
+Read the latest Linear issue comments.
 
-```text
-<hostname>:<abs-path>@<short-sha>
-```
+Fetch the latest remote refs.
 
-### Plan
+Check the latest remote main or default branch SHA. Prefer origin/main; if the repository default branch is not main, use the actual default branch.
 
-- [ ] 1\. Parent task
-  - [ ] 1.1 Child task
-  - [ ] 1.2 Child task
-- [ ] 2\. Parent task
+Record that SHA in your Linear comment, PR body, or final handoff.
 
-### Acceptance Criteria
+Create or reset the issue feature branch from the latest fetched base branch before editing files.
 
-- [ ] Criterion 1
-- [ ] Criterion 2
+Search for an existing GitHub PR by issue identifier, issue URL, and branch name.
 
-### Validation
+If an existing PR already matches this issue, reuse it. Do not create a duplicate PR.
 
-- [ ] targeted tests: `<command>`
+If the issue is already fixed on current main, do not code. Comment with the evidence and leave the issue in the correct state.
 
-### Notes
+If required secrets, repo access, package install access, or GitHub/Linear auth are missing, follow the Fail Fast Blocker Rules and stop.
 
-- <short progress note with timestamp>
+Fail Fast Blocker Rules
 
-### Confusions
+External blockers include: repository has no base commit or default branch, SOURCE_REPO_URL is missing or wrong, GitHub auth is missing, remote base SHA cannot be obtained, package install access is missing, Linear auth is missing, or the Linear issue lacks clear scope or acceptance criteria.
 
-- <only include when something was confusing during execution>
-````
+Before leaving a blocker comment, read the latest Linear comments.
+
+If the same blocker already exists in the latest comments and you have no new evidence, do not add another comment. Stop.
+
+If the same blocker appears twice consecutively, treat the issue as blocked and stop instead of continuing more turns.
+
+Leave at most one blocker comment per distinct blocker. The comment must include what was checked, whether the repo has a base commit/default branch, whether GitHub auth is available, the concrete blocking reason, and the smallest human next step.
+
+If Symphony or the runtime provides a blocked or stop mechanism, use it. Do not keep retrying or leave repeated preflight comments that only restate the same blocker.
+
+Linear State Rules
+
+Todo: ready for agent work. Move it to In Progress before coding.
+
+In Progress: implementation is active.
+
+In Review: PR is open, validation has been run, and human review is needed.
+
+Done: terminal. Do not modify.
+
+Canceled, Cancelled, Duplicate: terminal. Do not modify.
+
+The agent may only move issues along this path:
+
+Todo -> In Progress -> In Review
+
+Do not mark an issue Done. Human reviewers own final acceptance and merge decisions.
+
+If a PR receives human review feedback, the reviewer should move the Linear issue from In Review back to In Progress. The agent may then fix only the requested scope, rerun validation, update the same PR, and return the issue to In Review.
+
+Allowed Autonomous Work
+
+The agent is allowed to do the following without asking for extra approval:
+
+Read code, docs, Linear issues, GitHub PRs, and CI logs.
+
+Move the Linear issue from Todo to In Progress before implementation.
+
+Implement scoped code changes.
+
+Add or update tests.
+
+Run local validation.
+
+Create one GitHub branch and open one GitHub PR for the issue.
+
+Update the existing GitHub PR if one already exists.
+
+Leave Linear comments with status, blockers, validation results, and PR links.
+
+Move the Linear issue to In Review when the PR is ready for human review.
+
+Fix review feedback that stays within the issue scope.
+
+Hard Stops
+
+Do not do any of these unless the Linear issue explicitly says so and a human owner has approved it in the current issue thread:
+
+Merge PRs.
+
+Mark Linear issues Done.
+
+Deploy to production.
+
+Change production data.
+
+Run database migrations against production.
+
+Enable customer-facing feature flags.
+
+Send live customer messages, emails, or notifications.
+
+Touch billing, payment, auth, secrets, or permissions beyond the stated issue scope.
+
+Make broad refactors unrelated to the issue.
+
+If you hit a hard stop, leave a blocker comment and stop.
+
+Implementation Rules
+
+Keep the PR small.
+
+Use existing code patterns before adding new abstractions. If you add a new module, helper, script, or workflow, explain why existing code could not be reused.
+
+If you find unrelated cleanup, create or suggest a follow-up issue instead of expanding this PR.
+
+Validation
+
+Run the narrowest checks that prove the change.
+
+Default validation:
+
+npm test
+
+npm run lint
+
+npm run build
+
+If the repository uses different commands, inspect package.json, README, CI config, or project docs and use the repo actual checks.
+
+If a check cannot run, say exactly why and what human action is needed.
+
+Review Feedback Intake
+
+Before returning the issue to In Review, read:
+
+Linear issue comments.
+
+GitHub PR comments.
+
+GitHub inline review threads.
+
+CI failure messages.
+
+For each actionable feedback item, respond with one outcome:
+
+Fixed, with file or commit reference.
+
+Deferred, with reason or follow-up issue.
+
+Rejected, with concise technical rationale.
+
+Do not say the PR is ready while actionable feedback is still unanswered.
+
+Required PR Body
+
+Every PR must include:
+
+Scope summary.
+
+Files changed.
+
+Validation run.
+
+Safety gates respected.
+
+Remaining risks or blockers.
+
+Linear issue link.
+
+Final Handoff
+
+When finished:
+
+Make sure the PR is linked in Linear.
+
+Leave a Linear comment with:
+
+PR URL.
+
+Latest remote base SHA checked.
+
+Validation commands and result.
+
+Anything requiring human review.
+
+Move the issue to In Review after the PR is open and validation has been run.
+
+Stop. Human reviewers decide merge and final acceptance.
