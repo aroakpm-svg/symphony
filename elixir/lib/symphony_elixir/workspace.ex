@@ -473,8 +473,19 @@ defmodule SymphonyElixir.Workspace do
     [
       {"GIT_TERMINAL_PROMPT", "0"},
       {"GCM_INTERACTIVE", "Never"},
-      {"GIT_SSH_COMMAND", "ssh -o BatchMode=yes"}
+      {"GIT_SSH_COMMAND", batch_mode_ssh_command(System.get_env("GIT_SSH_COMMAND"))}
     ]
+  end
+
+  defp batch_mode_ssh_command(nil), do: "ssh -o BatchMode=yes"
+  defp batch_mode_ssh_command(""), do: "ssh -o BatchMode=yes"
+
+  defp batch_mode_ssh_command(command) when is_binary(command) do
+    if String.contains?(command, "BatchMode") do
+      command
+    else
+      command <> " -o BatchMode=yes"
+    end
   end
 
   defp remote_expected_repo_script do
@@ -488,13 +499,19 @@ defmodule SymphonyElixir.Workspace do
         [
           "actual_remote=\"$(git remote get-url origin)\"",
           "actual_remote=\"${actual_remote%.git}\"",
+          "actual_remote=\"${actual_remote%/}\"",
           "expected_remote=#{expected}",
           "expected_remote=\"${expected_remote%.git}\"",
+          "expected_remote=\"${expected_remote%/}\"",
           "test \"$actual_remote\" = \"$expected_remote\""
         ]
         |> Enum.join("\n")
     end
   end
+
+  @doc false
+  @spec remote_expected_repo_script_for_test() :: String.t()
+  def remote_expected_repo_script_for_test, do: remote_expected_repo_script()
 
   defp expected_source_repo_url do
     case System.get_env("SOURCE_REPO_URL") do

@@ -91,6 +91,54 @@ defmodule SymphonyElixir.WorkspacePreflightBlockerTest do
     end
   end
 
+  test "local git preflight preserves custom SSH command while forcing batch mode" do
+    previous_path = System.get_env("PATH")
+    previous_git_ssh_command = System.get_env("GIT_SSH_COMMAND")
+
+    on_exit(fn ->
+      restore_env("PATH", previous_path)
+      restore_env("GIT_SSH_COMMAND", previous_git_ssh_command)
+    end)
+
+    workspace_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-workspace-preflight-ssh-command-#{System.unique_integer([:positive])}"
+      )
+
+    fake_bin = Path.join(workspace_root, "bin")
+    workspace = Path.join(workspace_root, "MT-SSH")
+    marker = Path.join(workspace_root, "git-ssh-command.txt")
+
+    try do
+      File.mkdir_p!(fake_bin)
+      File.mkdir_p!(workspace)
+      write_git_env_recorder!(fake_bin, marker)
+      System.put_env("PATH", fake_bin <> path_separator() <> (previous_path || ""))
+      System.put_env("GIT_SSH_COMMAND", "ssh -i /tmp/deploy-key")
+
+      assert :ok = Workspace.preflight(workspace, "MT-SSH")
+
+      command = File.read!(marker)
+      assert command =~ "ssh -i /tmp/deploy-key"
+      assert command =~ "-o BatchMode=yes"
+    after
+      File.rm_rf(workspace_root)
+    end
+  end
+
+  test "remote preflight normalizes actual origin trailing slashes" do
+    previous_source_repo_url = System.get_env("SOURCE_REPO_URL")
+    on_exit(fn -> restore_env("SOURCE_REPO_URL", previous_source_repo_url) end)
+
+    System.put_env("SOURCE_REPO_URL", "https://github.com/example/repo")
+
+    script = Workspace.remote_expected_repo_script_for_test()
+
+    assert script =~ ~s(actual_remote="${actual_remote%/}")
+    assert script =~ ~s(expected_remote="${expected_remote%/}")
+  end
+
   test "agent-reported workspace preflight failure blocks without retrying" do
     issue_id = "issue-preflight-blocker"
 
@@ -197,6 +245,23 @@ defmodule SymphonyElixir.WorkspacePreflightBlockerTest do
       File.write!(git_path, "#!/bin/sh\nsleep 1\nexit 0\n")
       File.chmod!(git_path, 0o755)
     end
+  end
+
+  defp write_git_env_recorder!(fake_bin, marker) do
+    if match?({:win32, _}, :os.type()) do
+      File.write!(
+        Path.join(fake_bin, "git.cmd"),
+        "@echo off\r\necho %GIT_SSH_COMMAND%> \"#{marker}\"\r\nexit /b 0\r\n"
+      )
+    else
+      git_path = Path.join(fake_bin, "git")
+      File.write!(git_path, "#!/bin/sh\nprintf '%s' \"$GIT_SSH_COMMAND\" > #{shell_quote(marker)}\nexit 0\n")
+      File.chmod!(git_path, 0o755)
+    end
+  end
+
+  defp shell_quote(value) do
+    "'" <> String.replace(value, "'", "'\"'\"'") <> "'"
   end
 
   defp path_separator do
