@@ -59,6 +59,45 @@ defmodule SymphonyElixir.WorkspacePreflightBlockerTest do
     end
   end
 
+  test "workspace preflight compares stored remote before URL rewrites" do
+    previous_source_repo_url = System.get_env("SOURCE_REPO_URL")
+    on_exit(fn -> restore_env("SOURCE_REPO_URL", previous_source_repo_url) end)
+
+    expected_url = "https://github.com/example/rewrite.git"
+    System.put_env("SOURCE_REPO_URL", expected_url)
+
+    workspace_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-workspace-preflight-rewrite-#{System.unique_integer([:positive])}"
+      )
+
+    origin_repo = Path.join(workspace_root, "origin.git")
+    workspace = Path.join(workspace_root, "workspace")
+    rewritten_url = file_url(origin_repo)
+
+    try do
+      File.mkdir_p!(workspace_root)
+      System.cmd("git", ["init", "--bare", origin_repo], stderr_to_stdout: true)
+      System.cmd("git", ["init", workspace], stderr_to_stdout: true)
+      System.cmd("git", ["-C", workspace, "remote", "add", "origin", expected_url], stderr_to_stdout: true)
+
+      System.cmd(
+        "git",
+        ["-C", workspace, "config", "url.#{rewritten_url}.insteadOf", expected_url],
+        stderr_to_stdout: true
+      )
+
+      assert {expanded_url, 0} =
+               System.cmd("git", ["-C", workspace, "remote", "get-url", "origin"], stderr_to_stdout: true)
+
+      assert String.trim(expanded_url) == rewritten_url
+      assert :ok = Workspace.preflight(workspace, "MT-REWRITE")
+    after
+      File.rm_rf(workspace_root)
+    end
+  end
+
   test "local git preflight commands time out instead of hanging the worker slot" do
     write_workflow_file!(Workflow.workflow_file_path(), hook_timeout_ms: 10)
     {executable, args} = sleep_command()
@@ -97,6 +136,8 @@ defmodule SymphonyElixir.WorkspacePreflightBlockerTest do
 
     script = Workspace.remote_expected_repo_script_for_test()
 
+    assert script =~ ~s(actual_remote="$(git config --get remote.origin.url)")
+    refute script =~ "git remote get-url origin"
     assert script =~ ~s(actual_remote="${actual_remote%/}"\nactual_remote="${actual_remote%.git}")
     assert script =~ ~s(expected_remote="${expected_remote%/}"\nexpected_remote="${expected_remote%.git}")
   end
@@ -256,6 +297,19 @@ defmodule SymphonyElixir.WorkspacePreflightBlockerTest do
 
       true ->
         {"powershell.exe", ["-NoProfile", "-Command", "Start-Sleep -Seconds 1"]}
+    end
+  end
+
+  defp file_url(path) do
+    expanded_path =
+      path
+      |> Path.expand()
+      |> String.replace("\\", "/")
+
+    if String.starts_with?(expanded_path, "/") do
+      "file://#{expanded_path}"
+    else
+      "file:///#{expanded_path}"
     end
   end
 

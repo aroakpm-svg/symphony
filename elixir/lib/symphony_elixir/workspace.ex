@@ -397,13 +397,13 @@ defmodule SymphonyElixir.Workspace do
   defp maybe_validate_origin_remote(workspace) do
     case expected_source_repo_url() do
       nil ->
-        run_git_preflight_command(workspace, ["remote", "get-url", "origin"], :git_remote_missing)
+        run_git_preflight_command(workspace, ["config", "--get", "remote.origin.url"], :git_remote_missing)
 
       expected_url ->
         case run_local_preflight_command(
                "git",
-               ["-C", workspace, "remote", "get-url", "origin"],
-               "git remote get-url origin"
+               ["-C", workspace, "config", "--get", "remote.origin.url"],
+               "git config --get remote.origin.url"
              ) do
           {output, 0} ->
             actual_url = String.trim(output)
@@ -411,14 +411,14 @@ defmodule SymphonyElixir.Workspace do
             if normalized_repo_url(actual_url) == normalized_repo_url(expected_url) do
               :ok
             else
-              {:error, {:workspace_preflight_failed, :git_remote_mismatch, "git remote get-url origin", "expected #{redacted_repo_url(expected_url)}, got #{redacted_repo_url(actual_url)}"}}
+              {:error, {:workspace_preflight_failed, :git_remote_mismatch, "git config --get remote.origin.url", "expected #{redacted_repo_url(expected_url)}, got #{redacted_repo_url(actual_url)}"}}
             end
 
           {output, status} when is_integer(status) ->
-            {:error, workspace_preflight_error(:git_remote_missing, "git remote get-url origin", status, output)}
+            {:error, workspace_preflight_error(:git_remote_missing, "git config --get remote.origin.url", status, output)}
 
           {:error, reason} ->
-            {:error, workspace_preflight_error(:git_remote_missing, "git remote get-url origin", reason)}
+            {:error, workspace_preflight_error(:git_remote_missing, "git config --get remote.origin.url", reason)}
         end
     end
   end
@@ -521,13 +521,13 @@ defmodule SymphonyElixir.Workspace do
   defp remote_expected_repo_script do
     case expected_source_repo_url() do
       nil ->
-        "git remote get-url origin >/dev/null"
+        "git config --get remote.origin.url >/dev/null"
 
       expected_url ->
         expected = shell_escape(normalized_repo_url(expected_url))
 
         [
-          "actual_remote=\"$(git remote get-url origin)\"",
+          "actual_remote=\"$(git config --get remote.origin.url)\"",
           "actual_remote=\"${actual_remote%/}\"",
           "actual_remote=\"${actual_remote%.git}\"",
           "expected_remote=#{expected}",
