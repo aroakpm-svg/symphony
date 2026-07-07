@@ -41,22 +41,31 @@ defmodule SymphonyElixir.AgentRunner do
       {:ok, workspace} ->
         send_worker_runtime_info(codex_update_recipient, issue, worker_host, workspace)
 
-        try do
-          with :ok <- Workspace.preflight(workspace, issue, worker_host),
-               :ok <- Workspace.run_before_run_hook(workspace, issue, worker_host) do
-            run_codex_turns(workspace, issue, codex_update_recipient, opts, worker_host)
-          else
-            {:error, {:workspace_preflight_failed, _type, _command, _status, _output} = reason} ->
-              handle_workspace_preflight_failure(codex_update_recipient, issue, worker_host, workspace, reason)
+        run_result =
+          try do
+            with :ok <- Workspace.preflight(workspace, issue, worker_host),
+                 :ok <- Workspace.run_before_run_hook(workspace, issue, worker_host) do
+              run_codex_turns(workspace, issue, codex_update_recipient, opts, worker_host)
+            else
+              {:error, {:workspace_preflight_failed, _type, _command, _status, _output} = reason} ->
+                {:deferred_workspace_preflight_failure, reason}
 
-            {:error, {:workspace_preflight_failed, _type, _command, _detail} = reason} ->
-              handle_workspace_preflight_failure(codex_update_recipient, issue, worker_host, workspace, reason)
+              {:error, {:workspace_preflight_failed, _type, _command, _detail} = reason} ->
+                {:deferred_workspace_preflight_failure, reason}
 
-            other ->
-              other
+              other ->
+                other
+            end
+          after
+            Workspace.run_after_run_hook(workspace, issue, worker_host)
           end
-        after
-          Workspace.run_after_run_hook(workspace, issue, worker_host)
+
+        case run_result do
+          {:deferred_workspace_preflight_failure, reason} ->
+            handle_workspace_preflight_failure(codex_update_recipient, issue, worker_host, workspace, reason)
+
+          other ->
+            other
         end
 
       {:error, reason} ->

@@ -206,6 +206,41 @@ defmodule SymphonyElixir.WorkspacePreflightBlockerTest do
     end
   end
 
+  test "agent reports preflight blocker after after_run cleanup finishes" do
+    workspace_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-workspace-preflight-cleanup-#{System.unique_integer([:positive])}"
+      )
+
+    issue = %Issue{
+      id: "issue-preflight-cleanup",
+      identifier: "MT-PREFLIGHT-CLEANUP",
+      title: "Preflight blocker waits for cleanup",
+      description: "Workspace is not usable",
+      state: "In Progress",
+      url: "https://example.org/issues/MT-PREFLIGHT-CLEANUP"
+    }
+
+    try do
+      write_workflow_file!(Workflow.workflow_file_path(),
+        workspace_root: workspace_root,
+        hook_after_run: "printf cleanup > cleanup.marker"
+      )
+
+      assert {:ok, workspace} = Workspace.create_for_issue(issue)
+      File.mkdir_p!(workspace)
+
+      assert :ok = AgentRunner.run(issue, self())
+
+      assert_receive {:agent_hard_blocker, "issue-preflight-cleanup", blocker_info}
+      assert File.read!(Path.join(workspace, "cleanup.marker")) == "cleanup"
+      assert blocker_info.workspace_path == workspace
+    after
+      File.rm_rf(workspace_root)
+    end
+  end
+
   defp wait_for_blocked_issue(pid, issue_id, timeout_ms \\ 200) do
     deadline_ms = System.monotonic_time(:millisecond) + timeout_ms
     do_wait_for_blocked_issue(pid, issue_id, deadline_ms)
