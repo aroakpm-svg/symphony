@@ -528,11 +528,11 @@ defmodule SymphonyElixir.Workspace do
 
         [
           "actual_remote=\"$(git remote get-url origin)\"",
-          "actual_remote=\"${actual_remote%.git}\"",
           "actual_remote=\"${actual_remote%/}\"",
+          "actual_remote=\"${actual_remote%.git}\"",
           "expected_remote=#{expected}",
-          "expected_remote=\"${expected_remote%.git}\"",
           "expected_remote=\"${expected_remote%/}\"",
+          "expected_remote=\"${expected_remote%.git}\"",
           "test \"$actual_remote\" = \"$expected_remote\""
         ]
         |> Enum.join("\n")

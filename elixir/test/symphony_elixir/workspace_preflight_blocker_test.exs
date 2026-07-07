@@ -61,11 +61,12 @@ defmodule SymphonyElixir.WorkspacePreflightBlockerTest do
 
   test "local git preflight commands time out instead of hanging the worker slot" do
     write_workflow_file!(Workflow.workflow_file_path(), hook_timeout_ms: 10)
+    {executable, args} = sleep_command()
 
     assert {:error, {:workspace_hook_timeout, "sleep", 10}} =
              Workspace.run_local_preflight_command_for_test(
-               "powershell.exe",
-               ["-NoProfile", "-Command", "Start-Sleep -Seconds 1"],
+               executable,
+               args,
                "sleep"
              )
   end
@@ -96,8 +97,8 @@ defmodule SymphonyElixir.WorkspacePreflightBlockerTest do
 
     script = Workspace.remote_expected_repo_script_for_test()
 
-    assert script =~ ~s(actual_remote="${actual_remote%/}")
-    assert script =~ ~s(expected_remote="${expected_remote%/}")
+    assert script =~ ~s(actual_remote="${actual_remote%/}"\nactual_remote="${actual_remote%.git}")
+    assert script =~ ~s(expected_remote="${expected_remote%/}"\nexpected_remote="${expected_remote%.git}")
   end
 
   test "agent-reported workspace preflight failure blocks without retrying" do
@@ -208,6 +209,19 @@ defmodule SymphonyElixir.WorkspacePreflightBlockerTest do
   defp wait_for_blocked_issue(pid, issue_id, timeout_ms \\ 200) do
     deadline_ms = System.monotonic_time(:millisecond) + timeout_ms
     do_wait_for_blocked_issue(pid, issue_id, deadline_ms)
+  end
+
+  defp sleep_command do
+    cond do
+      System.find_executable("sh") ->
+        {"sh", ["-c", "sleep 1"]}
+
+      System.find_executable("pwsh") ->
+        {"pwsh", ["-NoProfile", "-Command", "Start-Sleep -Seconds 1"]}
+
+      true ->
+        {"powershell.exe", ["-NoProfile", "-Command", "Start-Sleep -Seconds 1"]}
+    end
   end
 
   defp do_wait_for_blocked_issue(pid, issue_id, deadline_ms) do
