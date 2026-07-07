@@ -400,31 +400,81 @@ defmodule SymphonyElixir.Workspace do
         run_git_preflight_command(workspace, ["remote", "get-url", "origin"], :git_remote_missing)
 
       expected_url ->
-        case System.cmd("git", ["-C", workspace, "remote", "get-url", "origin"], stderr_to_stdout: true) do
+        case run_local_preflight_command(
+               "git",
+               ["-C", workspace, "remote", "get-url", "origin"],
+               "git remote get-url origin"
+             ) do
           {output, 0} ->
             actual_url = String.trim(output)
 
             if normalized_repo_url(actual_url) == normalized_repo_url(expected_url) do
               :ok
             else
-              {:error, {:workspace_preflight_failed, :git_remote_mismatch, "git remote get-url origin", "expected #{expected_url}, got #{actual_url}"}}
+              {:error,
+               {:workspace_preflight_failed, :git_remote_mismatch, "git remote get-url origin",
+                "expected #{redacted_repo_url(expected_url)}, got #{redacted_repo_url(actual_url)}"}}
             end
 
           {output, status} ->
-            {:error, workspace_preflight_error(:git_remote_missing, "git remote get-url origin", status, output)}
+            {:error,
+             workspace_preflight_error(:git_remote_missing, "git remote get-url origin", status, output)}
+
+          {:error, reason} ->
+            {:error, workspace_preflight_error(:git_remote_missing, "git remote get-url origin", reason)}
         end
     end
   end
 
   defp run_git_preflight_command(workspace, args, error_type) do
-    case System.cmd("git", ["-C", workspace | args], stderr_to_stdout: true) do
+    command = Enum.join(["git" | args], " ")
+
+    case run_local_preflight_command("git", ["-C", workspace | args], command) do
       {_output, 0} -> :ok
-      {output, status} -> {:error, workspace_preflight_error(error_type, Enum.join(["git" | args], " "), status, output)}
+      {output, status} -> {:error, workspace_preflight_error(error_type, command, status, output)}
+      {:error, reason} -> {:error, workspace_preflight_error(error_type, command, reason)}
     end
   end
 
   defp workspace_preflight_error(error_type, command, status, output) do
     {:workspace_preflight_failed, error_type, command, status, sanitize_hook_output_for_log(output)}
+  end
+
+  defp workspace_preflight_error(error_type, command, {:workspace_hook_timeout, _command, timeout_ms}) do
+    {:workspace_preflight_failed, error_type, command, "timed out after #{timeout_ms}ms"}
+  end
+
+  defp workspace_preflight_error(error_type, command, reason) do
+    {:workspace_preflight_failed, error_type, command, inspect(reason)}
+  end
+
+  defp run_local_preflight_command(executable, args, command) do
+    timeout_ms = Config.settings!().hooks.timeout_ms
+
+    task =
+      Task.async(fn ->
+        System.cmd(executable, args,
+          stderr_to_stdout: true,
+          env: local_git_preflight_env()
+        )
+      end)
+
+    case Task.yield(task, timeout_ms) do
+      {:ok, result} ->
+        result
+
+      nil ->
+        Task.shutdown(task, :brutal_kill)
+        {:error, {:workspace_hook_timeout, command, timeout_ms}}
+    end
+  end
+
+  defp local_git_preflight_env do
+    [
+      {"GIT_TERMINAL_PROMPT", "0"},
+      {"GCM_INTERACTIVE", "Never"},
+      {"GIT_SSH_COMMAND", "ssh -o BatchMode=yes"}
+    ]
   end
 
   defp remote_expected_repo_script do
@@ -474,6 +524,17 @@ defmodule SymphonyElixir.Workspace do
       false ->
         binary_part(binary_output, 0, max_bytes) <> "... (truncated)"
     end
+    |> redact_url_userinfo()
+  end
+
+  defp redacted_repo_url(url) when is_binary(url) do
+    url
+    |> normalized_repo_url()
+    |> redact_url_userinfo()
+  end
+
+  defp redact_url_userinfo(value) when is_binary(value) do
+    String.replace(value, ~r{([a-z][a-z0-9+.-]*://)([^/@\s]+)@}i, "\\1[redacted]@")
   end
 
   defp validate_workspace_path(workspace, nil) when is_binary(workspace) do
