@@ -411,14 +411,11 @@ defmodule SymphonyElixir.Workspace do
             if normalized_repo_url(actual_url) == normalized_repo_url(expected_url) do
               :ok
             else
-              {:error,
-               {:workspace_preflight_failed, :git_remote_mismatch, "git remote get-url origin",
-                "expected #{redacted_repo_url(expected_url)}, got #{redacted_repo_url(actual_url)}"}}
+              {:error, {:workspace_preflight_failed, :git_remote_mismatch, "git remote get-url origin", "expected #{redacted_repo_url(expected_url)}, got #{redacted_repo_url(actual_url)}"}}
             end
 
-          {output, status} ->
-            {:error,
-             workspace_preflight_error(:git_remote_missing, "git remote get-url origin", status, output)}
+          {output, status} when is_integer(status) ->
+            {:error, workspace_preflight_error(:git_remote_missing, "git remote get-url origin", status, output)}
 
           {:error, reason} ->
             {:error, workspace_preflight_error(:git_remote_missing, "git remote get-url origin", reason)}
@@ -431,7 +428,7 @@ defmodule SymphonyElixir.Workspace do
 
     case run_local_preflight_command("git", ["-C", workspace | args], command) do
       {_output, 0} -> :ok
-      {output, status} -> {:error, workspace_preflight_error(error_type, command, status, output)}
+      {output, status} when is_integer(status) -> {:error, workspace_preflight_error(error_type, command, status, output)}
       {:error, reason} -> {:error, workspace_preflight_error(error_type, command, reason)}
     end
   end
@@ -453,10 +450,15 @@ defmodule SymphonyElixir.Workspace do
 
     task =
       Task.async(fn ->
-        System.cmd(executable, args,
-          stderr_to_stdout: true,
-          env: local_git_preflight_env()
-        )
+        try do
+          System.cmd(executable, args,
+            stderr_to_stdout: true,
+            env: local_git_preflight_env()
+          )
+        rescue
+          error in ErlangError -> {:error, error.original}
+          error -> {:error, Exception.message(error)}
+        end
       end)
 
     case Task.yield(task, timeout_ms) do
@@ -467,6 +469,13 @@ defmodule SymphonyElixir.Workspace do
         Task.shutdown(task, :brutal_kill)
         {:error, {:workspace_hook_timeout, command, timeout_ms}}
     end
+  end
+
+  @doc false
+  @spec run_local_preflight_command_for_test(String.t(), [String.t()], String.t()) ::
+          {String.t(), non_neg_integer()} | {:error, term()}
+  def run_local_preflight_command_for_test(executable, args, command) do
+    run_local_preflight_command(executable, args, command)
   end
 
   defp local_git_preflight_env do
@@ -487,6 +496,10 @@ defmodule SymphonyElixir.Workspace do
       command <> " -o BatchMode=yes"
     end
   end
+
+  @doc false
+  @spec batch_mode_ssh_command_for_test(String.t() | nil) :: String.t()
+  def batch_mode_ssh_command_for_test(command), do: batch_mode_ssh_command(command)
 
   defp remote_expected_repo_script do
     case expected_source_repo_url() do

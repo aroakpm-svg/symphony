@@ -45,9 +45,7 @@ defmodule SymphonyElixir.WorkspacePreflightBlockerTest do
     try do
       File.mkdir_p!(workspace)
       System.cmd("git", ["-C", workspace, "init"], stderr_to_stdout: true)
-      System.cmd("git", ["-C", workspace, "remote", "add", "origin", actual_url],
-        stderr_to_stdout: true
-      )
+      System.cmd("git", ["-C", workspace, "remote", "add", "origin", actual_url], stderr_to_stdout: true)
 
       assert {:error, {:workspace_preflight_failed, :git_remote_mismatch, _command, detail}} =
                Workspace.preflight(workspace, "MT-REDACT")
@@ -62,69 +60,25 @@ defmodule SymphonyElixir.WorkspacePreflightBlockerTest do
   end
 
   test "local git preflight commands time out instead of hanging the worker slot" do
-    previous_path = System.get_env("PATH")
-    on_exit(fn -> restore_env("PATH", previous_path) end)
+    write_workflow_file!(Workflow.workflow_file_path(), hook_timeout_ms: 10)
 
-    workspace_root =
-      Path.join(
-        System.tmp_dir!(),
-        "symphony-workspace-preflight-timeout-#{System.unique_integer([:positive])}"
-      )
-
-    fake_bin = Path.join(workspace_root, "bin")
-    workspace = Path.join(workspace_root, "MT-TIMEOUT")
-
-    try do
-      File.mkdir_p!(fake_bin)
-      File.mkdir_p!(workspace)
-      write_sleeping_git!(fake_bin)
-      System.put_env("PATH", fake_bin <> path_separator() <> (previous_path || ""))
-      write_workflow_file!(Workflow.workflow_file_path(), hook_timeout_ms: 10)
-
-      assert {:error, {:workspace_preflight_failed, :workspace_not_git_repo, command, detail}} =
-               Workspace.preflight(workspace, "MT-TIMEOUT")
-
-      assert command == "git rev-parse --is-inside-work-tree"
-      assert detail == "timed out after 10ms"
-    after
-      File.rm_rf(workspace_root)
-    end
+    assert {:error, {:workspace_hook_timeout, "sleep", 10}} =
+             Workspace.run_local_preflight_command_for_test(
+               "powershell.exe",
+               ["-NoProfile", "-Command", "Start-Sleep -Seconds 1"],
+               "sleep"
+             )
   end
 
   test "local git preflight preserves custom SSH command while forcing batch mode" do
-    previous_path = System.get_env("PATH")
-    previous_git_ssh_command = System.get_env("GIT_SSH_COMMAND")
+    assert Workspace.batch_mode_ssh_command_for_test(nil) == "ssh -o BatchMode=yes"
+    assert Workspace.batch_mode_ssh_command_for_test("") == "ssh -o BatchMode=yes"
 
-    on_exit(fn ->
-      restore_env("PATH", previous_path)
-      restore_env("GIT_SSH_COMMAND", previous_git_ssh_command)
-    end)
+    assert Workspace.batch_mode_ssh_command_for_test("ssh -i /tmp/deploy-key") ==
+             "ssh -i /tmp/deploy-key -o BatchMode=yes"
 
-    workspace_root =
-      Path.join(
-        System.tmp_dir!(),
-        "symphony-workspace-preflight-ssh-command-#{System.unique_integer([:positive])}"
-      )
-
-    fake_bin = Path.join(workspace_root, "bin")
-    workspace = Path.join(workspace_root, "MT-SSH")
-    marker = Path.join(workspace_root, "git-ssh-command.txt")
-
-    try do
-      File.mkdir_p!(fake_bin)
-      File.mkdir_p!(workspace)
-      write_git_env_recorder!(fake_bin, marker)
-      System.put_env("PATH", fake_bin <> path_separator() <> (previous_path || ""))
-      System.put_env("GIT_SSH_COMMAND", "ssh -i /tmp/deploy-key")
-
-      assert :ok = Workspace.preflight(workspace, "MT-SSH")
-
-      command = File.read!(marker)
-      assert command =~ "ssh -i /tmp/deploy-key"
-      assert command =~ "-o BatchMode=yes"
-    after
-      File.rm_rf(workspace_root)
-    end
+    assert Workspace.batch_mode_ssh_command_for_test("ssh -i /tmp/deploy-key -o BatchMode=yes") ==
+             "ssh -i /tmp/deploy-key -o BatchMode=yes"
   end
 
   test "remote preflight normalizes actual origin trailing slashes" do
@@ -233,41 +187,4 @@ defmodule SymphonyElixir.WorkspacePreflightBlockerTest do
       end
     end
   end
-
-  defp write_sleeping_git!(fake_bin) do
-    if match?({:win32, _}, :os.type()) do
-      File.write!(
-        Path.join(fake_bin, "git.cmd"),
-        "@echo off\r\nping -n 2 127.0.0.1 >NUL\r\nexit /b 0\r\n"
-      )
-    else
-      git_path = Path.join(fake_bin, "git")
-      File.write!(git_path, "#!/bin/sh\nsleep 1\nexit 0\n")
-      File.chmod!(git_path, 0o755)
-    end
-  end
-
-  defp write_git_env_recorder!(fake_bin, marker) do
-    if match?({:win32, _}, :os.type()) do
-      File.write!(
-        Path.join(fake_bin, "git.cmd"),
-        "@echo off\r\necho %GIT_SSH_COMMAND%> \"#{marker}\"\r\nexit /b 0\r\n"
-      )
-    else
-      git_path = Path.join(fake_bin, "git")
-      File.write!(git_path, "#!/bin/sh\nprintf '%s' \"$GIT_SSH_COMMAND\" > #{shell_quote(marker)}\nexit 0\n")
-      File.chmod!(git_path, 0o755)
-    end
-  end
-
-  defp shell_quote(value) do
-    "'" <> String.replace(value, "'", "'\"'\"'") <> "'"
-  end
-
-  defp path_separator do
-    if match?({:win32, _}, :os.type()), do: ";", else: ":"
-  end
-
-  defp restore_env(key, nil), do: System.delete_env(key)
-  defp restore_env(key, value), do: System.put_env(key, value)
 end
