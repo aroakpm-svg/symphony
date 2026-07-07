@@ -42,8 +42,20 @@ defmodule SymphonyElixir.AgentRunner do
         send_worker_runtime_info(codex_update_recipient, issue, worker_host, workspace)
 
         try do
-          with :ok <- Workspace.run_before_run_hook(workspace, issue, worker_host) do
+          with :ok <- Workspace.preflight(workspace, issue, worker_host),
+               :ok <- Workspace.run_before_run_hook(workspace, issue, worker_host) do
             run_codex_turns(workspace, issue, codex_update_recipient, opts, worker_host)
+          else
+            {:error, {:workspace_preflight_failed, _type, _command, _status, _output} = reason} ->
+              send_hard_blocker(codex_update_recipient, issue, worker_host, workspace, reason)
+              :ok
+
+            {:error, {:workspace_preflight_failed, _type, _command, _detail} = reason} ->
+              send_hard_blocker(codex_update_recipient, issue, worker_host, workspace, reason)
+              :ok
+
+            other ->
+              other
           end
         after
           Workspace.run_after_run_hook(workspace, issue, worker_host)
@@ -83,6 +95,33 @@ defmodule SymphonyElixir.AgentRunner do
   end
 
   defp send_worker_runtime_info(_recipient, _issue, _worker_host, _workspace), do: :ok
+
+  defp send_hard_blocker(recipient, %Issue{id: issue_id}, worker_host, workspace, reason)
+       when is_binary(issue_id) and is_pid(recipient) do
+    send(
+      recipient,
+      {:agent_hard_blocker, issue_id,
+       %{
+         worker_host: worker_host,
+         workspace_path: workspace,
+         error: hard_blocker_message(reason)
+       }}
+    )
+
+    :ok
+  end
+
+  defp send_hard_blocker(_recipient, _issue, _worker_host, _workspace, _reason), do: :ok
+
+  defp hard_blocker_message({:workspace_preflight_failed, type, command, status, output}) do
+    "workspace preflight failed type=#{type} command=#{command} status=#{status} output=#{inline_text(output)}"
+  end
+
+  defp hard_blocker_message({:workspace_preflight_failed, type, command, detail}) do
+    "workspace preflight failed type=#{type} command=#{command} detail=#{inline_text(detail)}"
+  end
+
+  defp hard_blocker_message(reason), do: "workspace preflight failed reason=#{inspect(reason)}"
 
   defp run_codex_turns(workspace, issue, codex_update_recipient, opts, worker_host) do
     max_turns = Keyword.get(opts, :max_turns, Config.settings!().agent.max_turns)
@@ -208,6 +247,15 @@ defmodule SymphonyElixir.AgentRunner do
     |> String.trim()
     |> String.downcase()
   end
+
+  defp inline_text(value) when is_binary(value) do
+    value
+    |> String.replace("\n", " ")
+    |> String.replace(~r/\s+/, " ")
+    |> String.trim()
+  end
+
+  defp inline_text(value), do: inspect(value)
 
   defp issue_context(%Issue{id: issue_id, identifier: identifier}) do
     "issue_id=#{issue_id} issue_identifier=#{identifier}"

@@ -178,6 +178,18 @@ defmodule SymphonyElixir.Workspace do
     end
   end
 
+  @spec preflight(Path.t(), map() | String.t() | nil, worker_host()) :: :ok | {:error, term()}
+  def preflight(workspace, issue_or_identifier, worker_host \\ nil) when is_binary(workspace) do
+    issue_context = issue_context(issue_or_identifier)
+
+    Logger.info("Running workspace preflight #{issue_log_context(issue_context)} workspace=#{workspace} worker_host=#{worker_host_for_log(worker_host)}")
+
+    case worker_host do
+      nil -> local_preflight(workspace)
+      host when is_binary(host) -> remote_preflight(workspace, host)
+    end
+  end
+
   @spec run_after_run_hook(Path.t(), map() | String.t() | nil, worker_host()) :: :ok
   def run_after_run_hook(workspace, issue_or_identifier, worker_host \\ nil) when is_binary(workspace) do
     issue_context = issue_context(issue_or_identifier)
@@ -341,6 +353,115 @@ defmodule SymphonyElixir.Workspace do
     Logger.warning("Workspace hook failed hook=#{hook_name} #{issue_log_context(issue_context)} workspace=#{workspace} status=#{status} output=#{inspect(sanitized_output)}")
 
     {:error, {:workspace_hook_failed, hook_name, status, output}}
+  end
+
+  defp local_preflight(workspace) do
+    with :ok <- require_workspace_dir(workspace),
+         :ok <- run_git_preflight_command(workspace, ["rev-parse", "--is-inside-work-tree"], :workspace_not_git_repo),
+         :ok <- maybe_validate_origin_remote(workspace),
+         :ok <- run_git_preflight_command(workspace, ["status", "--short"], :git_status_failed),
+         :ok <- run_git_preflight_command(workspace, ["fetch", "origin", "--prune"], :git_fetch_failed) do
+      :ok
+    end
+  end
+
+  defp remote_preflight(workspace, worker_host) do
+    script =
+      [
+        "set -eu",
+        remote_shell_assign("workspace", workspace),
+        "cd \"$workspace\"",
+        "git rev-parse --is-inside-work-tree >/dev/null",
+        remote_expected_repo_script(),
+        "git status --short >/dev/null",
+        "git fetch origin --prune >/dev/null"
+      ]
+      |> Enum.reject(&(&1 == ""))
+      |> Enum.join("\n")
+
+    case run_remote_command(worker_host, script, Config.settings!().hooks.timeout_ms) do
+      {:ok, {_output, 0}} -> :ok
+      {:ok, {output, status}} -> {:error, workspace_preflight_error(:remote_workspace_preflight_failed, "remote preflight", status, output)}
+      {:error, reason} -> {:error, {:workspace_preflight_failed, :remote_workspace_preflight_failed, "remote preflight", reason}}
+    end
+  end
+
+  defp require_workspace_dir(workspace) do
+    if File.dir?(workspace) do
+      :ok
+    else
+      {:error, {:workspace_preflight_failed, :workspace_missing, "test -d workspace", workspace}}
+    end
+  end
+
+  defp maybe_validate_origin_remote(workspace) do
+    case expected_source_repo_url() do
+      nil ->
+        run_git_preflight_command(workspace, ["remote", "get-url", "origin"], :git_remote_missing)
+
+      expected_url ->
+        case System.cmd("git", ["-C", workspace, "remote", "get-url", "origin"], stderr_to_stdout: true) do
+          {output, 0} ->
+            actual_url = String.trim(output)
+
+            if normalized_repo_url(actual_url) == normalized_repo_url(expected_url) do
+              :ok
+            else
+              {:error, {:workspace_preflight_failed, :git_remote_mismatch, "git remote get-url origin", "expected #{expected_url}, got #{actual_url}"}}
+            end
+
+          {output, status} ->
+            {:error, workspace_preflight_error(:git_remote_missing, "git remote get-url origin", status, output)}
+        end
+    end
+  end
+
+  defp run_git_preflight_command(workspace, args, error_type) do
+    case System.cmd("git", ["-C", workspace | args], stderr_to_stdout: true) do
+      {_output, 0} -> :ok
+      {output, status} -> {:error, workspace_preflight_error(error_type, Enum.join(["git" | args], " "), status, output)}
+    end
+  end
+
+  defp workspace_preflight_error(error_type, command, status, output) do
+    {:workspace_preflight_failed, error_type, command, status, sanitize_hook_output_for_log(output)}
+  end
+
+  defp remote_expected_repo_script do
+    case expected_source_repo_url() do
+      nil ->
+        "git remote get-url origin >/dev/null"
+
+      expected_url ->
+        expected = shell_escape(normalized_repo_url(expected_url))
+
+        [
+          "actual_remote=\"$(git remote get-url origin)\"",
+          "actual_remote=\"${actual_remote%.git}\"",
+          "expected_remote=#{expected}",
+          "expected_remote=\"${expected_remote%.git}\"",
+          "test \"$actual_remote\" = \"$expected_remote\""
+        ]
+        |> Enum.join("\n")
+    end
+  end
+
+  defp expected_source_repo_url do
+    case System.get_env("SOURCE_REPO_URL") do
+      value when is_binary(value) ->
+        trimmed = String.trim(value)
+        if trimmed == "", do: nil, else: trimmed
+
+      _ ->
+        nil
+    end
+  end
+
+  defp normalized_repo_url(url) when is_binary(url) do
+    url
+    |> String.trim()
+    |> String.trim_trailing("/")
+    |> String.trim_trailing(".git")
   end
 
   defp sanitize_hook_output_for_log(output, max_bytes \\ 2_048) do

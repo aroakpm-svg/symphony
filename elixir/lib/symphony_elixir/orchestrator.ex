@@ -179,6 +179,32 @@ defmodule SymphonyElixir.Orchestrator do
 
   def handle_info({:codex_worker_update, _issue_id, _update}, state), do: {:noreply, state}
 
+  def handle_info({:agent_hard_blocker, issue_id, blocker_info}, %{running: running} = state)
+      when is_binary(issue_id) and is_map(blocker_info) do
+    case Map.get(running, issue_id) do
+      nil ->
+        {:noreply, state}
+
+      running_entry ->
+        error = Map.get(blocker_info, :error) || "agent hard blocker"
+
+        running_entry =
+          running_entry
+          |> maybe_put_runtime_value(:worker_host, Map.get(blocker_info, :worker_host))
+          |> maybe_put_runtime_value(:workspace_path, Map.get(blocker_info, :workspace_path))
+
+        Logger.warning("Agent reported hard blocker for issue_id=#{issue_id} issue_identifier=#{running_entry.identifier}: #{error}")
+
+        state =
+          state
+          |> record_session_completion_totals(running_entry)
+          |> block_issue_from_entry(issue_id, running_entry, error)
+
+        notify_dashboard()
+        {:noreply, state}
+    end
+  end
+
   def handle_info({:retry_issue, issue_id, retry_token}, state) do
     result =
       case pop_retry_attempt_state(state, issue_id, retry_token) do
