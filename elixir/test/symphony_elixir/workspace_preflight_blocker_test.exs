@@ -71,8 +71,15 @@ defmodule SymphonyElixir.WorkspacePreflightBlockerTest do
   end
 
   test "local git preflight preserves custom SSH command while forcing batch mode" do
-    assert Workspace.batch_mode_ssh_command_for_test(nil) == "ssh -o BatchMode=yes"
-    assert Workspace.batch_mode_ssh_command_for_test("") == "ssh -o BatchMode=yes"
+    refute Enum.any?(
+             Workspace.local_git_preflight_env_for_test(nil),
+             &(elem(&1, 0) == "GIT_SSH_COMMAND")
+           )
+
+    refute Enum.any?(
+             Workspace.local_git_preflight_env_for_test(""),
+             &(elem(&1, 0) == "GIT_SSH_COMMAND")
+           )
 
     assert Workspace.batch_mode_ssh_command_for_test("ssh -i /tmp/deploy-key") ==
              "ssh -i /tmp/deploy-key -o BatchMode=yes"
@@ -166,6 +173,36 @@ defmodule SymphonyElixir.WorkspacePreflightBlockerTest do
              workspace_path: "/workspaces/MT-PREFLIGHT",
              error: "workspace preflight failed type=workspace_not_git_repo" <> _
            } = state.blocked[issue_id]
+  end
+
+  test "agent run raises when a workspace preflight blocker cannot be reported" do
+    workspace_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-workspace-preflight-unreported-#{System.unique_integer([:positive])}"
+      )
+
+    issue = %Issue{
+      id: "issue-preflight-unreported",
+      identifier: "MT-PREFLIGHT-UNREPORTED",
+      title: "Preflight blocker without recipient",
+      description: "Workspace is not usable",
+      state: "In Progress",
+      url: "https://example.org/issues/MT-PREFLIGHT-UNREPORTED"
+    }
+
+    try do
+      write_workflow_file!(Workflow.workflow_file_path(), workspace_root: workspace_root)
+
+      assert {:ok, workspace} = Workspace.create_for_issue(issue)
+      File.mkdir_p!(workspace)
+
+      assert_raise RuntimeError, ~r/agent_hard_blocker_unreported/, fn ->
+        AgentRunner.run(issue, nil)
+      end
+    after
+      File.rm_rf(workspace_root)
+    end
   end
 
   defp wait_for_blocked_issue(pid, issue_id, timeout_ms \\ 200) do

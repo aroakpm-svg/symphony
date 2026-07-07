@@ -47,12 +47,10 @@ defmodule SymphonyElixir.AgentRunner do
             run_codex_turns(workspace, issue, codex_update_recipient, opts, worker_host)
           else
             {:error, {:workspace_preflight_failed, _type, _command, _status, _output} = reason} ->
-              send_hard_blocker(codex_update_recipient, issue, worker_host, workspace, reason)
-              :ok
+              handle_workspace_preflight_failure(codex_update_recipient, issue, worker_host, workspace, reason)
 
             {:error, {:workspace_preflight_failed, _type, _command, _detail} = reason} ->
-              send_hard_blocker(codex_update_recipient, issue, worker_host, workspace, reason)
-              :ok
+              handle_workspace_preflight_failure(codex_update_recipient, issue, worker_host, workspace, reason)
 
             other ->
               other
@@ -96,6 +94,13 @@ defmodule SymphonyElixir.AgentRunner do
 
   defp send_worker_runtime_info(_recipient, _issue, _worker_host, _workspace), do: :ok
 
+  defp handle_workspace_preflight_failure(recipient, issue, worker_host, workspace, reason) do
+    case send_hard_blocker(recipient, issue, worker_host, workspace, reason) do
+      :ok -> :ok
+      {:error, _reason} = error -> error
+    end
+  end
+
   defp send_hard_blocker(recipient, %Issue{id: issue_id}, worker_host, workspace, reason)
        when is_binary(issue_id) and is_pid(recipient) do
     send(
@@ -111,7 +116,9 @@ defmodule SymphonyElixir.AgentRunner do
     :ok
   end
 
-  defp send_hard_blocker(_recipient, _issue, _worker_host, _workspace, _reason), do: :ok
+  defp send_hard_blocker(_recipient, _issue, _worker_host, _workspace, reason) do
+    {:error, {:agent_hard_blocker_unreported, reason}}
+  end
 
   defp hard_blocker_message({:workspace_preflight_failed, type, command, status, output}) do
     "workspace preflight failed type=#{type} command=#{command} status=#{status} output=#{inline_text(output)}"

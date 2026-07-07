@@ -481,13 +481,20 @@ defmodule SymphonyElixir.Workspace do
   defp local_git_preflight_env do
     [
       {"GIT_TERMINAL_PROMPT", "0"},
-      {"GCM_INTERACTIVE", "Never"},
-      {"GIT_SSH_COMMAND", batch_mode_ssh_command(System.get_env("GIT_SSH_COMMAND"))}
+      {"GCM_INTERACTIVE", "Never"}
     ]
+    |> maybe_add_git_ssh_command(System.get_env("GIT_SSH_COMMAND"))
   end
 
-  defp batch_mode_ssh_command(nil), do: "ssh -o BatchMode=yes"
-  defp batch_mode_ssh_command(""), do: "ssh -o BatchMode=yes"
+  defp maybe_add_git_ssh_command(env, nil), do: env
+  defp maybe_add_git_ssh_command(env, ""), do: env
+
+  defp maybe_add_git_ssh_command(env, command) when is_binary(command) do
+    [{"GIT_SSH_COMMAND", batch_mode_ssh_command(command)} | env]
+  end
+
+  defp batch_mode_ssh_command(nil), do: nil
+  defp batch_mode_ssh_command(""), do: nil
 
   defp batch_mode_ssh_command(command) when is_binary(command) do
     if String.contains?(command, "BatchMode") do
@@ -498,8 +505,18 @@ defmodule SymphonyElixir.Workspace do
   end
 
   @doc false
-  @spec batch_mode_ssh_command_for_test(String.t() | nil) :: String.t()
+  @spec batch_mode_ssh_command_for_test(String.t() | nil) :: String.t() | nil
   def batch_mode_ssh_command_for_test(command), do: batch_mode_ssh_command(command)
+
+  @doc false
+  @spec local_git_preflight_env_for_test(String.t() | nil) :: [{String.t(), String.t()}]
+  def local_git_preflight_env_for_test(command) do
+    [
+      {"GIT_TERMINAL_PROMPT", "0"},
+      {"GCM_INTERACTIVE", "Never"}
+    ]
+    |> maybe_add_git_ssh_command(command)
+  end
 
   defp remote_expected_repo_script do
     case expected_source_repo_url() do
