@@ -561,6 +561,10 @@ defmodule SymphonyElixir.Workspace do
   @spec remote_expected_repo_script_for_test() :: String.t()
   def remote_expected_repo_script_for_test, do: remote_expected_repo_script()
 
+  @doc false
+  @spec sanitize_hook_output_for_test(iodata(), non_neg_integer()) :: String.t()
+  def sanitize_hook_output_for_test(output, max_bytes), do: sanitize_hook_output_for_log(output, max_bytes)
+
   defp expected_source_repo_url do
     case System.get_env("SOURCE_REPO_URL") do
       value when is_binary(value) ->
@@ -586,16 +590,18 @@ defmodule SymphonyElixir.Workspace do
   end
 
   defp sanitize_hook_output_for_log(output, max_bytes \\ 2_048) do
-    binary_output = IO.iodata_to_binary(output)
+    redacted_output =
+      output
+      |> IO.iodata_to_binary()
+      |> redact_url_userinfo()
 
-    case byte_size(binary_output) <= max_bytes do
+    case byte_size(redacted_output) <= max_bytes do
       true ->
-        binary_output
+        redacted_output
 
       false ->
-        binary_part(binary_output, 0, max_bytes) <> "... (truncated)"
+        binary_part(redacted_output, 0, max_bytes) <> "... (truncated)"
     end
-    |> redact_url_userinfo()
   end
 
   defp redacted_repo_url(url) when is_binary(url) do

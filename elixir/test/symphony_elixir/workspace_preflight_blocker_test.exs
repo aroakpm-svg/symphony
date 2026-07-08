@@ -59,6 +59,21 @@ defmodule SymphonyElixir.WorkspacePreflightBlockerTest do
     end
   end
 
+  test "workspace preflight redacts credentials before truncating long output" do
+    secret = String.duplicate("secret-token-", 200)
+
+    output =
+      "fatal: could not read https://user:#{secret}@github.com/example/private.git " <>
+        String.duplicate("retrying ", 100)
+
+    sanitized = Workspace.sanitize_hook_output_for_test(output, 128)
+
+    refute sanitized =~ secret
+    refute sanitized =~ "secret-token"
+    assert sanitized =~ "https://[redacted]@github.com/example/private"
+    assert sanitized =~ "... (truncated)"
+  end
+
   test "workspace preflight compares stored remote before URL rewrites" do
     previous_source_repo_url = System.get_env("SOURCE_REPO_URL")
     on_exit(fn -> restore_env("SOURCE_REPO_URL", previous_source_repo_url) end)
