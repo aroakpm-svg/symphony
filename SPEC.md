@@ -397,6 +397,13 @@ Fields:
   - Runs before each agent attempt after workspace preparation and before launching the coding
     agent.
   - Failure aborts the current attempt.
+- Implementations MAY run a workspace preflight before `before_run`.
+  - The preflight MAY verify that the workspace exists, is a Git work tree, has an origin remote,
+    matches a configured source repository, and can perform non-interactive Git checks.
+  - A failed preflight MAY be treated as an implementation-defined hard blocker instead of a
+    retryable worker failure.
+  - If source repository URLs contain credentials, implementations MUST NOT expose those credentials
+    in logs, status surfaces, or remote command arguments.
 - `after_run` (multiline shell script string, OPTIONAL)
   - Runs after each agent attempt (success, failure, timeout, or cancellation) once the workspace
     exists.
@@ -1129,10 +1136,13 @@ The `Agent Runner` wraps workspace + prompt + app-server client.
 Behavior:
 
 1. Create/reuse workspace for issue.
-2. Build prompt from workflow template.
-3. Start app-server session.
-4. Forward app-server events to orchestrator.
-5. On any error, fail the worker attempt (the orchestrator will retry).
+2. Run implementation-defined workspace preflight if enabled.
+3. If workspace preflight returns a hard blocker, run `after_run` cleanup if configured, report the
+   blocker after cleanup finishes, and exit normally so the orchestrator does not retry.
+4. Build prompt from workflow template.
+5. Start app-server session.
+6. Forward app-server events to orchestrator.
+7. On any other error, fail the worker attempt (the orchestrator will retry).
 
 Note:
 
@@ -1826,6 +1836,14 @@ function run_agent_attempt(issue, attempt, orchestrator_channel):
   if workspace failed:
     fail_worker("workspace error")
 
+  preflight_result = workspace_manager.preflight(workspace.path)
+  if preflight_result is hard_blocker:
+    run_hook_best_effort("after_run", workspace.path)
+    send(orchestrator_channel, {agent_hard_blocker, issue.id, preflight_result})
+    exit_normal()
+  else if preflight_result failed:
+    fail_worker("workspace preflight error")
+
   if run_hook("before_run", workspace.path) failed:
     fail_worker("before_run hook error")
 
@@ -1975,6 +1993,8 @@ Unless otherwise noted, Sections 17.1 through 17.7 are `Core Conformance`. Bulle
 - OPTIONAL workspace population/synchronization errors are surfaced
 - `after_create` hook runs only on new workspace creation
 - `before_run` hook runs before each attempt and failure/timeouts abort the current attempt
+- If implemented, workspace preflight failures are surfaced without leaking URL credentials and any
+  hard-blocker signal is reported after `after_run` cleanup completes
 - `after_run` hook runs after each attempt and failure/timeouts are logged and ignored
 - `before_remove` hook runs on cleanup and failures/timeouts are ignored
 - Workspace path sanitization and root containment invariants are enforced before agent launch

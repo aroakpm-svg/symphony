@@ -408,7 +408,7 @@ defmodule SymphonyElixir.Workspace do
           {output, 0} ->
             actual_url = String.trim(output)
 
-            if normalized_repo_url(actual_url) == normalized_repo_url(expected_url) do
+            if comparable_repo_url(actual_url) == comparable_repo_url(expected_url) do
               :ok
             else
               {:error, {:workspace_preflight_failed, :git_remote_mismatch, "git config --get remote.origin.url", "expected #{redacted_repo_url(expected_url)}, got #{redacted_repo_url(actual_url)}"}}
@@ -524,10 +524,17 @@ defmodule SymphonyElixir.Workspace do
         "git config --get remote.origin.url >/dev/null"
 
       expected_url ->
-        expected = shell_escape(normalized_repo_url(expected_url))
+        expected = shell_escape(comparable_repo_url(expected_url))
 
         [
+          "strip_url_userinfo() {",
+          "  case \"$1\" in",
+          "    *://*@*) printf '%s://%s\\n' \"${1%%://*}\" \"${1#*@}\" ;;",
+          "    *) printf '%s\\n' \"$1\" ;;",
+          "  esac",
+          "}",
           "actual_remote=\"$(git config --get remote.origin.url)\"",
+          "actual_remote=\"$(strip_url_userinfo \"$actual_remote\")\"",
           "actual_remote=\"${actual_remote%/}\"",
           "actual_remote=\"${actual_remote%.git}\"",
           "expected_remote=#{expected}",
@@ -552,6 +559,12 @@ defmodule SymphonyElixir.Workspace do
       _ ->
         nil
     end
+  end
+
+  defp comparable_repo_url(url) when is_binary(url) do
+    url
+    |> strip_url_userinfo()
+    |> normalized_repo_url()
   end
 
   defp normalized_repo_url(url) when is_binary(url) do
@@ -582,6 +595,10 @@ defmodule SymphonyElixir.Workspace do
 
   defp redact_url_userinfo(value) when is_binary(value) do
     String.replace(value, ~r{([a-z][a-z0-9+.-]*://)([^/@\s]+)@}i, "\\1[redacted]@")
+  end
+
+  defp strip_url_userinfo(value) when is_binary(value) do
+    String.replace(value, ~r{^([a-z][a-z0-9+.-]*://)([^/@\s]+)@}i, "\\1")
   end
 
   defp validate_workspace_path(workspace, nil) when is_binary(workspace) do

@@ -132,14 +132,18 @@ defmodule SymphonyElixir.WorkspacePreflightBlockerTest do
     previous_source_repo_url = System.get_env("SOURCE_REPO_URL")
     on_exit(fn -> restore_env("SOURCE_REPO_URL", previous_source_repo_url) end)
 
-    System.put_env("SOURCE_REPO_URL", "https://github.com/example/repo")
+    expected_secret = "expected-token-123"
+    System.put_env("SOURCE_REPO_URL", "https://user:#{expected_secret}@github.com/example/repo")
 
     script = Workspace.remote_expected_repo_script_for_test()
 
-    assert script =~ ~s(actual_remote="$(git config --get remote.origin.url)")
+    assert script =~ "actual_remote=\"$(git config --get remote.origin.url)\""
+    assert script =~ "actual_remote=\"$(strip_url_userinfo \"$actual_remote\")\""
     refute script =~ "git remote get-url origin"
-    assert script =~ ~s(actual_remote="${actual_remote%/}"\nactual_remote="${actual_remote%.git}")
-    assert script =~ ~s(expected_remote="${expected_remote%/}"\nexpected_remote="${expected_remote%.git}")
+    refute script =~ expected_secret
+    assert script =~ "https://github.com/example/repo"
+    assert script =~ "actual_remote=\"${actual_remote%/}\"\nactual_remote=\"${actual_remote%.git}\""
+    assert script =~ "expected_remote=\"${expected_remote%/}\"\nexpected_remote=\"${expected_remote%.git}\""
   end
 
   test "agent-reported workspace preflight failure blocks without retrying" do
