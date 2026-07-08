@@ -308,6 +308,7 @@ defmodule SymphonyElixir.StatusDashboard do
   defp snapshot_with_samples(token_samples, now_ms) do
     case snapshot_payload() do
       {:ok, %{running: running, retrying: retrying, codex_totals: codex_totals} = snapshot} ->
+        blocked = Map.get(snapshot, :blocked, [])
         total_tokens = Map.get(codex_totals, :total_tokens, 0)
 
         {
@@ -315,6 +316,7 @@ defmodule SymphonyElixir.StatusDashboard do
            %{
              running: running,
              retrying: retrying,
+             blocked: blocked,
              codex_totals: codex_totals,
              rate_limits: Map.get(snapshot, :rate_limits),
              polling: Map.get(snapshot, :polling)
@@ -346,6 +348,9 @@ defmodule SymphonyElixir.StatusDashboard do
         running_rows = format_running_rows(running, running_event_width)
         running_to_backoff_spacer = if(running == [], do: [], else: ["│"])
         backoff_rows = format_retry_rows(retrying)
+        blocked = Map.get(snapshot, :blocked, [])
+        backoff_to_blocked_spacer = if(retrying == [], do: [], else: ["│"])
+        blocked_rows = format_blocked_rows(blocked)
 
         ([
            colorize("╭─ SYMPHONY STATUS", @ansi_bold),
@@ -374,6 +379,9 @@ defmodule SymphonyElixir.StatusDashboard do
            running_to_backoff_spacer ++
            [colorize("├─ Backoff queue", @ansi_bold), "│"] ++
            backoff_rows ++
+           backoff_to_blocked_spacer ++
+           [colorize("├─ Blocked", @ansi_bold), "│"] ++
+           blocked_rows ++
            [closing_border()])
         |> List.flatten()
         |> Enum.join("\n")
@@ -560,6 +568,7 @@ defmodule SymphonyElixir.StatusDashboard do
            %{
              running: running,
              retrying: retrying,
+             blocked: Map.get(snapshot, :blocked, []),
              codex_totals: codex_totals,
              rate_limits: Map.get(snapshot, :rate_limits),
              polling: Map.get(snapshot, :polling)
@@ -654,6 +663,34 @@ defmodule SymphonyElixir.StatusDashboard do
       |> Enum.map_join(", ", &format_retry_summary/1)
       |> String.split(", ")
     end
+  end
+
+  defp format_blocked_rows(blocked) do
+    if blocked == [] do
+      ["│  " <> colorize("No blocked issues", @ansi_gray)]
+    else
+      blocked
+      |> Enum.sort_by(&(&1.identifier || &1.issue_id || "unknown"))
+      |> Enum.map(&format_blocked_summary/1)
+    end
+  end
+
+  defp format_blocked_summary(blocked_entry) do
+    issue_id = blocked_entry.issue_id || "unknown"
+    identifier = blocked_entry.identifier || issue_id
+    worker_host = blocked_entry.worker_host || "local"
+    workspace_path = blocked_entry.workspace_path || "n/a"
+    error = format_retry_error(blocked_entry.error)
+
+    "│  " <>
+      colorize("!", @ansi_red) <>
+      " " <>
+      colorize("#{identifier}", @ansi_red) <>
+      colorize(" worker=", @ansi_dim) <>
+      colorize(inline_text(worker_host), @ansi_cyan) <>
+      colorize(" workspace=", @ansi_dim) <>
+      colorize(inline_text(workspace_path), @ansi_cyan) <>
+      error
   end
 
   defp format_retry_summary(retry_entry) do

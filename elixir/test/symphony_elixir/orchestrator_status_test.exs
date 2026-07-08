@@ -1319,6 +1319,35 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
     assert rendered |> String.split("\n") |> List.last() == "╰─"
   end
 
+  test "status dashboard renders blocked issue diagnostics" do
+    snapshot_data =
+      {:ok,
+       %{
+         running: [],
+         retrying: [],
+         blocked: [
+           %{
+             issue_id: "issue-preflight",
+             identifier: "MT-PREFLIGHT",
+             worker_host: "worker-01",
+             workspace_path: "/workspaces/MT-PREFLIGHT",
+             error: "workspace preflight failed type=workspace_not_git_repo"
+           }
+         ],
+         codex_totals: %{input_tokens: 0, output_tokens: 0, total_tokens: 0, seconds_running: 0},
+         rate_limits: nil
+       }}
+
+    rendered = StatusDashboard.format_snapshot_content_for_test(snapshot_data, 0.0)
+    plain = Regex.replace(~r/\e\[[0-9;]*m/, rendered, "")
+
+    assert plain =~ "Blocked"
+    assert plain =~ "MT-PREFLIGHT"
+    assert plain =~ "worker=worker-01"
+    assert plain =~ "workspace=/workspaces/MT-PREFLIGHT"
+    assert plain =~ "error=workspace preflight failed type=workspace_not_git_repo"
+  end
+
   test "status dashboard coalesces rapid updates to one render per interval" do
     dashboard_name = Module.concat(__MODULE__, :RenderDashboard)
     parent = self()

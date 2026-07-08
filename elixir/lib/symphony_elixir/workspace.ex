@@ -178,6 +178,18 @@ defmodule SymphonyElixir.Workspace do
     end
   end
 
+  @spec preflight(Path.t(), map() | String.t() | nil, worker_host()) :: :ok | {:error, term()}
+  def preflight(workspace, issue_or_identifier, worker_host \\ nil) when is_binary(workspace) do
+    issue_context = issue_context(issue_or_identifier)
+
+    Logger.info("Running workspace preflight #{issue_log_context(issue_context)} workspace=#{workspace} worker_host=#{worker_host_for_log(worker_host)}")
+
+    case worker_host do
+      nil -> local_preflight(workspace)
+      host when is_binary(host) -> remote_preflight(workspace, host)
+    end
+  end
+
   @spec run_after_run_hook(Path.t(), map() | String.t() | nil, worker_host()) :: :ok
   def run_after_run_hook(workspace, issue_or_identifier, worker_host \\ nil) when is_binary(workspace) do
     issue_context = issue_context(issue_or_identifier)
@@ -298,12 +310,23 @@ defmodule SymphonyElixir.Workspace do
 
     task =
       Task.async(fn ->
-        System.cmd("sh", ["-lc", command], cd: workspace, stderr_to_stdout: true)
+        try do
+          System.cmd("sh", ["-lc", command], cd: workspace, stderr_to_stdout: true)
+        rescue
+          error in ErlangError -> {:error, error.original}
+          error -> {:error, Exception.message(error)}
+        end
       end)
 
     case Task.yield(task, timeout_ms) do
+      {:ok, {:error, reason}} ->
+        {:error, {:workspace_hook_failed, hook_name, reason}}
+
       {:ok, cmd_result} ->
         handle_hook_command_result(cmd_result, workspace, issue_context, hook_name)
+
+      {:exit, reason} ->
+        {:error, {:workspace_hook_failed, hook_name, reason}}
 
       nil ->
         Task.shutdown(task, :brutal_kill)
@@ -343,16 +366,256 @@ defmodule SymphonyElixir.Workspace do
     {:error, {:workspace_hook_failed, hook_name, status, output}}
   end
 
-  defp sanitize_hook_output_for_log(output, max_bytes \\ 2_048) do
-    binary_output = IO.iodata_to_binary(output)
+  defp local_preflight(workspace) do
+    with :ok <- require_workspace_dir(workspace),
+         :ok <- run_git_preflight_command(workspace, ["rev-parse", "--is-inside-work-tree"], :workspace_not_git_repo),
+         :ok <- maybe_validate_origin_remote(workspace),
+         :ok <- run_git_preflight_command(workspace, ["status", "--short"], :git_status_failed),
+         :ok <- run_git_preflight_command(workspace, ["fetch", "origin", "--prune"], :git_fetch_failed) do
+      :ok
+    end
+  end
 
-    case byte_size(binary_output) <= max_bytes do
+  defp remote_preflight(workspace, worker_host) do
+    script =
+      [
+        "set -eu",
+        remote_shell_assign("workspace", workspace),
+        "cd \"$workspace\"",
+        "git rev-parse --is-inside-work-tree >/dev/null",
+        remote_expected_repo_script(),
+        "git status --short >/dev/null",
+        "git fetch origin --prune >/dev/null"
+      ]
+      |> Enum.reject(&(&1 == ""))
+      |> Enum.join("\n")
+
+    case run_remote_command(worker_host, script, Config.settings!().hooks.timeout_ms) do
+      {:ok, {_output, 0}} -> :ok
+      {:ok, {output, status}} -> {:error, workspace_preflight_error(:remote_workspace_preflight_failed, "remote preflight", status, output)}
+      {:error, reason} -> {:error, {:workspace_preflight_failed, :remote_workspace_preflight_failed, "remote preflight", reason}}
+    end
+  end
+
+  defp require_workspace_dir(workspace) do
+    if File.dir?(workspace) do
+      :ok
+    else
+      {:error, {:workspace_preflight_failed, :workspace_missing, "test -d workspace", workspace}}
+    end
+  end
+
+  defp maybe_validate_origin_remote(workspace) do
+    case expected_source_repo_url() do
+      nil ->
+        run_git_preflight_command(workspace, ["config", "--get", "remote.origin.url"], :git_remote_missing)
+
+      expected_url ->
+        case run_local_preflight_command(
+               "git",
+               ["-C", workspace, "config", "--get", "remote.origin.url"],
+               "git config --get remote.origin.url"
+             ) do
+          {output, 0} ->
+            actual_url = String.trim(output)
+
+            if comparable_repo_url(actual_url) == comparable_repo_url(expected_url) do
+              :ok
+            else
+              {:error, {:workspace_preflight_failed, :git_remote_mismatch, "git config --get remote.origin.url", "expected #{redacted_repo_url(expected_url)}, got #{redacted_repo_url(actual_url)}"}}
+            end
+
+          {output, status} when is_integer(status) ->
+            {:error, workspace_preflight_error(:git_remote_missing, "git config --get remote.origin.url", status, output)}
+
+          {:error, reason} ->
+            {:error, workspace_preflight_error(:git_remote_missing, "git config --get remote.origin.url", reason)}
+        end
+    end
+  end
+
+  defp run_git_preflight_command(workspace, args, error_type) do
+    command = Enum.join(["git" | args], " ")
+
+    case run_local_preflight_command("git", ["-C", workspace | args], command) do
+      {_output, 0} -> :ok
+      {output, status} when is_integer(status) -> {:error, workspace_preflight_error(error_type, command, status, output)}
+      {:error, reason} -> {:error, workspace_preflight_error(error_type, command, reason)}
+    end
+  end
+
+  defp workspace_preflight_error(error_type, command, status, output) do
+    {:workspace_preflight_failed, error_type, command, status, sanitize_hook_output_for_log(output)}
+  end
+
+  defp workspace_preflight_error(error_type, command, {:workspace_hook_timeout, _command, timeout_ms}) do
+    {:workspace_preflight_failed, error_type, command, "timed out after #{timeout_ms}ms"}
+  end
+
+  defp workspace_preflight_error(error_type, command, reason) do
+    {:workspace_preflight_failed, error_type, command, inspect(reason)}
+  end
+
+  defp run_local_preflight_command(executable, args, command) do
+    timeout_ms = Config.settings!().hooks.timeout_ms
+
+    task =
+      Task.async(fn ->
+        try do
+          System.cmd(executable, args,
+            stderr_to_stdout: true,
+            env: local_git_preflight_env()
+          )
+        rescue
+          error in ErlangError -> {:error, error.original}
+          error -> {:error, Exception.message(error)}
+        end
+      end)
+
+    case Task.yield(task, timeout_ms) do
+      {:ok, result} ->
+        result
+
+      nil ->
+        Task.shutdown(task, :brutal_kill)
+        {:error, {:workspace_hook_timeout, command, timeout_ms}}
+    end
+  end
+
+  @doc false
+  @spec run_local_preflight_command_for_test(String.t(), [String.t()], String.t()) ::
+          {String.t(), non_neg_integer()} | {:error, term()}
+  def run_local_preflight_command_for_test(executable, args, command) do
+    run_local_preflight_command(executable, args, command)
+  end
+
+  defp local_git_preflight_env do
+    [
+      {"GIT_TERMINAL_PROMPT", "0"},
+      {"GCM_INTERACTIVE", "Never"}
+    ]
+    |> maybe_add_git_ssh_command(System.get_env("GIT_SSH_COMMAND"))
+  end
+
+  defp maybe_add_git_ssh_command(env, nil), do: env
+  defp maybe_add_git_ssh_command(env, ""), do: env
+
+  defp maybe_add_git_ssh_command(env, command) when is_binary(command) do
+    [{"GIT_SSH_COMMAND", batch_mode_ssh_command(command)} | env]
+  end
+
+  defp batch_mode_ssh_command(nil), do: nil
+  defp batch_mode_ssh_command(""), do: nil
+
+  defp batch_mode_ssh_command(command) when is_binary(command) do
+    if String.contains?(command, "BatchMode") do
+      command
+    else
+      command <> " -o BatchMode=yes"
+    end
+  end
+
+  @doc false
+  @spec batch_mode_ssh_command_for_test(String.t() | nil) :: String.t() | nil
+  def batch_mode_ssh_command_for_test(command), do: batch_mode_ssh_command(command)
+
+  @doc false
+  @spec local_git_preflight_env_for_test(String.t() | nil) :: [{String.t(), String.t()}]
+  def local_git_preflight_env_for_test(command) do
+    [
+      {"GIT_TERMINAL_PROMPT", "0"},
+      {"GCM_INTERACTIVE", "Never"}
+    ]
+    |> maybe_add_git_ssh_command(command)
+  end
+
+  defp remote_expected_repo_script do
+    case expected_source_repo_url() do
+      nil ->
+        "git config --get remote.origin.url >/dev/null"
+
+      expected_url ->
+        expected = shell_escape(comparable_repo_url(expected_url))
+
+        [
+          "strip_url_userinfo() {",
+          "  case \"$1\" in",
+          "    *://*@*) printf '%s://%s\\n' \"${1%%://*}\" \"${1#*@}\" ;;",
+          "    *) printf '%s\\n' \"$1\" ;;",
+          "  esac",
+          "}",
+          "actual_remote=\"$(git config --get remote.origin.url)\"",
+          "actual_remote=\"$(strip_url_userinfo \"$actual_remote\")\"",
+          "actual_remote=\"${actual_remote%/}\"",
+          "actual_remote=\"${actual_remote%.git}\"",
+          "expected_remote=#{expected}",
+          "expected_remote=\"${expected_remote%/}\"",
+          "expected_remote=\"${expected_remote%.git}\"",
+          "test \"$actual_remote\" = \"$expected_remote\""
+        ]
+        |> Enum.join("\n")
+    end
+  end
+
+  @doc false
+  @spec remote_expected_repo_script_for_test() :: String.t()
+  def remote_expected_repo_script_for_test, do: remote_expected_repo_script()
+
+  @doc false
+  @spec sanitize_hook_output_for_test(iodata(), non_neg_integer()) :: String.t()
+  def sanitize_hook_output_for_test(output, max_bytes), do: sanitize_hook_output_for_log(output, max_bytes)
+
+  defp expected_source_repo_url do
+    case System.get_env("SOURCE_REPO_URL") do
+      value when is_binary(value) ->
+        trimmed = String.trim(value)
+        if trimmed == "", do: nil, else: trimmed
+
+      _ ->
+        nil
+    end
+  end
+
+  defp comparable_repo_url(url) when is_binary(url) do
+    url
+    |> strip_url_userinfo()
+    |> normalized_repo_url()
+  end
+
+  defp normalized_repo_url(url) when is_binary(url) do
+    url
+    |> String.trim()
+    |> String.trim_trailing("/")
+    |> String.trim_trailing(".git")
+  end
+
+  defp sanitize_hook_output_for_log(output, max_bytes \\ 2_048) do
+    redacted_output =
+      output
+      |> IO.iodata_to_binary()
+      |> redact_url_userinfo()
+
+    case byte_size(redacted_output) <= max_bytes do
       true ->
-        binary_output
+        redacted_output
 
       false ->
-        binary_part(binary_output, 0, max_bytes) <> "... (truncated)"
+        binary_part(redacted_output, 0, max_bytes) <> "... (truncated)"
     end
+  end
+
+  defp redacted_repo_url(url) when is_binary(url) do
+    url
+    |> normalized_repo_url()
+    |> redact_url_userinfo()
+  end
+
+  defp redact_url_userinfo(value) when is_binary(value) do
+    String.replace(value, ~r{([a-z][a-z0-9+.-]*://)([^/@\s]+)@}i, "\\1[redacted]@")
+  end
+
+  defp strip_url_userinfo(value) when is_binary(value) do
+    String.replace(value, ~r{^([a-z][a-z0-9+.-]*://)([^/@\s]+)@}i, "\\1")
   end
 
   defp validate_workspace_path(workspace, nil) when is_binary(workspace) do
