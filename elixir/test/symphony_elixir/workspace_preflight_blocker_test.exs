@@ -286,6 +286,38 @@ defmodule SymphonyElixir.WorkspacePreflightBlockerTest do
     end
   end
 
+  test "missing workspace after_run hook failure does not replace preflight blocker" do
+    workspace_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-workspace-preflight-missing-cleanup-#{System.unique_integer([:positive])}"
+      )
+
+    issue = %Issue{
+      id: "issue-preflight-missing-cleanup",
+      identifier: "MT-PREFLIGHT-MISSING-CLEANUP",
+      title: "Preflight blocker survives missing cleanup cwd",
+      description: "Workspace disappears before preflight",
+      state: "In Progress",
+      url: "https://example.org/issues/MT-PREFLIGHT-MISSING-CLEANUP"
+    }
+
+    try do
+      write_workflow_file!(Workflow.workflow_file_path(),
+        workspace_root: workspace_root,
+        hook_after_create: "cd .. && rm -rf MT-PREFLIGHT-MISSING-CLEANUP",
+        hook_after_run: "printf cleanup > cleanup.marker"
+      )
+
+      assert :ok = AgentRunner.run(issue, self())
+
+      assert_receive {:agent_hard_blocker, "issue-preflight-missing-cleanup", blocker_info}
+      assert blocker_info.error =~ "workspace preflight failed type=workspace_missing"
+    after
+      File.rm_rf(workspace_root)
+    end
+  end
+
   defp wait_for_blocked_issue(pid, issue_id, timeout_ms \\ 200) do
     deadline_ms = System.monotonic_time(:millisecond) + timeout_ms
     do_wait_for_blocked_issue(pid, issue_id, deadline_ms)

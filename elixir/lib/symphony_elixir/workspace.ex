@@ -310,12 +310,23 @@ defmodule SymphonyElixir.Workspace do
 
     task =
       Task.async(fn ->
-        System.cmd("sh", ["-lc", command], cd: workspace, stderr_to_stdout: true)
+        try do
+          System.cmd("sh", ["-lc", command], cd: workspace, stderr_to_stdout: true)
+        rescue
+          error in ErlangError -> {:error, error.original}
+          error -> {:error, Exception.message(error)}
+        end
       end)
 
     case Task.yield(task, timeout_ms) do
+      {:ok, {:error, reason}} ->
+        {:error, {:workspace_hook_failed, hook_name, reason}}
+
       {:ok, cmd_result} ->
         handle_hook_command_result(cmd_result, workspace, issue_context, hook_name)
+
+      {:exit, reason} ->
+        {:error, {:workspace_hook_failed, hook_name, reason}}
 
       nil ->
         Task.shutdown(task, :brutal_kill)
