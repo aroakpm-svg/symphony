@@ -41,6 +41,9 @@ defmodule SymphonyElixir.Tracker.Memory do
     :ok
   end
 
+  @spec review_history(String.t()) :: {:ok, map()}
+  def review_history(_issue_id), do: {:ok, %{dedup: MapSet.new(), rework_count: 0}}
+
   @spec update_issue_state(String.t(), String.t()) :: :ok | {:error, term()}
   def update_issue_state(issue_id, state_name) do
     send_event({:memory_tracker_state_update, issue_id, state_name})

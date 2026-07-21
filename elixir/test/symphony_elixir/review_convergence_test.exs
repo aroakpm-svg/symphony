@@ -3,7 +3,7 @@ defmodule SymphonyElixir.ReviewConvergenceTest do
 
   alias SymphonyElixir.Config.Schema
   alias SymphonyElixir.GitHubReviewClient
-  alias SymphonyElixir.Linear.Issue
+  alias SymphonyElixir.Linear.{Adapter, Issue}
   alias SymphonyElixir.ReviewConvergence
   alias SymphonyElixir.ReviewMonitor
 
@@ -37,6 +37,10 @@ defmodule SymphonyElixir.ReviewConvergenceTest do
     @spec fetch_issues_by_states([String.t()]) :: {:ok, [Issue.t()]}
     def fetch_issues_by_states(_states), do: {:ok, Application.fetch_env!(:symphony_elixir, :review_issues)}
 
+    @spec review_history(String.t()) :: {:ok, map()} | {:error, term()}
+    def review_history(_issue_id),
+      do: Application.get_env(:symphony_elixir, :review_history, {:ok, %{dedup: MapSet.new(), rework_count: 0}})
+
     @spec create_comment(String.t(), String.t()) :: :ok
     def create_comment(issue_id, body) do
       send(Application.fetch_env!(:symphony_elixir, :review_recipient), {:comment, issue_id, body})
@@ -59,6 +63,8 @@ defmodule SymphonyElixir.ReviewConvergenceTest do
       Application.delete_env(:symphony_elixir, :review_issues)
       Application.delete_env(:symphony_elixir, :review_snapshot)
       Application.delete_env(:symphony_elixir, :existing_review_keys)
+      Application.delete_env(:symphony_elixir, :review_history)
+      Application.delete_env(:symphony_elixir, :linear_client_module)
     end)
   end
 
@@ -137,6 +143,41 @@ defmodule SymphonyElixir.ReviewConvergenceTest do
     refute_receive {:status, _, _, _, _}
   end
 
+  defmodule HistoryClient do
+    @spec graphql(String.t(), map()) :: {:ok, map()}
+    def graphql(_query, variables) do
+      send(Application.fetch_env!(:symphony_elixir, :review_recipient), {:history_page, variables.after})
+      [response | rest] = Process.get(:history_responses)
+      Process.put(:history_responses, rest)
+      {:ok, response}
+    end
+  end
+
+  test "review monitor ignores review-state issues outside tracker routing" do
+    unroutable = %{issue() | id: "other", assigned_to_worker: false}
+    Application.put_env(:symphony_elixir, :review_issues, [unroutable])
+    Application.put_env(:symphony_elixir, :review_snapshot, {:ok, snapshot(%{reviewed_head_sha: nil})})
+
+    _state = ReviewMonitor.run_with(%{}, settings(), ReviewClient, Tracker)
+    refute_receive {:review_requested, _, _, _}
+    refute_receive {:comment, _, _}
+    refute_receive {:state, _, _}
+  end
+
+  test "Linear rework history paginates and counts stable keys once" do
+    Application.put_env(:symphony_elixir, :linear_client_module, HistoryClient)
+
+    Process.put(:history_responses, [
+      history_page([rework_body("one")], true, "next"),
+      history_page([rework_body("one"), rework_body("two")], false, nil)
+    ])
+
+    assert {:ok, %{dedup: dedup, rework_count: 2}} = Adapter.review_history("issue-160")
+    assert dedup == MapSet.new(["one", "two"])
+    assert_receive {:history_page, nil}
+    assert_receive {:history_page, "next"}
+  end
+
   test "structured snapshot errors fail closed without crashing comment rendering" do
     Application.put_env(:symphony_elixir, :review_snapshot, {:error, {:command_failed, 8, %{state: :pending}}})
 
@@ -183,6 +224,24 @@ defmodule SymphonyElixir.ReviewConvergenceTest do
     refute_receive {:state, _, _}
   end
 
+  test "persisted rework key prevents duplicate tracker effects after restart" do
+    finding = %{resolved: false, priority: 1, body: "P1 data loss", url: "https://example.test/thread"}
+    fingerprint = [{1, nil, "P1 data loss"}]
+    key = ReviewConvergence.dedup_key(:rework, "issue-160", "head", fingerprint)
+    Application.put_env(:symphony_elixir, :review_snapshot, {:ok, snapshot(%{threads: [finding]})})
+
+    Application.put_env(
+      :symphony_elixir,
+      :review_history,
+      {:ok, %{dedup: MapSet.new([key]), rework_count: 1}}
+    )
+
+    _state = ReviewMonitor.run_with(%{}, settings(), ReviewClient, Tracker)
+    refute_receive {:status, _, _, _, _}
+    refute_receive {:comment, _, _}
+    refute_receive {:state, _, _}
+  end
+
   test "waiting on environment or human judgment neither rereviews nor changes state" do
     Application.put_env(
       :symphony_elixir,
@@ -224,6 +283,27 @@ defmodule SymphonyElixir.ReviewConvergenceTest do
     refute_receive {:state, _, _}
   end
 
+  test "persisted rework rounds survive restart and force human escalation" do
+    finding = %{resolved: false, priority: 2, body: "P2 recurring patch", url: "thread"}
+    Application.put_env(:symphony_elixir, :review_snapshot, {:ok, snapshot(%{threads: [finding]})})
+    Application.put_env(:symphony_elixir, :review_history, {:ok, %{dedup: MapSet.new(), rework_count: 3}})
+
+    _state = ReviewMonitor.run_with(%{}, settings(), ReviewClient, Tracker)
+    assert_receive {:comment, "issue-160", body}
+    assert body =~ "review_not_converging"
+    refute_receive {:state, _, _}
+  end
+
+  test "unverifiable persisted rework history fails closed" do
+    Application.put_env(:symphony_elixir, :review_history, {:error, :linear_unavailable})
+    Application.put_env(:symphony_elixir, :review_snapshot, {:ok, snapshot()})
+
+    _state = ReviewMonitor.run_with(%{}, settings(), ReviewClient, Tracker)
+    assert_receive {:comment, "issue-160", body}
+    assert body =~ "linear_unavailable"
+    refute_receive {:state, _, _}
+  end
+
   defp settings do
     %{
       repository: "aroakpm-svg/repo",
@@ -241,7 +321,8 @@ defmodule SymphonyElixir.ReviewConvergenceTest do
       title: "Review convergence",
       state: "In Review",
       branch_name: "codex/aro-160",
-      url: "https://linear.test/ARO-160"
+      url: "https://linear.test/ARO-160",
+      labels: ["owned"]
     }
   end
 
@@ -262,5 +343,22 @@ defmodule SymphonyElixir.ReviewConvergenceTest do
       },
       overrides
     )
+  end
+
+  defp rework_body(key) do
+    %{"body" => "Review Convergence Gate found actionable latest-head findings.\n\ndedup-key: `#{key}`"}
+  end
+
+  defp history_page(nodes, has_next, cursor) do
+    %{
+      "data" => %{
+        "issue" => %{
+          "comments" => %{
+            "nodes" => nodes,
+            "pageInfo" => %{"hasNextPage" => has_next, "endCursor" => cursor}
+          }
+        }
+      }
+    }
   end
 end

@@ -24,7 +24,9 @@ defmodule SymphonyElixir.ReviewMonitor do
   def run_with(state, settings, review_client, tracker) do
     case tracker.fetch_issues_by_states([settings.review_state]) do
       {:ok, issues} ->
-        Enum.reduce(issues, state, &reconcile_issue(&1, &2, settings, review_client, tracker))
+        issues
+        |> Enum.filter(&Issue.routable?(&1, Config.settings!().tracker.required_labels))
+        |> Enum.reduce(state, &reconcile_issue(&1, &2, settings, review_client, tracker))
 
       {:error, reason} ->
         Logger.warning("Review monitor failed to fetch review-state issues: #{inspect(reason)}")
@@ -43,8 +45,15 @@ defmodule SymphonyElixir.ReviewMonitor do
         last_finding_fingerprint: nil
       })
 
-    with branch when is_binary(branch) and branch != "" <- issue.branch_name,
+    with {:ok, history} <- tracker.review_history(issue.id),
+         branch when is_binary(branch) and branch != "" <- issue.branch_name,
          {:ok, snapshot} <- review_client.snapshot(settings.repository, branch) do
+      entry = %{
+        entry
+        | dedup: MapSet.union(entry.dedup, history.dedup),
+          fix_rounds: max(entry.fix_rounds, history.rework_count)
+      }
+
       entry = invalidate_old_head(entry, snapshot.current_head_sha)
       decision = ReviewConvergence.evaluate(snapshot, entry.fix_rounds, settings.max_fix_rounds)
       {updated_entry, _outcome} = apply_decision(decision, issue, entry, settings, review_client, tracker, snapshot)

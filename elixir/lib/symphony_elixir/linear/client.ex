@@ -140,7 +140,9 @@ defmodule SymphonyElixir.Linear.Client do
           {:error, :missing_linear_project_slug}
 
         true ->
-          do_fetch_by_states(project_slug, normalized_states, nil)
+          with {:ok, assignee_filter} <- routing_assignee_filter() do
+            do_fetch_by_states(project_slug, normalized_states, assignee_filter)
+          end
       end
     end
   end
