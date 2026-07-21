@@ -17,6 +17,7 @@ defmodule SymphonyElixir.GitHubReviewClient do
               login
               __typename
               ... on Organization { databaseId }
+              ... on Bot { databaseId }
             }
           }
         }
@@ -49,7 +50,11 @@ defmodule SymphonyElixir.GitHubReviewClient do
   }
   """
 
-  @trusted_reviewer %{login: "chatgpt-codex-connector", type: "Organization", database_id: 261_883_814}
+  @trusted_reviewers [
+    %{login: "chatgpt-codex-connector", type: "Organization", database_id: 261_883_814},
+    %{login: "chatgpt-codex-connector", type: "Bot", database_id: 199_175_422},
+    %{login: "chatgpt-codex-connector[bot]", type: "Bot", database_id: 199_175_422}
+  ]
   @expected_checks [
     %{name: "make-all", app_slug: "github-actions", app_id: 15_368},
     %{name: "validate-pr-description", app_slug: "github-actions", app_id: 15_368}
@@ -151,6 +156,10 @@ defmodule SymphonyElixir.GitHubReviewClient do
   @doc false
   @spec normalize_threads_for_test([map()], String.t()) :: [map()]
   def normalize_threads_for_test(threads, head_sha), do: normalize_threads(threads, head_sha)
+
+  @doc false
+  @spec base_missing_paths_for_test([map()], String.t()) :: [String.t()]
+  def base_missing_paths_for_test(threads, head_sha), do: base_missing_paths(threads, head_sha)
 
   defp find_pull_request(repository, branch) do
     args = [
@@ -385,8 +394,9 @@ defmodule SymphonyElixir.GitHubReviewClient do
 
   defp verify_base_claims(repository, pull_request) do
     threads = current_head_threads(pull_request)
-    paths = base_missing_paths(threads)
-    claim_present = base_missing_claim?(threads)
+    head_sha = pull_request["headRefOid"]
+    paths = base_missing_paths(threads, head_sha)
+    claim_present = base_missing_claim?(threads, head_sha)
 
     if claim_present do
       verify_claimed_base_paths(repository, pull_request["baseRefOid"], paths)
@@ -416,9 +426,9 @@ defmodule SymphonyElixir.GitHubReviewClient do
 
   defp base_path_exists?(_repository, _base_oid, _path), do: false
 
-  defp base_missing_paths(threads) do
+  defp base_missing_paths(threads, head_sha) do
     threads
-    |> Enum.flat_map(fn thread -> get_in(thread, ["comments", "nodes"]) || [] end)
+    |> current_head_comments(head_sha)
     |> Enum.flat_map(fn comment ->
       body = comment["body"] || ""
 
@@ -433,10 +443,16 @@ defmodule SymphonyElixir.GitHubReviewClient do
     |> Enum.uniq()
   end
 
-  defp base_missing_claim?(threads) do
+  defp base_missing_claim?(threads, head_sha) do
+    threads
+    |> current_head_comments(head_sha)
+    |> Enum.any?(fn comment -> base_missing_claim_body?(comment["body"] || "") end)
+  end
+
+  defp current_head_comments(threads, head_sha) do
     threads
     |> Enum.flat_map(fn thread -> get_in(thread, ["comments", "nodes"]) || [] end)
-    |> Enum.any?(fn comment -> base_missing_claim_body?(comment["body"] || "") end)
+    |> Enum.filter(&(get_in(&1, ["commit", "oid"]) == head_sha))
   end
 
   defp base_missing_claim_body?(body) do
@@ -473,9 +489,11 @@ defmodule SymphonyElixir.GitHubReviewClient do
   end
 
   defp trusted_reviewer?(author) when is_map(author) do
-    author["login"] == @trusted_reviewer.login and
-      author["__typename"] == @trusted_reviewer.type and
-      author["databaseId"] == @trusted_reviewer.database_id
+    Enum.any?(@trusted_reviewers, fn reviewer ->
+      author["login"] == reviewer.login and
+        author["__typename"] == reviewer.type and
+        author["databaseId"] == reviewer.database_id
+    end)
   end
 
   defp trusted_reviewer?(_author), do: false

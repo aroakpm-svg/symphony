@@ -174,6 +174,18 @@ defmodule SymphonyElixir.ReviewConvergenceTest do
     refute GitHubReviewClient.accepted_review_for_test?(put_in(trusted, ["author", "databaseId"], 123), "head")
     refute GitHubReviewClient.accepted_review_for_test?(put_in(trusted, ["commit", "oid"], "old"), "head")
     refute GitHubReviewClient.accepted_review_for_test?(%{trusted | "body" => "No major issues found"}, "other")
+
+    bot = %{
+      trusted
+      | "author" => %{
+          "login" => "chatgpt-codex-connector[bot]",
+          "__typename" => "Bot",
+          "databaseId" => 199_175_422
+        }
+    }
+
+    assert GitHubReviewClient.accepted_review_for_test?(bot, "head")
+    refute GitHubReviewClient.accepted_review_for_test?(put_in(bot, ["author", "databaseId"], 123), "head")
   end
 
   test "pending required checks returned with gh exit status 8 remain pending evidence" do
@@ -239,6 +251,25 @@ defmodule SymphonyElixir.ReviewConvergenceTest do
 
     assert [%{body: "P1 current follow-up", priority: 1, commit_sha: "head"}] =
              GitHubReviewClient.normalize_threads_for_test([thread], "head")
+  end
+
+  test "old-head base-missing claims do not contaminate current-head follow-ups" do
+    thread = %{
+      "comments" => %{
+        "nodes" => [
+          %{
+            "body" => "The base branch is missing `lib/old.ex`",
+            "commit" => %{"oid" => "old"}
+          },
+          %{"body" => "Current-head follow-up", "commit" => %{"oid" => "head"}}
+        ]
+      }
+    }
+
+    assert GitHubReviewClient.base_missing_paths_for_test([thread], "head") == []
+
+    current = put_in(thread, ["comments", "nodes", Access.at(1), "body"], "Base ref is missing `lib/current.ex`")
+    assert GitHubReviewClient.base_missing_paths_for_test([current], "head") == ["lib/current.ex"]
   end
 
   test "review thread comments are merged across every comment page" do
