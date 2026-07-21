@@ -180,6 +180,7 @@ defmodule SymphonyElixir.Config.Schema do
         empty_values: []
       )
       |> validate_number(:max_fix_rounds, greater_than: 0)
+      |> validate_format(:repository, ~r/\A[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+\z/, message: "must use owner/name format")
       |> validate_required_if_enabled()
     end
 

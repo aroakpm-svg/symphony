@@ -80,6 +80,13 @@ defmodule SymphonyElixir.ReviewConvergenceTest do
              Schema.parse(%{"review_convergence" => %{"enabled" => true}})
 
     assert message =~ "review_convergence.repository"
+
+    assert {:error, {:invalid_workflow_config, malformed_message}} =
+             Schema.parse(%{
+               "review_convergence" => %{"enabled" => true, "repository" => "symphony"}
+             })
+
+    assert malformed_message =~ "must use owner/name format"
   end
 
   test "missing expected GitHub Actions checks fail closed instead of treating zero rows as passing" do
@@ -162,6 +169,7 @@ defmodule SymphonyElixir.ReviewConvergenceTest do
   test "formal pass requires the trusted reviewer database identity on the current head" do
     trusted = %{
       "body" => "No major issues found",
+      "state" => "COMMENTED",
       "commit" => %{"oid" => "head"},
       "author" => %{
         "login" => "chatgpt-codex-connector",
@@ -173,6 +181,8 @@ defmodule SymphonyElixir.ReviewConvergenceTest do
     assert GitHubReviewClient.accepted_review_for_test?(trusted, "head")
     refute GitHubReviewClient.accepted_review_for_test?(put_in(trusted, ["author", "databaseId"], 123), "head")
     refute GitHubReviewClient.accepted_review_for_test?(put_in(trusted, ["commit", "oid"], "old"), "head")
+    refute GitHubReviewClient.accepted_review_for_test?(%{trusted | "state" => "DISMISSED"}, "head")
+    refute GitHubReviewClient.accepted_review_for_test?(%{trusted | "state" => "PENDING"}, "head")
     refute GitHubReviewClient.accepted_review_for_test?(%{trusted | "body" => "No major issues found"}, "other")
 
     bot = %{

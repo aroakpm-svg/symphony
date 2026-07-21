@@ -11,6 +11,7 @@ defmodule SymphonyElixir.GitHubReviewClient do
         reviews(last: 100) {
           nodes {
             body
+            state
             submittedAt
             commit { oid }
             author {
@@ -488,6 +489,7 @@ defmodule SymphonyElixir.GitHubReviewClient do
 
   defp accepted_review?(review, head_sha) do
     get_in(review, ["commit", "oid"]) == head_sha and
+      review["state"] in ["APPROVED", "COMMENTED"] and
       trusted_reviewer?(review["author"]) and
       String.contains?(review["body"] || "", "No major issues found")
   end
