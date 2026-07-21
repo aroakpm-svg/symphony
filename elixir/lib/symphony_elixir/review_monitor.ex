@@ -77,16 +77,7 @@ defmodule SymphonyElixir.ReviewMonitor do
     key = ReviewConvergence.dedup_key(:review_request, issue.id, snapshot.current_head_sha, :codex)
 
     dedup_action(entry, key, fn ->
-      with {:ok, requested?} <-
-             review_client.review_request_exists?(settings.repository, snapshot.pull_request_number, key) do
-        if requested? do
-          :ok
-        else
-          status_then(review_client, settings.repository, snapshot, :pending, "Waiting for a formal latest-head review", fn ->
-            review_client.request_review(settings.repository, snapshot.pull_request_number, key)
-          end)
-        end
-      end
+      ensure_review_requested(review_client, settings.repository, snapshot, key)
     end)
     |> then(fn {updated, result} -> {%{updated | review_requested: result == :ok}, result} end)
   end
@@ -96,27 +87,14 @@ defmodule SymphonyElixir.ReviewMonitor do
     fingerprint = finding_fingerprint(findings)
     key = ReviewConvergence.dedup_key(:rework, issue.id, snapshot.current_head_sha, fingerprint)
 
-    with :ok <-
-           publish_status(
-             review_client,
-             settings.repository,
-             snapshot,
-             :failure,
-             "Unresolved actionable P1-P4 review findings"
-           ) do
-      {updated, comment_result} =
-        dedup_action(entry, key, fn ->
-          tracker.create_comment(issue.id, rework_comment(snapshot, findings, key))
-        end)
-
-      result =
-        if comment_result in [:ok, :deduplicated],
-          do: tracker.update_issue_state(issue.id, settings.in_progress_state),
-          else: comment_result
-
-      rounds = if(comment_result == :ok, do: entry.fix_rounds + 1, else: entry.fix_rounds)
-      {%{updated | fix_rounds: rounds, last_finding_fingerprint: fingerprint}, result}
-    else
+    case publish_status(
+           review_client,
+           settings.repository,
+           snapshot,
+           :failure,
+           "Unresolved actionable P1-P4 review findings"
+         ) do
+      :ok -> apply_rework(issue, entry, settings, tracker, snapshot, findings, fingerprint, key)
       {:error, reason} -> {entry, {:error, reason}}
     end
   end
@@ -157,6 +135,36 @@ defmodule SymphonyElixir.ReviewMonitor do
       :ok -> dedup_action(entry, key, fn -> tracker.create_comment(issue.id, converged_comment(snapshot, key)) end)
       {:error, reason} -> {entry, {:error, reason}}
     end
+  end
+
+  defp ensure_review_requested(review_client, repository, snapshot, key) do
+    case review_client.review_request_exists?(repository, snapshot.pull_request_number, key) do
+      {:ok, true} ->
+        :ok
+
+      {:ok, false} ->
+        status_then(review_client, repository, snapshot, :pending, "Waiting for a formal latest-head review", fn ->
+          review_client.request_review(repository, snapshot.pull_request_number, key)
+        end)
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  defp apply_rework(issue, entry, settings, tracker, snapshot, findings, fingerprint, key) do
+    {updated, comment_result} =
+      dedup_action(entry, key, fn ->
+        tracker.create_comment(issue.id, rework_comment(snapshot, findings, key))
+      end)
+
+    result =
+      if comment_result in [:ok, :deduplicated],
+        do: tracker.update_issue_state(issue.id, settings.in_progress_state),
+        else: comment_result
+
+    rounds = if(comment_result == :ok, do: entry.fix_rounds + 1, else: entry.fix_rounds)
+    {%{updated | fix_rounds: rounds, last_finding_fingerprint: fingerprint}, result}
   end
 
   defp dedup_action(entry, key, action) do

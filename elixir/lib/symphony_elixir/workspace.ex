@@ -370,9 +370,8 @@ defmodule SymphonyElixir.Workspace do
     with :ok <- require_workspace_dir(workspace),
          :ok <- run_git_preflight_command(workspace, ["rev-parse", "--is-inside-work-tree"], :workspace_not_git_repo),
          :ok <- maybe_validate_origin_remote(workspace),
-         :ok <- run_git_preflight_command(workspace, ["status", "--short"], :git_status_failed),
-         :ok <- run_git_preflight_command(workspace, ["fetch", "origin", "--prune"], :git_fetch_failed) do
-      :ok
+         :ok <- run_git_preflight_command(workspace, ["status", "--short"], :git_status_failed) do
+      run_git_preflight_command(workspace, ["fetch", "origin", "--prune"], :git_fetch_failed)
     end
   end
 
@@ -391,9 +390,14 @@ defmodule SymphonyElixir.Workspace do
       |> Enum.join("\n")
 
     case run_remote_command(worker_host, script, Config.settings!().hooks.timeout_ms) do
-      {:ok, {_output, 0}} -> :ok
-      {:ok, {output, status}} -> {:error, workspace_preflight_error(:remote_workspace_preflight_failed, "remote preflight", status, output)}
-      {:error, reason} -> {:error, {:workspace_preflight_failed, :remote_workspace_preflight_failed, "remote preflight", reason}}
+      {:ok, {_output, 0}} ->
+        :ok
+
+      {:ok, {output, status}} ->
+        {:error, workspace_preflight_error(:remote_workspace_preflight_failed, "remote preflight", status, output)}
+
+      {:error, reason} ->
+        {:error, {:workspace_preflight_failed, :remote_workspace_preflight_failed, "remote preflight", reason}}
     end
   end
 
@@ -417,13 +421,7 @@ defmodule SymphonyElixir.Workspace do
                "git config --get remote.origin.url"
              ) do
           {output, 0} ->
-            actual_url = String.trim(output)
-
-            if comparable_repo_url(actual_url) == comparable_repo_url(expected_url) do
-              :ok
-            else
-              {:error, {:workspace_preflight_failed, :git_remote_mismatch, "git config --get remote.origin.url", "expected #{redacted_repo_url(expected_url)}, got #{redacted_repo_url(actual_url)}"}}
-            end
+            validate_origin_remote(String.trim(output), expected_url)
 
           {output, status} when is_integer(status) ->
             {:error, workspace_preflight_error(:git_remote_missing, "git config --get remote.origin.url", status, output)}
@@ -434,13 +432,27 @@ defmodule SymphonyElixir.Workspace do
     end
   end
 
+  defp validate_origin_remote(actual_url, expected_url) do
+    if comparable_repo_url(actual_url) == comparable_repo_url(expected_url) do
+      :ok
+    else
+      message = "expected #{redacted_repo_url(expected_url)}, got #{redacted_repo_url(actual_url)}"
+      {:error, {:workspace_preflight_failed, :git_remote_mismatch, "git config --get remote.origin.url", message}}
+    end
+  end
+
   defp run_git_preflight_command(workspace, args, error_type) do
     command = Enum.join(["git" | args], " ")
 
     case run_local_preflight_command("git", ["-C", workspace | args], command) do
-      {_output, 0} -> :ok
-      {output, status} when is_integer(status) -> {:error, workspace_preflight_error(error_type, command, status, output)}
-      {:error, reason} -> {:error, workspace_preflight_error(error_type, command, reason)}
+      {_output, 0} ->
+        :ok
+
+      {output, status} when is_integer(status) ->
+        {:error, workspace_preflight_error(error_type, command, status, output)}
+
+      {:error, reason} ->
+        {:error, workspace_preflight_error(error_type, command, reason)}
     end
   end
 

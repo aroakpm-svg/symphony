@@ -83,14 +83,18 @@ defmodule SymphonyElixir.GitHubReviewClient do
   def review_request_exists?(repository, number, key) do
     case run(["api", "--paginate", "--slurp", "repos/#{repository}/issues/#{number}/comments"]) do
       {:ok, output} ->
-        with {:ok, pages} when is_list(pages) <- Jason.decode(output) do
-          {:ok,
-           pages
-           |> List.flatten()
-           |> Enum.any?(&String.contains?(&1["body"] || "", "dedup-key: `#{key}`"))}
-        else
-          {:ok, unexpected} -> {:error, {:invalid_issue_comments, unexpected}}
-          {:error, reason} -> {:error, reason}
+        case Jason.decode(output) do
+          {:ok, pages} when is_list(pages) ->
+            {:ok,
+             pages
+             |> List.flatten()
+             |> Enum.any?(&String.contains?(&1["body"] || "", "dedup-key: `#{key}`"))}
+
+          {:ok, unexpected} ->
+            {:error, {:invalid_issue_comments, unexpected}}
+
+          {:error, reason} ->
+            {:error, reason}
         end
 
       {:error, reason} ->
@@ -263,21 +267,27 @@ defmodule SymphonyElixir.GitHubReviewClient do
   defp check_run_state(_run), do: :pending
 
   defp normalize_required_checks(output, status) do
-    with {:ok, checks} when is_list(checks) <- Jason.decode(output) do
-      {:ok,
-       checks
-       |> Enum.reject(&(&1["name"] == "Review Convergence Gate"))
-       |> Enum.map(fn check ->
-         %{
-           name: check["name"],
-           state: normalize_check_state(check["bucket"] || check["state"]),
-           link: check["link"]
-         }
-       end)}
-    else
-      {:error, _reason} when status == 1 -> normalize_no_required_checks(output)
-      {:ok, unexpected} -> {:error, {:invalid_required_checks, unexpected}}
-      {:error, reason} -> {:error, {:command_failed, status, reason}}
+    case Jason.decode(output) do
+      {:ok, checks} when is_list(checks) ->
+        {:ok,
+         checks
+         |> Enum.reject(&(&1["name"] == "Review Convergence Gate"))
+         |> Enum.map(fn check ->
+           %{
+             name: check["name"],
+             state: normalize_check_state(check["bucket"] || check["state"]),
+             link: check["link"]
+           }
+         end)}
+
+      {:error, _reason} when status == 1 ->
+        normalize_no_required_checks(output)
+
+      {:ok, unexpected} ->
+        {:error, {:invalid_required_checks, unexpected}}
+
+      {:error, reason} ->
+        {:error, {:command_failed, status, reason}}
     end
   end
 

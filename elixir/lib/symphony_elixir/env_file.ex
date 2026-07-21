@@ -38,15 +38,13 @@ defmodule SymphonyElixir.EnvFile do
   defp put_env_line(line) do
     line = String.trim(line)
 
-    cond do
-      line == "" or String.starts_with?(line, "#") ->
-        {false, false}
-
-      true ->
-        line
-        |> String.replace_prefix("export ", "")
-        |> String.split("=", parts: 2)
-        |> put_env_pair()
+    if line == "" or String.starts_with?(line, "#") do
+      {false, false}
+    else
+      line
+      |> String.replace_prefix("export ", "")
+      |> String.split("=", parts: 2)
+      |> put_env_pair()
     end
   end
 
