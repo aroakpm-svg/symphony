@@ -27,6 +27,8 @@ defmodule SymphonyElixir.CoreTest do
     assert {:error, {:invalid_workflow_config, message}} = Config.validate!()
     assert message =~ "polling.interval_ms"
 
+    assert %Orchestrator.State{} = Orchestrator.maybe_dispatch_for_test(%Orchestrator.State{})
+
     write_workflow_file!(Workflow.workflow_file_path(), poll_interval_ms: 45_000)
     assert Config.settings!().polling.interval_ms == 45_000
 

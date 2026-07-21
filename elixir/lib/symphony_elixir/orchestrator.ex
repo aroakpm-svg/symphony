@@ -277,9 +277,9 @@ defmodule SymphonyElixir.Orchestrator do
       state
       |> reconcile_running_issues()
       |> reconcile_blocked_issues()
-      |> reconcile_review_convergence()
 
     with :ok <- Config.validate!(),
+         state <- reconcile_review_convergence(state),
          {:ok, issues} <- Tracker.fetch_candidate_issues(),
          true <- available_slots(state) > 0 do
       choose_issues(issues, state)
@@ -326,6 +326,10 @@ defmodule SymphonyElixir.Orchestrator do
         state
     end
   end
+
+  @doc false
+  @spec maybe_dispatch_for_test(State.t()) :: State.t()
+  def maybe_dispatch_for_test(%State{} = state), do: maybe_dispatch(state)
 
   defp reconcile_review_convergence(%State{} = state) do
     %{state | review_convergence: ReviewMonitor.run(state.review_convergence)}
