@@ -3,8 +3,8 @@ name: pr-description-lint
 on:
   workflow_dispatch:
     inputs:
-      pr_body:
-        description: Pull request body to validate
+      pr_number:
+        description: Pull request number whose actual body and head will be validated
         required: true
         type: string
   pull_request:
@@ -12,6 +12,7 @@ on:
 
 permissions:
   contents: read
+  pull-requests: read
 
 jobs:
   validate-pr-description:
@@ -35,10 +36,25 @@ jobs:
 
       - name: Validate PR description format
         env:
-          PR_BODY_JSON: ${{ toJson(github.event.pull_request.body || inputs.pr_body) }}
+          EXPECTED_HEAD: ${{ github.sha }}
+          GH_TOKEN: ${{ github.token }}
+          PR_BODY_JSON: ${{ toJson(github.event.pull_request.body) }}
+          PR_NUMBER: ${{ inputs.pr_number }}
         run: |
           mix local.hex --force
           mix local.rebar --force
           mix deps.get
-          printf '%s' "$PR_BODY_JSON" | jq -r '.' > /tmp/pr_body.md
+
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            pr_json=$(gh api "repos/$GITHUB_REPOSITORY/pulls/$PR_NUMBER")
+            actual_head=$(printf '%s' "$pr_json" | jq -r '.head.sha')
+            if [ "$actual_head" != "$EXPECTED_HEAD" ]; then
+              echo "PR #$PR_NUMBER head $actual_head does not match workflow head $EXPECTED_HEAD" >&2
+              exit 1
+            fi
+            printf '%s' "$pr_json" | jq -r '.body // ""' > /tmp/pr_body.md
+          else
+            printf '%s' "$PR_BODY_JSON" | jq -r '.' > /tmp/pr_body.md
+          fi
+
           mix pr_body.check --file /tmp/pr_body.md
