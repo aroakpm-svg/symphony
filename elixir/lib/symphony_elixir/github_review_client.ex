@@ -2,7 +2,7 @@ defmodule SymphonyElixir.GitHubReviewClient do
   @moduledoc "Reads latest-head review evidence and requests Codex reviews through `gh`."
 
   @graphql """
-  query SymphonyReviewConvergence($owner: String!, $name: String!, $number: Int!) {
+  query SymphonyReviewConvergence($owner: String!, $name: String!, $number: Int!, $endCursor: String) {
     repository(owner: $owner, name: $name) {
       pullRequest(number: $number) {
         number
@@ -11,11 +11,12 @@ defmodule SymphonyElixir.GitHubReviewClient do
         reviews(last: 100) {
           nodes { body submittedAt commit { oid } }
         }
-        reviewThreads(first: 100) {
+        reviewThreads(first: 100, after: $endCursor) {
           nodes {
             isResolved
             comments(first: 20) { nodes { body path url commit { oid } } }
           }
+          pageInfo { hasNextPage endCursor }
         }
       }
     }
@@ -36,11 +37,32 @@ defmodule SymphonyElixir.GitHubReviewClient do
     end
   end
 
-  @spec request_review(String.t(), pos_integer()) :: :ok | {:error, term()}
-  def request_review(repository, number) do
-    case run(["pr", "comment", Integer.to_string(number), "--repo", repository, "--body", "@codex review"]) do
+  @spec request_review(String.t(), pos_integer(), String.t()) :: :ok | {:error, term()}
+  def request_review(repository, number, key) do
+    body = "@codex review\n\ndedup-key: `#{key}`"
+
+    case run(["pr", "comment", Integer.to_string(number), "--repo", repository, "--body", body]) do
       {:ok, _output} -> :ok
       {:error, reason} -> {:error, reason}
+    end
+  end
+
+  @spec review_request_exists?(String.t(), pos_integer(), String.t()) :: {:ok, boolean()} | {:error, term()}
+  def review_request_exists?(repository, number, key) do
+    case run(["api", "--paginate", "--slurp", "repos/#{repository}/issues/#{number}/comments"]) do
+      {:ok, output} ->
+        with {:ok, pages} when is_list(pages) <- Jason.decode(output) do
+          {:ok,
+           pages
+           |> List.flatten()
+           |> Enum.any?(&String.contains?(&1["body"] || "", "dedup-key: `#{key}`"))}
+        else
+          {:ok, unexpected} -> {:error, {:invalid_issue_comments, unexpected}}
+          {:error, reason} -> {:error, reason}
+        end
+
+      {:error, reason} ->
+        {:error, reason}
     end
   end
 
@@ -65,6 +87,14 @@ defmodule SymphonyElixir.GitHubReviewClient do
   @doc false
   @spec normalize_no_required_checks_for_test(String.t()) :: {:ok, []} | {:error, term()}
   def normalize_no_required_checks_for_test(output), do: normalize_no_required_checks(output)
+
+  @doc false
+  @spec normalize_required_checks_for_test(String.t(), non_neg_integer()) :: {:ok, [map()]} | {:error, term()}
+  def normalize_required_checks_for_test(output, status), do: normalize_required_checks(output, status)
+
+  @doc false
+  @spec merge_pull_request_pages_for_test([map()]) :: {:ok, map()} | {:error, term()}
+  def merge_pull_request_pages_for_test(pages), do: merge_pull_request_pages(pages)
 
   defp find_pull_request(repository, branch) do
     args = [
@@ -103,12 +133,14 @@ defmodule SymphonyElixir.GitHubReviewClient do
       "-F",
       "name=#{name}",
       "-F",
-      "number=#{number}"
+      "number=#{number}",
+      "--paginate",
+      "--slurp"
     ]
 
     with {:ok, output} <- run(args),
-         {:ok, decoded} <- Jason.decode(output),
-         pull_request when is_map(pull_request) <- get_in(decoded, ["data", "repository", "pullRequest"]) do
+         {:ok, decoded} when is_list(decoded) <- Jason.decode(output),
+         {:ok, pull_request} <- merge_pull_request_pages(decoded) do
       {:ok, pull_request}
     else
       nil -> {:error, :pull_request_not_found}
@@ -120,7 +152,15 @@ defmodule SymphonyElixir.GitHubReviewClient do
   defp required_checks(repository, number) do
     args = ["pr", "checks", Integer.to_string(number), "--repo", repository, "--required", "--json", "name,state,bucket,link"]
 
-    with {:ok, output} <- run(args), {:ok, checks} when is_list(checks) <- Jason.decode(output) do
+    case run(args) do
+      {:ok, output} -> normalize_required_checks(output, 0)
+      {:error, {:command_failed, status, output}} when status in [1, 8] -> normalize_required_checks(output, status)
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp normalize_required_checks(output, status) do
+    with {:ok, checks} when is_list(checks) <- Jason.decode(output) do
       {:ok,
        checks
        |> Enum.reject(&(&1["name"] == "Review Convergence Gate"))
@@ -132,9 +172,22 @@ defmodule SymphonyElixir.GitHubReviewClient do
          }
        end)}
     else
-      {:error, {:command_failed, 1, output}} -> normalize_no_required_checks(output)
+      {:error, _reason} when status == 1 -> normalize_no_required_checks(output)
       {:ok, unexpected} -> {:error, {:invalid_required_checks, unexpected}}
-      {:error, reason} -> {:error, reason}
+      {:error, reason} -> {:error, {:command_failed, status, reason}}
+    end
+  end
+
+  defp merge_pull_request_pages(pages) do
+    pull_requests = Enum.map(pages, &get_in(&1, ["data", "repository", "pullRequest"]))
+
+    case pull_requests do
+      [first | _] when is_map(first) ->
+        threads = Enum.flat_map(pull_requests, &(get_in(&1 || %{}, ["reviewThreads", "nodes"]) || []))
+        {:ok, put_in(first, ["reviewThreads", "nodes"], threads)}
+
+      _ ->
+        {:error, :pull_request_not_found}
     end
   end
 

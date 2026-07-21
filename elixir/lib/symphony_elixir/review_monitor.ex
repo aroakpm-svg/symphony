@@ -52,7 +52,7 @@ defmodule SymphonyElixir.ReviewMonitor do
     else
       nil -> wait_for_human(issue, entry, settings, tracker, :missing_branch_name, nil, state)
       "" -> wait_for_human(issue, entry, settings, tracker, :missing_branch_name, nil, state)
-      {:error, reason} -> wait_for_human(issue, entry, settings, tracker, reason, nil, state)
+      {:error, reason} -> wait_for_human(issue, entry, settings, tracker, inspect(reason), nil, state)
     end
   end
 
@@ -68,9 +68,16 @@ defmodule SymphonyElixir.ReviewMonitor do
     key = ReviewConvergence.dedup_key(:review_request, issue.id, snapshot.current_head_sha, :codex)
 
     dedup_action(entry, key, fn ->
-      status_then(review_client, settings.repository, snapshot, :pending, "Waiting for a formal latest-head review", fn ->
-        review_client.request_review(settings.repository, snapshot.pull_request_number)
-      end)
+      with {:ok, requested?} <-
+             review_client.review_request_exists?(settings.repository, snapshot.pull_request_number, key) do
+        if requested? do
+          :ok
+        else
+          status_then(review_client, settings.repository, snapshot, :pending, "Waiting for a formal latest-head review", fn ->
+            review_client.request_review(settings.repository, snapshot.pull_request_number, key)
+          end)
+        end
+      end
     end)
     |> then(fn {updated, result} -> {%{updated | review_requested: result == :ok}, result} end)
   end

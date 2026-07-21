@@ -11,10 +11,15 @@ defmodule SymphonyElixir.ReviewConvergenceTest do
     @spec snapshot(String.t(), String.t()) :: {:ok, map()} | {:error, term()}
     def snapshot(_repository, _branch), do: Application.fetch_env!(:symphony_elixir, :review_snapshot)
 
-    @spec request_review(String.t(), pos_integer()) :: :ok
-    def request_review(repository, number) do
-      send(Application.fetch_env!(:symphony_elixir, :review_recipient), {:review_requested, repository, number})
+    @spec request_review(String.t(), pos_integer(), String.t()) :: :ok
+    def request_review(repository, number, key) do
+      send(Application.fetch_env!(:symphony_elixir, :review_recipient), {:review_requested, repository, number, key})
       :ok
+    end
+
+    @spec review_request_exists?(String.t(), pos_integer(), String.t()) :: {:ok, boolean()}
+    def review_request_exists?(_repository, _number, key) do
+      {:ok, key in Application.get_env(:symphony_elixir, :existing_review_keys, [])}
     end
 
     @spec publish_status(String.t(), String.t(), atom(), String.t(), String.t() | nil) :: :ok
@@ -53,6 +58,7 @@ defmodule SymphonyElixir.ReviewConvergenceTest do
       Application.delete_env(:symphony_elixir, :review_recipient)
       Application.delete_env(:symphony_elixir, :review_issues)
       Application.delete_env(:symphony_elixir, :review_snapshot)
+      Application.delete_env(:symphony_elixir, :existing_review_keys)
     end)
   end
 
@@ -76,17 +82,67 @@ defmodule SymphonyElixir.ReviewConvergenceTest do
              GitHubReviewClient.normalize_no_required_checks_for_test("authentication failed")
   end
 
+  test "pending required checks returned with gh exit status 8 remain pending evidence" do
+    output = Jason.encode!([%{"name" => "ci", "bucket" => "pending", "state" => "PENDING", "link" => "url"}])
+
+    assert {:ok, [%{name: "ci", state: :pending}]} =
+             GitHubReviewClient.normalize_required_checks_for_test(output, 8)
+  end
+
+  test "review thread pagination merges every page before evaluation" do
+    page = fn body ->
+      %{
+        "data" => %{
+          "repository" => %{
+            "pullRequest" => %{
+              "reviewThreads" => %{
+                "nodes" => [%{"comments" => %{"nodes" => [%{"body" => body}]}}]
+              }
+            }
+          }
+        }
+      }
+    end
+
+    assert {:ok, pull_request} =
+             GitHubReviewClient.merge_pull_request_pages_for_test([page.("P4 first"), page.("P1 second")])
+
+    assert Enum.map(
+             pull_request["reviewThreads"]["nodes"],
+             &get_in(&1, ["comments", "nodes", Access.at(0), "body"])
+           ) == ["P4 first", "P1 second"]
+  end
+
   test "a new head invalidates an old formal review and requests one deduplicated review" do
     snapshot = snapshot(%{current_head_sha: "new", reviewed_head_sha: "old"})
     Application.put_env(:symphony_elixir, :review_snapshot, {:ok, snapshot})
 
     state = ReviewMonitor.run_with(%{}, settings(), ReviewClient, Tracker)
     assert_receive {:status, "aroakpm-svg/repo", "new", :pending, _}
-    assert_receive {:review_requested, "aroakpm-svg/repo", 42}
+    assert_receive {:review_requested, "aroakpm-svg/repo", 42, key}
+    assert is_binary(key)
 
     _state = ReviewMonitor.run_with(state, settings(), ReviewClient, Tracker)
     refute_receive {:status, _, _, _, _}
-    refute_receive {:review_requested, _, _}
+    refute_receive {:review_requested, _, _, _}
+  end
+
+  test "a persisted review-request key prevents a duplicate after monitor restart" do
+    Application.put_env(:symphony_elixir, :review_snapshot, {:ok, snapshot(%{reviewed_head_sha: nil})})
+    key = ReviewConvergence.dedup_key(:review_request, "issue-160", "head", :codex)
+    Application.put_env(:symphony_elixir, :existing_review_keys, [key])
+
+    _state = ReviewMonitor.run_with(%{}, settings(), ReviewClient, Tracker)
+    refute_receive {:review_requested, _, _, _}
+    refute_receive {:status, _, _, _, _}
+  end
+
+  test "structured snapshot errors fail closed without crashing comment rendering" do
+    Application.put_env(:symphony_elixir, :review_snapshot, {:error, {:command_failed, 8, %{state: :pending}}})
+
+    _state = ReviewMonitor.run_with(%{}, settings(), ReviewClient, Tracker)
+    assert_receive {:comment, "issue-160", body}
+    assert body =~ "command_failed"
   end
 
   test "review, required checks, and actionable threads are independent gates" do
@@ -138,7 +194,7 @@ defmodule SymphonyElixir.ReviewConvergenceTest do
     assert_receive {:status, _, "head", :pending, _}
     assert_receive {:comment, "issue-160", body}
     assert body =~ "waiting for team human judgment"
-    refute_receive {:review_requested, _, _}
+    refute_receive {:review_requested, _, _, _}
     refute_receive {:state, _, _}
 
     _state = ReviewMonitor.run_with(state, settings(), ReviewClient, Tracker)
