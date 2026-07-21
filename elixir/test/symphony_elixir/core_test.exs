@@ -1092,8 +1092,6 @@ defmodule SymphonyElixir.CoreTest do
     assert prompt =~ "Title: Use rich templates for WORKFLOW.md"
     assert prompt =~ "State: In Progress"
     assert prompt =~ "https://example.org/issues/MT-616/use-rich-templates-for-workflowmd"
-    assert prompt =~ "Continuation context:"
-    assert prompt =~ "retry attempt #2"
   end
 
   test "prompt builder adds continuation guidance for retries" do
