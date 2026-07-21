@@ -384,7 +384,7 @@ defmodule SymphonyElixir.ReviewConvergenceTest do
 
     _state = ReviewMonitor.run_with(%{}, settings(), ReviewClient, Tracker)
     refute_receive {:review_requested, _, _, _}
-    refute_receive {:status, _, _, _, _}
+    assert_receive {:status, _, "head", :pending, _}
   end
 
   defmodule HistoryClient do
@@ -546,6 +546,32 @@ defmodule SymphonyElixir.ReviewConvergenceTest do
 
     _state = ReviewMonitor.run_with(state, settings(), ReviewClient, Tracker)
     refute_receive {:status, _, "head", :success, _}
+  end
+
+  test "previously deduplicated wait still replaces a later success when evidence regresses" do
+    wait_key = ReviewConvergence.dedup_key(:wait, "issue-160", "head", :required_checks_not_passed)
+
+    entry = %{
+      "issue-160" => %{
+        dedup: MapSet.new([wait_key]),
+        fix_rounds: 0,
+        head_sha: "head",
+        last_published_status: {"head", :success},
+        review_requested: false,
+        waiting: false,
+        last_finding_fingerprint: nil
+      }
+    }
+
+    Application.put_env(
+      :symphony_elixir,
+      :review_snapshot,
+      {:ok, snapshot(%{required_checks: [%{name: "make-all", state: :pending}]})}
+    )
+
+    _state = ReviewMonitor.run_with(entry, settings(), ReviewClient, Tracker)
+    assert_receive {:status, _, "head", :pending, _}
+    refute_receive {:comment, _, _}
   end
 
   test "review, required checks, and actionable threads are independent gates" do

@@ -140,9 +140,19 @@ defmodule SymphonyElixir.ReviewMonitor do
   defp apply_decision({:request_review, _evidence}, issue, entry, settings, review_client, _tracker, snapshot) do
     key = ReviewConvergence.dedup_key(:review_request, issue.id, snapshot.current_head_sha, :codex)
 
-    dedup_action(entry, key, fn ->
-      ensure_review_requested(review_client, settings.repository, snapshot, key)
-    end)
+    with {entry, :ok} <-
+           ensure_published_status(
+             entry,
+             review_client,
+             settings.repository,
+             snapshot,
+             :pending,
+             "Waiting for a formal latest-head review"
+           ) do
+      dedup_action(entry, key, fn ->
+        ensure_review_requested(review_client, settings.repository, snapshot, key)
+      end)
+    end
     |> then(fn {updated, result} -> {%{updated | review_requested: result == :ok}, result} end)
   end
 
@@ -151,18 +161,18 @@ defmodule SymphonyElixir.ReviewMonitor do
     fingerprint = finding_fingerprint(findings)
     key = ReviewConvergence.dedup_key(:rework, issue.id, snapshot.current_head_sha, fingerprint)
 
-    case publish_status(
+    case ensure_published_status(
+           entry,
            review_client,
            settings.repository,
            snapshot,
            :failure,
            "Unresolved actionable P1-P4 review findings"
          ) do
-      :ok ->
-        entry = mark_published_status(entry, snapshot, :failure)
+      {entry, :ok} ->
         apply_rework(issue, entry, settings, tracker, snapshot, findings, fingerprint, key)
 
-      {:error, reason} ->
+      {entry, {:error, reason}} ->
         {entry, {:error, reason}}
     end
   end
@@ -171,13 +181,20 @@ defmodule SymphonyElixir.ReviewMonitor do
     reason = evidence[:reason] || :external_or_human_validation
     key = ReviewConvergence.dedup_key(:wait, issue.id, snapshot.current_head_sha, reason)
 
-    dedup_action(entry, key, fn ->
-      status_then(review_client, settings.repository, snapshot, :pending, "Waiting for required evidence or human judgment", fn ->
+    with {entry, :ok} <-
+           ensure_published_status(
+             entry,
+             review_client,
+             settings.repository,
+             snapshot,
+             :pending,
+             "Waiting for required evidence or human judgment"
+           ) do
+      dedup_action(entry, key, fn ->
         tracker.create_comment(issue.id, human_comment(settings, snapshot, reason, key))
       end)
-    end)
+    end
     |> then(fn {updated, result} ->
-      updated = if result == :ok, do: mark_published_status(updated, snapshot, :pending), else: updated
       {%{updated | waiting: result == :ok}, result}
     end)
   end
@@ -185,13 +202,20 @@ defmodule SymphonyElixir.ReviewMonitor do
   defp apply_decision({:escalate, evidence}, issue, entry, settings, review_client, tracker, snapshot) do
     key = ReviewConvergence.dedup_key(:escalate, issue.id, snapshot.current_head_sha, evidence[:reason])
 
-    dedup_action(entry, key, fn ->
-      status_then(review_client, settings.repository, snapshot, :failure, "Review did not converge; human decision required", fn ->
+    with {entry, :ok} <-
+           ensure_published_status(
+             entry,
+             review_client,
+             settings.repository,
+             snapshot,
+             :failure,
+             "Review did not converge; human decision required"
+           ) do
+      dedup_action(entry, key, fn ->
         tracker.create_comment(issue.id, human_comment(settings, snapshot, :review_not_converging, key))
       end)
-    end)
+    end
     |> then(fn {updated, result} ->
-      updated = if result == :ok, do: mark_published_status(updated, snapshot, :failure), else: updated
       {%{updated | waiting: result == :ok}, result}
     end)
   end
@@ -229,9 +253,7 @@ defmodule SymphonyElixir.ReviewMonitor do
         :ok
 
       {:ok, false} ->
-        status_then(review_client, repository, snapshot, :pending, "Waiting for a formal latest-head review", fn ->
-          review_client.request_review(repository, snapshot.pull_request_number, key)
-        end)
+        review_client.request_review(repository, snapshot.pull_request_number, key)
 
       {:error, reason} ->
         {:error, reason}
@@ -269,14 +291,24 @@ defmodule SymphonyElixir.ReviewMonitor do
     snapshot = %{current_head_sha: head_sha, pull_request_number: nil, required_checks: [], threads: []}
     key = ReviewConvergence.dedup_key(:wait, issue.id, head_sha, reason)
 
-    {updated, result} =
-      dedup_action(entry, key, fn ->
-        status_then(review_client, settings.repository, snapshot, :error, "Review evidence unavailable; human judgment required", fn ->
+    {entry, status_result} =
+      ensure_published_status(
+        entry,
+        review_client,
+        settings.repository,
+        snapshot,
+        :error,
+        "Review evidence unavailable; human judgment required"
+      )
+
+    {updated, _result} =
+      if status_result == :ok do
+        dedup_action(entry, key, fn ->
           tracker.create_comment(issue.id, human_comment(settings, snapshot, reason, key))
         end)
-      end)
-
-    updated = if result == :ok, do: mark_published_status(updated, snapshot, :error), else: updated
+      else
+        {entry, status_result}
+      end
 
     Map.put(state, issue.id, %{updated | waiting: true})
   end
@@ -297,10 +329,14 @@ defmodule SymphonyElixir.ReviewMonitor do
     Map.put(entry, :last_published_status, {snapshot.current_head_sha, state})
   end
 
-  defp status_then(review_client, repository, snapshot, state, description, next) do
-    case publish_status(review_client, repository, snapshot, state, description) do
-      :ok -> next.()
-      {:error, reason} -> {:error, reason}
+  defp ensure_published_status(entry, review_client, repository, snapshot, state, description) do
+    if entry[:last_published_status] == {snapshot.current_head_sha, state} do
+      {entry, :ok}
+    else
+      case publish_status(review_client, repository, snapshot, state, description) do
+        :ok -> {mark_published_status(entry, snapshot, state), :ok}
+        {:error, reason} -> {entry, {:error, reason}}
+      end
     end
   end
 
