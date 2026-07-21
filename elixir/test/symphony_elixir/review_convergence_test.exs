@@ -57,6 +57,11 @@ defmodule SymphonyElixir.ReviewConvergenceTest do
     end
   end
 
+  defmodule FailingIssueTracker do
+    @spec fetch_routed_issues_by_states([String.t()]) :: {:error, :linear_unavailable}
+    def fetch_routed_issues_by_states(_states), do: {:error, :linear_unavailable}
+  end
+
   setup do
     Application.put_env(:symphony_elixir, :review_recipient, self())
     Application.put_env(:symphony_elixir, :review_issues, [issue()])
@@ -436,6 +441,25 @@ defmodule SymphonyElixir.ReviewConvergenceTest do
     _state = ReviewMonitor.run_with(entry, settings(), ReviewClient, Tracker)
     assert_receive {:status, _, "known-head", :error, _}
     assert_receive {:comment, "issue-160", _}
+  end
+
+  test "review-issue fetch outage clears each known head once until recovery" do
+    entry = %{
+      "issue-160" => %{
+        dedup: MapSet.new(),
+        fix_rounds: 0,
+        head_sha: "known-head",
+        review_requested: false,
+        waiting: false,
+        last_finding_fingerprint: nil
+      }
+    }
+
+    state = ReviewMonitor.run_with(entry, settings(), ReviewClient, FailingIssueTracker)
+    assert_receive {:status, _, "known-head", :error, _}
+
+    _state = ReviewMonitor.run_with(state, settings(), ReviewClient, FailingIssueTracker)
+    refute_receive {:status, _, _, _, _}
   end
 
   test "convergence republishes success after a transient error while keeping its comment deduplicated" do

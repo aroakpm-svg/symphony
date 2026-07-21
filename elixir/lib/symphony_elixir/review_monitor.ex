@@ -30,7 +30,7 @@ defmodule SymphonyElixir.ReviewMonitor do
 
       {:error, reason} ->
         Logger.warning("Review monitor failed to fetch review-state issues: #{inspect(reason)}")
-        state
+        clear_known_successes(state, settings, review_client)
     end
   end
 
@@ -42,8 +42,11 @@ defmodule SymphonyElixir.ReviewMonitor do
         head_sha: nil,
         review_requested: false,
         waiting: false,
+        fetch_failed: false,
         last_finding_fingerprint: nil
       })
+
+    entry = Map.put(entry, :fetch_failed, false)
 
     case tracker.review_history(issue.id) do
       {:ok, history} ->
@@ -61,6 +64,32 @@ defmodule SymphonyElixir.ReviewMonitor do
   end
 
   defp reconcile_issue(_issue, state, _settings, _review_client, _tracker), do: state
+
+  defp clear_known_successes(state, settings, review_client) do
+    Map.new(state, fn {issue_id, entry} ->
+      {issue_id, clear_known_success(entry, settings, review_client)}
+    end)
+  end
+
+  defp clear_known_success(%{fetch_failed: true} = entry, _settings, _review_client), do: entry
+
+  defp clear_known_success(%{head_sha: head_sha} = entry, settings, review_client)
+       when is_binary(head_sha) and head_sha != "" do
+    snapshot = %{current_head_sha: head_sha}
+
+    case publish_status(
+           review_client,
+           settings.repository,
+           snapshot,
+           :error,
+           "Review issue evidence unavailable; human judgment required"
+         ) do
+      :ok -> Map.put(entry, :fetch_failed, true)
+      {:error, _reason} -> entry
+    end
+  end
+
+  defp clear_known_success(entry, _settings, _review_client), do: entry
 
   defp reconcile_snapshot(issue, entry, state, settings, review_client, tracker) do
     with branch when is_binary(branch) and branch != "" <- issue.branch_name,
