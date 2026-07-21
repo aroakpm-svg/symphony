@@ -22,7 +22,7 @@ defmodule SymphonyElixir.ReviewMonitor do
   @doc false
   @spec run_with(state(), struct() | map(), module(), module()) :: state()
   def run_with(state, settings, review_client, tracker) do
-    case tracker.fetch_issues_by_states([settings.review_state]) do
+    case tracker.fetch_routed_issues_by_states([settings.review_state]) do
       {:ok, issues} ->
         issues
         |> Enum.filter(&Issue.routable?(&1, Config.settings!().tracker.required_labels))

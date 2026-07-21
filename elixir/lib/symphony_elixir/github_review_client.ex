@@ -23,8 +23,25 @@ defmodule SymphonyElixir.GitHubReviewClient do
         reviewThreads(first: 100, after: $endCursor) {
           nodes {
             isResolved
-            comments(first: 20) { nodes { body path url commit { oid } } }
+            id
+            comments(first: 100) {
+              nodes { body path url commit { oid } }
+              pageInfo { hasNextPage endCursor }
+            }
           }
+          pageInfo { hasNextPage endCursor }
+        }
+      }
+    }
+  }
+  """
+
+  @thread_comments_graphql """
+  query SymphonyReviewThreadComments($threadId: ID!, $endCursor: String) {
+    node(id: $threadId) {
+      ... on PullRequestReviewThread {
+        comments(first: 100, after: $endCursor) {
+          nodes { body path url commit { oid } }
           pageInfo { hasNextPage endCursor }
         }
       }
@@ -112,12 +129,20 @@ defmodule SymphonyElixir.GitHubReviewClient do
   def normalize_expected_checks_for_test(payload), do: normalize_expected_checks(payload)
 
   @doc false
+  @spec merge_check_run_pages_for_test([map()]) :: {:ok, map()} | {:error, term()}
+  def merge_check_run_pages_for_test(pages), do: merge_check_run_pages(pages)
+
+  @doc false
   @spec accepted_review_for_test?(map(), String.t()) :: boolean()
   def accepted_review_for_test?(review, head_sha), do: accepted_review?(review, head_sha)
 
   @doc false
   @spec merge_pull_request_pages_for_test([map()]) :: {:ok, map()} | {:error, term()}
   def merge_pull_request_pages_for_test(pages), do: merge_pull_request_pages(pages)
+
+  @doc false
+  @spec merge_thread_comment_pages_for_test([map()]) :: {:ok, [map()]} | {:error, term()}
+  def merge_thread_comment_pages_for_test(pages), do: merge_thread_comment_pages(pages)
 
   @doc false
   @spec normalize_threads_for_test([map()], String.t()) :: [map()]
@@ -167,7 +192,8 @@ defmodule SymphonyElixir.GitHubReviewClient do
 
     with {:ok, output} <- run(args),
          {:ok, decoded} when is_list(decoded) <- Jason.decode(output),
-         {:ok, pull_request} <- merge_pull_request_pages(decoded) do
+         {:ok, pull_request} <- merge_pull_request_pages(decoded),
+         {:ok, pull_request} <- hydrate_pull_request_threads(repository, pull_request) do
       {:ok, pull_request}
     else
       nil -> {:error, :pull_request_not_found}
@@ -180,11 +206,14 @@ defmodule SymphonyElixir.GitHubReviewClient do
     with {:ok, output} <-
            run([
              "api",
-             "repos/#{repository}/commits/#{head_sha}/check-runs",
+             "--paginate",
+             "--slurp",
+             "repos/#{repository}/commits/#{head_sha}/check-runs?per_page=100",
              "-H",
              "Accept: application/vnd.github+json"
            ]),
-         {:ok, payload} <- Jason.decode(output) do
+         {:ok, pages} when is_list(pages) <- Jason.decode(output),
+         {:ok, payload} <- merge_check_run_pages(pages) do
       normalize_expected_checks(payload)
     else
       {:error, reason} -> {:error, reason}
@@ -212,6 +241,19 @@ defmodule SymphonyElixir.GitHubReviewClient do
   end
 
   defp normalize_expected_checks(payload), do: {:error, {:invalid_check_runs, payload}}
+
+  defp merge_check_run_pages(pages) when is_list(pages) do
+    Enum.reduce_while(pages, {:ok, []}, fn
+      %{"check_runs" => runs}, {:ok, acc} when is_list(runs) -> {:cont, {:ok, [runs | acc]}}
+      payload, _acc -> {:halt, {:error, {:invalid_check_runs, payload}}}
+    end)
+    |> case do
+      {:ok, pages_reversed} -> {:ok, %{"check_runs" => pages_reversed |> Enum.reverse() |> List.flatten()}}
+      error -> error
+    end
+  end
+
+  defp merge_check_run_pages(payload), do: {:error, {:invalid_check_run_pages, payload}}
 
   defp check_run_state(nil), do: :missing
 
@@ -251,6 +293,77 @@ defmodule SymphonyElixir.GitHubReviewClient do
         {:error, :pull_request_not_found}
     end
   end
+
+  defp hydrate_pull_request_threads(repository, pull_request) do
+    threads = get_in(pull_request, ["reviewThreads", "nodes"]) || []
+
+    Enum.reduce_while(threads, {:ok, []}, fn thread, {:ok, acc} ->
+      case hydrate_one_thread(repository, thread) do
+        {:ok, hydrated} -> {:cont, {:ok, [hydrated | acc]}}
+        {:error, reason} -> {:halt, {:error, reason}}
+      end
+    end)
+    |> case do
+      {:ok, hydrated_reversed} ->
+        {:ok, put_in(pull_request, ["reviewThreads", "nodes"], Enum.reverse(hydrated_reversed))}
+
+      error ->
+        error
+    end
+  end
+
+  defp hydrate_one_thread(repository, thread) do
+    page_info = get_in(thread, ["comments", "pageInfo"]) || %{}
+
+    if page_info["hasNextPage"] == true do
+      fetch_all_thread_comments(repository, thread["id"])
+      |> case do
+        {:ok, comments} -> {:ok, put_in(thread, ["comments", "nodes"], comments)}
+        error -> error
+      end
+    else
+      {:ok, thread}
+    end
+  end
+
+  defp fetch_all_thread_comments(_repository, thread_id) when is_binary(thread_id) do
+    args = [
+      "api",
+      "graphql",
+      "-f",
+      "query=#{@thread_comments_graphql}",
+      "-F",
+      "threadId=#{thread_id}",
+      "--paginate",
+      "--slurp"
+    ]
+
+    with {:ok, output} <- run(args),
+         {:ok, pages} when is_list(pages) <- Jason.decode(output),
+         {:ok, comments} <- merge_thread_comment_pages(pages) do
+      {:ok, comments}
+    else
+      {:ok, payload} -> {:error, {:invalid_thread_comment_pages, payload}}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp fetch_all_thread_comments(_repository, thread_id), do: {:error, {:missing_review_thread_id, thread_id}}
+
+  defp merge_thread_comment_pages(pages) when is_list(pages) do
+    Enum.reduce_while(pages, {:ok, []}, fn page, {:ok, acc} ->
+      case get_in(page, ["data", "node", "comments", "nodes"]) do
+        nodes when is_list(nodes) -> {:cont, {:ok, [nodes | acc]}}
+        _ -> {:halt, {:error, {:invalid_thread_comment_page, page}}}
+      end
+    end)
+    |> case do
+      {:ok, pages_reversed} -> {:ok, pages_reversed |> Enum.reverse() |> List.flatten()}
+      error -> error
+    end
+  end
+
+  defp merge_thread_comment_pages(payload), do: {:error, {:invalid_thread_comment_pages, payload}}
 
   defp normalize_no_required_checks(output) do
     if output == "" or String.contains?(output, "checks reported on") do
@@ -358,21 +471,22 @@ defmodule SymphonyElixir.GitHubReviewClient do
   defp trusted_reviewer?(_author), do: false
 
   defp normalize_threads(threads, head_sha) do
-    Enum.map(threads, fn thread ->
-      comments = get_in(thread, ["comments", "nodes"]) || []
-      first = List.first(comments) || %{}
-      body = first["body"] || ""
+    Enum.flat_map(threads, fn thread ->
+      (get_in(thread, ["comments", "nodes"]) || [])
+      |> Enum.filter(&(get_in(&1, ["commit", "oid"]) == head_sha))
+      |> Enum.map(fn comment ->
+        body = comment["body"] || ""
 
-      %{
-        resolved: thread["isResolved"] == true,
-        priority: priority(body),
-        body: body,
-        path: first["path"],
-        url: first["url"],
-        commit_sha: get_in(first, ["commit", "oid"])
-      }
+        %{
+          resolved: thread["isResolved"] == true,
+          priority: priority(body),
+          body: body,
+          path: comment["path"],
+          url: comment["url"],
+          commit_sha: get_in(comment, ["commit", "oid"])
+        }
+      end)
     end)
-    |> Enum.filter(&(&1.commit_sha == head_sha))
   end
 
   defp current_head_threads(pull_request) do
@@ -403,7 +517,7 @@ defmodule SymphonyElixir.GitHubReviewClient do
   defp normalize_check_state(value) when is_binary(value) do
     case String.downcase(value) do
       state when state in ["pass", "success"] -> :success
-      "skipping" -> :skipped
+      "skipped" -> :skipped
       "neutral" -> :neutral
       "pending" -> :pending
       _ -> :failure

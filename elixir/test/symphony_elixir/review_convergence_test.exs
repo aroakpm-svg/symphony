@@ -34,6 +34,9 @@ defmodule SymphonyElixir.ReviewConvergenceTest do
   end
 
   defmodule Tracker do
+    @spec fetch_routed_issues_by_states([String.t()]) :: {:ok, [Issue.t()]}
+    def fetch_routed_issues_by_states(_states), do: {:ok, Application.fetch_env!(:symphony_elixir, :review_issues)}
+
     @spec fetch_issues_by_states([String.t()]) :: {:ok, [Issue.t()]}
     def fetch_issues_by_states(_states), do: {:ok, Application.fetch_env!(:symphony_elixir, :review_issues)}
 
@@ -114,6 +117,48 @@ defmodule SymphonyElixir.ReviewConvergenceTest do
             ]} = GitHubReviewClient.normalize_expected_checks_for_test(payload)
   end
 
+  test "check-run REST pages are all merged before expected checks are selected" do
+    first = %{"check_runs" => [%{"name" => "unrelated"}]}
+
+    second = %{
+      "check_runs" => [
+        %{
+          "name" => "make-all",
+          "status" => "completed",
+          "conclusion" => "success",
+          "app" => %{"slug" => "github-actions", "id" => 15_368}
+        },
+        %{
+          "name" => "validate-pr-description",
+          "status" => "completed",
+          "conclusion" => "success",
+          "app" => %{"slug" => "github-actions", "id" => 15_368}
+        }
+      ]
+    }
+
+    assert {:ok, payload} = GitHubReviewClient.merge_check_run_pages_for_test([first, second])
+
+    assert {:ok, [%{state: :success}, %{state: :success}]} =
+             GitHubReviewClient.normalize_expected_checks_for_test(payload)
+  end
+
+  test "GitHub skipped conclusion uses the explicitly allowed skipped gate state" do
+    run = fn name ->
+      %{
+        "name" => name,
+        "status" => "completed",
+        "conclusion" => "skipped",
+        "app" => %{"slug" => "github-actions", "id" => 15_368}
+      }
+    end
+
+    assert {:ok, [%{state: :skipped}, %{state: :skipped}]} =
+             GitHubReviewClient.normalize_expected_checks_for_test(%{
+               "check_runs" => [run.("make-all"), run.("validate-pr-description")]
+             })
+  end
+
   test "formal pass requires the trusted reviewer database identity on the current head" do
     trusted = %{
       "body" => "No major issues found",
@@ -179,6 +224,33 @@ defmodule SymphonyElixir.ReviewConvergenceTest do
                [thread.("old", "P1 stale"), thread.("new", "P2 current")],
                "new"
              )
+  end
+
+  test "a current-head follow-up on an older thread remains actionable" do
+    thread = %{
+      "isResolved" => false,
+      "comments" => %{
+        "nodes" => [
+          %{"body" => "P4 old", "commit" => %{"oid" => "old"}},
+          %{"body" => "P1 current follow-up", "path" => "lib/current.ex", "url" => "thread", "commit" => %{"oid" => "head"}}
+        ]
+      }
+    }
+
+    assert [%{body: "P1 current follow-up", priority: 1, commit_sha: "head"}] =
+             GitHubReviewClient.normalize_threads_for_test([thread], "head")
+  end
+
+  test "review thread comments are merged across every comment page" do
+    page = fn body ->
+      %{"data" => %{"node" => %{"comments" => %{"nodes" => [%{"body" => body}]}}}}
+    end
+
+    assert {:ok, [%{"body" => "old"}, %{"body" => "current P1"}]} =
+             GitHubReviewClient.merge_thread_comment_pages_for_test([
+               page.("old"),
+               page.("current P1")
+             ])
   end
 
   test "a new head invalidates an old formal review and requests one deduplicated review" do

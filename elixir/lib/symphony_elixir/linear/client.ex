@@ -124,6 +124,17 @@ defmodule SymphonyElixir.Linear.Client do
 
   @spec fetch_issues_by_states([String.t()]) :: {:ok, [Issue.t()]} | {:error, term()}
   def fetch_issues_by_states(state_names) when is_list(state_names) do
+    fetch_issues_by_states(state_names, nil)
+  end
+
+  @spec fetch_routed_issues_by_states([String.t()]) :: {:ok, [Issue.t()]} | {:error, term()}
+  def fetch_routed_issues_by_states(state_names) when is_list(state_names) do
+    with {:ok, assignee_filter} <- routing_assignee_filter() do
+      fetch_issues_by_states(state_names, assignee_filter)
+    end
+  end
+
+  defp fetch_issues_by_states(state_names, assignee_filter) do
     normalized_states = Enum.map(state_names, &to_string/1) |> Enum.uniq()
 
     if normalized_states == [] do
@@ -140,9 +151,7 @@ defmodule SymphonyElixir.Linear.Client do
           {:error, :missing_linear_project_slug}
 
         true ->
-          with {:ok, assignee_filter} <- routing_assignee_filter() do
-            do_fetch_by_states(project_slug, normalized_states, assignee_filter)
-          end
+          do_fetch_by_states(project_slug, normalized_states, assignee_filter)
       end
     end
   end
