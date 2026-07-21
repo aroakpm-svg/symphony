@@ -1,6 +1,12 @@
 name: pr-description-lint
 
 on:
+  workflow_dispatch:
+    inputs:
+      pr_body:
+        description: Pull request body to validate
+        required: true
+        type: string
   pull_request:
     types: [opened, edited, reopened, synchronize, ready_for_review]
 
@@ -29,7 +35,7 @@ jobs:
 
       - name: Validate PR description format
         env:
-          PR_BODY_JSON: ${{ toJson(github.event.pull_request.body) }}
+          PR_BODY_JSON: ${{ toJson(github.event.pull_request.body || inputs.pr_body) }}
         run: |
           mix local.hex --force
           mix local.rebar --force
