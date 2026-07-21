@@ -374,6 +374,23 @@ defmodule SymphonyElixir.ReviewConvergenceTest do
              |> ReviewConvergence.evaluate(0, 3)
   end
 
+  test "missing current head fails closed and malformed threads are not actionable" do
+    assert {:wait, %{reason: :missing_current_head}} =
+             snapshot(%{current_head_sha: nil, threads: [:malformed]})
+             |> ReviewConvergence.evaluate(0, 3)
+
+    refute ReviewConvergence.actionable_thread?(:malformed)
+  end
+
+  test "structural risk escalates actionable findings before the retry limit" do
+    assert {:escalate, %{reason: :review_not_converging}} =
+             snapshot(%{
+               structural_risk: true,
+               threads: [%{resolved: false, priority: 4, body: "P4 architectural expansion"}]
+             })
+             |> ReviewConvergence.evaluate(0, 3)
+  end
+
   test "an unverified remote base claim fails closed" do
     result =
       snapshot(%{base_verification_required: true, base_verification: :unverified})
