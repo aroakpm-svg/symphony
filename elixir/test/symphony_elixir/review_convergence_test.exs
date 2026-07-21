@@ -533,6 +533,16 @@ defmodule SymphonyElixir.ReviewConvergenceTest do
     refute_receive {:comment, _, _}
   end
 
+  test "steady convergence does not republish the same head status every poll" do
+    Application.put_env(:symphony_elixir, :review_snapshot, {:ok, snapshot()})
+
+    state = ReviewMonitor.run_with(%{}, settings(), ReviewClient, Tracker)
+    assert_receive {:status, _, "head", :success, _}
+
+    _state = ReviewMonitor.run_with(state, settings(), ReviewClient, Tracker)
+    refute_receive {:status, _, "head", :success, _}
+  end
+
   test "review, required checks, and actionable threads are independent gates" do
     assert {:converged, _} = ReviewConvergence.evaluate(snapshot(), 0, 3)
 

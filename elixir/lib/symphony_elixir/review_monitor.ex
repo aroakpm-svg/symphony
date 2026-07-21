@@ -153,8 +153,12 @@ defmodule SymphonyElixir.ReviewMonitor do
            :failure,
            "Unresolved actionable P1-P4 review findings"
          ) do
-      :ok -> apply_rework(issue, entry, settings, tracker, snapshot, findings, fingerprint, key)
-      {:error, reason} -> {entry, {:error, reason}}
+      :ok ->
+        entry = mark_published_status(entry, snapshot, :failure)
+        apply_rework(issue, entry, settings, tracker, snapshot, findings, fingerprint, key)
+
+      {:error, reason} ->
+        {entry, {:error, reason}}
     end
   end
 
@@ -167,7 +171,10 @@ defmodule SymphonyElixir.ReviewMonitor do
         tracker.create_comment(issue.id, human_comment(settings, snapshot, reason, key))
       end)
     end)
-    |> then(fn {updated, result} -> {%{updated | waiting: result == :ok}, result} end)
+    |> then(fn {updated, result} ->
+      updated = if result == :ok, do: mark_published_status(updated, snapshot, :pending), else: updated
+      {%{updated | waiting: result == :ok}, result}
+    end)
   end
 
   defp apply_decision({:escalate, evidence}, issue, entry, settings, review_client, tracker, snapshot) do
@@ -178,21 +185,36 @@ defmodule SymphonyElixir.ReviewMonitor do
         tracker.create_comment(issue.id, human_comment(settings, snapshot, :review_not_converging, key))
       end)
     end)
-    |> then(fn {updated, result} -> {%{updated | waiting: result == :ok}, result} end)
+    |> then(fn {updated, result} ->
+      updated = if result == :ok, do: mark_published_status(updated, snapshot, :failure), else: updated
+      {%{updated | waiting: result == :ok}, result}
+    end)
   end
 
   defp apply_decision({:converged, _evidence}, issue, entry, settings, review_client, tracker, snapshot) do
     key = ReviewConvergence.dedup_key(:converged, issue.id, snapshot.current_head_sha, :technical)
 
-    case publish_status(
-           review_client,
-           settings.repository,
-           snapshot,
-           :success,
-           "Latest head technically converged; human merge required"
-         ) do
-      :ok -> dedup_action(entry, key, fn -> tracker.create_comment(issue.id, converged_comment(snapshot, key)) end)
-      {:error, reason} -> {entry, {:error, reason}}
+    status_result =
+      if entry[:last_published_status] == {snapshot.current_head_sha, :success} do
+        :ok
+      else
+        publish_status(
+          review_client,
+          settings.repository,
+          snapshot,
+          :success,
+          "Latest head technically converged; human merge required"
+        )
+      end
+
+    case status_result do
+      :ok ->
+        entry
+        |> mark_published_status(snapshot, :success)
+        |> dedup_action(key, fn -> tracker.create_comment(issue.id, converged_comment(snapshot, key)) end)
+
+      {:error, reason} ->
+        {entry, {:error, reason}}
     end
   end
 
@@ -242,12 +264,14 @@ defmodule SymphonyElixir.ReviewMonitor do
     snapshot = %{current_head_sha: head_sha, pull_request_number: nil, required_checks: [], threads: []}
     key = ReviewConvergence.dedup_key(:wait, issue.id, head_sha, reason)
 
-    {updated, _result} =
+    {updated, result} =
       dedup_action(entry, key, fn ->
         status_then(review_client, settings.repository, snapshot, :error, "Review evidence unavailable; human judgment required", fn ->
           tracker.create_comment(issue.id, human_comment(settings, snapshot, reason, key))
         end)
       end)
+
+    updated = if result == :ok, do: mark_published_status(updated, snapshot, :error), else: updated
 
     Map.put(state, issue.id, %{updated | waiting: true})
   end
@@ -262,6 +286,10 @@ defmodule SymphonyElixir.ReviewMonitor do
 
   defp publish_status(review_client, repository, snapshot, state, description) do
     review_client.publish_status(repository, snapshot.current_head_sha, state, description, nil)
+  end
+
+  defp mark_published_status(entry, snapshot, state) do
+    Map.put(entry, :last_published_status, {snapshot.current_head_sha, state})
   end
 
   defp status_then(review_client, repository, snapshot, state, description, next) do
