@@ -22,6 +22,10 @@ This directory contains the Elixir agent orchestration service that polls Linear
   - Never run Codex turn cwd in source repo.
   - Workspaces must stay under configured workspace root.
 - Orchestrator behavior is stateful and concurrency-sensitive; preserve retry, reconciliation, and cleanup semantics.
+- Review convergence is latest-head only: require a formal review on the current head, required
+  checks, and no unresolved P1-P4 threads. Never treat convergence as merge authorization.
+- Keep review requests, tracker comments/state writes, retries, and human escalation idempotent with
+  stable keys. When evidence cannot be verified, remain in review and fail closed.
 - Follow `docs/logging.md` for logging conventions and required issue/session context fields.
 
 ## Tests and Validation

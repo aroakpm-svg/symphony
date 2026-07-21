@@ -35,6 +35,13 @@ hooks:
 agent:
   max_concurrent_agents: 2
   max_turns: 5
+review_convergence:
+  enabled: true
+  repository: "aroakpm-svg/aroak-central-brain"
+  review_state: "In Review"
+  in_progress_state: "In Progress"
+  max_fix_rounds: 3
+  human_owner: "PM AROAK"
 codex:
   command: |
     ENV_FILE="C:/Users/aroak/Desktop/codex/symphony/elixir/.env.local"
@@ -411,6 +418,22 @@ If the repository uses different commands, inspect package.json, README, CI conf
 If a check cannot run, say exactly why and what human action is needed.
 
 Review Feedback Intake
+
+Review Convergence Runtime
+
+After a PR enters In Review, Symphony's Review Monitor owns machine-verifiable convergence. A
+technical pass requires the exact latest head to have a formal `No major issues found` review,
+all required checks passing, and zero unresolved actionable P1-P4 threads. Old-head reviews,
+comments, and emoji reactions never count. A new head invalidates the prior result and triggers one
+deduplicated `@codex review` request.
+
+The runtime publishes `Review Convergence Gate` as a commit status for ruleset enforcement. That
+status is an output of the gate and is excluded from its prerequisite required-check set.
+
+Actionable P1-P4 findings move the issue back to In Progress once per head/finding fingerprint and
+reuse the same branch and PR. Waiting for staging, permissions, or human product/safety decisions
+keeps the issue In Review and pauses retries without repeating a full review. Technical convergence
+never authorizes merge, deployment, production changes, permission changes, or Done.
 
 Before returning the issue to In Review, read:
 

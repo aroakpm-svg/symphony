@@ -333,8 +333,18 @@ Top-level keys:
 - `hooks`
 - `agent`
 - `codex`
+- `review_convergence` (implementation extension)
 
 Unknown keys SHOULD be ignored for forward compatibility.
+
+#### 5.3.7 `review_convergence` (implementation extension)
+
+When enabled, the runtime MAY monitor pull requests for issues in a configured review state. A
+technical convergence result MUST be bound to the current head SHA and MUST require the configured
+formal review result, required checks, and absence of unresolved actionable review threads. New
+commits invalidate old conclusions. Retry, review request, tracker write, and escalation effects
+MUST be idempotent. Failure to verify base-ref evidence or other required evidence MUST fail closed.
+Technical convergence MUST NOT authorize merge, deployment, or terminal tracker transitions.
 
 Note:
 

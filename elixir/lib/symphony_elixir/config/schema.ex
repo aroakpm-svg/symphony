@@ -156,6 +156,42 @@ defmodule SymphonyElixir.Config.Schema do
     end
   end
 
+  defmodule ReviewConvergence do
+    @moduledoc false
+    use Ecto.Schema
+    import Ecto.Changeset
+
+    @primary_key false
+    embedded_schema do
+      field(:enabled, :boolean, default: false)
+      field(:repository, :string)
+      field(:review_state, :string, default: "In Review")
+      field(:in_progress_state, :string, default: "In Progress")
+      field(:max_fix_rounds, :integer, default: 3)
+      field(:human_owner, :string)
+    end
+
+    @spec changeset(%__MODULE__{}, map()) :: Ecto.Changeset.t()
+    def changeset(schema, attrs) do
+      schema
+      |> cast(
+        attrs,
+        [:enabled, :repository, :review_state, :in_progress_state, :max_fix_rounds, :human_owner],
+        empty_values: []
+      )
+      |> validate_number(:max_fix_rounds, greater_than: 0)
+      |> validate_required_if_enabled()
+    end
+
+    defp validate_required_if_enabled(changeset) do
+      if get_field(changeset, :enabled) do
+        validate_required(changeset, [:repository, :review_state, :in_progress_state])
+      else
+        changeset
+      end
+    end
+  end
+
   defmodule Codex do
     @moduledoc false
     use Ecto.Schema
@@ -273,6 +309,7 @@ defmodule SymphonyElixir.Config.Schema do
     embeds_one(:workspace, Workspace, on_replace: :update, defaults_to_struct: true)
     embeds_one(:worker, Worker, on_replace: :update, defaults_to_struct: true)
     embeds_one(:agent, Agent, on_replace: :update, defaults_to_struct: true)
+    embeds_one(:review_convergence, ReviewConvergence, on_replace: :update, defaults_to_struct: true)
     embeds_one(:codex, Codex, on_replace: :update, defaults_to_struct: true)
     embeds_one(:hooks, Hooks, on_replace: :update, defaults_to_struct: true)
     embeds_one(:observability, Observability, on_replace: :update, defaults_to_struct: true)
@@ -365,6 +402,7 @@ defmodule SymphonyElixir.Config.Schema do
     |> cast_embed(:workspace, with: &Workspace.changeset/2)
     |> cast_embed(:worker, with: &Worker.changeset/2)
     |> cast_embed(:agent, with: &Agent.changeset/2)
+    |> cast_embed(:review_convergence, with: &ReviewConvergence.changeset/2)
     |> cast_embed(:codex, with: &Codex.changeset/2)
     |> cast_embed(:hooks, with: &Hooks.changeset/2)
     |> cast_embed(:observability, with: &Observability.changeset/2)

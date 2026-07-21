@@ -7,7 +7,7 @@ defmodule SymphonyElixir.Orchestrator do
   require Logger
   import Bitwise, only: [<<<: 2]
 
-  alias SymphonyElixir.{AgentRunner, Config, StatusDashboard, Tracker, Workspace}
+  alias SymphonyElixir.{AgentRunner, Config, ReviewMonitor, StatusDashboard, Tracker, Workspace}
   alias SymphonyElixir.Linear.Issue
 
   @continuation_retry_delay_ms 1_000
@@ -38,6 +38,7 @@ defmodule SymphonyElixir.Orchestrator do
       claimed: MapSet.new(),
       blocked: %{},
       retry_attempts: %{},
+      review_convergence: %{},
       codex_totals: nil,
       codex_rate_limits: nil
     ]
@@ -276,6 +277,7 @@ defmodule SymphonyElixir.Orchestrator do
       state
       |> reconcile_running_issues()
       |> reconcile_blocked_issues()
+      |> reconcile_review_convergence()
 
     with :ok <- Config.validate!(),
          {:ok, issues} <- Tracker.fetch_candidate_issues(),
@@ -323,6 +325,10 @@ defmodule SymphonyElixir.Orchestrator do
       false ->
         state
     end
+  end
+
+  defp reconcile_review_convergence(%State{} = state) do
+    %{state | review_convergence: ReviewMonitor.run(state.review_convergence)}
   end
 
   defp reconcile_running_issues(%State{} = state) do
