@@ -267,6 +267,26 @@ defmodule SymphonyElixir.ReviewConvergenceTest do
     assert_receive {:comment, "issue-160", _}
   end
 
+  test "convergence republishes success after a transient error while keeping its comment deduplicated" do
+    Application.put_env(:symphony_elixir, :review_snapshot, {:ok, snapshot()})
+    key = ReviewConvergence.dedup_key(:converged, "issue-160", "head", :technical)
+
+    entry = %{
+      "issue-160" => %{
+        dedup: MapSet.new([key]),
+        fix_rounds: 0,
+        head_sha: "head",
+        review_requested: false,
+        waiting: true,
+        last_finding_fingerprint: nil
+      }
+    }
+
+    _state = ReviewMonitor.run_with(entry, settings(), ReviewClient, Tracker)
+    assert_receive {:status, _, "head", :success, _}
+    refute_receive {:comment, _, _}
+  end
+
   test "review, required checks, and actionable threads are independent gates" do
     assert {:converged, _} = ReviewConvergence.evaluate(snapshot(), 0, 3)
 

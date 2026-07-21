@@ -147,11 +147,16 @@ defmodule SymphonyElixir.ReviewMonitor do
   defp apply_decision({:converged, _evidence}, issue, entry, settings, review_client, tracker, snapshot) do
     key = ReviewConvergence.dedup_key(:converged, issue.id, snapshot.current_head_sha, :technical)
 
-    dedup_action(entry, key, fn ->
-      status_then(review_client, settings.repository, snapshot, :success, "Latest head technically converged; human merge required", fn ->
-        tracker.create_comment(issue.id, converged_comment(snapshot, key))
-      end)
-    end)
+    case publish_status(
+           review_client,
+           settings.repository,
+           snapshot,
+           :success,
+           "Latest head technically converged; human merge required"
+         ) do
+      :ok -> dedup_action(entry, key, fn -> tracker.create_comment(issue.id, converged_comment(snapshot, key)) end)
+      {:error, reason} -> {entry, {:error, reason}}
+    end
   end
 
   defp dedup_action(entry, key, action) do
