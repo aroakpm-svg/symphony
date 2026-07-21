@@ -498,6 +498,13 @@ defmodule SymphonyElixir.ReviewConvergenceTest do
     assert {:wait, %{reason: :base_unverified, base_ref_oid: "base"}} = result
   end
 
+  test "base-missing claims verify absence rather than presence" do
+    base_paths = MapSet.new(["lib/present.ex", "README.md"])
+
+    assert GitHubReviewClient.missing_paths_verified_for_test?(base_paths, ["lib/missing.ex"])
+    refute GitHubReviewClient.missing_paths_verified_for_test?(base_paths, ["lib/present.ex"])
+  end
+
   test "actionable findings comment and return the issue for repair once per head and finding" do
     finding = %{resolved: false, priority: 1, body: "P1 data loss", url: "https://example.test/thread"}
     Application.put_env(:symphony_elixir, :review_snapshot, {:ok, snapshot(%{threads: [finding]})})

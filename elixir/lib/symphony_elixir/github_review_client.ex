@@ -177,6 +177,12 @@ defmodule SymphonyElixir.GitHubReviewClient do
     accepted_clean_comment?(comment, head_sha, resolved_sha)
   end
 
+  @doc false
+  @spec missing_paths_verified_for_test?(MapSet.t(String.t()), [String.t()]) :: boolean()
+  def missing_paths_verified_for_test?(base_paths, claimed_missing_paths) do
+    missing_paths_verified?(base_paths, claimed_missing_paths)
+  end
+
   defp find_pull_request(repository, branch) do
     args = [
       "pr",
@@ -491,21 +497,33 @@ defmodule SymphonyElixir.GitHubReviewClient do
   end
 
   defp verify_claimed_base_paths(repository, base_oid, paths) do
-    results = Enum.map(paths, &base_path_exists?(repository, base_oid, &1))
+    case fetch_base_tree_paths(repository, base_oid) do
+      {:ok, base_paths} ->
+        result = if missing_paths_verified?(base_paths, paths), do: :verified, else: :unverified
+        {:ok, %{required: true, result: result}}
 
-    if Enum.all?(results, &(&1 == true)) do
-      {:ok, %{required: true, result: :verified}}
-    else
-      {:ok, %{required: true, result: :unverified}}
+      {:error, _reason} ->
+        {:ok, %{required: true, result: :unverified}}
     end
   end
 
-  defp base_path_exists?(repository, base_oid, path) when is_binary(base_oid) do
-    endpoint = "repos/#{repository}/contents/#{path}?ref=#{base_oid}"
-    match?({:ok, _}, run(["api", endpoint, "--silent"]))
+  defp fetch_base_tree_paths(repository, base_oid) when is_binary(base_oid) do
+    endpoint = "repos/#{repository}/git/trees/#{base_oid}?recursive=1"
+
+    with {:ok, output} <- run(["api", endpoint]),
+         {:ok, %{"tree" => tree, "truncated" => false}} when is_list(tree) <- Jason.decode(output) do
+      {:ok, tree |> Enum.map(& &1["path"]) |> Enum.filter(&is_binary/1) |> MapSet.new()}
+    else
+      {:ok, payload} -> {:error, {:invalid_or_truncated_base_tree, payload}}
+      {:error, reason} -> {:error, reason}
+    end
   end
 
-  defp base_path_exists?(_repository, _base_oid, _path), do: false
+  defp fetch_base_tree_paths(_repository, base_oid), do: {:error, {:missing_base_oid, base_oid}}
+
+  defp missing_paths_verified?(base_paths, claimed_missing_paths) do
+    Enum.all?(claimed_missing_paths, &(not MapSet.member?(base_paths, &1)))
+  end
 
   defp base_missing_paths(threads, head_sha) do
     threads
