@@ -391,6 +391,18 @@ defmodule SymphonyElixir.ReviewConvergenceTest do
     assert body =~ "command_failed"
   end
 
+  test "persisted wait key prevents duplicate evidence-outage effects after restart" do
+    reason = inspect(:github_unavailable)
+    key = ReviewConvergence.dedup_key(:wait, "issue-160", nil, reason)
+
+    Application.put_env(:symphony_elixir, :review_snapshot, {:error, :github_unavailable})
+    Application.put_env(:symphony_elixir, :review_history, {:ok, %{dedup: MapSet.new([key]), rework_count: 0}})
+
+    _state = ReviewMonitor.run_with(%{}, settings(), ReviewClient, Tracker)
+    refute_receive {:status, _, _, _, _}
+    refute_receive {:comment, _, _}
+  end
+
   test "evidence outage clears a known head's prior success with an error status" do
     Application.put_env(:symphony_elixir, :review_snapshot, {:error, :github_unavailable})
 

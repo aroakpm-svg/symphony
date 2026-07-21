@@ -45,15 +45,26 @@ defmodule SymphonyElixir.ReviewMonitor do
         last_finding_fingerprint: nil
       })
 
-    with {:ok, history} <- tracker.review_history(issue.id),
-         branch when is_binary(branch) and branch != "" <- issue.branch_name,
-         {:ok, snapshot} <- review_client.snapshot(settings.repository, branch) do
-      entry = %{
-        entry
-        | dedup: MapSet.union(entry.dedup, history.dedup),
-          fix_rounds: max(entry.fix_rounds, history.rework_count)
-      }
+    case tracker.review_history(issue.id) do
+      {:ok, history} ->
+        entry = %{
+          entry
+          | dedup: MapSet.union(entry.dedup, history.dedup),
+            fix_rounds: max(entry.fix_rounds, history.rework_count)
+        }
 
+        reconcile_snapshot(issue, entry, state, settings, review_client, tracker)
+
+      {:error, reason} ->
+        wait_for_human(issue, entry, settings, review_client, tracker, inspect(reason), state)
+    end
+  end
+
+  defp reconcile_issue(_issue, state, _settings, _review_client, _tracker), do: state
+
+  defp reconcile_snapshot(issue, entry, state, settings, review_client, tracker) do
+    with branch when is_binary(branch) and branch != "" <- issue.branch_name,
+         {:ok, snapshot} <- review_client.snapshot(settings.repository, branch) do
       entry = invalidate_old_head(entry, snapshot.current_head_sha)
       decision = ReviewConvergence.evaluate(snapshot, entry.fix_rounds, settings.max_fix_rounds)
       {updated_entry, _outcome} = apply_decision(decision, issue, entry, settings, review_client, tracker, snapshot)
@@ -64,8 +75,6 @@ defmodule SymphonyElixir.ReviewMonitor do
       {:error, reason} -> wait_for_human(issue, entry, settings, review_client, tracker, inspect(reason), state)
     end
   end
-
-  defp reconcile_issue(_issue, state, _settings, _review_client, _tracker), do: state
 
   defp invalidate_old_head(%{head_sha: head_sha} = entry, current_head) when head_sha != current_head do
     %{entry | head_sha: current_head, review_requested: false, waiting: false}
