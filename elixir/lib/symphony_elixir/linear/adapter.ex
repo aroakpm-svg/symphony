@@ -62,7 +62,7 @@ defmodule SymphonyElixir.Linear.Adapter do
 
   @spec review_history(String.t()) :: {:ok, map()} | {:error, term()}
   def review_history(issue_id) when is_binary(issue_id) do
-    fetch_review_history(issue_id, nil, %{dedup: MapSet.new(), rework: MapSet.new()})
+    fetch_review_history(issue_id, nil, %{dedup: MapSet.new(), rework: MapSet.new(), last_head_sha: nil})
   end
 
   @spec create_comment(String.t(), String.t()) :: :ok | {:error, term()}
@@ -91,7 +91,12 @@ defmodule SymphonyElixir.Linear.Adapter do
           fetch_review_history(issue_id, cursor, history)
 
         %{"hasNextPage" => false} ->
-          {:ok, %{dedup: history.dedup, rework_count: MapSet.size(history.rework)}}
+          {:ok,
+           %{
+             dedup: history.dedup,
+             rework_count: MapSet.size(history.rework),
+             last_head_sha: history.last_head_sha
+           }}
 
         _ ->
           {:error, :invalid_review_history_page_info}
@@ -103,6 +108,14 @@ defmodule SymphonyElixir.Linear.Adapter do
   end
 
   defp collect_history(%{"body" => body}, history) when is_binary(body) do
+    history
+    |> collect_dedup(body)
+    |> collect_head_sha(body)
+  end
+
+  defp collect_history(_comment, history), do: history
+
+  defp collect_dedup(history, body) do
     case Regex.run(~r/dedup-key: `([^`]+)`/, body, capture: :all_but_first) do
       [key] ->
         rework =
@@ -117,7 +130,23 @@ defmodule SymphonyElixir.Linear.Adapter do
     end
   end
 
-  defp collect_history(_comment, history), do: history
+  defp collect_head_sha(history, body) do
+    patterns = [
+      ~r/currentHeadSha = reviewedHeadSha = `([0-9a-f]{40})`/i,
+      ~r/currentHeadSha: `([0-9a-f]{40})`/i
+    ]
+
+    Enum.find_value(patterns, fn pattern ->
+      case Regex.run(pattern, body, capture: :all_but_first) do
+        [head_sha] -> String.downcase(head_sha)
+        _ -> nil
+      end
+    end)
+    |> case do
+      nil -> history
+      head_sha -> %{history | last_head_sha: head_sha}
+    end
+  end
 
   @spec update_issue_state(String.t(), String.t()) :: :ok | {:error, term()}
   def update_issue_state(issue_id, state_name)

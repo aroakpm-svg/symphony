@@ -53,7 +53,8 @@ defmodule SymphonyElixir.ReviewMonitor do
         entry = %{
           entry
           | dedup: MapSet.union(entry.dedup, history.dedup),
-            fix_rounds: max(entry.fix_rounds, history.rework_count)
+            fix_rounds: max(entry.fix_rounds, history.rework_count),
+            head_sha: entry.head_sha || history[:last_head_sha]
         }
 
         reconcile_snapshot(issue, entry, state, settings, review_client, tracker)

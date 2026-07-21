@@ -395,11 +395,14 @@ defmodule SymphonyElixir.ReviewConvergenceTest do
 
     Process.put(:history_responses, [
       history_page([rework_body("one")], true, "next"),
-      history_page([rework_body("one"), rework_body("two")], false, nil)
+      history_page([rework_body("one"), rework_body("two"), converged_body(String.duplicate("b", 40))], false, nil)
     ])
 
-    assert {:ok, %{dedup: dedup, rework_count: 2}} = Adapter.review_history("issue-160")
-    assert dedup == MapSet.new(["one", "two"])
+    assert {:ok, %{dedup: dedup, rework_count: 2, last_head_sha: last_head_sha}} =
+             Adapter.review_history("issue-160")
+
+    assert dedup == MapSet.new(["one", "two", "converged"])
+    assert last_head_sha == String.duplicate("b", 40)
     assert_receive {:history_page, nil}
     assert_receive {:history_page, "next"}
   end
@@ -441,6 +444,20 @@ defmodule SymphonyElixir.ReviewConvergenceTest do
     _state = ReviewMonitor.run_with(entry, settings(), ReviewClient, Tracker)
     assert_receive {:status, _, "known-head", :error, _}
     assert_receive {:comment, "issue-160", _}
+  end
+
+  test "restart restores persisted head before snapshot outage clears success" do
+    persisted_head = String.duplicate("a", 40)
+    Application.put_env(:symphony_elixir, :review_snapshot, {:error, :github_unavailable})
+
+    Application.put_env(
+      :symphony_elixir,
+      :review_history,
+      {:ok, %{dedup: MapSet.new(), rework_count: 0, last_head_sha: persisted_head}}
+    )
+
+    _state = ReviewMonitor.run_with(%{}, settings(), ReviewClient, Tracker)
+    assert_receive {:status, _, ^persisted_head, :error, _}
   end
 
   test "review-issue fetch outage clears each known head once until recovery" do
@@ -687,6 +704,12 @@ defmodule SymphonyElixir.ReviewConvergenceTest do
 
   defp rework_body(key) do
     %{"body" => "Review Convergence Gate found actionable latest-head findings.\n\ndedup-key: `#{key}`"}
+  end
+
+  defp converged_body(head_sha) do
+    %{
+      "body" => "Review Convergence Gate reports technical convergence.\ncurrentHeadSha = reviewedHeadSha = `#{head_sha}`\ndedup-key: `converged`"
+    }
   end
 
   defp history_page(nodes, has_next, cursor) do
