@@ -161,6 +161,10 @@ defmodule SymphonyElixir.GitHubReviewClient do
   @spec base_missing_paths_for_test([map()], String.t()) :: [String.t()]
   def base_missing_paths_for_test(threads, head_sha), do: base_missing_paths(threads, head_sha)
 
+  @doc false
+  @spec structural_risk_for_test?([map()], String.t()) :: boolean()
+  def structural_risk_for_test?(threads, head_sha), do: structural_risk?(threads, head_sha)
+
   defp find_pull_request(repository, branch) do
     args = [
       "pr",
@@ -478,7 +482,7 @@ defmodule SymphonyElixir.GitHubReviewClient do
       base_verification: base_verification.result,
       required_checks: checks,
       threads: normalize_threads(threads, head_sha),
-      structural_risk: structural_risk?(threads)
+      structural_risk: structural_risk?(threads, head_sha)
     }
   end
 
@@ -534,9 +538,10 @@ defmodule SymphonyElixir.GitHubReviewClient do
     end
   end
 
-  defp structural_risk?(threads) do
+  defp structural_risk?(threads, head_sha) do
     threads
-    |> Enum.flat_map(fn thread -> get_in(thread, ["comments", "nodes"]) || [] end)
+    |> Enum.reject(&(&1["isResolved"] == true))
+    |> current_head_comments(head_sha)
     |> Enum.any?(fn comment ->
       Regex.match?(~r/one[- ]off patch|scope (?:keeps )?(?:expanding|growth)|spec(?:ification)? conflict/i, comment["body"] || "")
     end)

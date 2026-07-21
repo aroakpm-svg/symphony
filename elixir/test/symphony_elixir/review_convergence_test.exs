@@ -272,6 +272,28 @@ defmodule SymphonyElixir.ReviewConvergenceTest do
     assert GitHubReviewClient.base_missing_paths_for_test([current], "head") == ["lib/current.ex"]
   end
 
+  test "structural risk only uses unresolved current-head comments" do
+    thread = fn resolved, commit, body ->
+      %{
+        "isResolved" => resolved,
+        "comments" => %{"nodes" => [%{"body" => body, "commit" => %{"oid" => commit}}]}
+      }
+    end
+
+    refute GitHubReviewClient.structural_risk_for_test?(
+             [
+               thread.(false, "old", "P2 spec conflict"),
+               thread.(true, "head", "P2 scope keeps expanding")
+             ],
+             "head"
+           )
+
+    assert GitHubReviewClient.structural_risk_for_test?(
+             [thread.(false, "head", "P2 one-off patch")],
+             "head"
+           )
+  end
+
   test "review thread comments are merged across every comment page" do
     page = fn body ->
       %{"data" => %{"node" => %{"comments" => %{"nodes" => [%{"body" => body}]}}}}
