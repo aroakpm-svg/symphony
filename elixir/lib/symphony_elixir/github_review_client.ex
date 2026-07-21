@@ -9,7 +9,16 @@ defmodule SymphonyElixir.GitHubReviewClient do
         headRefOid
         baseRefOid
         reviews(last: 100) {
-          nodes { body submittedAt commit { oid } }
+          nodes {
+            body
+            submittedAt
+            commit { oid }
+            author {
+              login
+              __typename
+              ... on Organization { databaseId }
+            }
+          }
         }
         reviewThreads(first: 100, after: $endCursor) {
           nodes {
@@ -23,11 +32,17 @@ defmodule SymphonyElixir.GitHubReviewClient do
   }
   """
 
+  @trusted_reviewer %{login: "chatgpt-codex-connector", type: "Organization", database_id: 261_883_814}
+  @expected_checks [
+    %{name: "make-all", app_slug: "github-actions", app_id: 15_368},
+    %{name: "validate-pr-description", app_slug: "github-actions", app_id: 15_368}
+  ]
+
   @spec snapshot(String.t(), String.t()) :: {:ok, map()} | {:error, term()}
   def snapshot(repository, branch) when is_binary(repository) and is_binary(branch) do
     with {:ok, number} <- find_pull_request(repository, branch),
          {:ok, pull_request} <- fetch_pull_request(repository, number),
-         {:ok, checks} <- required_checks(repository, number),
+         {:ok, checks} <- required_checks(repository, pull_request["headRefOid"]),
          {:ok, base_verification} <- verify_base_claims(repository, pull_request) do
       {:ok,
        pull_request
@@ -93,6 +108,14 @@ defmodule SymphonyElixir.GitHubReviewClient do
   def normalize_required_checks_for_test(output, status), do: normalize_required_checks(output, status)
 
   @doc false
+  @spec normalize_expected_checks_for_test(map()) :: {:ok, [map()]} | {:error, term()}
+  def normalize_expected_checks_for_test(payload), do: normalize_expected_checks(payload)
+
+  @doc false
+  @spec accepted_review_for_test?(map(), String.t()) :: boolean()
+  def accepted_review_for_test?(review, head_sha), do: accepted_review?(review, head_sha)
+
+  @doc false
   @spec merge_pull_request_pages_for_test([map()]) :: {:ok, map()} | {:error, term()}
   def merge_pull_request_pages_for_test(pages), do: merge_pull_request_pages(pages)
 
@@ -153,15 +176,49 @@ defmodule SymphonyElixir.GitHubReviewClient do
     end
   end
 
-  defp required_checks(repository, number) do
-    args = ["pr", "checks", Integer.to_string(number), "--repo", repository, "--required", "--json", "name,state,bucket,link"]
-
-    case run(args) do
-      {:ok, output} -> normalize_required_checks(output, 0)
-      {:error, {:command_failed, status, output}} when status in [1, 8] -> normalize_required_checks(output, status)
+  defp required_checks(repository, head_sha) do
+    with {:ok, output} <-
+           run([
+             "api",
+             "repos/#{repository}/commits/#{head_sha}/check-runs",
+             "-H",
+             "Accept: application/vnd.github+json"
+           ]),
+         {:ok, payload} <- Jason.decode(output) do
+      normalize_expected_checks(payload)
+    else
       {:error, reason} -> {:error, reason}
     end
   end
+
+  defp normalize_expected_checks(%{"check_runs" => runs}) when is_list(runs) do
+    checks =
+      Enum.map(@expected_checks, fn expected ->
+        run =
+          Enum.find(runs, fn candidate ->
+            candidate["name"] == expected.name and
+              get_in(candidate, ["app", "slug"]) == expected.app_slug and
+              get_in(candidate, ["app", "id"]) == expected.app_id
+          end)
+
+        %{
+          name: expected.name,
+          state: check_run_state(run),
+          link: run && run["details_url"]
+        }
+      end)
+
+    {:ok, checks}
+  end
+
+  defp normalize_expected_checks(payload), do: {:error, {:invalid_check_runs, payload}}
+
+  defp check_run_state(nil), do: :missing
+
+  defp check_run_state(%{"status" => "completed", "conclusion" => conclusion}),
+    do: normalize_check_state(conclusion)
+
+  defp check_run_state(_run), do: :pending
 
   defp normalize_required_checks(output, status) do
     with {:ok, checks} when is_list(checks) <- Jason.decode(output) do
@@ -288,8 +345,17 @@ defmodule SymphonyElixir.GitHubReviewClient do
 
   defp accepted_review?(review, head_sha) do
     get_in(review, ["commit", "oid"]) == head_sha and
+      trusted_reviewer?(review["author"]) and
       String.contains?(review["body"] || "", "No major issues found")
   end
+
+  defp trusted_reviewer?(author) when is_map(author) do
+    author["login"] == @trusted_reviewer.login and
+      author["__typename"] == @trusted_reviewer.type and
+      author["databaseId"] == @trusted_reviewer.database_id
+  end
+
+  defp trusted_reviewer?(_author), do: false
 
   defp normalize_threads(threads, head_sha) do
     Enum.map(threads, fn thread ->

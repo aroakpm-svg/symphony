@@ -59,9 +59,9 @@ defmodule SymphonyElixir.ReviewMonitor do
       {updated_entry, _outcome} = apply_decision(decision, issue, entry, settings, review_client, tracker, snapshot)
       Map.put(state, issue.id, updated_entry)
     else
-      nil -> wait_for_human(issue, entry, settings, tracker, :missing_branch_name, nil, state)
-      "" -> wait_for_human(issue, entry, settings, tracker, :missing_branch_name, nil, state)
-      {:error, reason} -> wait_for_human(issue, entry, settings, tracker, inspect(reason), nil, state)
+      nil -> wait_for_human(issue, entry, settings, review_client, tracker, :missing_branch_name, state)
+      "" -> wait_for_human(issue, entry, settings, review_client, tracker, :missing_branch_name, state)
+      {:error, reason} -> wait_for_human(issue, entry, settings, review_client, tracker, inspect(reason), state)
     end
   end
 
@@ -165,10 +165,18 @@ defmodule SymphonyElixir.ReviewMonitor do
     end
   end
 
-  defp wait_for_human(issue, entry, settings, tracker, reason, head_sha, state) do
+  defp wait_for_human(issue, entry, settings, review_client, tracker, reason, state) do
+    head_sha = entry.head_sha
     snapshot = %{current_head_sha: head_sha, pull_request_number: nil, required_checks: [], threads: []}
     key = ReviewConvergence.dedup_key(:wait, issue.id, head_sha, reason)
-    {updated, _result} = dedup_action(entry, key, fn -> tracker.create_comment(issue.id, human_comment(settings, snapshot, reason, key)) end)
+
+    {updated, _result} =
+      dedup_action(entry, key, fn ->
+        status_then(review_client, settings.repository, snapshot, :error, "Review evidence unavailable; human judgment required", fn ->
+          tracker.create_comment(issue.id, human_comment(settings, snapshot, reason, key))
+        end)
+      end)
+
     Map.put(state, issue.id, %{updated | waiting: true})
   end
 

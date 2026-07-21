@@ -79,14 +79,56 @@ defmodule SymphonyElixir.ReviewConvergenceTest do
     assert message =~ "review_convergence.repository"
   end
 
-  test "GitHub's no-checks CLI variants normalize to an empty prerequisite set" do
-    assert {:ok, []} = GitHubReviewClient.normalize_no_required_checks_for_test("no checks reported on the branch")
+  test "missing expected GitHub Actions checks fail closed instead of treating zero rows as passing" do
+    assert {:ok, checks} = GitHubReviewClient.normalize_expected_checks_for_test(%{"check_runs" => []})
 
-    assert {:ok, []} =
-             GitHubReviewClient.normalize_no_required_checks_for_test("no required checks reported on the branch")
+    assert checks == [
+             %{name: "make-all", state: :missing, link: nil},
+             %{name: "validate-pr-description", state: :missing, link: nil}
+           ]
+  end
 
-    assert {:error, {:command_failed, 1, "authentication failed"}} =
-             GitHubReviewClient.normalize_no_required_checks_for_test("authentication failed")
+  test "expected checks require exact job and GitHub Actions app identities" do
+    run = fn name, slug, id, conclusion ->
+      %{
+        "name" => name,
+        "status" => "completed",
+        "conclusion" => conclusion,
+        "details_url" => "url/#{name}",
+        "app" => %{"slug" => slug, "id" => id}
+      }
+    end
+
+    payload = %{
+      "check_runs" => [
+        run.("make-all", "github-actions", 15_368, "success"),
+        run.("validate-pr-description", "impostor", 15_368, "success"),
+        run.("validate-pr-description", "github-actions", 15_368, "failure")
+      ]
+    }
+
+    assert {:ok,
+            [
+              %{name: "make-all", state: :success},
+              %{name: "validate-pr-description", state: :failure}
+            ]} = GitHubReviewClient.normalize_expected_checks_for_test(payload)
+  end
+
+  test "formal pass requires the trusted reviewer database identity on the current head" do
+    trusted = %{
+      "body" => "No major issues found",
+      "commit" => %{"oid" => "head"},
+      "author" => %{
+        "login" => "chatgpt-codex-connector",
+        "__typename" => "Organization",
+        "databaseId" => 261_883_814
+      }
+    }
+
+    assert GitHubReviewClient.accepted_review_for_test?(trusted, "head")
+    refute GitHubReviewClient.accepted_review_for_test?(put_in(trusted, ["author", "databaseId"], 123), "head")
+    refute GitHubReviewClient.accepted_review_for_test?(put_in(trusted, ["commit", "oid"], "old"), "head")
+    refute GitHubReviewClient.accepted_review_for_test?(%{trusted | "body" => "No major issues found"}, "other")
   end
 
   test "pending required checks returned with gh exit status 8 remain pending evidence" do
@@ -204,6 +246,25 @@ defmodule SymphonyElixir.ReviewConvergenceTest do
     _state = ReviewMonitor.run_with(%{}, settings(), ReviewClient, Tracker)
     assert_receive {:comment, "issue-160", body}
     assert body =~ "command_failed"
+  end
+
+  test "evidence outage clears a known head's prior success with an error status" do
+    Application.put_env(:symphony_elixir, :review_snapshot, {:error, :github_unavailable})
+
+    entry = %{
+      "issue-160" => %{
+        dedup: MapSet.new(),
+        fix_rounds: 0,
+        head_sha: "known-head",
+        review_requested: false,
+        waiting: false,
+        last_finding_fingerprint: nil
+      }
+    }
+
+    _state = ReviewMonitor.run_with(entry, settings(), ReviewClient, Tracker)
+    assert_receive {:status, _, "known-head", :error, _}
+    assert_receive {:comment, "issue-160", _}
   end
 
   test "review, required checks, and actionable threads are independent gates" do
