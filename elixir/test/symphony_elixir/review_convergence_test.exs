@@ -47,10 +47,10 @@ defmodule SymphonyElixir.ReviewConvergenceTest do
       :ok
     end
 
-    @spec update_issue_state(String.t(), String.t()) :: :ok
+    @spec update_issue_state(String.t(), String.t()) :: :ok | {:error, term()}
     def update_issue_state(issue_id, state) do
       send(Application.fetch_env!(:symphony_elixir, :review_recipient), {:state, issue_id, state})
-      :ok
+      Application.get_env(:symphony_elixir, :review_state_result, :ok)
     end
   end
 
@@ -65,6 +65,7 @@ defmodule SymphonyElixir.ReviewConvergenceTest do
       Application.delete_env(:symphony_elixir, :existing_review_keys)
       Application.delete_env(:symphony_elixir, :review_history)
       Application.delete_env(:symphony_elixir, :linear_client_module)
+      Application.delete_env(:symphony_elixir, :review_state_result)
     end)
   end
 
@@ -117,6 +118,25 @@ defmodule SymphonyElixir.ReviewConvergenceTest do
              pull_request["reviewThreads"]["nodes"],
              &get_in(&1, ["comments", "nodes", Access.at(0), "body"])
            ) == ["P4 first", "P1 second"]
+  end
+
+  test "only current-head review threads are actionable" do
+    thread = fn commit, body ->
+      %{
+        "isResolved" => false,
+        "comments" => %{
+          "nodes" => [
+            %{"body" => body, "path" => "lib/example.ex", "url" => "url", "commit" => %{"oid" => commit}}
+          ]
+        }
+      }
+    end
+
+    assert [%{body: "P2 current", commit_sha: "new"}] =
+             GitHubReviewClient.normalize_threads_for_test(
+               [thread.("old", "P1 stale"), thread.("new", "P2 current")],
+               "new"
+             )
   end
 
   test "a new head invalidates an old formal review and requests one deduplicated review" do
@@ -221,7 +241,7 @@ defmodule SymphonyElixir.ReviewConvergenceTest do
 
     _state = ReviewMonitor.run_with(state, settings(), ReviewClient, Tracker)
     refute_receive {:comment, _, _}
-    refute_receive {:state, _, _}
+    assert_receive {:state, "issue-160", "In Progress"}
   end
 
   test "persisted rework key prevents duplicate tracker effects after restart" do
@@ -237,9 +257,28 @@ defmodule SymphonyElixir.ReviewConvergenceTest do
     )
 
     _state = ReviewMonitor.run_with(%{}, settings(), ReviewClient, Tracker)
-    refute_receive {:status, _, _, _, _}
+    assert_receive {:status, _, "head", :failure, _}
     refute_receive {:comment, _, _}
-    refute_receive {:state, _, _}
+    assert_receive {:state, "issue-160", "In Progress"}
+  end
+
+  test "state transition retries after the rework comment already persisted" do
+    finding = %{resolved: false, priority: 1, body: "P1 state retry", url: "thread"}
+    fingerprint = [{1, nil, "P1 state retry"}]
+    key = ReviewConvergence.dedup_key(:rework, "issue-160", "head", fingerprint)
+    Application.put_env(:symphony_elixir, :review_snapshot, {:ok, snapshot(%{threads: [finding]})})
+    Application.put_env(:symphony_elixir, :review_state_result, {:error, :linear_unavailable})
+
+    _state = ReviewMonitor.run_with(%{}, settings(), ReviewClient, Tracker)
+    assert_receive {:comment, "issue-160", _body}
+    assert_receive {:state, "issue-160", "In Progress"}
+
+    Application.put_env(:symphony_elixir, :review_history, {:ok, %{dedup: MapSet.new([key]), rework_count: 1}})
+    Application.put_env(:symphony_elixir, :review_state_result, :ok)
+
+    _state = ReviewMonitor.run_with(%{}, settings(), ReviewClient, Tracker)
+    refute_receive {:comment, _, _}
+    assert_receive {:state, "issue-160", "In Progress"}
   end
 
   test "waiting on environment or human judgment neither rereviews nor changes state" do

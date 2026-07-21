@@ -96,16 +96,29 @@ defmodule SymphonyElixir.ReviewMonitor do
     fingerprint = finding_fingerprint(findings)
     key = ReviewConvergence.dedup_key(:rework, issue.id, snapshot.current_head_sha, fingerprint)
 
-    dedup_action(entry, key, fn ->
-      case publish_status(review_client, settings.repository, snapshot, :failure, "Unresolved actionable P1-P4 review findings") do
-        :ok -> write_rework(tracker, issue, settings, snapshot, findings, key)
-        {:error, reason} -> {:error, reason}
-      end
-    end)
-    |> then(fn {updated, result} ->
-      rounds = if(result == :ok, do: entry.fix_rounds + 1, else: entry.fix_rounds)
+    with :ok <-
+           publish_status(
+             review_client,
+             settings.repository,
+             snapshot,
+             :failure,
+             "Unresolved actionable P1-P4 review findings"
+           ) do
+      {updated, comment_result} =
+        dedup_action(entry, key, fn ->
+          tracker.create_comment(issue.id, rework_comment(snapshot, findings, key))
+        end)
+
+      result =
+        if comment_result in [:ok, :deduplicated],
+          do: tracker.update_issue_state(issue.id, settings.in_progress_state),
+          else: comment_result
+
+      rounds = if(comment_result == :ok, do: entry.fix_rounds + 1, else: entry.fix_rounds)
       {%{updated | fix_rounds: rounds, last_finding_fingerprint: fingerprint}, result}
-    end)
+    else
+      {:error, reason} -> {entry, {:error, reason}}
+    end
   end
 
   defp apply_decision({:wait, evidence}, issue, entry, settings, review_client, tracker, snapshot) do
@@ -161,13 +174,6 @@ defmodule SymphonyElixir.ReviewMonitor do
 
   defp finding_fingerprint(findings) do
     Enum.map(findings, &{&1[:priority], &1[:path], &1[:body]})
-  end
-
-  defp write_rework(tracker, issue, settings, snapshot, findings, key) do
-    case tracker.create_comment(issue.id, rework_comment(snapshot, findings, key)) do
-      :ok -> tracker.update_issue_state(issue.id, settings.in_progress_state)
-      {:error, reason} -> {:error, reason}
-    end
   end
 
   defp publish_status(_review_client, _repository, %{current_head_sha: head}, _state, _description)

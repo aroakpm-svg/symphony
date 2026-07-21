@@ -96,6 +96,10 @@ defmodule SymphonyElixir.GitHubReviewClient do
   @spec merge_pull_request_pages_for_test([map()]) :: {:ok, map()} | {:error, term()}
   def merge_pull_request_pages_for_test(pages), do: merge_pull_request_pages(pages)
 
+  @doc false
+  @spec normalize_threads_for_test([map()], String.t()) :: [map()]
+  def normalize_threads_for_test(threads, head_sha), do: normalize_threads(threads, head_sha)
+
   defp find_pull_request(repository, branch) do
     args = [
       "pr",
@@ -200,7 +204,7 @@ defmodule SymphonyElixir.GitHubReviewClient do
   end
 
   defp verify_base_claims(repository, pull_request) do
-    threads = get_in(pull_request, ["reviewThreads", "nodes"]) || []
+    threads = current_head_threads(pull_request)
     paths = base_missing_paths(threads)
     claim_present = base_missing_claim?(threads)
 
@@ -265,6 +269,7 @@ defmodule SymphonyElixir.GitHubReviewClient do
 
   defp normalize_snapshot(pull_request, checks, base_verification) do
     head_sha = pull_request["headRefOid"]
+    threads = current_head_threads(pull_request)
     reviews = get_in(pull_request, ["reviews", "nodes"]) || []
     accepted_review = Enum.find(Enum.reverse(reviews), &accepted_review?(&1, head_sha))
 
@@ -276,8 +281,8 @@ defmodule SymphonyElixir.GitHubReviewClient do
       base_verification_required: base_verification.required,
       base_verification: base_verification.result,
       required_checks: checks,
-      threads: normalize_threads(get_in(pull_request, ["reviewThreads", "nodes"]) || []),
-      structural_risk: structural_risk?(get_in(pull_request, ["reviewThreads", "nodes"]) || [])
+      threads: normalize_threads(threads, head_sha),
+      structural_risk: structural_risk?(threads)
     }
   end
 
@@ -286,7 +291,7 @@ defmodule SymphonyElixir.GitHubReviewClient do
       String.contains?(review["body"] || "", "No major issues found")
   end
 
-  defp normalize_threads(threads) do
+  defp normalize_threads(threads, head_sha) do
     Enum.map(threads, fn thread ->
       comments = get_in(thread, ["comments", "nodes"]) || []
       first = List.first(comments) || %{}
@@ -300,6 +305,17 @@ defmodule SymphonyElixir.GitHubReviewClient do
         url: first["url"],
         commit_sha: get_in(first, ["commit", "oid"])
       }
+    end)
+    |> Enum.filter(&(&1.commit_sha == head_sha))
+  end
+
+  defp current_head_threads(pull_request) do
+    head_sha = pull_request["headRefOid"]
+
+    (get_in(pull_request, ["reviewThreads", "nodes"]) || [])
+    |> Enum.filter(fn thread ->
+      (get_in(thread, ["comments", "nodes"]) || [])
+      |> Enum.any?(&(get_in(&1, ["commit", "oid"]) == head_sha))
     end)
   end
 
