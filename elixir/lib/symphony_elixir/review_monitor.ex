@@ -89,8 +89,13 @@ defmodule SymphonyElixir.ReviewMonitor do
            :error,
            "Review issue evidence unavailable; human judgment required"
          ) do
-      :ok -> Map.put(entry, :fetch_failed, true)
-      {:error, _reason} -> entry
+      :ok ->
+        entry
+        |> Map.put(:fetch_failed, true)
+        |> mark_published_status(snapshot, :error)
+
+      {:error, _reason} ->
+        entry
     end
   end
 

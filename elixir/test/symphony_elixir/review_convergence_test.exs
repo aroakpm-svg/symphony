@@ -499,7 +499,8 @@ defmodule SymphonyElixir.ReviewConvergenceTest do
       "issue-160" => %{
         dedup: MapSet.new(),
         fix_rounds: 0,
-        head_sha: "known-head",
+        head_sha: "head",
+        last_published_status: {"head", :success},
         review_requested: false,
         waiting: false,
         last_finding_fingerprint: nil
@@ -507,10 +508,14 @@ defmodule SymphonyElixir.ReviewConvergenceTest do
     }
 
     state = ReviewMonitor.run_with(entry, settings(), ReviewClient, FailingIssueTracker)
-    assert_receive {:status, _, "known-head", :error, _}
+    assert_receive {:status, _, "head", :error, _}
 
-    _state = ReviewMonitor.run_with(state, settings(), ReviewClient, FailingIssueTracker)
+    state = ReviewMonitor.run_with(state, settings(), ReviewClient, FailingIssueTracker)
     refute_receive {:status, _, _, _, _}
+
+    Application.put_env(:symphony_elixir, :review_snapshot, {:ok, snapshot()})
+    _state = ReviewMonitor.run_with(state, settings(), ReviewClient, Tracker)
+    assert_receive {:status, _, "head", :success, _}
   end
 
   test "convergence republishes success after a transient error while keeping its comment deduplicated" do
@@ -556,6 +561,11 @@ defmodule SymphonyElixir.ReviewConvergenceTest do
     assert {:rework, %{actionable_threads: [_]}} =
              snapshot(%{threads: [%{resolved: false, priority: 2, body: "P2", url: "url"}]})
              |> ReviewConvergence.evaluate(0, 3)
+  end
+
+  test "an explicit human wait reason is preserved in the decision evidence" do
+    assert {:wait, %{reason: :staging}} =
+             snapshot(%{waiting_reason: :staging}) |> ReviewConvergence.evaluate(0, 3)
   end
 
   test "missing current head fails closed and malformed threads are not actionable" do
@@ -661,6 +671,7 @@ defmodule SymphonyElixir.ReviewConvergenceTest do
     assert_receive {:status, _, "head", :pending, _}
     assert_receive {:comment, "issue-160", body}
     assert body =~ "waiting for team human judgment"
+    assert body =~ "staging"
     refute_receive {:review_requested, _, _, _}
     refute_receive {:state, _, _}
 

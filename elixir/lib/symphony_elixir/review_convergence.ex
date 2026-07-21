@@ -44,7 +44,9 @@ defmodule SymphonyElixir.ReviewConvergence do
 
   def actionable_thread?(_thread), do: false
 
-  defp waiting_gate(%{waiting_reason: reason}, evidence) when not is_nil(reason), do: {:wait, evidence}
+  defp waiting_gate(%{waiting_reason: reason}, evidence) when not is_nil(reason),
+    do: {:wait, Map.put(evidence, :reason, reason)}
+
   defp waiting_gate(_snapshot, _evidence), do: :continue
 
   defp current_head_gate(%{current_head_sha: head}, evidence) when head in [nil, ""] do
