@@ -273,12 +273,13 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   defp maybe_dispatch(%State{} = state) do
+    state =
+      state
+      |> reconcile_running_issues()
+      |> reconcile_blocked_issues()
+
     with {:ok, _settings} <- Config.settings(),
-         state <-
-           state
-           |> reconcile_running_issues()
-           |> reconcile_blocked_issues()
-           |> reconcile_review_convergence(),
+         state <- reconcile_review_convergence(state),
          :ok <- Config.validate!(),
          {:ok, issues} <- Tracker.fetch_candidate_issues(),
          true <- available_slots(state) > 0 do
@@ -608,21 +609,20 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   defp reconcile_stalled_running_issues(%State{} = state) do
-    timeout_ms = Config.settings!().codex.stall_timeout_ms
+    if map_size(state.running) == 0 do
+      state
+    else
+      timeout_ms = Config.settings!().codex.stall_timeout_ms
 
-    cond do
-      timeout_ms <= 0 ->
+      if timeout_ms <= 0 do
         state
-
-      map_size(state.running) == 0 ->
-        state
-
-      true ->
+      else
         now = DateTime.utc_now()
 
         Enum.reduce(state.running, state, fn {issue_id, running_entry}, state_acc ->
           maybe_restart_stalled_issue(state_acc, issue_id, running_entry, now, timeout_ms)
         end)
+      end
     end
   end
 
