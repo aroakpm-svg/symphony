@@ -137,8 +137,6 @@ defmodule SymphonyElixir.AgentRunner do
     "workspace preflight failed type=#{type} command=#{command} detail=#{inline_text(detail)}"
   end
 
-  defp hard_blocker_message(reason), do: "workspace preflight failed reason=#{inspect(reason)}"
-
   defp run_codex_turns(workspace, issue, codex_update_recipient, opts, worker_host) do
     max_turns = Keyword.get(opts, :max_turns, Config.settings!().agent.max_turns)
     issue_state_fetcher = Keyword.get(opts, :issue_state_fetcher, &Tracker.fetch_issue_states_by_ids/1)
