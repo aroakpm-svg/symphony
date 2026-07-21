@@ -226,6 +226,24 @@ defmodule SymphonyElixir.ReviewConvergenceTest do
              GitHubReviewClient.normalize_required_checks_for_test(output, 8)
   end
 
+  test "protected required checks are merged with bootstrap checks and cannot be masked" do
+    expected = [
+      %{name: "make-all", state: :success, link: "expected"},
+      %{name: "validate-pr-description", state: :success, link: nil}
+    ]
+
+    protected = [
+      %{name: "security", state: :pending, link: "security"},
+      %{name: "make-all", state: :failure, link: "protected"}
+    ]
+
+    assert GitHubReviewClient.merge_required_checks_for_test(expected, protected) == [
+             %{name: "make-all", state: :failure, link: "expected"},
+             %{name: "security", state: :pending, link: "security"},
+             %{name: "validate-pr-description", state: :success, link: nil}
+           ]
+  end
+
   test "review thread pagination merges every page before evaluation" do
     page = fn body ->
       %{

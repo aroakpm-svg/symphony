@@ -66,7 +66,7 @@ defmodule SymphonyElixir.GitHubReviewClient do
          {:ok, pull_request} <- fetch_pull_request(repository, number),
          {:ok, clean_reviewed_head} <-
            fetch_clean_review_comment(repository, number, pull_request["headRefOid"]),
-         {:ok, checks} <- required_checks(repository, pull_request["headRefOid"]),
+         {:ok, checks} <- required_checks(repository, number, pull_request["headRefOid"]),
          {:ok, base_verification} <- verify_base_claims(repository, pull_request) do
       {:ok,
        pull_request
@@ -138,6 +138,10 @@ defmodule SymphonyElixir.GitHubReviewClient do
   @doc false
   @spec normalize_expected_checks_for_test(map()) :: {:ok, [map()]} | {:error, term()}
   def normalize_expected_checks_for_test(payload), do: normalize_expected_checks(payload)
+
+  @doc false
+  @spec merge_required_checks_for_test([map()], [map()]) :: [map()]
+  def merge_required_checks_for_test(expected, protected), do: merge_required_checks(expected, protected)
 
   @doc false
   @spec merge_check_run_pages_for_test([map()]) :: {:ok, map()} | {:error, term()}
@@ -306,7 +310,7 @@ defmodule SymphonyElixir.GitHubReviewClient do
     end
   end
 
-  defp required_checks(repository, head_sha) do
+  defp required_checks(repository, pull_request_number, head_sha) do
     with {:ok, output} <-
            run([
              "api",
@@ -317,12 +321,53 @@ defmodule SymphonyElixir.GitHubReviewClient do
              "Accept: application/vnd.github+json"
            ]),
          {:ok, pages} when is_list(pages) <- Jason.decode(output),
-         {:ok, payload} <- merge_check_run_pages(pages) do
-      normalize_expected_checks(payload)
+         {:ok, payload} <- merge_check_run_pages(pages),
+         {:ok, expected} <- normalize_expected_checks(payload),
+         {:ok, protected} <- protected_required_checks(repository, pull_request_number) do
+      {:ok, merge_required_checks(expected, protected)}
     else
       {:error, reason} -> {:error, reason}
     end
   end
+
+  defp protected_required_checks(repository, pull_request_number) do
+    args = [
+      "pr",
+      "checks",
+      Integer.to_string(pull_request_number),
+      "--repo",
+      repository,
+      "--required",
+      "--json",
+      "name,bucket,state,link"
+    ]
+
+    {output, status} = run_with_status(args)
+    normalize_required_checks(String.trim(output), status)
+  rescue
+    error -> {:error, {:command_error, Exception.message(error)}}
+  end
+
+  defp merge_required_checks(expected, protected) do
+    (expected ++ protected)
+    |> Enum.group_by(& &1.name)
+    |> Enum.map(fn {name, checks} ->
+      %{
+        name: name,
+        state: checks |> Enum.map(& &1.state) |> Enum.max_by(&check_state_rank/1),
+        link: Enum.find_value(checks, & &1.link)
+      }
+    end)
+    |> Enum.sort_by(& &1.name)
+  end
+
+  defp check_state_rank(:failure), do: 5
+  defp check_state_rank(:missing), do: 4
+  defp check_state_rank(:pending), do: 3
+  defp check_state_rank(:neutral), do: 2
+  defp check_state_rank(:skipped), do: 1
+  defp check_state_rank(:success), do: 0
+  defp check_state_rank(_state), do: 5
 
   defp normalize_expected_checks(%{"check_runs" => runs}) when is_list(runs) do
     checks =
@@ -674,11 +719,13 @@ defmodule SymphonyElixir.GitHubReviewClient do
   defp normalize_check_state(_value), do: :failure
 
   defp run(args) do
-    case System.cmd("gh", args, stderr_to_stdout: true) do
+    case run_with_status(args) do
       {output, 0} -> {:ok, output}
       {output, status} -> {:error, {:command_failed, status, String.trim(output)}}
     end
   rescue
     error -> {:error, {:command_error, Exception.message(error)}}
   end
+
+  defp run_with_status(args), do: System.cmd("gh", args, stderr_to_stdout: true)
 end
