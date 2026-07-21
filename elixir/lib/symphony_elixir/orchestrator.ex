@@ -329,7 +329,7 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   @doc false
-  @spec maybe_dispatch_for_test(State.t()) :: State.t()
+  @spec maybe_dispatch_for_test(term()) :: term()
   def maybe_dispatch_for_test(%State{} = state), do: maybe_dispatch(state)
 
   defp reconcile_review_convergence(%State{} = state) do
