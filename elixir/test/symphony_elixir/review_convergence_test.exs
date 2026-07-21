@@ -229,6 +229,14 @@ defmodule SymphonyElixir.ReviewConvergenceTest do
            ) == ["P4 first", "P1 second"]
   end
 
+  test "pull-request pagination exposes only the outer review-thread cursor" do
+    query = GitHubReviewClient.pull_request_query_for_test()
+
+    assert length(Regex.scan(~r/pageInfo \{ hasNextPage endCursor \}/, query)) == 1
+    assert query =~ "reviewThreads(first: 100, after: $endCursor)"
+    assert query =~ "comments(first: 100)"
+  end
+
   test "only current-head review threads are actionable" do
     thread = fn commit, body ->
       %{

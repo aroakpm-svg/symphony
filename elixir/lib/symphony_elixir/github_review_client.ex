@@ -28,7 +28,6 @@ defmodule SymphonyElixir.GitHubReviewClient do
             id
             comments(first: 100) {
               nodes { body path url commit { oid } }
-              pageInfo { hasNextPage endCursor }
             }
           }
           pageInfo { hasNextPage endCursor }
@@ -165,6 +164,10 @@ defmodule SymphonyElixir.GitHubReviewClient do
   @doc false
   @spec structural_risk_for_test?([map()], String.t()) :: boolean()
   def structural_risk_for_test?(threads, head_sha), do: structural_risk?(threads, head_sha)
+
+  @doc false
+  @spec pull_request_query_for_test() :: String.t()
+  def pull_request_query_for_test, do: @graphql
 
   defp find_pull_request(repository, branch) do
     args = [
@@ -337,9 +340,9 @@ defmodule SymphonyElixir.GitHubReviewClient do
   end
 
   defp hydrate_one_thread(repository, thread) do
-    page_info = get_in(thread, ["comments", "pageInfo"]) || %{}
+    comments = get_in(thread, ["comments", "nodes"]) || []
 
-    if page_info["hasNextPage"] == true do
+    if length(comments) == 100 do
       fetch_all_thread_comments(repository, thread["id"])
       |> case do
         {:ok, comments} -> {:ok, put_in(thread, ["comments", "nodes"], comments)}
