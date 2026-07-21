@@ -183,6 +183,10 @@ defmodule SymphonyElixir.GitHubReviewClient do
     missing_paths_verified?(base_paths, claimed_missing_paths)
   end
 
+  @doc false
+  @spec base_tree_oid_for_test(map()) :: {:ok, String.t()} | {:error, term()}
+  def base_tree_oid_for_test(payload), do: base_tree_oid(payload)
+
   defp find_pull_request(repository, branch) do
     args = [
       "pr",
@@ -508,9 +512,10 @@ defmodule SymphonyElixir.GitHubReviewClient do
   end
 
   defp fetch_base_tree_paths(repository, base_oid) when is_binary(base_oid) do
-    endpoint = "repos/#{repository}/git/trees/#{base_oid}?recursive=1"
-
-    with {:ok, output} <- run(["api", endpoint]),
+    with {:ok, commit_output} <- run(["api", "repos/#{repository}/git/commits/#{base_oid}"]),
+         {:ok, commit_payload} <- Jason.decode(commit_output),
+         {:ok, tree_oid} <- base_tree_oid(commit_payload),
+         {:ok, output} <- run(["api", "repos/#{repository}/git/trees/#{tree_oid}?recursive=1"]),
          {:ok, %{"tree" => tree, "truncated" => false}} when is_list(tree) <- Jason.decode(output) do
       {:ok, tree |> Enum.map(& &1["path"]) |> Enum.filter(&is_binary/1) |> MapSet.new()}
     else
@@ -520,6 +525,11 @@ defmodule SymphonyElixir.GitHubReviewClient do
   end
 
   defp fetch_base_tree_paths(_repository, base_oid), do: {:error, {:missing_base_oid, base_oid}}
+
+  defp base_tree_oid(%{"tree" => %{"sha" => tree_oid}}) when is_binary(tree_oid) and tree_oid != "",
+    do: {:ok, tree_oid}
+
+  defp base_tree_oid(payload), do: {:error, {:missing_base_tree_oid, payload}}
 
   defp missing_paths_verified?(base_paths, claimed_missing_paths) do
     Enum.all?(claimed_missing_paths, &(not MapSet.member?(base_paths, &1)))

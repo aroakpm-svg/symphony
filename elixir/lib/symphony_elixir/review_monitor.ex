@@ -24,9 +24,13 @@ defmodule SymphonyElixir.ReviewMonitor do
   def run_with(state, settings, review_client, tracker) do
     case tracker.fetch_routed_issues_by_states([settings.review_state]) do
       {:ok, issues} ->
-        issues
-        |> Enum.filter(&Issue.routable?(&1, Config.settings!().tracker.required_labels))
-        |> Enum.reduce(state, &reconcile_issue(&1, &2, settings, review_client, tracker))
+        routed_issues =
+          Enum.filter(issues, &Issue.routable?(&1, Config.settings!().tracker.required_labels))
+
+        active_issue_ids = MapSet.new(routed_issues, & &1.id)
+        active_state = Map.take(state, MapSet.to_list(active_issue_ids))
+
+        Enum.reduce(routed_issues, active_state, &reconcile_issue(&1, &2, settings, review_client, tracker))
 
       {:error, reason} ->
         Logger.warning("Review monitor failed to fetch review-state issues: #{inspect(reason)}")

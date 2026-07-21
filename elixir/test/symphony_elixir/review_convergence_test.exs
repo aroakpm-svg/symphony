@@ -390,6 +390,22 @@ defmodule SymphonyElixir.ReviewConvergenceTest do
     refute_receive {:state, _, _}
   end
 
+  test "review monitor prunes entries for issues that left the review state" do
+    Application.put_env(:symphony_elixir, :review_issues, [])
+
+    stale_state = %{
+      "issue-160" => %{
+        dedup: MapSet.new(),
+        fix_rounds: 0,
+        head_sha: "old-head",
+        fetch_failed: false
+      }
+    }
+
+    assert ReviewMonitor.run_with(stale_state, settings(), ReviewClient, Tracker) == %{}
+    refute_receive {:status, _, _, _, _}
+  end
+
   test "Linear rework history paginates and counts stable keys once" do
     Application.put_env(:symphony_elixir, :linear_client_module, HistoryClient)
 
@@ -544,6 +560,14 @@ defmodule SymphonyElixir.ReviewConvergenceTest do
 
     assert GitHubReviewClient.missing_paths_verified_for_test?(base_paths, ["lib/missing.ex"])
     refute GitHubReviewClient.missing_paths_verified_for_test?(base_paths, ["lib/present.ex"])
+  end
+
+  test "base verification resolves a commit payload to its tree oid" do
+    assert GitHubReviewClient.base_tree_oid_for_test(%{"tree" => %{"sha" => "tree-sha"}}) ==
+             {:ok, "tree-sha"}
+
+    assert {:error, {:missing_base_tree_oid, _}} =
+             GitHubReviewClient.base_tree_oid_for_test(%{"sha" => "commit-sha"})
   end
 
   test "actionable findings comment and return the issue for repair once per head and finding" do
