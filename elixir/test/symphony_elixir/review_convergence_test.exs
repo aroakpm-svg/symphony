@@ -607,6 +607,7 @@ defmodule SymphonyElixir.ReviewConvergenceTest do
     Application.put_env(:symphony_elixir, :review_snapshot, {:ok, snapshot()})
 
     _state = ReviewMonitor.run_with(%{}, settings(), ReviewClient, Tracker)
+    assert_receive {:status, _, "head", :error, _}
     assert_receive {:comment, "issue-160", body}
     assert body =~ "linear_unavailable"
     refute_receive {:state, _, _}

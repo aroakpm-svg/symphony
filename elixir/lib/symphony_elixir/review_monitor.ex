@@ -56,7 +56,7 @@ defmodule SymphonyElixir.ReviewMonitor do
         reconcile_snapshot(issue, entry, state, settings, review_client, tracker)
 
       {:error, reason} ->
-        wait_for_human(issue, entry, settings, review_client, tracker, inspect(reason), state)
+        wait_for_history_error(issue, entry, state, settings, review_client, tracker, reason)
     end
   end
 
@@ -74,6 +74,22 @@ defmodule SymphonyElixir.ReviewMonitor do
       "" -> wait_for_human(issue, entry, settings, review_client, tracker, :missing_branch_name, state)
       {:error, reason} -> wait_for_human(issue, entry, settings, review_client, tracker, inspect(reason), state)
     end
+  end
+
+  defp wait_for_history_error(issue, entry, state, settings, review_client, tracker, reason) do
+    entry =
+      case issue.branch_name do
+        branch when is_binary(branch) and branch != "" ->
+          case review_client.snapshot(settings.repository, branch) do
+            {:ok, snapshot} -> invalidate_old_head(entry, snapshot.current_head_sha)
+            {:error, _snapshot_reason} -> entry
+          end
+
+        _missing_branch ->
+          entry
+      end
+
+    wait_for_human(issue, entry, settings, review_client, tracker, inspect(reason), state)
   end
 
   defp invalidate_old_head(%{head_sha: head_sha} = entry, current_head) when head_sha != current_head do
