@@ -159,46 +159,54 @@ defmodule SymphonyElixir.Linear.Adapter do
         history
 
       String.contains?(body, "transition-operation: `intent`") ->
-        intent = %{
-          operation_id: operation_id,
-          head_sha: capture(body, ~r/currentHeadSha: `([0-9a-f]{40})`/i),
-          target_state: capture(body, ~r/target-state: `([^`]+)`/)
-        }
-
-        existing = history.transition_intents[operation_id]
-
-        invalid? =
-          is_nil(intent.head_sha) or is_nil(intent.target_state) or
-            (not is_nil(existing) and existing != intent)
-
-        %{
-          history
-          | transition_intents: Map.put(history.transition_intents, operation_id, intent),
-            invalid_transition: history.invalid_transition or invalid?
-        }
+        collect_transition_intent(history, body, operation_id)
 
       String.contains?(body, "transition-operation: `completed`") ->
-        completion = %{
-          operation_id: operation_id,
-          head_sha: capture(body, ~r/currentHeadSha: `([0-9a-f]{40})`/i),
-          dedup_key: capture(body, ~r/dedup-key: `([^`]+)`/)
-        }
-
-        existing = history.completed_transitions[operation_id]
-
-        invalid? =
-          is_nil(completion.head_sha) or completion.dedup_key != operation_id or
-            (not is_nil(existing) and existing != completion)
-
-        %{
-          history
-          | completed_transitions: Map.put(history.completed_transitions, operation_id, completion),
-            invalid_transition: history.invalid_transition or invalid?
-        }
+        collect_transition_completion(history, body, operation_id)
 
       true ->
         history
     end
+  end
+
+  defp collect_transition_intent(history, body, operation_id) do
+    intent = %{
+      operation_id: operation_id,
+      head_sha: capture(body, ~r/currentHeadSha: `([0-9a-f]{40})`/i),
+      target_state: capture(body, ~r/target-state: `([^`]+)`/)
+    }
+
+    existing = history.transition_intents[operation_id]
+
+    invalid? =
+      is_nil(intent.head_sha) or is_nil(intent.target_state) or
+        (not is_nil(existing) and existing != intent)
+
+    %{
+      history
+      | transition_intents: Map.put(history.transition_intents, operation_id, intent),
+        invalid_transition: history.invalid_transition or invalid?
+    }
+  end
+
+  defp collect_transition_completion(history, body, operation_id) do
+    completion = %{
+      operation_id: operation_id,
+      head_sha: capture(body, ~r/currentHeadSha: `([0-9a-f]{40})`/i),
+      dedup_key: capture(body, ~r/dedup-key: `([^`]+)`/)
+    }
+
+    existing = history.completed_transitions[operation_id]
+
+    invalid? =
+      is_nil(completion.head_sha) or completion.dedup_key != operation_id or
+        (not is_nil(existing) and existing != completion)
+
+    %{
+      history
+      | completed_transitions: Map.put(history.completed_transitions, operation_id, completion),
+        invalid_transition: history.invalid_transition or invalid?
+    }
   end
 
   defp capture(body, pattern) do
