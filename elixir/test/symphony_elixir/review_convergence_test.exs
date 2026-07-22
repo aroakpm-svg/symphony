@@ -546,6 +546,41 @@ defmodule SymphonyElixir.ReviewConvergenceTest do
              )
   end
 
+  test "snapshot keeps unresolved actionable threads from prior heads" do
+    pull_request = %{
+      "headRefOid" => "new",
+      "baseRefOid" => "base",
+      "reviews" => %{"nodes" => []},
+      "reviewThreads" => %{
+        "nodes" => [
+          %{
+            "isResolved" => false,
+            "comments" => %{
+              "nodes" => [
+                %{
+                  "body" => "P1 unresolved on prior head",
+                  "path" => "lib/example.ex",
+                  "url" => "thread",
+                  "commit" => %{"oid" => "old"}
+                }
+              ]
+            }
+          }
+        ]
+      }
+    }
+
+    snapshot =
+      GitHubReviewClient.normalize_snapshot_for_test(
+        pull_request,
+        [%{name: "make-all", state: :success}],
+        %{required: false, result: :verified},
+        []
+      )
+
+    assert [%{body: "P1 unresolved on prior head", commit_sha: "old"}] = snapshot.threads
+  end
+
   test "a current-head follow-up on an older thread remains actionable" do
     thread = %{
       "isResolved" => false,
@@ -1090,6 +1125,37 @@ defmodule SymphonyElixir.ReviewConvergenceTest do
     assert_receive {:state, "issue-160", "In Progress"}
     assert_receive {:comment, "issue-160", completion}
     assert completion =~ "transition-operation: `completed`"
+    assert state["issue-160"].fix_rounds == 1
+  end
+
+  test "stale pending history does not recount an already deduplicated completion" do
+    operation_id = "already-completed-operation"
+
+    Application.put_env(:symphony_elixir, :review_issues, [
+      %{issue() | state: "In Progress"}
+    ])
+
+    Application.put_env(
+      :symphony_elixir,
+      :review_history,
+      {:ok,
+       %{
+         dedup: MapSet.new(["transition-intent:#{operation_id}", operation_id]),
+         rework_count: 1,
+         pending_transitions: %{
+           operation_id => %{
+             operation_id: operation_id,
+             head_sha: String.duplicate("c", 40),
+             target_state: "In Progress"
+           }
+         }
+       }}
+    )
+
+    state = ReviewMonitor.run_with(%{}, settings(), ReviewClient, Tracker)
+
+    refute_receive {:comment, _, _}
+    refute_receive {:state, _, _}
     assert state["issue-160"].fix_rounds == 1
   end
 

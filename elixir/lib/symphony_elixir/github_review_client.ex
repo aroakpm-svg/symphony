@@ -191,6 +191,11 @@ defmodule SymphonyElixir.GitHubReviewClient do
   def normalize_threads_for_test(threads, head_sha), do: normalize_threads(threads, head_sha)
 
   @doc false
+  @spec normalize_snapshot_for_test(map(), [map()], map(), [map()]) :: map()
+  def normalize_snapshot_for_test(pull_request, checks, base_verification, issue_comments),
+    do: normalize_snapshot(pull_request, checks, base_verification, issue_comments)
+
+  @doc false
   @spec base_missing_paths_for_test([map()], String.t()) :: [String.t()]
   def base_missing_paths_for_test(threads, head_sha), do: base_missing_paths(threads, head_sha)
 
@@ -751,7 +756,8 @@ defmodule SymphonyElixir.GitHubReviewClient do
 
   defp normalize_snapshot(pull_request, checks, base_verification, issue_comments) do
     head_sha = pull_request["headRefOid"]
-    threads = current_head_threads(pull_request)
+    threads = get_in(pull_request, ["reviewThreads", "nodes"]) || []
+    current_threads = current_head_threads(pull_request)
     reviews = get_in(pull_request, ["reviews", "nodes"]) || []
     accepted_review = latest_accepted_review(reviews, head_sha)
 
@@ -770,7 +776,7 @@ defmodule SymphonyElixir.GitHubReviewClient do
       base_verification: base_verification.result,
       required_checks: checks,
       threads: normalize_threads(threads, head_sha),
-      structural_risk: structural_risk?(threads, head_sha)
+      structural_risk: structural_risk?(current_threads, head_sha)
     }
   end
 

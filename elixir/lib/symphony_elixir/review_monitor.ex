@@ -397,7 +397,9 @@ defmodule SymphonyElixir.ReviewMonitor do
         tracker.create_comment(issue.id, state_transition_comment(snapshot, operation_id))
       end)
 
-    {persisted, result, result in [:ok, :deduplicated]}
+    # A deduplicated completion is already represented by this entry's durable
+    # history. Only a completion newly persisted in this pass consumes a round.
+    {persisted, result, result == :ok}
   end
 
   defp dedup_action(entry, key, action) do
