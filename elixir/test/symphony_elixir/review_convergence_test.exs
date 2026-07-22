@@ -210,6 +210,34 @@ defmodule SymphonyElixir.ReviewConvergenceTest do
     refute GitHubReviewClient.accepted_review_for_test?(issue_comment, "head")
   end
 
+  test "formal pass uses only the latest unambiguous trusted current-head review" do
+    head = "head"
+
+    clean = %{
+      "body" => "No major issues found",
+      "state" => "COMMENTED",
+      "submittedAt" => "2026-07-22T01:00:00Z",
+      "commit" => %{"oid" => head},
+      "author" => %{
+        "login" => "chatgpt-codex-connector",
+        "__typename" => "Organization",
+        "databaseId" => 261_883_814
+      }
+    }
+
+    assert GitHubReviewClient.latest_accepted_review_for_test([clean], head) == clean
+
+    conflicting = %{
+      clean
+      | "body" => "Changes required",
+        "state" => "CHANGES_REQUESTED",
+        "submittedAt" => "2026-07-22T01:01:00Z"
+    }
+
+    refute GitHubReviewClient.latest_accepted_review_for_test([clean, conflicting], head)
+    refute GitHubReviewClient.latest_accepted_review_for_test([clean, Map.delete(conflicting, "submittedAt")], head)
+  end
+
   test "trusted current-head clean comment attests only to its unique earlier request" do
     head = String.duplicate("a", 40)
     request = review_request_comment(head)

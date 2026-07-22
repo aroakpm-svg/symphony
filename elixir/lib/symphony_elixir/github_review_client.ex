@@ -169,6 +169,11 @@ defmodule SymphonyElixir.GitHubReviewClient do
   def accepted_review_for_test?(review, head_sha), do: accepted_review?(review, head_sha)
 
   @doc false
+  @spec latest_accepted_review_for_test([map()], String.t()) :: map() | nil
+  def latest_accepted_review_for_test(reviews, head_sha),
+    do: latest_accepted_review(reviews, head_sha)
+
+  @doc false
   @spec accepted_comment_attestation_for_test([map()], String.t()) :: map() | nil
   def accepted_comment_attestation_for_test(comments, head_sha),
     do: accepted_comment_attestation(comments, head_sha)
@@ -748,7 +753,7 @@ defmodule SymphonyElixir.GitHubReviewClient do
     head_sha = pull_request["headRefOid"]
     threads = current_head_threads(pull_request)
     reviews = get_in(pull_request, ["reviews", "nodes"]) || []
-    accepted_review = Enum.find(Enum.reverse(reviews), &accepted_review?(&1, head_sha))
+    accepted_review = latest_accepted_review(reviews, head_sha)
 
     comment_attestation =
       if accepted_review, do: nil, else: accepted_comment_attestation(issue_comments, head_sha)
@@ -774,6 +779,26 @@ defmodule SymphonyElixir.GitHubReviewClient do
       review["state"] in ["APPROVED", "COMMENTED"] and
       trusted_reviewer?(review["author"]) and
       String.contains?(review["body"] || "", "No major issues found")
+  end
+
+  defp latest_accepted_review(reviews, head_sha) do
+    trusted_current_head =
+      Enum.filter(reviews, fn review ->
+        get_in(review, ["commit", "oid"]) == head_sha and trusted_reviewer?(review["author"])
+      end)
+
+    with [_ | _] <- trusted_current_head,
+         true <- Enum.all?(trusted_current_head, &valid_review_time?/1),
+         latest <- Enum.max_by(trusted_current_head, & &1["submittedAt"]),
+         true <- accepted_review?(latest, head_sha) do
+      latest
+    else
+      _ -> nil
+    end
+  end
+
+  defp valid_review_time?(review) do
+    match?({:ok, _, _}, DateTime.from_iso8601(review["submittedAt"] || ""))
   end
 
   defp accepted_comment_attestation(comments, head_sha)
