@@ -201,22 +201,13 @@ defmodule SymphonyElixir.ReviewConvergenceTest do
 
     assert GitHubReviewClient.accepted_review_for_test?(bot, "head")
     refute GitHubReviewClient.accepted_review_for_test?(put_in(bot, ["author", "databaseId"], 123), "head")
-  end
 
-  test "official clean-review comment requires trusted bot identity and a fully resolved current head" do
-    comment = %{
-      "body" => "Codex Review: Didn't find any major issues. You're on a roll.\n\n**Reviewed commit:** `75a1180c8f`",
-      "user" => %{
-        "login" => "chatgpt-codex-connector[bot]",
-        "type" => "Bot",
-        "id" => 199_175_422
-      }
+    issue_comment = %{
+      "body" => "No major issues found\n\n**Reviewed commit:** `head`",
+      "user" => %{"login" => "chatgpt-codex-connector[bot]", "type" => "Bot", "id" => 199_175_422}
     }
 
-    head = "75a1180c8fa42c4c93438a55f27b4e466089cb33"
-    assert GitHubReviewClient.accepted_clean_comment_for_test?(comment, head, head)
-    refute GitHubReviewClient.accepted_clean_comment_for_test?(comment, head, String.duplicate("0", 40))
-    refute GitHubReviewClient.accepted_clean_comment_for_test?(put_in(comment, ["user", "id"], 123), head, head)
+    refute GitHubReviewClient.accepted_review_for_test?(issue_comment, "head")
   end
 
   test "pending required checks returned with gh exit status 8 remain pending evidence" do

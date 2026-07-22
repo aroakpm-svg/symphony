@@ -64,13 +64,11 @@ defmodule SymphonyElixir.GitHubReviewClient do
   def snapshot(repository, branch) when is_binary(repository) and is_binary(branch) do
     with {:ok, number} <- find_pull_request(repository, branch),
          {:ok, pull_request} <- fetch_pull_request(repository, number),
-         {:ok, clean_reviewed_head} <-
-           fetch_clean_review_comment(repository, number, pull_request["headRefOid"]),
          {:ok, checks} <- required_checks(repository, number, pull_request["headRefOid"]),
          {:ok, base_verification} <- verify_base_claims(repository, pull_request) do
       {:ok,
        pull_request
-       |> normalize_snapshot(checks, base_verification, clean_reviewed_head)
+       |> normalize_snapshot(checks, base_verification)
        |> Map.put(:repository, repository)
        |> Map.put(:pull_request_number, number)}
     end
@@ -176,12 +174,6 @@ defmodule SymphonyElixir.GitHubReviewClient do
   def pull_request_query_for_test, do: @graphql
 
   @doc false
-  @spec accepted_clean_comment_for_test?(map(), String.t(), String.t()) :: boolean()
-  def accepted_clean_comment_for_test?(comment, head_sha, resolved_sha) do
-    accepted_clean_comment?(comment, head_sha, resolved_sha)
-  end
-
-  @doc false
   @spec missing_paths_verified_for_test?(MapSet.t(String.t()), [String.t()]) :: boolean()
   def missing_paths_verified_for_test?(base_paths, claimed_missing_paths) do
     missing_paths_verified?(base_paths, claimed_missing_paths)
@@ -213,71 +205,6 @@ defmodule SymphonyElixir.GitHubReviewClient do
       {:ok, unexpected} -> {:error, {:invalid_pull_request_lookup, unexpected}}
       {:error, reason} -> {:error, reason}
     end
-  end
-
-  defp fetch_clean_review_comment(repository, number, head_sha) do
-    args = [
-      "api",
-      "--paginate",
-      "--slurp",
-      "repos/#{repository}/issues/#{number}/comments?per_page=100"
-    ]
-
-    with {:ok, output} <- run(args),
-         {:ok, pages} when is_list(pages) <- Jason.decode(output) do
-      pages
-      |> List.flatten()
-      |> Enum.reverse()
-      |> Enum.filter(&clean_review_comment?/1)
-      |> resolve_clean_review_comments(repository, head_sha)
-    else
-      {:ok, payload} -> {:error, {:invalid_issue_comments, payload}}
-      {:error, reason} -> {:error, reason}
-    end
-  end
-
-  defp resolve_clean_review_comments(comments, repository, head_sha) do
-    Enum.reduce_while(comments, {:ok, nil}, fn comment, _acc ->
-      prefix = clean_review_prefix(comment["body"] || "")
-
-      case resolve_commit_sha(repository, prefix) do
-        {:ok, ^head_sha} -> {:halt, {:ok, head_sha}}
-        {:ok, _other_sha} -> {:cont, {:ok, nil}}
-        {:error, reason} -> {:halt, {:error, reason}}
-      end
-    end)
-  end
-
-  defp resolve_commit_sha(repository, prefix) when is_binary(prefix) do
-    case run(["api", "repos/#{repository}/commits/#{prefix}", "--jq", ".sha"]) do
-      {:ok, output} ->
-        sha = String.trim(output)
-        if Regex.match?(~r/\A[0-9a-f]{40}\z/, sha), do: {:ok, sha}, else: {:error, {:invalid_commit_sha, sha}}
-
-      {:error, reason} ->
-        {:error, reason}
-    end
-  end
-
-  defp clean_review_comment?(comment) do
-    trusted_rest_reviewer?(comment["user"]) and is_binary(clean_review_prefix(comment["body"] || ""))
-  end
-
-  defp clean_review_prefix(body) do
-    clean_result =
-      String.contains?(body, "No major issues found") or
-        String.contains?(body, "Didn't find any major issues")
-
-    if clean_result do
-      case Regex.run(~r/\*\*Reviewed commit:\*\* `([0-9a-f]{7,40})`/i, body, capture: :all_but_first) do
-        [prefix] -> String.downcase(prefix)
-        _ -> nil
-      end
-    end
-  end
-
-  defp accepted_clean_comment?(comment, head_sha, resolved_sha) do
-    clean_review_comment?(comment) and resolved_sha == head_sha
   end
 
   defp fetch_pull_request(repository, number) do
@@ -617,7 +544,7 @@ defmodule SymphonyElixir.GitHubReviewClient do
     String.contains?(value, "/") and !String.contains?(value, " ")
   end
 
-  defp normalize_snapshot(pull_request, checks, base_verification, clean_reviewed_head) do
+  defp normalize_snapshot(pull_request, checks, base_verification) do
     head_sha = pull_request["headRefOid"]
     threads = current_head_threads(pull_request)
     reviews = get_in(pull_request, ["reviews", "nodes"]) || []
@@ -625,8 +552,8 @@ defmodule SymphonyElixir.GitHubReviewClient do
 
     %{
       current_head_sha: head_sha,
-      reviewed_head_sha: get_in(accepted_review || %{}, ["commit", "oid"]) || clean_reviewed_head,
-      review_result: if(accepted_review || clean_reviewed_head, do: :no_major_issues, else: :missing),
+      reviewed_head_sha: get_in(accepted_review || %{}, ["commit", "oid"]),
+      review_result: if(accepted_review, do: :no_major_issues, else: :missing),
       base_ref_oid: pull_request["baseRefOid"],
       base_verification_required: base_verification.required,
       base_verification: base_verification.result,
@@ -652,14 +579,6 @@ defmodule SymphonyElixir.GitHubReviewClient do
   end
 
   defp trusted_reviewer?(_author), do: false
-
-  defp trusted_rest_reviewer?(user) when is_map(user) do
-    user["login"] == "chatgpt-codex-connector[bot]" and
-      user["type"] == "Bot" and
-      user["id"] == 199_175_422
-  end
-
-  defp trusted_rest_reviewer?(_user), do: false
 
   defp normalize_threads(threads, head_sha) do
     Enum.flat_map(threads, fn thread ->
