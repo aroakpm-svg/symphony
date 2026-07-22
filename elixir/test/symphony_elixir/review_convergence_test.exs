@@ -226,6 +226,13 @@ defmodule SymphonyElixir.ReviewConvergenceTest do
              GitHubReviewClient.normalize_required_checks_for_test(output, 8)
   end
 
+  test "protected required checks normalize the gh skipping bucket as skipped" do
+    output = Jason.encode!([%{"name" => "optional", "bucket" => "skipping", "state" => "SKIPPED", "link" => "url"}])
+
+    assert {:ok, [%{name: "optional", state: :skipped}]} =
+             GitHubReviewClient.normalize_required_checks_for_test(output, 0)
+  end
+
   test "protected required checks are merged with bootstrap checks and cannot be masked" do
     expected = [
       %{name: "make-all", state: :success, link: "expected"},

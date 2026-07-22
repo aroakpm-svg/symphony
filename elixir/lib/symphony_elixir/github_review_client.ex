@@ -709,7 +709,7 @@ defmodule SymphonyElixir.GitHubReviewClient do
   defp normalize_check_state(value) when is_binary(value) do
     case String.downcase(value) do
       state when state in ["pass", "success"] -> :success
-      "skipped" -> :skipped
+      state when state in ["skipped", "skipping"] -> :skipped
       "neutral" -> :neutral
       "pending" -> :pending
       _ -> :failure
