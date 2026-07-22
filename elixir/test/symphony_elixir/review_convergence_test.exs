@@ -364,6 +364,42 @@ defmodule SymphonyElixir.ReviewConvergenceTest do
     assert contexts == [%{name: "lint", app_id: 7}, %{name: "linux", app_id: 42}]
   end
 
+  test "branch-protection app_id minus one allows any check provider" do
+    protection = %{"checks" => [%{"context" => "lint", "app_id" => -1}]}
+
+    assert {:ok, [%{name: "lint", app_id: nil}]} =
+             GitHubReviewClient.normalize_required_contexts_for_test([], protection)
+
+    assert {:ok, [%{name: "lint", state: :success}]} =
+             GitHubReviewClient.match_required_contexts_for_test(
+               [%{name: "lint", app_id: nil}],
+               %{
+                 "check_runs" => [
+                   %{
+                     "name" => "lint",
+                     "status" => "completed",
+                     "conclusion" => "success",
+                     "app" => %{"id" => 99}
+                   }
+                 ]
+               }
+             )
+  end
+
+  test "disabled classic required checks are absence, not an evidence error" do
+    assert {:ok, nil} =
+             GitHubReviewClient.normalize_branch_protection_response_for_test(
+               "gh: Required status checks are not enabled for this branch. (HTTP 404)",
+               1
+             )
+
+    assert {:error, {:required_status_checks_failed, 1, _}} =
+             GitHubReviewClient.normalize_branch_protection_response_for_test(
+               "gh: resource unavailable (HTTP 404)",
+               1
+             )
+  end
+
   test "required contexts absent from current-head evidence are synthesized as missing" do
     contexts = [%{name: "linux", app_id: 42}, %{name: "lint", app_id: nil}]
 

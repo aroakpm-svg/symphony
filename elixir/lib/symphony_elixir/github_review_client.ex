@@ -204,6 +204,12 @@ defmodule SymphonyElixir.GitHubReviewClient do
   def structural_risk_for_test?(threads, head_sha), do: structural_risk?(threads, head_sha)
 
   @doc false
+  @spec normalize_branch_protection_response_for_test(String.t(), integer()) ::
+          {:ok, map() | nil} | {:error, term()}
+  def normalize_branch_protection_response_for_test(output, status),
+    do: normalize_branch_protection_response(output, status)
+
+  @doc false
   @spec pull_request_query_for_test() :: String.t()
   def pull_request_query_for_test, do: @graphql
 
@@ -359,13 +365,24 @@ defmodule SymphonyElixir.GitHubReviewClient do
         "repos/#{repository}/branches/#{encode_path_segment(base_ref_name)}/protection/required_status_checks"
       ])
 
-    cond do
-      status == 0 -> Jason.decode(output)
-      status == 1 and String.contains?(output, "Branch not protected") -> {:ok, nil}
-      true -> {:error, {:required_status_checks_failed, status, String.trim(output)}}
-    end
+    normalize_branch_protection_response(output, status)
   rescue
     error -> {:error, {:command_error, Exception.message(error)}}
+  end
+
+  defp normalize_branch_protection_response(output, status) do
+    cond do
+      status == 0 ->
+        Jason.decode(output)
+
+      status == 1 and
+          (String.contains?(output, "Branch not protected") or
+             String.contains?(output, "Required status checks are not enabled")) ->
+        {:ok, nil}
+
+      true ->
+        {:error, {:required_status_checks_failed, status, String.trim(output)}}
+    end
   end
 
   defp normalize_required_contexts(rules, protection) when is_list(rules) do
@@ -404,10 +421,13 @@ defmodule SymphonyElixir.GitHubReviewClient do
   defp normalize_context_identities(contexts) do
     contexts
     |> Enum.reject(&(&1["context"] == "Review Convergence Gate"))
-    |> Enum.map(&%{name: &1["context"], app_id: &1["integration_id"] || &1["app_id"]})
+    |> Enum.map(&%{name: &1["context"], app_id: normalize_app_id(&1["integration_id"] || &1["app_id"])})
     |> Enum.uniq()
     |> Enum.sort_by(&{&1.name, &1.app_id || 0})
   end
+
+  defp normalize_app_id(-1), do: nil
+  defp normalize_app_id(app_id), do: app_id
 
   defp match_required_contexts(contexts, %{"check_runs" => runs}, statuses)
        when is_list(contexts) and is_list(runs) and is_list(statuses) do
