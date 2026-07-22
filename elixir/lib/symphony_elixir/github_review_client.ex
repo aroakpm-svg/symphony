@@ -157,7 +157,12 @@ defmodule SymphonyElixir.GitHubReviewClient do
   @doc false
   @spec match_required_contexts_for_test([map()], map()) :: {:ok, [map()]} | {:error, term()}
   def match_required_contexts_for_test(contexts, payload),
-    do: match_required_contexts(contexts, payload)
+    do: match_required_contexts(contexts, payload, [])
+
+  @doc false
+  @spec match_required_contexts_for_test([map()], map(), [map()]) :: {:ok, [map()]} | {:error, term()}
+  def match_required_contexts_for_test(contexts, payload, statuses),
+    do: match_required_contexts(contexts, payload, statuses)
 
   @doc false
   @spec accepted_review_for_test?(map(), String.t()) :: boolean()
@@ -285,12 +290,30 @@ defmodule SymphonyElixir.GitHubReviewClient do
            ]),
          {:ok, pages} when is_list(pages) <- Jason.decode(output),
          {:ok, payload} <- merge_check_run_pages(pages),
+         {:ok, statuses} <- commit_statuses(repository, head_sha),
          {:ok, expected} <- normalize_expected_checks(payload),
          {:ok, contexts} <- required_contexts(repository, pull_request["baseRefName"]),
-         {:ok, protected} <- match_required_contexts(contexts, payload) do
+         {:ok, protected} <- match_required_contexts(contexts, payload, statuses) do
       {:ok, merge_required_checks(expected, protected)}
     else
       {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp commit_statuses(repository, head_sha) do
+    with {:ok, output} <-
+           run([
+             "api",
+             "--paginate",
+             "--slurp",
+             "repos/#{repository}/commits/#{head_sha}/statuses?per_page=100"
+           ]),
+         {:ok, pages} when is_list(pages) <- Jason.decode(output),
+         statuses when is_list(statuses) <- List.flatten(pages) do
+      {:ok, statuses}
+    else
+      {:error, reason} -> {:error, reason}
+      unexpected -> {:error, {:invalid_commit_statuses, unexpected}}
     end
   end
 
@@ -372,23 +395,39 @@ defmodule SymphonyElixir.GitHubReviewClient do
     |> Enum.sort_by(&{&1.name, &1.app_id || 0})
   end
 
-  defp match_required_contexts(contexts, %{"check_runs" => runs})
-       when is_list(contexts) and is_list(runs) do
+  defp match_required_contexts(contexts, %{"check_runs" => runs}, statuses)
+       when is_list(contexts) and is_list(runs) and is_list(statuses) do
     {:ok,
      Enum.map(contexts, fn context ->
-       matching_runs =
-         Enum.filter(runs, fn run ->
-           run["name"] == context.name and
-             (is_nil(context.app_id) or get_in(run, ["app", "id"]) == context.app_id)
-         end)
-
-       run = Enum.max_by(matching_runs, &(&1["completed_at"] || &1["started_at"] || ""), fn -> nil end)
-       %{name: context.name, state: check_run_state(run), link: run && run["details_url"]}
+       required_context_evidence(context, runs, statuses)
      end)}
   end
 
-  defp match_required_contexts(contexts, payload),
-    do: {:error, {:invalid_required_context_evidence, {contexts, payload}}}
+  defp match_required_contexts(contexts, payload, statuses),
+    do: {:error, {:invalid_required_context_evidence, {contexts, payload, statuses}}}
+
+  defp required_context_evidence(context, runs, statuses) do
+    matching_runs =
+      Enum.filter(runs, fn run ->
+        run["name"] == context.name and
+          (is_nil(context.app_id) or get_in(run, ["app", "id"]) == context.app_id)
+      end)
+
+    run = Enum.max_by(matching_runs, &(&1["completed_at"] || &1["started_at"] || ""), fn -> nil end)
+    status = if is_nil(context.app_id), do: latest_commit_status(statuses, context.name)
+
+    cond do
+      run -> %{name: context.name, state: check_run_state(run), link: run["details_url"]}
+      status -> %{name: context.name, state: normalize_check_state(status["state"]), link: status["target_url"]}
+      true -> %{name: context.name, state: :missing, link: nil}
+    end
+  end
+
+  defp latest_commit_status(statuses, context) do
+    statuses
+    |> Enum.filter(&(&1["context"] == context))
+    |> Enum.max_by(&(&1["created_at"] || &1["updated_at"] || ""), fn -> nil end)
+  end
 
   defp merge_required_checks(expected, protected) do
     (expected ++ protected)

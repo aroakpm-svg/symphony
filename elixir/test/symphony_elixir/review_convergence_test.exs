@@ -362,6 +362,30 @@ defmodule SymphonyElixir.ReviewConvergenceTest do
              })
   end
 
+  test "legacy required commit statuses are matched on the current head" do
+    contexts = [%{name: "jenkins", app_id: nil}]
+    statuses = [%{"context" => "jenkins", "state" => "success", "target_url" => "jenkins/url"}]
+
+    assert {:ok, [%{name: "jenkins", state: :success, link: "jenkins/url"}]} =
+             GitHubReviewClient.match_required_contexts_for_test(
+               contexts,
+               %{"check_runs" => []},
+               statuses
+             )
+  end
+
+  test "app-bound required contexts cannot be satisfied by a legacy commit status" do
+    contexts = [%{name: "ci", app_id: 42}]
+    statuses = [%{"context" => "ci", "state" => "success", "target_url" => "impostor"}]
+
+    assert {:ok, [%{name: "ci", state: :missing, link: nil}]} =
+             GitHubReviewClient.match_required_contexts_for_test(
+               contexts,
+               %{"check_runs" => []},
+               statuses
+             )
+  end
+
   test "unknown required-rule or check evidence fails closed" do
     assert {:error, _} = GitHubReviewClient.normalize_required_contexts_for_test(%{}, nil)
     assert {:error, _} = GitHubReviewClient.match_required_contexts_for_test([], %{})
