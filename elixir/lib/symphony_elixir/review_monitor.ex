@@ -22,7 +22,9 @@ defmodule SymphonyElixir.ReviewMonitor do
   @doc false
   @spec run_with(state(), struct() | map(), module(), module()) :: state()
   def run_with(state, settings, review_client, tracker) do
-    case tracker.fetch_routed_issues_by_states([settings.review_state]) do
+    monitored_states = [settings.review_state, settings.in_progress_state] |> Enum.uniq()
+
+    case tracker.fetch_routed_issues_by_states(monitored_states) do
       {:ok, issues} ->
         routed_issues =
           Enum.filter(issues, &Issue.routable?(&1, Config.settings!().tracker.required_labels))
@@ -61,7 +63,25 @@ defmodule SymphonyElixir.ReviewMonitor do
             head_sha: entry.head_sha || history[:last_head_sha]
         }
 
-        reconcile_snapshot(issue, entry, state, settings, review_client, tracker)
+        pending_transitions = history[:pending_transitions] || %{}
+
+        cond do
+          map_size(pending_transitions) > 0 ->
+            recover_pending_transitions(
+              issue,
+              entry,
+              state,
+              settings,
+              tracker,
+              pending_transitions
+            )
+
+          issue.state == settings.review_state ->
+            reconcile_snapshot(issue, entry, state, settings, review_client, tracker)
+
+          true ->
+            Map.delete(state, issue.id)
+        end
 
       {:error, reason} ->
         wait_for_history_error(issue, entry, state, settings, review_client, tracker, reason)
@@ -287,18 +307,63 @@ defmodule SymphonyElixir.ReviewMonitor do
   end
 
   defp transition_to_rework(issue, entry, settings, tracker, snapshot, transition_key) do
-    case tracker.update_issue_state(issue.id, settings.in_progress_state) do
-      :ok ->
-        {persisted, persist_result} =
-          dedup_action(entry, transition_key, fn ->
-            tracker.create_comment(issue.id, state_transition_comment(snapshot, transition_key))
-          end)
+    intent_key = "transition-intent:#{transition_key}"
 
-        {persisted, persist_result, true}
+    {entry, intent_result} =
+      dedup_action(entry, intent_key, fn ->
+        tracker.create_comment(
+          issue.id,
+          transition_intent_comment(snapshot, settings.in_progress_state, transition_key, intent_key)
+        )
+      end)
 
-      {:error, reason} ->
-        {entry, {:error, reason}, false}
+    if intent_result in [:ok, :deduplicated] do
+      case tracker.update_issue_state(issue.id, settings.in_progress_state) do
+        :ok -> complete_transition(issue, entry, tracker, snapshot, transition_key)
+        {:error, reason} -> {entry, {:error, reason}, false}
+      end
+    else
+      {entry, intent_result, false}
     end
+  end
+
+  defp recover_pending_transitions(issue, entry, state, settings, tracker, pending_transitions) do
+    {entry, completed_count} =
+      Enum.reduce(pending_transitions, {entry, 0}, fn {operation_id, intent}, {current, count} ->
+        {updated, _outcome, completed?} =
+          recover_pending_transition(issue, current, settings, tracker, operation_id, intent)
+
+        {updated, count + if(completed?, do: 1, else: 0)}
+      end)
+
+    Map.put(state, issue.id, %{entry | fix_rounds: entry.fix_rounds + completed_count})
+  end
+
+  defp recover_pending_transition(issue, entry, settings, tracker, operation_id, intent) do
+    snapshot = %{current_head_sha: intent.head_sha}
+    target_state = intent.target_state || settings.in_progress_state
+
+    if issue.state == target_state do
+      complete_transition(issue, entry, tracker, snapshot, operation_id)
+    else
+      move_and_complete_transition(issue, entry, tracker, snapshot, operation_id, target_state)
+    end
+  end
+
+  defp move_and_complete_transition(issue, entry, tracker, snapshot, operation_id, target_state) do
+    case tracker.update_issue_state(issue.id, target_state) do
+      :ok -> complete_transition(issue, entry, tracker, snapshot, operation_id)
+      {:error, reason} -> {entry, {:error, reason}, false}
+    end
+  end
+
+  defp complete_transition(issue, entry, tracker, snapshot, operation_id) do
+    {persisted, result} =
+      dedup_action(entry, operation_id, fn ->
+        tracker.create_comment(issue.id, state_transition_comment(snapshot, operation_id))
+      end)
+
+    {persisted, result, result in [:ok, :deduplicated]}
   end
 
   defp dedup_action(entry, key, action) do
@@ -386,7 +451,23 @@ defmodule SymphonyElixir.ReviewMonitor do
     Review Convergence Gate returned this issue to In Progress for latest-head repair.
 
     - currentHeadSha: `#{snapshot.current_head_sha}`
+    - transition-operation: `completed`
+    - transition-operation-id: `#{key}`
     - dedup-key: `#{key}`
+    """
+  end
+
+  defp transition_intent_comment(snapshot, target_state, operation_id, key) do
+    """
+    Review Convergence Gate recorded a durable rework transition intent.
+
+    - currentHeadSha: `#{snapshot.current_head_sha}`
+    - target-state: `#{target_state}`
+    - transition-operation: `intent`
+    - transition-operation-id: `#{operation_id}`
+    - dedup-key: `#{key}`
+
+    This operation is safe to resume after timeout or process restart; completion is recorded separately.
     """
   end
 

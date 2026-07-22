@@ -207,6 +207,10 @@ defmodule SymphonyElixir.GitHubReviewClient do
   @spec base_tree_oid_for_test(map()) :: {:ok, String.t()} | {:error, term()}
   def base_tree_oid_for_test(payload), do: base_tree_oid(payload)
 
+  @doc false
+  @spec encode_path_segment_for_test(String.t()) :: String.t()
+  def encode_path_segment_for_test(value), do: encode_path_segment(value)
+
   defp find_pull_request(repository, branch) do
     args = [
       "pr",
@@ -323,7 +327,7 @@ defmodule SymphonyElixir.GitHubReviewClient do
              "api",
              "--paginate",
              "--slurp",
-             "repos/#{repository}/rules/branches/#{URI.encode(base_ref_name)}?per_page=100"
+             "repos/#{repository}/rules/branches/#{encode_path_segment(base_ref_name)}?per_page=100"
            ]),
          {:ok, rule_pages} when is_list(rule_pages) <- Jason.decode(rules_output),
          rules when is_list(rules) <- List.flatten(rule_pages),
@@ -342,7 +346,7 @@ defmodule SymphonyElixir.GitHubReviewClient do
     {output, status} =
       run_with_status([
         "api",
-        "repos/#{repository}/branches/#{URI.encode(base_ref_name)}/protection/required_status_checks"
+        "repos/#{repository}/branches/#{encode_path_segment(base_ref_name)}/protection/required_status_checks"
       ])
 
     cond do
@@ -517,17 +521,59 @@ defmodule SymphonyElixir.GitHubReviewClient do
     end
   end
 
-  defp merge_pull_request_pages(pages) do
-    pull_requests = Enum.map(pages, &get_in(&1, ["data", "repository", "pullRequest"]))
+  defp merge_pull_request_pages(pages) when is_list(pages) and pages != [] do
+    Enum.reduce_while(pages, {:ok, nil, []}, fn page, {:ok, first, threads} ->
+      case validate_pull_request_page(page) do
+        {:ok, pull_request, nodes} ->
+          {:cont, {:ok, first || pull_request, [nodes | threads]}}
 
-    case pull_requests do
-      [first | _] when is_map(first) ->
-        threads = Enum.flat_map(pull_requests, &(get_in(&1 || %{}, ["reviewThreads", "nodes"]) || []))
-        {:ok, put_in(first, ["reviewThreads", "nodes"], threads)}
+        {:error, reason} ->
+          {:halt, {:error, reason}}
+      end
+    end)
+    |> case do
+      {:ok, first, pages_reversed} when is_map(first) ->
+        {:ok,
+         put_in(
+           first,
+           ["reviewThreads", "nodes"],
+           pages_reversed |> Enum.reverse() |> List.flatten()
+         )}
 
-      _ ->
-        {:error, :pull_request_not_found}
+      error ->
+        error
     end
+  end
+
+  defp merge_pull_request_pages(pages), do: {:error, {:invalid_pull_request_pages, pages}}
+
+  defp validate_pull_request_page(
+         %{
+           "data" => %{
+             "repository" => %{
+               "pullRequest" =>
+                 %{
+                   "reviewThreads" => %{
+                     "nodes" => nodes,
+                     "pageInfo" => %{"hasNextPage" => has_next_page, "endCursor" => end_cursor}
+                   }
+                 } = pull_request
+             }
+           }
+         } = page
+       ) do
+    if is_list(nodes) and is_boolean(has_next_page) and
+         (is_binary(end_cursor) or is_nil(end_cursor)) do
+      {:ok, pull_request, nodes}
+    else
+      {:error, {:invalid_pull_request_page, page}}
+    end
+  end
+
+  defp validate_pull_request_page(page), do: {:error, {:invalid_pull_request_page, page}}
+
+  defp encode_path_segment(value) do
+    URI.encode(value, &URI.char_unreserved?/1)
   end
 
   defp hydrate_pull_request_threads(repository, pull_request) do

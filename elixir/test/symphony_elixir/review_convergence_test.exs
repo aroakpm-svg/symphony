@@ -392,13 +392,14 @@ defmodule SymphonyElixir.ReviewConvergenceTest do
   end
 
   test "review thread pagination merges every page before evaluation" do
-    page = fn body ->
+    page = fn body, has_next_page, end_cursor ->
       %{
         "data" => %{
           "repository" => %{
             "pullRequest" => %{
               "reviewThreads" => %{
-                "nodes" => [%{"comments" => %{"nodes" => [%{"body" => body}]}}]
+                "nodes" => [%{"comments" => %{"nodes" => [%{"body" => body}]}}],
+                "pageInfo" => %{"hasNextPage" => has_next_page, "endCursor" => end_cursor}
               }
             }
           }
@@ -407,12 +408,59 @@ defmodule SymphonyElixir.ReviewConvergenceTest do
     end
 
     assert {:ok, pull_request} =
-             GitHubReviewClient.merge_pull_request_pages_for_test([page.("P4 first"), page.("P1 second")])
+             GitHubReviewClient.merge_pull_request_pages_for_test([
+               page.("P4 first", true, "next"),
+               page.("P1 second", false, nil)
+             ])
 
     assert Enum.map(
              pull_request["reviewThreads"]["nodes"],
              &get_in(&1, ["comments", "nodes", Access.at(0), "body"])
            ) == ["P4 first", "P1 second"]
+  end
+
+  test "every paginated pull-request page must have valid data and pagination evidence" do
+    valid = %{
+      "data" => %{
+        "repository" => %{
+          "pullRequest" => %{
+            "reviewThreads" => %{
+              "nodes" => [],
+              "pageInfo" => %{"hasNextPage" => true, "endCursor" => "next"}
+            }
+          }
+        }
+      }
+    }
+
+    for invalid <- [
+          %{"errors" => [%{"message" => "rate limited"}]},
+          %{"data" => %{"repository" => %{"pullRequest" => nil}}},
+          %{"data" => %{"repository" => %{"pullRequest" => %{"reviewThreads" => %{}}}}},
+          %{
+            "data" => %{
+              "repository" => %{
+                "pullRequest" => %{
+                  "reviewThreads" => %{
+                    "nodes" => "not-a-list",
+                    "pageInfo" => %{"hasNextPage" => false, "endCursor" => nil}
+                  }
+                }
+              }
+            }
+          }
+        ] do
+      assert {:error, {:invalid_pull_request_page, ^invalid}} =
+               GitHubReviewClient.merge_pull_request_pages_for_test([valid, invalid])
+    end
+  end
+
+  test "base refs are encoded as one GitHub API path segment" do
+    assert GitHubReviewClient.encode_path_segment_for_test("release/2026.07") ==
+             "release%2F2026.07"
+
+    assert GitHubReviewClient.encode_path_segment_for_test("release 100%/台灣") ==
+             "release%20100%25%2F%E5%8F%B0%E7%81%A3"
   end
 
   test "pull-request pagination exposes only the outer review-thread cursor" do
@@ -587,6 +635,52 @@ defmodule SymphonyElixir.ReviewConvergenceTest do
     assert last_head_sha == String.duplicate("b", 40)
     assert_receive {:history_page, nil}
     assert_receive {:history_page, "next"}
+  end
+
+  test "Linear history exposes only incomplete durable transition intents" do
+    Application.put_env(:symphony_elixir, :linear_client_module, HistoryClient)
+    head = String.duplicate("c", 40)
+
+    Process.put(:history_responses, [
+      history_page(
+        [
+          transition_intent_body("pending", head),
+          transition_intent_body("completed", head),
+          transition_completed_body("completed", head)
+        ],
+        false,
+        nil
+      )
+    ])
+
+    assert {:ok, %{pending_transitions: pending, rework_count: 1}} =
+             Adapter.review_history("issue-160")
+
+    assert pending == %{
+             "pending" => %{
+               operation_id: "pending",
+               head_sha: head,
+               target_state: "In Progress"
+             }
+           }
+  end
+
+  test "malformed or contradictory transition history fails closed" do
+    Application.put_env(:symphony_elixir, :linear_client_module, HistoryClient)
+
+    Process.put(:history_responses, [
+      history_page(
+        [
+          %{
+            "body" => "transition-operation: `intent`\ntransition-operation-id: `broken`\ndedup-key: `transition-intent:broken`"
+          }
+        ],
+        false,
+        nil
+      )
+    ])
+
+    assert {:error, :invalid_review_transition_history} = Adapter.review_history("issue-160")
   end
 
   test "structured snapshot errors fail closed without crashing comment rendering" do
@@ -790,9 +884,12 @@ defmodule SymphonyElixir.ReviewConvergenceTest do
     assert_receive {:status, _, "head", :failure, _}
     assert_receive {:comment, "issue-160", body}
     assert body =~ "P1"
+    assert_receive {:comment, "issue-160", intent_body}
+    assert intent_body =~ "transition-operation: `intent`"
     assert_receive {:state, "issue-160", "In Progress"}
     assert_receive {:comment, "issue-160", transition_body}
     assert transition_body =~ "returned this issue to In Progress"
+    assert transition_body =~ "transition-operation: `completed`"
 
     _state = ReviewMonitor.run_with(state, settings(), ReviewClient, Tracker)
     refute_receive {:comment, _, _}
@@ -827,11 +924,22 @@ defmodule SymphonyElixir.ReviewConvergenceTest do
     Application.put_env(:symphony_elixir, :review_state_result, {:error, :linear_unavailable})
 
     first_state = ReviewMonitor.run_with(%{}, settings(), ReviewClient, Tracker)
-    assert_receive {:comment, "issue-160", _body}
+    assert_receive {:comment, "issue-160", rework_body}
+    assert rework_body =~ "actionable latest-head findings"
+    assert_receive {:comment, "issue-160", intent_body}
+    assert intent_body =~ "transition-operation: `intent`"
     assert_receive {:state, "issue-160", "In Progress"}
     assert first_state["issue-160"].fix_rounds == 0
 
-    Application.put_env(:symphony_elixir, :review_history, {:ok, %{dedup: MapSet.new([key]), rework_count: 0}})
+    transition_key = ReviewConvergence.dedup_key(:state_transition, "issue-160", "head", fingerprint)
+    intent_key = "transition-intent:#{transition_key}"
+
+    Application.put_env(
+      :symphony_elixir,
+      :review_history,
+      {:ok, %{dedup: MapSet.new([key, intent_key]), rework_count: 0}}
+    )
+
     Application.put_env(:symphony_elixir, :review_state_result, :ok)
 
     second_state = ReviewMonitor.run_with(%{}, settings(), ReviewClient, Tracker)
@@ -839,8 +947,6 @@ defmodule SymphonyElixir.ReviewConvergenceTest do
     assert_receive {:comment, "issue-160", transition_body}
     assert transition_body =~ "returned this issue to In Progress"
     assert second_state["issue-160"].fix_rounds == 1
-
-    transition_key = ReviewConvergence.dedup_key(:state_transition, "issue-160", "head", fingerprint)
 
     Application.put_env(
       :symphony_elixir,
@@ -852,6 +958,68 @@ defmodule SymphonyElixir.ReviewConvergenceTest do
     refute_receive {:comment, _, _}
     refute_receive {:state, _, _}
     assert restarted["issue-160"].fix_rounds == 1
+  end
+
+  test "pending transition completes after restart even after the issue left review" do
+    operation_id = "durable-operation"
+
+    Application.put_env(:symphony_elixir, :review_issues, [
+      %{issue() | state: "In Progress"}
+    ])
+
+    Application.put_env(
+      :symphony_elixir,
+      :review_history,
+      {:ok,
+       %{
+         dedup: MapSet.new(["transition-intent:#{operation_id}"]),
+         rework_count: 0,
+         pending_transitions: %{
+           operation_id => %{
+             operation_id: operation_id,
+             head_sha: String.duplicate("a", 40),
+             target_state: "In Progress"
+           }
+         }
+       }}
+    )
+
+    state = ReviewMonitor.run_with(%{}, settings(), ReviewClient, Tracker)
+
+    assert_receive {:comment, "issue-160", completion}
+    assert completion =~ "transition-operation: `completed`"
+    assert completion =~ "transition-operation-id: `#{operation_id}`"
+    refute_receive {:state, _, _}
+    refute_receive {:status, _, _, _, _}
+    assert state["issue-160"].fix_rounds == 1
+  end
+
+  test "pending transition retries the state move before recording completion" do
+    operation_id = "retry-operation"
+
+    Application.put_env(
+      :symphony_elixir,
+      :review_history,
+      {:ok,
+       %{
+         dedup: MapSet.new(["transition-intent:#{operation_id}"]),
+         rework_count: 0,
+         pending_transitions: %{
+           operation_id => %{
+             operation_id: operation_id,
+             head_sha: String.duplicate("b", 40),
+             target_state: "In Progress"
+           }
+         }
+       }}
+    )
+
+    state = ReviewMonitor.run_with(%{}, settings(), ReviewClient, Tracker)
+
+    assert_receive {:state, "issue-160", "In Progress"}
+    assert_receive {:comment, "issue-160", completion}
+    assert completion =~ "transition-operation: `completed`"
+    assert state["issue-160"].fix_rounds == 1
   end
 
   test "waiting on environment or human judgment neither rereviews nor changes state" do
@@ -984,6 +1152,31 @@ defmodule SymphonyElixir.ReviewConvergenceTest do
 
   defp rework_body(key) do
     %{"body" => "Review Convergence Gate returned this issue to In Progress for latest-head repair.\n\ndedup-key: `#{key}`"}
+  end
+
+  defp transition_intent_body(operation_id, head_sha) do
+    %{
+      "body" => """
+      Review Convergence Gate recorded a durable rework transition intent.
+      currentHeadSha: `#{head_sha}`
+      target-state: `In Progress`
+      transition-operation: `intent`
+      transition-operation-id: `#{operation_id}`
+      dedup-key: `transition-intent:#{operation_id}`
+      """
+    }
+  end
+
+  defp transition_completed_body(operation_id, head_sha) do
+    %{
+      "body" => """
+      Review Convergence Gate returned this issue to In Progress for latest-head repair.
+      currentHeadSha: `#{head_sha}`
+      transition-operation: `completed`
+      transition-operation-id: `#{operation_id}`
+      dedup-key: `#{operation_id}`
+      """
+    }
   end
 
   defp converged_body(head_sha) do

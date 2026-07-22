@@ -349,6 +349,10 @@ Ordinary comments, display-name matches, reactions, ambiguous or conflicting evi
 closed. New
 commits invalidate old conclusions. Retry, review request, tracker write, and escalation effects
 MUST be idempotent. Failure to verify base-ref evidence or other required evidence MUST fail closed.
+Actionable-finding state changes MUST use a durable, stable operation identity: intent MUST be
+persisted before the tracker state move, completion MUST be recorded separately, and incomplete
+operations MUST remain recoverable after restart and after the issue leaves the review state. A fix
+round MUST be counted only once the target state is observed and completion is durable.
 Technical convergence MUST NOT authorize merge, deployment, or terminal tracker transitions.
 
 Note:

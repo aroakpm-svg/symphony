@@ -62,7 +62,14 @@ defmodule SymphonyElixir.Linear.Adapter do
 
   @spec review_history(String.t()) :: {:ok, map()} | {:error, term()}
   def review_history(issue_id) when is_binary(issue_id) do
-    fetch_review_history(issue_id, nil, %{dedup: MapSet.new(), rework: MapSet.new(), last_head_sha: nil})
+    fetch_review_history(issue_id, nil, %{
+      dedup: MapSet.new(),
+      rework: MapSet.new(),
+      transition_intents: %{},
+      completed_transitions: MapSet.new(),
+      invalid_transition: false,
+      last_head_sha: nil
+    })
   end
 
   @spec create_comment(String.t(), String.t()) :: :ok | {:error, term()}
@@ -91,12 +98,7 @@ defmodule SymphonyElixir.Linear.Adapter do
           fetch_review_history(issue_id, cursor, history)
 
         %{"hasNextPage" => false} ->
-          {:ok,
-           %{
-             dedup: history.dedup,
-             rework_count: MapSet.size(history.rework),
-             last_head_sha: history.last_head_sha
-           }}
+          finalize_review_history(history)
 
         _ ->
           {:error, :invalid_review_history_page_info}
@@ -110,6 +112,7 @@ defmodule SymphonyElixir.Linear.Adapter do
   defp collect_history(%{"body" => body}, history) when is_binary(body) do
     history
     |> collect_dedup(body)
+    |> collect_transition(body)
     |> collect_head_sha(body)
   end
 
@@ -145,6 +148,64 @@ defmodule SymphonyElixir.Linear.Adapter do
     |> case do
       nil -> history
       head_sha -> %{history | last_head_sha: head_sha}
+    end
+  end
+
+  defp collect_transition(history, body) do
+    operation_id = capture(body, ~r/transition-operation-id: `([^`]+)`/)
+
+    cond do
+      is_nil(operation_id) ->
+        history
+
+      String.contains?(body, "transition-operation: `intent`") ->
+        intent = %{
+          operation_id: operation_id,
+          head_sha: capture(body, ~r/currentHeadSha: `([0-9a-f]{40})`/i),
+          target_state: capture(body, ~r/target-state: `([^`]+)`/)
+        }
+
+        existing = history.transition_intents[operation_id]
+
+        invalid? =
+          is_nil(intent.head_sha) or is_nil(intent.target_state) or
+            (not is_nil(existing) and existing != intent)
+
+        %{
+          history
+          | transition_intents: Map.put(history.transition_intents, operation_id, intent),
+            invalid_transition: history.invalid_transition or invalid?
+        }
+
+      String.contains?(body, "transition-operation: `completed`") ->
+        %{history | completed_transitions: MapSet.put(history.completed_transitions, operation_id)}
+
+      true ->
+        history
+    end
+  end
+
+  defp capture(body, pattern) do
+    case Regex.run(pattern, body, capture: :all_but_first) do
+      [value] -> value
+      _ -> nil
+    end
+  end
+
+  defp finalize_review_history(history) do
+    completed_without_intent =
+      MapSet.difference(history.completed_transitions, MapSet.new(Map.keys(history.transition_intents)))
+
+    if history.invalid_transition or MapSet.size(completed_without_intent) > 0 do
+      {:error, :invalid_review_transition_history}
+    else
+      {:ok,
+       %{
+         dedup: history.dedup,
+         rework_count: MapSet.size(history.rework),
+         pending_transitions: Map.drop(history.transition_intents, MapSet.to_list(history.completed_transitions)),
+         last_head_sha: history.last_head_sha
+       }}
     end
   end
 

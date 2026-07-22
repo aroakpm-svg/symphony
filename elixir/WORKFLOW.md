@@ -439,6 +439,13 @@ reuse the same branch and PR. Waiting for staging, permissions, or human product
 keeps the issue In Review and pauses retries without repeating a full review. Technical convergence
 never authorizes merge, deployment, production changes, permission changes, or Done.
 
+The state move is a recoverable transition, not two best-effort writes. Review Monitor first
+persists a stable operation intent in Linear, then moves the issue, then persists a completion
+marker. It resumes incomplete operations while the issue is in either In Review or In Progress,
+re-reads durable history after restart, and counts exactly one fix round only after the target state
+is observed and completion is durable. Unknown responses, malformed history, or conflicting
+evidence fail closed and never consume a round.
+
 Before returning the issue to In Review, read:
 
 Linear issue comments.

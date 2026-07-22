@@ -47,6 +47,10 @@ compatibility path also verifies the unique request, time ordering, immutable Ap
 and reviewed commit. Actionable findings return the issue to the
 configured in-progress state; unverifiable evidence and repeated non-convergence remain in review
 for a deduplicated human decision. The monitor never merges or moves an issue to Done.
+Rework uses Linear comment history as a scoped durable transition log: an operation intent is
+persisted before the state change, each step is retry-safe, and an incomplete operation is resumed
+even after the issue has entered In Progress or the runtime has restarted. A fix round is counted
+only after the target state is observed and the completion marker is durable.
 Each decision publishes the fixed GitHub commit status context `Review Convergence Gate`. Configure
 that context as required only after the runtime change is deployed and live-smoked; keep existing
 human approval protection until then.

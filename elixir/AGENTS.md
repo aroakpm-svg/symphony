@@ -28,6 +28,9 @@ This directory contains the Elixir agent orchestration service that polls Linear
   checks and no unresolved P1-P4 threads. Never treat convergence as merge authorization.
 - Keep review requests, tracker comments/state writes, retries, and human escalation idempotent with
   stable keys. When evidence cannot be verified, remain in review and fail closed.
+- Rework state changes use a durable transition operation: persist intent before changing Linear,
+  record completion separately, and resume incomplete operations from both review and in-progress
+  states. Count a fix round only after the target state is observed and completion is durable.
 - Follow `docs/logging.md` for logging conventions and required issue/session context fields.
 
 ## Tests and Validation
