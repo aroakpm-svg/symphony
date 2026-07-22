@@ -119,7 +119,7 @@ defmodule SymphonyElixir.Linear.Adapter do
     case Regex.run(~r/dedup-key: `([^`]+)`/, body, capture: :all_but_first) do
       [key] ->
         rework =
-          if String.contains?(body, "Review Convergence Gate found actionable latest-head findings."),
+          if String.contains?(body, "Review Convergence Gate returned this issue to In Progress"),
             do: MapSet.put(history.rework, key),
             else: history.rework
 

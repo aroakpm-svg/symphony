@@ -267,13 +267,38 @@ defmodule SymphonyElixir.ReviewMonitor do
         tracker.create_comment(issue.id, rework_comment(snapshot, findings, key))
       end)
 
-    result =
-      if comment_result in [:ok, :deduplicated],
-        do: tracker.update_issue_state(issue.id, settings.in_progress_state),
-        else: comment_result
+    transition_key =
+      ReviewConvergence.dedup_key(:state_transition, issue.id, snapshot.current_head_sha, fingerprint)
 
-    rounds = if(comment_result == :ok, do: entry.fix_rounds + 1, else: entry.fix_rounds)
+    {updated, result, moved?} =
+      cond do
+        comment_result not in [:ok, :deduplicated] ->
+          {updated, comment_result, false}
+
+        MapSet.member?(updated.dedup, transition_key) ->
+          {updated, :deduplicated, false}
+
+        true ->
+          transition_to_rework(issue, updated, settings, tracker, snapshot, transition_key)
+      end
+
+    rounds = if(moved?, do: entry.fix_rounds + 1, else: entry.fix_rounds)
     {%{updated | fix_rounds: rounds, last_finding_fingerprint: fingerprint}, result}
+  end
+
+  defp transition_to_rework(issue, entry, settings, tracker, snapshot, transition_key) do
+    case tracker.update_issue_state(issue.id, settings.in_progress_state) do
+      :ok ->
+        {persisted, persist_result} =
+          dedup_action(entry, transition_key, fn ->
+            tracker.create_comment(issue.id, state_transition_comment(snapshot, transition_key))
+          end)
+
+        {persisted, persist_result, true}
+
+      {:error, reason} ->
+        {entry, {:error, reason}, false}
+    end
   end
 
   defp dedup_action(entry, key, action) do
@@ -353,6 +378,15 @@ defmodule SymphonyElixir.ReviewMonitor do
 
     Symphony should reuse the same branch/PR and fix only these scoped findings.
     dedup-key: `#{key}`
+    """
+  end
+
+  defp state_transition_comment(snapshot, key) do
+    """
+    Review Convergence Gate returned this issue to In Progress for latest-head repair.
+
+    - currentHeadSha: `#{snapshot.current_head_sha}`
+    - dedup-key: `#{key}`
     """
   end
 

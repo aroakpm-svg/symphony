@@ -290,6 +290,83 @@ defmodule SymphonyElixir.ReviewConvergenceTest do
            ]
   end
 
+  test "authoritative ruleset and branch-protection contexts retain app identity" do
+    rules = [
+      %{
+        "type" => "required_status_checks",
+        "parameters" => %{
+          "required_status_checks" => [
+            %{"context" => "linux", "integration_id" => 42},
+            %{"context" => "Review Convergence Gate", "integration_id" => nil}
+          ]
+        }
+      }
+    ]
+
+    protection = %{"checks" => [%{"context" => "lint", "app_id" => 7}]}
+
+    assert {:ok, contexts} =
+             GitHubReviewClient.normalize_required_contexts_for_test(rules, protection)
+
+    assert contexts == [%{name: "lint", app_id: 7}, %{name: "linux", app_id: 42}]
+  end
+
+  test "required contexts absent from current-head evidence are synthesized as missing" do
+    contexts = [%{name: "linux", app_id: 42}, %{name: "lint", app_id: nil}]
+
+    payload = %{
+      "check_runs" => [
+        %{
+          "name" => "linux",
+          "status" => "completed",
+          "conclusion" => "success",
+          "details_url" => "wrong-app",
+          "app" => %{"id" => 9}
+        }
+      ]
+    }
+
+    assert {:ok, checks} = GitHubReviewClient.match_required_contexts_for_test(contexts, payload)
+    assert checks == [%{name: "linux", state: :missing, link: nil}, %{name: "lint", state: :missing, link: nil}]
+  end
+
+  test "partial and complete current-head required evidence preserve pending and success" do
+    contexts = [%{name: "linux", app_id: 42}, %{name: "lint", app_id: nil}]
+
+    pending = %{
+      "name" => "linux",
+      "status" => "in_progress",
+      "details_url" => "linux",
+      "app" => %{"id" => 42}
+    }
+
+    success = %{
+      "name" => "lint",
+      "status" => "completed",
+      "conclusion" => "success",
+      "details_url" => "lint",
+      "app" => %{"id" => 7}
+    }
+
+    assert {:ok, [%{state: :pending}, %{state: :success}]} =
+             GitHubReviewClient.match_required_contexts_for_test(contexts, %{
+               "check_runs" => [pending, success]
+             })
+
+    assert {:ok, [%{state: :success}, %{state: :success}]} =
+             GitHubReviewClient.match_required_contexts_for_test(contexts, %{
+               "check_runs" => [
+                 pending |> Map.put("status", "completed") |> Map.put("conclusion", "success"),
+                 success
+               ]
+             })
+  end
+
+  test "unknown required-rule or check evidence fails closed" do
+    assert {:error, _} = GitHubReviewClient.normalize_required_contexts_for_test(%{}, nil)
+    assert {:error, _} = GitHubReviewClient.match_required_contexts_for_test([], %{})
+  end
+
   test "review thread pagination merges every page before evaluation" do
     page = fn body ->
       %{
@@ -690,10 +767,12 @@ defmodule SymphonyElixir.ReviewConvergenceTest do
     assert_receive {:comment, "issue-160", body}
     assert body =~ "P1"
     assert_receive {:state, "issue-160", "In Progress"}
+    assert_receive {:comment, "issue-160", transition_body}
+    assert transition_body =~ "returned this issue to In Progress"
 
     _state = ReviewMonitor.run_with(state, settings(), ReviewClient, Tracker)
     refute_receive {:comment, _, _}
-    assert_receive {:state, "issue-160", "In Progress"}
+    refute_receive {:state, _, _}
   end
 
   test "persisted rework key prevents duplicate tracker effects after restart" do
@@ -702,16 +781,18 @@ defmodule SymphonyElixir.ReviewConvergenceTest do
     key = ReviewConvergence.dedup_key(:rework, "issue-160", "head", fingerprint)
     Application.put_env(:symphony_elixir, :review_snapshot, {:ok, snapshot(%{threads: [finding]})})
 
+    transition_key = ReviewConvergence.dedup_key(:state_transition, "issue-160", "head", fingerprint)
+
     Application.put_env(
       :symphony_elixir,
       :review_history,
-      {:ok, %{dedup: MapSet.new([key]), rework_count: 1}}
+      {:ok, %{dedup: MapSet.new([key, transition_key]), rework_count: 1}}
     )
 
     _state = ReviewMonitor.run_with(%{}, settings(), ReviewClient, Tracker)
     assert_receive {:status, _, "head", :failure, _}
     refute_receive {:comment, _, _}
-    assert_receive {:state, "issue-160", "In Progress"}
+    refute_receive {:state, _, _}
   end
 
   test "state transition retries after the rework comment already persisted" do
@@ -721,16 +802,32 @@ defmodule SymphonyElixir.ReviewConvergenceTest do
     Application.put_env(:symphony_elixir, :review_snapshot, {:ok, snapshot(%{threads: [finding]})})
     Application.put_env(:symphony_elixir, :review_state_result, {:error, :linear_unavailable})
 
-    _state = ReviewMonitor.run_with(%{}, settings(), ReviewClient, Tracker)
+    first_state = ReviewMonitor.run_with(%{}, settings(), ReviewClient, Tracker)
     assert_receive {:comment, "issue-160", _body}
     assert_receive {:state, "issue-160", "In Progress"}
+    assert first_state["issue-160"].fix_rounds == 0
 
-    Application.put_env(:symphony_elixir, :review_history, {:ok, %{dedup: MapSet.new([key]), rework_count: 1}})
+    Application.put_env(:symphony_elixir, :review_history, {:ok, %{dedup: MapSet.new([key]), rework_count: 0}})
     Application.put_env(:symphony_elixir, :review_state_result, :ok)
 
-    _state = ReviewMonitor.run_with(%{}, settings(), ReviewClient, Tracker)
-    refute_receive {:comment, _, _}
+    second_state = ReviewMonitor.run_with(%{}, settings(), ReviewClient, Tracker)
     assert_receive {:state, "issue-160", "In Progress"}
+    assert_receive {:comment, "issue-160", transition_body}
+    assert transition_body =~ "returned this issue to In Progress"
+    assert second_state["issue-160"].fix_rounds == 1
+
+    transition_key = ReviewConvergence.dedup_key(:state_transition, "issue-160", "head", fingerprint)
+
+    Application.put_env(
+      :symphony_elixir,
+      :review_history,
+      {:ok, %{dedup: MapSet.new([key, transition_key]), rework_count: 1}}
+    )
+
+    restarted = ReviewMonitor.run_with(%{}, settings(), ReviewClient, Tracker)
+    refute_receive {:comment, _, _}
+    refute_receive {:state, _, _}
+    assert restarted["issue-160"].fix_rounds == 1
   end
 
   test "waiting on environment or human judgment neither rereviews nor changes state" do
@@ -862,7 +959,7 @@ defmodule SymphonyElixir.ReviewConvergenceTest do
   end
 
   defp rework_body(key) do
-    %{"body" => "Review Convergence Gate found actionable latest-head findings.\n\ndedup-key: `#{key}`"}
+    %{"body" => "Review Convergence Gate returned this issue to In Progress for latest-head repair.\n\ndedup-key: `#{key}`"}
   end
 
   defp converged_body(head_sha) do

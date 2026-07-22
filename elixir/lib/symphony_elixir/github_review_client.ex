@@ -7,6 +7,7 @@ defmodule SymphonyElixir.GitHubReviewClient do
       pullRequest(number: $number) {
         number
         headRefOid
+        baseRefName
         baseRefOid
         reviews(last: 100) {
           nodes {
@@ -67,7 +68,7 @@ defmodule SymphonyElixir.GitHubReviewClient do
     with {:ok, number} <- find_pull_request(repository, branch),
          {:ok, pull_request} <- fetch_pull_request(repository, number),
          {:ok, issue_comments} <- fetch_issue_comments(repository, number),
-         {:ok, checks} <- required_checks(repository, number, pull_request["headRefOid"]),
+         {:ok, checks} <- required_checks(repository, pull_request),
          {:ok, base_verification} <- verify_base_claims(repository, pull_request) do
       {:ok,
        pull_request
@@ -147,6 +148,16 @@ defmodule SymphonyElixir.GitHubReviewClient do
   @doc false
   @spec merge_check_run_pages_for_test([map()]) :: {:ok, map()} | {:error, term()}
   def merge_check_run_pages_for_test(pages), do: merge_check_run_pages(pages)
+
+  @doc false
+  @spec normalize_required_contexts_for_test([map()], map() | nil) :: {:ok, [map()]} | {:error, term()}
+  def normalize_required_contexts_for_test(rules, protection),
+    do: normalize_required_contexts(rules, protection)
+
+  @doc false
+  @spec match_required_contexts_for_test([map()], map()) :: {:ok, [map()]} | {:error, term()}
+  def match_required_contexts_for_test(contexts, payload),
+    do: match_required_contexts(contexts, payload)
 
   @doc false
   @spec accepted_review_for_test?(map(), String.t()) :: boolean()
@@ -260,7 +271,9 @@ defmodule SymphonyElixir.GitHubReviewClient do
     end
   end
 
-  defp required_checks(repository, pull_request_number, head_sha) do
+  defp required_checks(repository, pull_request) do
+    head_sha = pull_request["headRefOid"]
+
     with {:ok, output} <-
            run([
              "api",
@@ -273,30 +286,110 @@ defmodule SymphonyElixir.GitHubReviewClient do
          {:ok, pages} when is_list(pages) <- Jason.decode(output),
          {:ok, payload} <- merge_check_run_pages(pages),
          {:ok, expected} <- normalize_expected_checks(payload),
-         {:ok, protected} <- protected_required_checks(repository, pull_request_number) do
+         {:ok, contexts} <- required_contexts(repository, pull_request["baseRefName"]),
+         {:ok, protected} <- match_required_contexts(contexts, payload) do
       {:ok, merge_required_checks(expected, protected)}
     else
       {:error, reason} -> {:error, reason}
     end
   end
 
-  defp protected_required_checks(repository, pull_request_number) do
-    args = [
-      "pr",
-      "checks",
-      Integer.to_string(pull_request_number),
-      "--repo",
-      repository,
-      "--required",
-      "--json",
-      "name,bucket,state,link"
-    ]
+  defp required_contexts(repository, base_ref_name) when is_binary(base_ref_name) do
+    with {:ok, rules_output} <-
+           run([
+             "api",
+             "--paginate",
+             "--slurp",
+             "repos/#{repository}/rules/branches/#{URI.encode(base_ref_name)}?per_page=100"
+           ]),
+         {:ok, rule_pages} when is_list(rule_pages) <- Jason.decode(rules_output),
+         rules when is_list(rules) <- List.flatten(rule_pages),
+         {:ok, protection} <- branch_protection(repository, base_ref_name) do
+      normalize_required_contexts(rules, protection)
+    else
+      {:error, reason} -> {:error, reason}
+      unexpected -> {:error, {:invalid_required_rules, unexpected}}
+    end
+  end
 
-    {output, status} = run_with_status(args)
-    normalize_required_checks(String.trim(output), status)
+  defp required_contexts(_repository, base_ref_name),
+    do: {:error, {:invalid_base_ref_name, base_ref_name}}
+
+  defp branch_protection(repository, base_ref_name) do
+    {output, status} =
+      run_with_status([
+        "api",
+        "repos/#{repository}/branches/#{URI.encode(base_ref_name)}/protection/required_status_checks"
+      ])
+
+    cond do
+      status == 0 -> Jason.decode(output)
+      status == 1 and String.contains?(output, "Branch not protected") -> {:ok, nil}
+      status == 1 and String.contains?(output, "Not Found") -> {:ok, nil}
+      true -> {:error, {:required_status_checks_failed, status, String.trim(output)}}
+    end
   rescue
     error -> {:error, {:command_error, Exception.message(error)}}
   end
+
+  defp normalize_required_contexts(rules, protection) when is_list(rules) do
+    contexts = ruleset_required_contexts(rules) ++ protection_required_contexts(protection)
+
+    if invalid_required_contexts?(contexts) do
+      {:error, {:invalid_required_contexts, contexts}}
+    else
+      {:ok, normalize_context_identities(contexts)}
+    end
+  end
+
+  defp normalize_required_contexts(rules, protection),
+    do: {:error, {:invalid_required_contexts, {rules, protection}}}
+
+  defp ruleset_required_contexts(rules) do
+    rules
+    |> Enum.filter(&(&1["type"] == "required_status_checks"))
+    |> Enum.flat_map(&(get_in(&1, ["parameters", "required_status_checks"]) || []))
+  end
+
+  defp protection_required_contexts(nil), do: []
+
+  defp protection_required_contexts(protection) when is_map(protection),
+    do: protection["checks"] || Enum.map(protection["contexts"] || [], &%{"context" => &1})
+
+  defp protection_required_contexts(unexpected), do: [{:invalid, unexpected}]
+
+  defp invalid_required_contexts?(contexts) do
+    Enum.any?(contexts, fn
+      %{"context" => context} -> not is_binary(context)
+      _unexpected -> true
+    end)
+  end
+
+  defp normalize_context_identities(contexts) do
+    contexts
+    |> Enum.reject(&(&1["context"] == "Review Convergence Gate"))
+    |> Enum.map(&%{name: &1["context"], app_id: &1["integration_id"] || &1["app_id"]})
+    |> Enum.uniq()
+    |> Enum.sort_by(&{&1.name, &1.app_id || 0})
+  end
+
+  defp match_required_contexts(contexts, %{"check_runs" => runs})
+       when is_list(contexts) and is_list(runs) do
+    {:ok,
+     Enum.map(contexts, fn context ->
+       matching_runs =
+         Enum.filter(runs, fn run ->
+           run["name"] == context.name and
+             (is_nil(context.app_id) or get_in(run, ["app", "id"]) == context.app_id)
+         end)
+
+       run = Enum.max_by(matching_runs, &(&1["completed_at"] || &1["started_at"] || ""), fn -> nil end)
+       %{name: context.name, state: check_run_state(run), link: run && run["details_url"]}
+     end)}
+  end
+
+  defp match_required_contexts(contexts, payload),
+    do: {:error, {:invalid_required_context_evidence, {contexts, payload}}}
 
   defp merge_required_checks(expected, protected) do
     (expected ++ protected)
