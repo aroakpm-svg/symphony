@@ -210,6 +210,54 @@ defmodule SymphonyElixir.ReviewConvergenceTest do
     refute GitHubReviewClient.accepted_review_for_test?(issue_comment, "head")
   end
 
+  test "trusted current-head clean comment attests only to its unique earlier request" do
+    head = String.duplicate("a", 40)
+    request = review_request_comment(head)
+    clean = clean_attestation_comment(String.slice(head, 0, 10))
+
+    assert GitHubReviewClient.accepted_comment_attestation_for_test([request, clean], head) == clean
+
+    refute GitHubReviewClient.accepted_comment_attestation_for_test(
+             [request, %{clean | "created_at" => "2026-07-22T00:59:00Z"}],
+             head
+           )
+
+    refute GitHubReviewClient.accepted_comment_attestation_for_test(
+             [request, clean_attestation_comment("bbbbbbbbbb")],
+             head
+           )
+  end
+
+  test "comment attestation rejects duplicate requests and invalidates on a new head" do
+    head = String.duplicate("a", 40)
+    request = review_request_comment(head)
+    clean = clean_attestation_comment(String.slice(head, 0, 10))
+
+    refute GitHubReviewClient.accepted_comment_attestation_for_test([request, request, clean], head)
+    refute GitHubReviewClient.accepted_comment_attestation_for_test([request, clean], String.duplicate("b", 40))
+  end
+
+  test "comment attestation rejects impersonation, general comments, and missing app identity" do
+    head = String.duplicate("a", 40)
+    request = review_request_comment(head)
+    clean = clean_attestation_comment(String.slice(head, 0, 10))
+
+    refute GitHubReviewClient.accepted_comment_attestation_for_test(
+             [request, put_in(clean, ["user", "id"], 123)],
+             head
+           )
+
+    refute GitHubReviewClient.accepted_comment_attestation_for_test(
+             [request, Map.put(clean, "performed_via_github_app", nil)],
+             head
+           )
+
+    refute GitHubReviewClient.accepted_comment_attestation_for_test(
+             [request, %{clean | "body" => "Looks good to me\n\n**Reviewed commit:** `aaaaaaaaaa`"}],
+             head
+           )
+  end
+
   test "pending required checks returned with gh exit status 8 remain pending evidence" do
     output = Jason.encode!([%{"name" => "ci", "bucket" => "pending", "state" => "PENDING", "link" => "url"}])
 
@@ -377,7 +425,8 @@ defmodule SymphonyElixir.ReviewConvergenceTest do
 
   test "a persisted review-request key prevents a duplicate after monitor restart" do
     Application.put_env(:symphony_elixir, :review_snapshot, {:ok, snapshot(%{reviewed_head_sha: nil})})
-    key = ReviewConvergence.dedup_key(:review_request, "issue-160", "head", :codex)
+    digest = ReviewConvergence.dedup_key(:review_request, "issue-160", "head", :codex)
+    key = "review-request:issue-160:head:#{digest}"
     Application.put_env(:symphony_elixir, :existing_review_keys, [key])
 
     _state = ReviewMonitor.run_with(%{}, settings(), ReviewClient, Tracker)
@@ -755,6 +804,29 @@ defmodule SymphonyElixir.ReviewConvergenceTest do
       in_progress_state: "In Progress",
       max_fix_rounds: 3,
       human_owner: "owner"
+    }
+  end
+
+  defp review_request_comment(head) do
+    %{
+      "body" => "@codex review\n\ndedup-key: `aro-160-review-#{head}`",
+      "created_at" => "2026-07-22T01:00:00Z"
+    }
+  end
+
+  defp clean_attestation_comment(reviewed_prefix) do
+    %{
+      "body" => "Codex Review: Didn't find any major issues. Another round soon, please!\n\n**Reviewed commit:** `#{reviewed_prefix}`",
+      "created_at" => "2026-07-22T01:05:00Z",
+      "user" => %{
+        "login" => "chatgpt-codex-connector[bot]",
+        "type" => "Bot",
+        "id" => 199_175_422
+      },
+      "performed_via_github_app" => %{
+        "slug" => "chatgpt-codex-connector",
+        "id" => 1_144_995
+      }
     }
   end
 

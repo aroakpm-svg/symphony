@@ -422,9 +422,13 @@ Review Feedback Intake
 Review Convergence Runtime
 
 After a PR enters In Review, Symphony's Review Monitor owns machine-verifiable convergence. A
-technical pass requires the exact latest head to have a formal `No major issues found` review,
-all required checks passing, and zero unresolved actionable P1-P4 threads. Old-head reviews,
-comments, and emoji reactions never count. A new head invalidates the prior result and triggers one
+technical pass requires the exact latest head to have a clean review result, all required checks
+passing, and zero unresolved actionable P1-P4 threads. A formal `PullRequestReview` is preferred.
+Because Codex may emit its clean result as an issue comment, the runtime accepts that compatibility
+shape only when there is exactly one persisted request bound to the full current head, the response
+comes later from the allowlisted Codex App and bot database identities, and its explicit reviewed
+commit matches the current head. Ordinary comments, display names, emoji, old heads, missing or
+conflicting evidence never count. A new head invalidates the prior result and triggers one
 deduplicated `@codex review` request.
 
 The runtime publishes `Review Convergence Gate` as a commit status for ruleset enforcement. That

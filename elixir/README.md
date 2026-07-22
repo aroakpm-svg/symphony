@@ -41,8 +41,10 @@ blocker so worker capacity is not released while cleanup is still running.
 
 When `review_convergence.enabled` is true, each poll also monitors issues in the configured review
 state. The monitor resolves the PR from the issue branch, invalidates old-head reviews, requests one
-`@codex review` per head, and requires a formal current-head `No major issues found` review, passing
-required checks, and no unresolved P1-P4 review thread. Actionable findings return the issue to the
+`@codex review` per head, and requires a current-head clean review result, passing required checks,
+and no unresolved P1-P4 review thread. Formal reviews are preferred; the restricted issue-comment
+compatibility path also verifies the unique request, time ordering, immutable App/bot identities,
+and reviewed commit. Actionable findings return the issue to the
 configured in-progress state; unverifiable evidence and repeated non-convergence remain in review
 for a deduplicated human decision. The monitor never merges or moves an issue to Done.
 Each decision publishes the fixed GitHub commit status context `Review Convergence Gate`. Configure

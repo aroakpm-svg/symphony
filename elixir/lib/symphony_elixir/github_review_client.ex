@@ -55,6 +55,8 @@ defmodule SymphonyElixir.GitHubReviewClient do
     %{login: "chatgpt-codex-connector", type: "Bot", database_id: 199_175_422},
     %{login: "chatgpt-codex-connector[bot]", type: "Bot", database_id: 199_175_422}
   ]
+  @trusted_comment_app %{slug: "chatgpt-codex-connector", id: 1_144_995}
+  @trusted_comment_user %{login: "chatgpt-codex-connector[bot]", type: "Bot", id: 199_175_422}
   @expected_checks [
     %{name: "make-all", app_slug: "github-actions", app_id: 15_368},
     %{name: "validate-pr-description", app_slug: "github-actions", app_id: 15_368}
@@ -64,11 +66,12 @@ defmodule SymphonyElixir.GitHubReviewClient do
   def snapshot(repository, branch) when is_binary(repository) and is_binary(branch) do
     with {:ok, number} <- find_pull_request(repository, branch),
          {:ok, pull_request} <- fetch_pull_request(repository, number),
+         {:ok, issue_comments} <- fetch_issue_comments(repository, number),
          {:ok, checks} <- required_checks(repository, number, pull_request["headRefOid"]),
          {:ok, base_verification} <- verify_base_claims(repository, pull_request) do
       {:ok,
        pull_request
-       |> normalize_snapshot(checks, base_verification)
+       |> normalize_snapshot(checks, base_verification, issue_comments)
        |> Map.put(:repository, repository)
        |> Map.put(:pull_request_number, number)}
     end
@@ -148,6 +151,11 @@ defmodule SymphonyElixir.GitHubReviewClient do
   @doc false
   @spec accepted_review_for_test?(map(), String.t()) :: boolean()
   def accepted_review_for_test?(review, head_sha), do: accepted_review?(review, head_sha)
+
+  @doc false
+  @spec accepted_comment_attestation_for_test([map()], String.t()) :: map() | nil
+  def accepted_comment_attestation_for_test(comments, head_sha),
+    do: accepted_comment_attestation(comments, head_sha)
 
   @doc false
   @spec merge_pull_request_pages_for_test([map()]) :: {:ok, map()} | {:error, term()}
@@ -234,6 +242,21 @@ defmodule SymphonyElixir.GitHubReviewClient do
       nil -> {:error, :pull_request_not_found}
       {:ok, unexpected} -> {:error, {:invalid_pull_request_payload, unexpected}}
       {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp fetch_issue_comments(repository, number) do
+    case run(["api", "--paginate", "--slurp", "repos/#{repository}/issues/#{number}/comments?per_page=100"]) do
+      {:ok, output} ->
+        with {:ok, pages} when is_list(pages) <- Jason.decode(output),
+             comments when is_list(comments) <- List.flatten(pages) do
+          {:ok, comments}
+        else
+          unexpected -> {:error, {:invalid_issue_comments, unexpected}}
+        end
+
+      {:error, reason} ->
+        {:error, reason}
     end
   end
 
@@ -544,16 +567,22 @@ defmodule SymphonyElixir.GitHubReviewClient do
     String.contains?(value, "/") and !String.contains?(value, " ")
   end
 
-  defp normalize_snapshot(pull_request, checks, base_verification) do
+  defp normalize_snapshot(pull_request, checks, base_verification, issue_comments) do
     head_sha = pull_request["headRefOid"]
     threads = current_head_threads(pull_request)
     reviews = get_in(pull_request, ["reviews", "nodes"]) || []
     accepted_review = Enum.find(Enum.reverse(reviews), &accepted_review?(&1, head_sha))
 
+    comment_attestation =
+      if accepted_review, do: nil, else: accepted_comment_attestation(issue_comments, head_sha)
+
+    reviewed_head_sha =
+      if accepted_review || comment_attestation, do: head_sha, else: nil
+
     %{
       current_head_sha: head_sha,
-      reviewed_head_sha: get_in(accepted_review || %{}, ["commit", "oid"]),
-      review_result: if(accepted_review, do: :no_major_issues, else: :missing),
+      reviewed_head_sha: reviewed_head_sha,
+      review_result: if(reviewed_head_sha, do: :no_major_issues, else: :missing),
       base_ref_oid: pull_request["baseRefOid"],
       base_verification_required: base_verification.required,
       base_verification: base_verification.result,
@@ -568,6 +597,65 @@ defmodule SymphonyElixir.GitHubReviewClient do
       review["state"] in ["APPROVED", "COMMENTED"] and
       trusted_reviewer?(review["author"]) and
       String.contains?(review["body"] || "", "No major issues found")
+  end
+
+  defp accepted_comment_attestation(comments, head_sha)
+       when is_list(comments) and is_binary(head_sha) do
+    requests = Enum.filter(comments, &current_head_review_request?(&1, head_sha))
+
+    with [request] <- requests,
+         {:ok, request_time, _} <- DateTime.from_iso8601(request["created_at"] || ""),
+         attestation when is_map(attestation) <- first_trusted_response(comments, request_time),
+         true <- clean_comment_attestation?(attestation, head_sha, request_time) do
+      attestation
+    else
+      _ -> nil
+    end
+  end
+
+  defp accepted_comment_attestation(_comments, _head_sha), do: nil
+
+  defp first_trusted_response(comments, request_time) do
+    comments
+    |> Enum.filter(fn comment ->
+      with {:ok, comment_time, _} <- DateTime.from_iso8601(comment["created_at"] || "") do
+        trusted_comment_author?(comment) and DateTime.compare(comment_time, request_time) == :gt
+      else
+        _ -> false
+      end
+    end)
+    |> Enum.min_by(& &1["created_at"], fn -> nil end)
+  end
+
+  defp current_head_review_request?(comment, head_sha) do
+    body = comment["body"] || ""
+
+    Regex.match?(~r/^@codex review(?:\r?\n|$)/, body) and
+      String.contains?(body, "dedup-key:") and
+      String.contains?(body, head_sha)
+  end
+
+  defp clean_comment_attestation?(comment, head_sha, request_time) do
+    with {:ok, comment_time, _} <- DateTime.from_iso8601(comment["created_at"] || ""),
+         true <- DateTime.compare(comment_time, request_time) == :gt,
+         true <- trusted_comment_author?(comment),
+         [reviewed_prefix] <- Regex.run(~r/\*\*Reviewed commit:\*\* `([0-9a-f]{10,40})`/i, comment["body"] || "", capture: :all_but_first) do
+      String.starts_with?(head_sha, String.downcase(reviewed_prefix)) and
+        Regex.match?(~r/^Codex Review: Didn't find any major issues\./, comment["body"] || "")
+    else
+      _ -> false
+    end
+  end
+
+  defp trusted_comment_author?(comment) do
+    user = comment["user"] || %{}
+    app = comment["performed_via_github_app"] || %{}
+
+    user["login"] == @trusted_comment_user.login and
+      user["type"] == @trusted_comment_user.type and
+      user["id"] == @trusted_comment_user.id and
+      app["slug"] == @trusted_comment_app.slug and
+      app["id"] == @trusted_comment_app.id
   end
 
   defp trusted_reviewer?(author) when is_map(author) do

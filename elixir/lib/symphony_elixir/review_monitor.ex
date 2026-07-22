@@ -138,7 +138,8 @@ defmodule SymphonyElixir.ReviewMonitor do
   defp invalidate_old_head(entry, current_head), do: Map.put(entry, :head_sha, current_head)
 
   defp apply_decision({:request_review, _evidence}, issue, entry, settings, review_client, _tracker, snapshot) do
-    key = ReviewConvergence.dedup_key(:review_request, issue.id, snapshot.current_head_sha, :codex)
+    digest = ReviewConvergence.dedup_key(:review_request, issue.id, snapshot.current_head_sha, :codex)
+    key = "review-request:#{issue.id}:#{snapshot.current_head_sha}:#{digest}"
 
     with {entry, :ok} <-
            ensure_published_status(
