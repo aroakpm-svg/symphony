@@ -782,7 +782,7 @@ defmodule SymphonyElixir.GitHubReviewClient do
 
     with [request] <- requests,
          {:ok, request_time, _} <- DateTime.from_iso8601(request["created_at"] || ""),
-         attestation when is_map(attestation) <- first_trusted_response(comments, request_time),
+         [attestation] <- trusted_responses(comments, request_time),
          true <- clean_comment_attestation?(attestation, head_sha, request_time) do
       attestation
     else
@@ -792,7 +792,7 @@ defmodule SymphonyElixir.GitHubReviewClient do
 
   defp accepted_comment_attestation(_comments, _head_sha), do: nil
 
-  defp first_trusted_response(comments, request_time) do
+  defp trusted_responses(comments, request_time) do
     comments
     |> Enum.filter(fn comment ->
       case DateTime.from_iso8601(comment["created_at"] || "") do
@@ -803,7 +803,7 @@ defmodule SymphonyElixir.GitHubReviewClient do
           false
       end
     end)
-    |> Enum.min_by(& &1["created_at"], fn -> nil end)
+    |> Enum.sort_by(& &1["created_at"])
   end
 
   defp current_head_review_request?(comment, head_sha) do

@@ -237,6 +237,18 @@ defmodule SymphonyElixir.ReviewConvergenceTest do
     refute GitHubReviewClient.accepted_comment_attestation_for_test([request, clean], String.duplicate("b", 40))
   end
 
+  test "comment attestation rejects multiple trusted responses after one request" do
+    head = String.duplicate("a", 40)
+    request = review_request_comment(head)
+    clean = clean_attestation_comment(String.slice(head, 0, 10))
+    later = %{clean | "created_at" => "2026-07-22T01:06:00Z"}
+
+    refute GitHubReviewClient.accepted_comment_attestation_for_test(
+             [request, clean, later],
+             head
+           )
+  end
+
   test "comment attestation rejects impersonation, general comments, and missing app identity" do
     head = String.duplicate("a", 40)
     request = review_request_comment(head)
@@ -1020,6 +1032,47 @@ defmodule SymphonyElixir.ReviewConvergenceTest do
     assert_receive {:comment, "issue-160", completion}
     assert completion =~ "transition-operation: `completed`"
     assert state["issue-160"].fix_rounds == 1
+  end
+
+  test "ordinary In Progress issue ignores review-history outages" do
+    Application.put_env(:symphony_elixir, :review_issues, [
+      %{issue() | state: "In Progress"}
+    ])
+
+    Application.put_env(:symphony_elixir, :review_history, {:error, :linear_unavailable})
+
+    assert ReviewMonitor.run_with(%{}, settings(), ReviewClient, Tracker) == %{}
+    refute_receive {:comment, _, _}
+    refute_receive {:status, _, _, _, _}
+    refute_receive {:state, _, _}
+  end
+
+  test "known pending transition still fails closed on a history outage" do
+    Application.put_env(:symphony_elixir, :review_issues, [
+      %{issue() | state: "In Progress"}
+    ])
+
+    Application.put_env(:symphony_elixir, :review_history, {:error, :linear_unavailable})
+    Application.put_env(:symphony_elixir, :review_snapshot, {:error, :github_unavailable})
+
+    state = %{
+      "issue-160" => %{
+        dedup: MapSet.new(),
+        fix_rounds: 0,
+        head_sha: "head",
+        fetch_failed: false,
+        waiting: false,
+        review_requested: false,
+        last_finding_fingerprint: nil,
+        pending_transitions: %{"operation" => %{target_state: "In Progress"}}
+      }
+    }
+
+    result = ReviewMonitor.run_with(state, settings(), ReviewClient, Tracker)
+    assert_receive {:status, _, "head", :error, _}
+    assert_receive {:comment, "issue-160", body}
+    assert body =~ "linear_unavailable"
+    assert result["issue-160"].waiting
   end
 
   test "waiting on environment or human judgment neither rereviews nor changes state" do

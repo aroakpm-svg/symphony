@@ -64,6 +64,7 @@ defmodule SymphonyElixir.ReviewMonitor do
         }
 
         pending_transitions = history[:pending_transitions] || %{}
+        entry = Map.put(entry, :pending_transitions, pending_transitions)
 
         cond do
           map_size(pending_transitions) > 0 ->
@@ -84,11 +85,21 @@ defmodule SymphonyElixir.ReviewMonitor do
         end
 
       {:error, reason} ->
-        wait_for_history_error(issue, entry, state, settings, review_client, tracker, reason)
+        handle_history_error(issue, entry, state, settings, review_client, tracker, reason)
     end
   end
 
   defp reconcile_issue(_issue, state, _settings, _review_client, _tracker), do: state
+
+  defp handle_history_error(issue, entry, state, settings, review_client, tracker, reason) do
+    pending? = map_size(entry[:pending_transitions] || %{}) > 0
+
+    if issue.state == settings.review_state or pending? do
+      wait_for_history_error(issue, entry, state, settings, review_client, tracker, reason)
+    else
+      Map.delete(state, issue.id)
+    end
+  end
 
   defp clear_known_successes(state, settings, review_client) do
     Map.new(state, fn {issue_id, entry} ->
@@ -328,15 +339,24 @@ defmodule SymphonyElixir.ReviewMonitor do
   end
 
   defp recover_pending_transitions(issue, entry, state, settings, tracker, pending_transitions) do
-    {entry, completed_count} =
-      Enum.reduce(pending_transitions, {entry, 0}, fn {operation_id, intent}, {current, count} ->
+    {entry, completed_count, remaining} =
+      Enum.reduce(pending_transitions, {entry, 0, %{}}, fn {operation_id, intent}, {current, count, remaining} ->
         {updated, _outcome, completed?} =
           recover_pending_transition(issue, current, settings, tracker, operation_id, intent)
 
-        {updated, count + if(completed?, do: 1, else: 0)}
+        if completed? do
+          {updated, count + 1, remaining}
+        else
+          {updated, count, Map.put(remaining, operation_id, intent)}
+        end
       end)
 
-    Map.put(state, issue.id, %{entry | fix_rounds: entry.fix_rounds + completed_count})
+    entry =
+      entry
+      |> Map.put(:fix_rounds, entry.fix_rounds + completed_count)
+      |> Map.put(:pending_transitions, remaining)
+
+    Map.put(state, issue.id, entry)
   end
 
   defp recover_pending_transition(issue, entry, settings, tracker, operation_id, intent) do
