@@ -329,10 +329,14 @@ defmodule SymphonyElixir.ReviewMonitor do
       end)
 
     if intent_result in [:ok, :deduplicated] do
-      case tracker.update_issue_state(issue.id, settings.in_progress_state) do
-        :ok -> complete_transition(issue, entry, tracker, snapshot, transition_key)
-        {:error, reason} -> {entry, {:error, reason}, false}
-      end
+      move_and_complete_transition(
+        issue,
+        entry,
+        tracker,
+        snapshot,
+        transition_key,
+        settings.in_progress_state
+      )
     else
       {entry, intent_result, false}
     end
@@ -371,9 +375,19 @@ defmodule SymphonyElixir.ReviewMonitor do
   end
 
   defp move_and_complete_transition(issue, entry, tracker, snapshot, operation_id, target_state) do
-    case tracker.update_issue_state(issue.id, target_state) do
-      :ok -> complete_transition(issue, entry, tracker, snapshot, operation_id)
+    with :ok <- tracker.update_issue_state(issue.id, target_state),
+         :ok <- verify_issue_state(tracker, issue.id, target_state) do
+      complete_transition(issue, entry, tracker, snapshot, operation_id)
+    else
       {:error, reason} -> {entry, {:error, reason}, false}
+    end
+  end
+
+  defp verify_issue_state(tracker, issue_id, target_state) do
+    case tracker.fetch_issue_states_by_ids([issue_id]) do
+      {:ok, [%Issue{id: ^issue_id, state: ^target_state}]} -> :ok
+      {:ok, issues} -> {:error, {:state_transition_unverified, target_state, issues}}
+      {:error, reason} -> {:error, {:state_transition_verification_failed, reason}}
     end
   end
 

@@ -661,7 +661,7 @@ defmodule SymphonyElixir.GitHubReviewClient do
   end
 
   defp verify_base_claims(repository, pull_request) do
-    threads = current_head_threads(pull_request)
+    threads = get_in(pull_request, ["reviewThreads", "nodes"]) || []
     head_sha = pull_request["headRefOid"]
     paths = base_missing_paths(threads, head_sha)
     claim_present = base_missing_claim?(threads, head_sha)
@@ -872,22 +872,29 @@ defmodule SymphonyElixir.GitHubReviewClient do
 
   defp trusted_reviewer?(_author), do: false
 
-  defp normalize_threads(threads, head_sha) do
+  defp normalize_threads(threads, _head_sha) do
     Enum.flat_map(threads, fn thread ->
-      (get_in(thread, ["comments", "nodes"]) || [])
-      |> Enum.filter(&(get_in(&1, ["commit", "oid"]) == head_sha))
-      |> Enum.map(fn comment ->
+      comment =
+        (get_in(thread, ["comments", "nodes"]) || [])
+        |> Enum.reverse()
+        |> Enum.find(&(not is_nil(priority(&1["body"] || ""))))
+
+      if comment do
         body = comment["body"] || ""
 
-        %{
-          resolved: thread["isResolved"] == true,
-          priority: priority(body),
-          body: body,
-          path: comment["path"],
-          url: comment["url"],
-          commit_sha: get_in(comment, ["commit", "oid"])
-        }
-      end)
+        [
+          %{
+            resolved: thread["isResolved"] == true,
+            priority: priority(body),
+            body: body,
+            path: comment["path"],
+            url: comment["url"],
+            commit_sha: get_in(comment, ["commit", "oid"])
+          }
+        ]
+      else
+        []
+      end
     end)
   end
 

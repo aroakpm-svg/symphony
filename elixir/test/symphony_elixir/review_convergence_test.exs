@@ -40,6 +40,18 @@ defmodule SymphonyElixir.ReviewConvergenceTest do
     @spec fetch_issues_by_states([String.t()]) :: {:ok, [Issue.t()]}
     def fetch_issues_by_states(_states), do: {:ok, Application.fetch_env!(:symphony_elixir, :review_issues)}
 
+    @spec fetch_issue_states_by_ids([String.t()]) :: {:ok, [Issue.t()]} | {:error, term()}
+    def fetch_issue_states_by_ids([issue_id]) do
+      case Application.get_env(:symphony_elixir, :verified_issue_state, "In Progress") do
+        {:error, reason} ->
+          {:error, reason}
+
+        state ->
+          issue = Application.fetch_env!(:symphony_elixir, :review_issues) |> hd()
+          {:ok, [%{issue | id: issue_id, state: state}]}
+      end
+    end
+
     @spec review_history(String.t()) :: {:ok, map()} | {:error, term()}
     def review_history(_issue_id),
       do: Application.get_env(:symphony_elixir, :review_history, {:ok, %{dedup: MapSet.new(), rework_count: 0}})
@@ -74,6 +86,7 @@ defmodule SymphonyElixir.ReviewConvergenceTest do
       Application.delete_env(:symphony_elixir, :review_history)
       Application.delete_env(:symphony_elixir, :linear_client_module)
       Application.delete_env(:symphony_elixir, :review_state_result)
+      Application.delete_env(:symphony_elixir, :verified_issue_state)
     end)
   end
 
@@ -511,7 +524,7 @@ defmodule SymphonyElixir.ReviewConvergenceTest do
     assert query =~ "comments(first: 100)"
   end
 
-  test "only current-head review threads are actionable" do
+  test "unresolved actionable threads remain blocking across head changes" do
     thread = fn commit, body ->
       %{
         "isResolved" => false,
@@ -523,7 +536,10 @@ defmodule SymphonyElixir.ReviewConvergenceTest do
       }
     end
 
-    assert [%{body: "P2 current", commit_sha: "new"}] =
+    assert [
+             %{body: "P1 stale", commit_sha: "old"},
+             %{body: "P2 current", commit_sha: "new"}
+           ] =
              GitHubReviewClient.normalize_threads_for_test(
                [thread.("old", "P1 stale"), thread.("new", "P2 current")],
                "new"
@@ -998,6 +1014,21 @@ defmodule SymphonyElixir.ReviewConvergenceTest do
     refute_receive {:comment, _, _}
     refute_receive {:state, _, _}
     assert restarted["issue-160"].fix_rounds == 1
+  end
+
+  test "state transition completion requires authoritative target-state readback" do
+    finding = %{resolved: false, priority: 1, body: "P1 state race", url: "thread"}
+    Application.put_env(:symphony_elixir, :review_snapshot, {:ok, snapshot(%{threads: [finding]})})
+    Application.put_env(:symphony_elixir, :verified_issue_state, "In Review")
+
+    state = ReviewMonitor.run_with(%{}, settings(), ReviewClient, Tracker)
+
+    assert_receive {:comment, "issue-160", _rework}
+    assert_receive {:comment, "issue-160", intent}
+    assert intent =~ "transition-operation: `intent`"
+    assert_receive {:state, "issue-160", "In Progress"}
+    refute_receive {:comment, "issue-160", _completion}
+    assert state["issue-160"].fix_rounds == 0
   end
 
   test "pending transition completes after restart even after the issue left review" do
