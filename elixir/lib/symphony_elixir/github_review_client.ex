@@ -618,10 +618,12 @@ defmodule SymphonyElixir.GitHubReviewClient do
   defp first_trusted_response(comments, request_time) do
     comments
     |> Enum.filter(fn comment ->
-      with {:ok, comment_time, _} <- DateTime.from_iso8601(comment["created_at"] || "") do
-        trusted_comment_author?(comment) and DateTime.compare(comment_time, request_time) == :gt
-      else
-        _ -> false
+      case DateTime.from_iso8601(comment["created_at"] || "") do
+        {:ok, comment_time, _} ->
+          trusted_comment_author?(comment) and DateTime.compare(comment_time, request_time) == :gt
+
+        _ ->
+          false
       end
     end)
     |> Enum.min_by(& &1["created_at"], fn -> nil end)
