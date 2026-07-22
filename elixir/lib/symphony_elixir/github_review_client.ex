@@ -427,7 +427,7 @@ defmodule SymphonyElixir.GitHubReviewClient do
           (is_nil(context.app_id) or get_in(run, ["app", "id"]) == context.app_id)
       end)
 
-    run = Enum.max_by(matching_runs, &(&1["completed_at"] || &1["started_at"] || ""), fn -> nil end)
+    run = latest_check_run(matching_runs)
     status = if is_nil(context.app_id), do: latest_commit_status(statuses, context.name)
 
     cond do
@@ -441,6 +441,14 @@ defmodule SymphonyElixir.GitHubReviewClient do
     statuses
     |> Enum.filter(&(&1["context"] == context))
     |> Enum.max_by(&(&1["created_at"] || &1["updated_at"] || ""), fn -> nil end)
+  end
+
+  defp latest_check_run(runs) do
+    Enum.max_by(
+      runs,
+      &(&1["completed_at"] || &1["started_at"] || &1["created_at"] || ""),
+      fn -> nil end
+    )
   end
 
   defp merge_required_checks(expected, protected) do
@@ -468,11 +476,13 @@ defmodule SymphonyElixir.GitHubReviewClient do
     checks =
       Enum.map(@expected_checks, fn expected ->
         run =
-          Enum.find(runs, fn candidate ->
+          runs
+          |> Enum.filter(fn candidate ->
             candidate["name"] == expected.name and
               get_in(candidate, ["app", "slug"]) == expected.app_slug and
               get_in(candidate, ["app", "id"]) == expected.app_id
           end)
+          |> latest_check_run()
 
         %{
           name: expected.name,

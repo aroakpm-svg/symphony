@@ -415,6 +415,34 @@ defmodule SymphonyElixir.ReviewConvergenceTest do
              })
   end
 
+  test "a newer queued rerun keeps a required context pending" do
+    contexts = [%{name: "linux", app_id: 42}]
+
+    old_success = %{
+      "name" => "linux",
+      "status" => "completed",
+      "conclusion" => "success",
+      "completed_at" => "2026-07-22T01:05:00Z",
+      "created_at" => "2026-07-22T01:00:00Z",
+      "details_url" => "old",
+      "app" => %{"id" => 42}
+    }
+
+    queued_rerun = %{
+      "name" => "linux",
+      "status" => "queued",
+      "created_at" => "2026-07-22T01:06:00Z",
+      "details_url" => "new",
+      "app" => %{"id" => 42}
+    }
+
+    assert {:ok, [%{state: :pending, link: "new"}]} =
+             GitHubReviewClient.match_required_contexts_for_test(
+               contexts,
+               %{"check_runs" => [old_success, queued_rerun]}
+             )
+  end
+
   test "legacy required commit statuses are matched on the current head" do
     contexts = [%{name: "jenkins", app_id: nil}]
     statuses = [%{"context" => "jenkins", "state" => "success", "target_url" => "jenkins/url"}]
