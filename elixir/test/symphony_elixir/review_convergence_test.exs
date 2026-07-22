@@ -609,6 +609,44 @@ defmodule SymphonyElixir.ReviewConvergenceTest do
     assert [%{body: "P1 unresolved on prior head", commit_sha: "old"}] = snapshot.threads
   end
 
+  test "a conflicting trusted formal review blocks comment-attestation fallback" do
+    head = String.duplicate("d", 40)
+    request = review_request_comment(head)
+    clean_comment = clean_attestation_comment(head)
+
+    pull_request = %{
+      "headRefOid" => head,
+      "baseRefOid" => "base",
+      "reviewThreads" => %{"nodes" => []},
+      "reviews" => %{
+        "nodes" => [
+          %{
+            "commit" => %{"oid" => head},
+            "state" => "CHANGES_REQUESTED",
+            "body" => "P1 remains",
+            "submittedAt" => "2026-07-22T01:10:00Z",
+            "author" => %{
+              "login" => "chatgpt-codex-connector[bot]",
+              "__typename" => "Bot",
+              "databaseId" => 199_175_422
+            }
+          }
+        ]
+      }
+    }
+
+    snapshot =
+      GitHubReviewClient.normalize_snapshot_for_test(
+        pull_request,
+        [%{name: "make-all", state: :success}],
+        %{required: false, result: :verified},
+        [request, clean_comment]
+      )
+
+    assert snapshot.reviewed_head_sha == nil
+    assert snapshot.review_result == :missing
+  end
+
   test "a current-head follow-up on an older thread remains actionable" do
     thread = %{
       "isResolved" => false,

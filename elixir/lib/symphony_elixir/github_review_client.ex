@@ -769,10 +769,13 @@ defmodule SymphonyElixir.GitHubReviewClient do
     threads = get_in(pull_request, ["reviewThreads", "nodes"]) || []
     current_threads = current_head_threads(pull_request)
     reviews = get_in(pull_request, ["reviews", "nodes"]) || []
+    trusted_current_head_reviews = trusted_current_head_reviews(reviews, head_sha)
     accepted_review = latest_accepted_review(reviews, head_sha)
 
     comment_attestation =
-      if accepted_review, do: nil, else: accepted_comment_attestation(issue_comments, head_sha)
+      if accepted_review || trusted_current_head_reviews != [],
+        do: nil,
+        else: accepted_comment_attestation(issue_comments, head_sha)
 
     reviewed_head_sha =
       if accepted_review || comment_attestation, do: head_sha, else: nil
@@ -798,10 +801,7 @@ defmodule SymphonyElixir.GitHubReviewClient do
   end
 
   defp latest_accepted_review(reviews, head_sha) do
-    trusted_current_head =
-      Enum.filter(reviews, fn review ->
-        get_in(review, ["commit", "oid"]) == head_sha and trusted_reviewer?(review["author"])
-      end)
+    trusted_current_head = trusted_current_head_reviews(reviews, head_sha)
 
     with [_ | _] <- trusted_current_head,
          true <- Enum.all?(trusted_current_head, &valid_review_time?/1),
@@ -811,6 +811,12 @@ defmodule SymphonyElixir.GitHubReviewClient do
     else
       _ -> nil
     end
+  end
+
+  defp trusted_current_head_reviews(reviews, head_sha) do
+    Enum.filter(reviews, fn review ->
+      get_in(review, ["commit", "oid"]) == head_sha and trusted_reviewer?(review["author"])
+    end)
   end
 
   defp valid_review_time?(review) do
