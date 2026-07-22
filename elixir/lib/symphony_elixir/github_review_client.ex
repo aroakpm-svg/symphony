@@ -325,7 +325,6 @@ defmodule SymphonyElixir.GitHubReviewClient do
     cond do
       status == 0 -> Jason.decode(output)
       status == 1 and String.contains?(output, "Branch not protected") -> {:ok, nil}
-      status == 1 and String.contains?(output, "Not Found") -> {:ok, nil}
       true -> {:error, {:required_status_checks_failed, status, String.trim(output)}}
     end
   rescue
