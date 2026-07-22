@@ -66,7 +66,7 @@ defmodule SymphonyElixir.Linear.Adapter do
       dedup: MapSet.new(),
       rework: MapSet.new(),
       transition_intents: %{},
-      completed_transitions: MapSet.new(),
+      completed_transitions: %{},
       invalid_transition: false,
       last_head_sha: nil
     })
@@ -178,7 +178,23 @@ defmodule SymphonyElixir.Linear.Adapter do
         }
 
       String.contains?(body, "transition-operation: `completed`") ->
-        %{history | completed_transitions: MapSet.put(history.completed_transitions, operation_id)}
+        completion = %{
+          operation_id: operation_id,
+          head_sha: capture(body, ~r/currentHeadSha: `([0-9a-f]{40})`/i),
+          dedup_key: capture(body, ~r/dedup-key: `([^`]+)`/)
+        }
+
+        existing = history.completed_transitions[operation_id]
+
+        invalid? =
+          is_nil(completion.head_sha) or completion.dedup_key != operation_id or
+            (not is_nil(existing) and existing != completion)
+
+        %{
+          history
+          | completed_transitions: Map.put(history.completed_transitions, operation_id, completion),
+            invalid_transition: history.invalid_transition or invalid?
+        }
 
       true ->
         history
@@ -193,17 +209,27 @@ defmodule SymphonyElixir.Linear.Adapter do
   end
 
   defp finalize_review_history(history) do
-    completed_without_intent =
-      MapSet.difference(history.completed_transitions, MapSet.new(Map.keys(history.transition_intents)))
+    completed_ids = Map.keys(history.completed_transitions)
 
-    if history.invalid_transition or MapSet.size(completed_without_intent) > 0 do
+    completed_without_intent =
+      MapSet.difference(MapSet.new(completed_ids), MapSet.new(Map.keys(history.transition_intents)))
+
+    mismatched_completion? =
+      Enum.any?(history.completed_transitions, fn {operation_id, completion} ->
+        case history.transition_intents[operation_id] do
+          %{head_sha: head_sha} -> completion.head_sha != head_sha
+          _ -> true
+        end
+      end)
+
+    if history.invalid_transition or MapSet.size(completed_without_intent) > 0 or mismatched_completion? do
       {:error, :invalid_review_transition_history}
     else
       {:ok,
        %{
          dedup: history.dedup,
          rework_count: MapSet.size(history.rework),
-         pending_transitions: Map.drop(history.transition_intents, MapSet.to_list(history.completed_transitions)),
+         pending_transitions: Map.drop(history.transition_intents, completed_ids),
          last_head_sha: history.last_head_sha
        }}
     end

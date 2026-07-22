@@ -876,6 +876,46 @@ defmodule SymphonyElixir.ReviewConvergenceTest do
     assert {:error, :invalid_review_transition_history} = Adapter.review_history("issue-160")
   end
 
+  test "completion markers must match their durable transition intent" do
+    Application.put_env(:symphony_elixir, :linear_client_module, HistoryClient)
+    intent_head = String.duplicate("d", 40)
+    conflicting_head = String.duplicate("e", 40)
+
+    Process.put(:history_responses, [
+      history_page(
+        [
+          transition_intent_body("conflict", intent_head),
+          transition_completed_body("conflict", conflicting_head)
+        ],
+        false,
+        nil
+      )
+    ])
+
+    assert {:error, :invalid_review_transition_history} = Adapter.review_history("issue-160")
+
+    Process.put(:history_responses, [
+      history_page(
+        [
+          transition_intent_body("bad-dedup", intent_head),
+          %{
+            transition_completed_body("bad-dedup", intent_head)
+            | "body" =>
+                String.replace(
+                  transition_completed_body("bad-dedup", intent_head)["body"],
+                  "dedup-key: `bad-dedup`",
+                  "dedup-key: `reused-other-key`"
+                )
+          }
+        ],
+        false,
+        nil
+      )
+    ])
+
+    assert {:error, :invalid_review_transition_history} = Adapter.review_history("issue-160")
+  end
+
   test "structured snapshot errors fail closed without crashing comment rendering" do
     Application.put_env(:symphony_elixir, :review_snapshot, {:error, {:command_failed, 8, %{state: :pending}}})
 
