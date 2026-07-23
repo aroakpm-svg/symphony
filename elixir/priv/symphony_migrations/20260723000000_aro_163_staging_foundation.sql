@@ -36,11 +36,11 @@ $$;
 
 do $$
 declare
-  role_name name;
+  checked_role_name name;
   role_record record;
   postgres_oid oid := (select oid from pg_roles where rolname = 'postgres');
 begin
-  foreach role_name in array array[
+  foreach checked_role_name in array array[
     'symphony_staging_runtime'::name,
     'symphony_staging_provisioner'::name
   ]
@@ -48,7 +48,7 @@ begin
     select *
     into strict role_record
     from pg_roles
-    where rolname = role_name;
+    where rolname = checked_role_name;
 
     if role_record.rolconfig is not null
        or exists (
@@ -62,26 +62,29 @@ begin
        ) then
       raise exception using
         errcode = '42501',
-        message = format('unsafe pre-existing role state for %I', role_name);
+        message = format('unsafe pre-existing role state for %I', checked_role_name);
     end if;
 
     if not exists (
          select 1
          from aro_163_created_roles created
-         where created.role_name = role_name
+         where created.role_name = checked_role_name
        )
        and (
-         not has_schema_privilege(role_name, 'symphony_staging', 'USAGE')
-         or has_schema_privilege(role_name, 'symphony_staging', 'CREATE')
+         not has_schema_privilege(checked_role_name, 'symphony_staging', 'USAGE')
+         or has_schema_privilege(checked_role_name, 'symphony_staging', 'CREATE')
          or has_schema_privilege(
-           role_name,
+           checked_role_name,
            'symphony_staging',
            'USAGE WITH GRANT OPTION'
          )
        ) then
       raise exception using
         errcode = '42501',
-        message = format('incompatible pre-existing schema grants for %I', role_name);
+        message = format(
+          'incompatible pre-existing schema grants for %I',
+          checked_role_name
+        );
     end if;
   end loop;
 end

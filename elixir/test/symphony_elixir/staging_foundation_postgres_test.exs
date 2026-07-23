@@ -11,7 +11,12 @@ defmodule SymphonyElixir.StagingFoundationPostgresTest do
             )
 
   @database_url System.get_env("ARO163_MIGRATION_TEST_DATABASE_URL")
-  @psql System.find_executable("psql")
+  @psql_wrapper System.get_env("ARO163_PSQL_WRAPPER")
+  @psql if(@psql_wrapper in [nil, ""],
+          do: System.find_executable("psql"),
+          else: System.find_executable("node")
+        )
+  @psql_prefix_args if(@psql_wrapper in [nil, ""], do: [], else: [@psql_wrapper])
   @enabled @database_url not in [nil, ""] and @psql != nil and
              System.get_env("ARO163_ALLOW_DESTRUCTIVE_DB_TEST") == "1"
 
@@ -24,6 +29,12 @@ defmodule SymphonyElixir.StagingFoundationPostgresTest do
                )
 
   setup do
+    run_sql("""
+    create role anon nologin;
+    create role authenticated nologin;
+    create role service_role nologin;
+    """)
+
     on_exit(fn ->
       run_sql("""
       drop schema if exists symphony_staging cascade;
@@ -31,6 +42,9 @@ defmodule SymphonyElixir.StagingFoundationPostgresTest do
       drop role if exists aro_163_acl_reader;
       drop role if exists symphony_staging_runtime;
       drop role if exists symphony_staging_provisioner;
+      drop role if exists anon;
+      drop role if exists authenticated;
+      drop role if exists service_role;
       """)
     end)
 
@@ -191,11 +205,34 @@ defmodule SymphonyElixir.StagingFoundationPostgresTest do
   end
 
   defp run_psql(sql) do
-    System.cmd(
-      @psql,
-      ["-X", "-q", "-A", "-t", "-v", "ON_ERROR_STOP=1", "-d", @database_url, "-f", "-"],
-      input: sql,
-      stderr_to_stdout: true
-    )
+    sql_path =
+      Path.join(
+        System.tmp_dir!(),
+        "aro_163_staging_foundation_#{System.unique_integer([:positive])}.sql"
+      )
+
+    File.write!(sql_path, sql)
+
+    try do
+      System.cmd(
+        @psql,
+        @psql_prefix_args ++
+          [
+            "-X",
+            "-q",
+            "-A",
+            "-t",
+            "-v",
+            "ON_ERROR_STOP=1",
+            "-d",
+            @database_url,
+            "-f",
+            sql_path
+          ],
+        stderr_to_stdout: true
+      )
+    after
+      File.rm(sql_path)
+    end
   end
 end
