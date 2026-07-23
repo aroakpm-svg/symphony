@@ -15,6 +15,7 @@ defmodule SymphonyElixir.StagingFoundationMigrationTest do
 
     assert sql =~ "create schema if not exists symphony_staging"
     assert sql =~ "revoke all on schema symphony_production"
+    assert length(Regex.scan(~r/nspname = 'symphony_production'/, sql)) == 2
     refute sql =~ ~r/(create|alter|drop|insert into|update|delete from)\s+.*symphony_production/i
   end
 

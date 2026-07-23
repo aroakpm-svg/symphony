@@ -3,7 +3,19 @@ begin;
 create schema if not exists symphony_staging;
 
 revoke all on schema symphony_staging from public, anon, authenticated, service_role;
-revoke all on schema symphony_production from public, anon, authenticated, service_role;
+
+do $$
+begin
+  if exists (
+    select 1
+    from pg_namespace
+    where nspname = 'symphony_production'
+  ) then
+    revoke all on schema symphony_production
+      from public, anon, authenticated, service_role;
+  end if;
+end
+$$;
 
 do $$
 begin
@@ -35,8 +47,19 @@ grant symphony_staging_runtime, symphony_staging_provisioner to postgres;
 
 revoke all on schema symphony_staging
   from symphony_staging_runtime, symphony_staging_provisioner;
-revoke all on schema symphony_production
-  from symphony_staging_runtime, symphony_staging_provisioner;
+
+do $$
+begin
+  if exists (
+    select 1
+    from pg_namespace
+    where nspname = 'symphony_production'
+  ) then
+    revoke all on schema symphony_production
+      from symphony_staging_runtime, symphony_staging_provisioner;
+  end if;
+end
+$$;
 
 grant usage on schema symphony_staging
   to symphony_staging_runtime, symphony_staging_provisioner;
