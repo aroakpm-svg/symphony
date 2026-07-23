@@ -333,8 +333,27 @@ Top-level keys:
 - `hooks`
 - `agent`
 - `codex`
+- `review_convergence` (implementation extension)
 
 Unknown keys SHOULD be ignored for forward compatibility.
+
+#### 5.3.7 `review_convergence` (implementation extension)
+
+When enabled, the runtime MAY monitor pull requests for issues in a configured review state. A
+technical convergence result MUST be bound to the current head SHA and MUST require the configured
+review result, required checks, and absence of unresolved actionable review threads. A formal
+`PullRequestReview` is preferred. An implementation MAY accept a clean issue-comment attestation
+only when it verifies a unique, persisted current-head request, strict request-before-response
+ordering, an allowlisted immutable App and bot identity, and an explicit reviewed-commit value.
+Ordinary comments, display-name matches, reactions, ambiguous or conflicting evidence MUST fail
+closed. New
+commits invalidate old conclusions. Retry, review request, tracker write, and escalation effects
+MUST be idempotent. Failure to verify base-ref evidence or other required evidence MUST fail closed.
+Actionable-finding state changes MUST use a durable, stable operation identity: intent MUST be
+persisted before the tracker state move, completion MUST be recorded separately, and incomplete
+operations MUST remain recoverable after restart and after the issue leaves the review state. A fix
+round MUST be counted only once the target state is observed and completion is durable.
+Technical convergence MUST NOT authorize merge, deployment, or terminal tracker transitions.
 
 Note:
 

@@ -35,6 +35,13 @@ hooks:
 agent:
   max_concurrent_agents: 2
   max_turns: 5
+review_convergence:
+  enabled: true
+  repository: "aroakpm-svg/aroak-central-brain"
+  review_state: "In Review"
+  in_progress_state: "In Progress"
+  max_fix_rounds: 3
+  human_owner: "PM AROAK"
 codex:
   command: |
     ENV_FILE="C:/Users/aroak/Desktop/codex/symphony/elixir/.env.local"
@@ -411,6 +418,33 @@ If the repository uses different commands, inspect package.json, README, CI conf
 If a check cannot run, say exactly why and what human action is needed.
 
 Review Feedback Intake
+
+Review Convergence Runtime
+
+After a PR enters In Review, Symphony's Review Monitor owns machine-verifiable convergence. A
+technical pass requires the exact latest head to have a clean review result, all required checks
+passing, and zero unresolved actionable P1-P4 threads. A formal `PullRequestReview` is preferred.
+Because Codex may emit its clean result as an issue comment, the runtime accepts that compatibility
+shape only when there is exactly one persisted request bound to the full current head, the response
+comes later from the allowlisted Codex App and bot database identities, and its explicit reviewed
+commit matches the current head. Ordinary comments, display names, emoji, old heads, missing or
+conflicting evidence never count. A new head invalidates the prior result and triggers one
+deduplicated `@codex review` request.
+
+The runtime publishes `Review Convergence Gate` as a commit status for ruleset enforcement. That
+status is an output of the gate and is excluded from its prerequisite required-check set.
+
+Actionable P1-P4 findings move the issue back to In Progress once per head/finding fingerprint and
+reuse the same branch and PR. Waiting for staging, permissions, or human product/safety decisions
+keeps the issue In Review and pauses retries without repeating a full review. Technical convergence
+never authorizes merge, deployment, production changes, permission changes, or Done.
+
+The state move is a recoverable transition, not two best-effort writes. Review Monitor first
+persists a stable operation intent in Linear, then moves the issue, then persists a completion
+marker. It resumes incomplete operations while the issue is in either In Review or In Progress,
+re-reads durable history after restart, and counts exactly one fix round only after the target state
+is observed and completion is durable. Unknown responses, malformed history, or conflicting
+evidence fail closed and never consume a round.
 
 Before returning the issue to In Review, read:
 

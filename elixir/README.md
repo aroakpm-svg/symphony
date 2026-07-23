@@ -39,6 +39,22 @@ Symphony keeps the issue claimed and exposes the blocker in memory, the JSON API
 If `after_run` cleanup is configured, Symphony waits for that cleanup to finish before reporting the
 blocker so worker capacity is not released while cleanup is still running.
 
+When `review_convergence.enabled` is true, each poll also monitors issues in the configured review
+state. The monitor resolves the PR from the issue branch, invalidates old-head reviews, requests one
+`@codex review` per head, and requires a current-head clean review result, passing required checks,
+and no unresolved P1-P4 review thread. Formal reviews are preferred; the restricted issue-comment
+compatibility path also verifies the unique request, time ordering, immutable App/bot identities,
+and reviewed commit. Actionable findings return the issue to the
+configured in-progress state; unverifiable evidence and repeated non-convergence remain in review
+for a deduplicated human decision. The monitor never merges or moves an issue to Done.
+Rework uses Linear comment history as a scoped durable transition log: an operation intent is
+persisted before the state change, each step is retry-safe, and an incomplete operation is resumed
+even after the issue has entered In Progress or the runtime has restarted. A fix round is counted
+only after the target state is observed and the completion marker is durable.
+Each decision publishes the fixed GitHub commit status context `Review Convergence Gate`. Configure
+that context as required only after the runtime change is deployed and live-smoked; keep existing
+human approval protection until then.
+
 ## How to use it
 
 1. Make sure your codebase is set up to work well with agents: see
@@ -140,6 +156,9 @@ Notes:
   by the Codex turn sandbox.
 - `agent.max_turns` caps how many back-to-back Codex turns Symphony will run in a single agent
   invocation when a turn completes normally but the issue is still in an active state. Default: `20`.
+- `review_convergence.enabled` defaults to `false`. When enabled, `repository` is required in
+  `owner/name` form. `review_state`, `in_progress_state`, `max_fix_rounds`, and `human_owner`
+  configure monitoring, rework, and escalation without changing merge authorization.
 - If the Markdown body is blank, Symphony uses a default prompt template that includes the issue
   identifier, title, and body.
 - Use `hooks.after_create` to bootstrap a fresh workspace. For a Git-backed repo, you can run

@@ -7,7 +7,7 @@ defmodule SymphonyElixir.Orchestrator do
   require Logger
   import Bitwise, only: [<<<: 2]
 
-  alias SymphonyElixir.{AgentRunner, Config, StatusDashboard, Tracker, Workspace}
+  alias SymphonyElixir.{AgentRunner, Config, ReviewMonitor, StatusDashboard, Tracker, Workspace}
   alias SymphonyElixir.Linear.Issue
 
   @continuation_retry_delay_ms 1_000
@@ -38,6 +38,7 @@ defmodule SymphonyElixir.Orchestrator do
       claimed: MapSet.new(),
       blocked: %{},
       retry_attempts: %{},
+      review_convergence: %{},
       codex_totals: nil,
       codex_rate_limits: nil
     ]
@@ -277,7 +278,9 @@ defmodule SymphonyElixir.Orchestrator do
       |> reconcile_running_issues()
       |> reconcile_blocked_issues()
 
-    with :ok <- Config.validate!(),
+    with {:ok, _settings} <- Config.settings(),
+         state <- reconcile_review_convergence(state),
+         :ok <- Config.validate!(),
          {:ok, issues} <- Tracker.fetch_candidate_issues(),
          true <- available_slots(state) > 0 do
       choose_issues(issues, state)
@@ -323,6 +326,14 @@ defmodule SymphonyElixir.Orchestrator do
       false ->
         state
     end
+  end
+
+  @doc false
+  @spec maybe_dispatch_for_test(term()) :: term()
+  def maybe_dispatch_for_test(%State{} = state), do: maybe_dispatch(state)
+
+  defp reconcile_review_convergence(%State{} = state) do
+    %{state | review_convergence: ReviewMonitor.run(state.review_convergence)}
   end
 
   defp reconcile_running_issues(%State{} = state) do
@@ -597,22 +608,20 @@ defmodule SymphonyElixir.Orchestrator do
     end
   end
 
+  defp reconcile_stalled_running_issues(%State{running: running} = state) when map_size(running) == 0,
+    do: state
+
   defp reconcile_stalled_running_issues(%State{} = state) do
     timeout_ms = Config.settings!().codex.stall_timeout_ms
 
-    cond do
-      timeout_ms <= 0 ->
-        state
+    if timeout_ms <= 0 do
+      state
+    else
+      now = DateTime.utc_now()
 
-      map_size(state.running) == 0 ->
-        state
-
-      true ->
-        now = DateTime.utc_now()
-
-        Enum.reduce(state.running, state, fn {issue_id, running_entry}, state_acc ->
-          maybe_restart_stalled_issue(state_acc, issue_id, running_entry, now, timeout_ms)
-        end)
+      Enum.reduce(state.running, state, fn {issue_id, running_entry}, state_acc ->
+        maybe_restart_stalled_issue(state_acc, issue_id, running_entry, now, timeout_ms)
+      end)
     end
   end
 
