@@ -45,15 +45,45 @@ defmodule SymphonyElixir.StagingFoundationPostgresTest do
     grant select on public.aro_163_acl_sentinel to aro_163_acl_reader;
     create temporary table aro_163_acl_before as
     select
-      (select nspacl from pg_namespace where nspname = 'symphony_staging') as schema_acl,
+      (select coalesce(
+         jsonb_agg(to_jsonb(acl) order by
+           acl.grantor,
+           acl.grantee,
+           acl.privilege_type,
+           acl.is_grantable
+         ),
+         '[]'::jsonb
+       )
+       from pg_namespace namespace
+       cross join lateral aclexplode(
+         coalesce(namespace.nspacl, acldefault('n', namespace.nspowner))
+       ) acl
+       where namespace.nspname = 'symphony_staging') as unrelated_schema_acl,
       (select relacl from pg_class where oid = 'public.aro_163_acl_sentinel'::regclass) as table_acl,
       (select coalesce(jsonb_agg(to_jsonb(defaults) order by defaults.oid), '[]'::jsonb)
        from pg_default_acl defaults) as default_acls;
     #{File.read!(@migration)}
     do $$
     begin
-      if (select nspacl from pg_namespace where nspname = 'symphony_staging')
-           is distinct from (select schema_acl from aro_163_acl_before)
+      if (select coalesce(
+            jsonb_agg(to_jsonb(acl) order by
+              acl.grantor,
+              acl.grantee,
+              acl.privilege_type,
+              acl.is_grantable
+            ),
+            '[]'::jsonb
+          )
+          from pg_namespace namespace
+          cross join lateral aclexplode(
+            coalesce(namespace.nspacl, acldefault('n', namespace.nspowner))
+          ) acl
+          where namespace.nspname = 'symphony_staging'
+            and acl.grantee not in (
+              'symphony_staging_runtime'::regrole::oid,
+              'symphony_staging_provisioner'::regrole::oid
+            ))
+           is distinct from (select unrelated_schema_acl from aro_163_acl_before)
          or (select relacl from pg_class where oid = 'public.aro_163_acl_sentinel'::regclass)
            is distinct from (select table_acl from aro_163_acl_before)
          or (select coalesce(jsonb_agg(to_jsonb(defaults) order by defaults.oid), '[]'::jsonb)
@@ -84,7 +114,22 @@ defmodule SymphonyElixir.StagingFoundationPostgresTest do
            'aro_163_acl_reader',
            'public.aro_163_acl_sentinel',
            'SELECT'
-         ) then
+         )
+         or (select coalesce(
+               jsonb_agg(to_jsonb(acl) order by
+                 acl.grantor,
+                 acl.grantee,
+                 acl.privilege_type,
+                 acl.is_grantable
+               ),
+               '[]'::jsonb
+             )
+             from pg_namespace namespace
+             cross join lateral aclexplode(
+               coalesce(namespace.nspacl, acldefault('n', namespace.nspowner))
+             ) acl
+             where namespace.nspname = 'symphony_staging')
+           is distinct from (select unrelated_schema_acl from aro_163_acl_before) then
         raise exception 'rollback changed unrelated sentinel state';
       end if;
     end
@@ -106,6 +151,30 @@ defmodule SymphonyElixir.StagingFoundationPostgresTest do
     assert status != 0
     assert output =~ "unsafe pre-existing role state"
     refute foundation_table_exists?()
+  end
+
+  test "pre-existing schema grant option fails closed transactionally" do
+    run_sql("""
+    create schema symphony_staging;
+    create role symphony_staging_runtime
+      nologin nosuperuser nocreatedb nocreaterole noinherit noreplication nobypassrls;
+    grant usage on schema symphony_staging
+      to symphony_staging_runtime with grant option;
+    """)
+
+    {output, status} = run_psql(File.read!(@migration))
+
+    assert status != 0
+    assert output =~ "incompatible pre-existing schema grants"
+    refute foundation_table_exists?()
+
+    assert run_sql(
+             "select has_schema_privilege(" <>
+               "'symphony_staging_runtime', " <>
+               "'symphony_staging', " <>
+               "'USAGE WITH GRANT OPTION');"
+           )
+           |> String.trim() == "t"
   end
 
   defp foundation_table_exists? do

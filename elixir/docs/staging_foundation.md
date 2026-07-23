@@ -43,9 +43,11 @@ commit;
 ```
 
 The migration fails closed when a same-name role has role-level configuration or memberships other
-than the approved `postgres` administration membership. It re-hardens accepted roles before any
-grant. Rollback drops only roles carrying the migration's ownership marker; compatible roles that
-predated ARO-163 remain.
+than the approved `postgres` administration membership. Pre-existing roles must have exactly the
+approved schema capability: `USAGE` without `CREATE` or grant option. The migration re-hardens
+accepted roles before any grant. Rollback drops only roles carrying an owner-only migration marker;
+the provisioner cannot read or mutate those marker rows, and compatible roles that predated ARO-163
+remain.
 
 ## Credential contract
 

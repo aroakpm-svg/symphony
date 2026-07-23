@@ -69,7 +69,18 @@ defmodule SymphonyElixir.StagingFoundationMigrationTest do
     assert sql =~ "role_record.rolconfig is not null"
     assert sql =~ "pg_auth_members"
     assert sql =~ "has_schema_privilege"
+    assert sql =~ "'USAGE WITH GRANT OPTION'"
     refute sql =~ ~r/alter role .* set search_path/i
+  end
+
+  test "rollback ownership markers are owner-only" do
+    sql = File.read!(@migration)
+
+    assert sql =~
+             "using (contract_name not like 'aro-163-created-role:%')"
+
+    assert sql =~
+             "with check (contract_name not like 'aro-163-created-role:%')"
   end
 
   test "migration preserves shared schema ACLs and default privileges" do

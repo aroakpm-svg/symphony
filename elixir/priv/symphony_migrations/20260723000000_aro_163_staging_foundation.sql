@@ -73,6 +73,11 @@ begin
        and (
          not has_schema_privilege(role_name, 'symphony_staging', 'USAGE')
          or has_schema_privilege(role_name, 'symphony_staging', 'CREATE')
+         or has_schema_privilege(
+           role_name,
+           'symphony_staging',
+           'USAGE WITH GRANT OPTION'
+         )
        ) then
       raise exception using
         errcode = '42501',
@@ -365,8 +370,8 @@ create policy provisioner_manage_contract_versions
   on symphony_staging.contract_versions
   for all
   to symphony_staging_provisioner
-  using (true)
-  with check (true);
+  using (contract_name not like 'aro-163-created-role:%')
+  with check (contract_name not like 'aro-163-created-role:%');
 
 drop policy if exists provisioner_manage_nodes
   on symphony_staging.nodes;
