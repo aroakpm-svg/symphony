@@ -48,6 +48,7 @@ defmodule SymphonyElixir.StagingFoundationMigrationTest do
 
     for role <- ["symphony_staging_runtime", "symphony_staging_provisioner"] do
       assert sql =~ "create role #{role}"
+      assert sql =~ "alter role #{role} with"
     end
 
     for restriction <- [
@@ -66,7 +67,16 @@ defmodule SymphonyElixir.StagingFoundationMigrationTest do
              "grant symphony_staging_runtime, symphony_staging_provisioner to postgres"
   end
 
-  test "migration revokes privileges only from ARO-163-owned objects" do
+  test "migration preserves shared schema ACLs and default privileges" do
+    sql = File.read!(@migration)
+
+    refute sql =~
+             ~r/revoke all on schema symphony_staging from public, anon, authenticated, service_role/i
+
+    refute sql =~ ~r/alter default privileges/i
+  end
+
+  test "migration revokes object privileges only from ARO-163-owned objects" do
     sql = File.read!(@migration)
 
     refute sql =~ ~r/on all (tables|sequences|functions) in schema symphony_staging/i

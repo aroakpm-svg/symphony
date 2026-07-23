@@ -2,8 +2,6 @@ begin;
 
 create schema if not exists symphony_staging;
 
-revoke all on schema symphony_staging from public, anon, authenticated, service_role;
-
 do $$
 begin
   if exists (
@@ -42,6 +40,23 @@ begin
   end if;
 end
 $$;
+
+alter role symphony_staging_runtime with
+  nologin
+  nosuperuser
+  nocreatedb
+  nocreaterole
+  noinherit
+  noreplication
+  nobypassrls;
+alter role symphony_staging_provisioner with
+  nologin
+  nosuperuser
+  nocreatedb
+  nocreaterole
+  noinherit
+  noreplication
+  nobypassrls;
 
 grant symphony_staging_runtime, symphony_staging_provisioner to postgres;
 
@@ -438,15 +453,6 @@ grant insert on symphony_staging.foundation_audit_events
   to symphony_staging_provisioner;
 grant usage, select on sequence symphony_staging.foundation_audit_events_audit_id_seq
   to symphony_staging_provisioner;
-
-alter default privileges for role postgres in schema symphony_staging
-  revoke all on tables from public, anon, authenticated, service_role;
-alter default privileges for role postgres in schema symphony_staging
-  revoke all on sequences from public, anon, authenticated, service_role;
-alter default privileges for role postgres in schema symphony_staging
-  revoke execute on functions from public, anon, authenticated, service_role;
-alter default privileges for role postgres in schema symphony_staging
-  revoke execute on functions from public;
 
 insert into symphony_staging.contract_versions (
   contract_name,
