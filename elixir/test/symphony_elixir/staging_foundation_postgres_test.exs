@@ -114,7 +114,12 @@ defmodule SymphonyElixir.StagingFoundationPostgresTest do
     begin
       if current_setting('search_path') <> 'pg_catalog, symphony_staging'
          or to_regclass('routing_assignments') <>
-           'symphony_staging.routing_assignments'::regclass then
+           'symphony_staging.routing_assignments'::regclass
+         or exists (
+           select 1
+           from symphony_staging.contract_versions
+           where contract_name like 'aro-163-created-role:%'
+         ) then
         raise exception 'SET ROLE connection contract did not resolve staging safely';
       end if;
     end

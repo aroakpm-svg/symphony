@@ -333,7 +333,7 @@ create policy runtime_read_contract_versions
   on symphony_staging.contract_versions
   for select
   to symphony_staging_runtime
-  using (true);
+  using (contract_name not like 'aro-163-created-role:%');
 
 drop policy if exists runtime_read_nodes
   on symphony_staging.nodes;

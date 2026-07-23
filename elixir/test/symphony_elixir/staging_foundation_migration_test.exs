@@ -77,7 +77,10 @@ defmodule SymphonyElixir.StagingFoundationMigrationTest do
     sql = File.read!(@migration)
 
     assert sql =~
-             "using (contract_name not like 'aro-163-created-role:%')"
+             ~r/create policy runtime_read_contract_versions.*using \(contract_name not like 'aro-163-created-role:%'\)/s
+
+    assert sql =~
+             ~r/create policy provisioner_manage_contract_versions.*using \(contract_name not like 'aro-163-created-role:%'\)/s
 
     assert sql =~
              "with check (contract_name not like 'aro-163-created-role:%')"
