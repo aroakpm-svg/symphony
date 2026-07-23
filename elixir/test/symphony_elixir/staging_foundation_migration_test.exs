@@ -14,9 +14,7 @@ defmodule SymphonyElixir.StagingFoundationMigrationTest do
     sql = File.read!(@migration)
 
     assert sql =~ "create schema if not exists symphony_staging"
-    assert sql =~ "revoke all on schema symphony_production"
-    assert length(Regex.scan(~r/nspname = 'symphony_production'/, sql)) == 2
-    refute sql =~ ~r/(create|alter|drop|insert into|update|delete from)\s+.*symphony_production/i
+    refute sql =~ "symphony_production"
   end
 
   test "migration defines the reviewed foundation contract" do
@@ -65,6 +63,13 @@ defmodule SymphonyElixir.StagingFoundationMigrationTest do
 
     assert sql =~
              "grant symphony_staging_runtime, symphony_staging_provisioner to postgres"
+
+    assert sql =~ "unsafe pre-existing role state"
+    assert sql =~ "incompatible pre-existing schema grants"
+    assert sql =~ "role_record.rolconfig is not null"
+    assert sql =~ "pg_auth_members"
+    assert sql =~ "has_schema_privilege"
+    refute sql =~ ~r/alter role .* set search_path/i
   end
 
   test "migration preserves shared schema ACLs and default privileges" do
@@ -111,6 +116,12 @@ defmodule SymphonyElixir.StagingFoundationMigrationTest do
 
     refute sql =~ ~r/drop schema/i
     refute sql =~ ~r/(drop|alter|truncate|insert|update|delete).*symphony_production/i
+    assert sql =~ "aro_163_roles_to_drop"
+    assert sql =~ "'aro-163-created-role:symphony_staging_runtime'"
+    assert sql =~ "'aro-163-created-role:symphony_staging_provisioner'"
+
+    refute sql =~
+             ~r/revoke all on schema symphony_staging\s+from symphony_staging_runtime/i
 
     for function <- [
           "enforce_node_transition",

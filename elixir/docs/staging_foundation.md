@@ -11,9 +11,10 @@ checkpoints, or production deployment.
 - Reserved schema: `symphony_production`
 - Added fixed-cost limit: USD 0
 
-Every SQL reference is schema-qualified. The staging roles receive no `USAGE` or object privileges
-on `symphony_production`. `anon`, `authenticated`, and `service_role` receive no privileges on the
-foundation objects.
+Every migration and runtime query is schema-qualified. The migration never creates, grants,
+revokes, or otherwise changes `symphony_production`; denial is inherited from the approved
+environment baseline and must be verified without changing its ACL. `anon`, `authenticated`, and
+`service_role` receive no privileges on the foundation objects.
 
 ## Roles
 
@@ -27,6 +28,24 @@ The migration creates two `NOLOGIN`, `NOINHERIT`, non-admin permission roles:
 They are deliberately `NOLOGIN`. A later approved provisioning flow can bind a login credential to
 the appropriate permission role without putting a password in Git, Linear, Codex, migration output,
 or logs. Permission verification uses `SET ROLE`, so no durable test password is required.
+
+`ALTER ROLE ... SET search_path` is intentionally not used: PostgreSQL does not apply a `NOLOGIN`
+permission role's role settings when a login session later runs `SET ROLE`. Every transaction must
+use this connection contract:
+
+```sql
+begin;
+set local role symphony_staging_runtime;
+set local search_path = pg_catalog, symphony_staging;
+-- Keep application SQL schema-qualified even with this defense in depth.
+select * from symphony_staging.routing_assignments where issue_id = $1;
+commit;
+```
+
+The migration fails closed when a same-name role has role-level configuration or memberships other
+than the approved `postgres` administration membership. It re-hardens accepted roles before any
+grant. Rollback drops only roles carrying the migration's ownership marker; compatible roles that
+predated ARO-163 remain.
 
 ## Credential contract
 
@@ -89,6 +108,20 @@ Validation must prove:
 7. `symphony_production` access denied for both staging roles;
 8. `anon` and `authenticated` remain denied;
 9. migration checksum and exact implementation SHA are recorded.
+
+The behavior-level Postgres regression suite is intentionally destructive and only runs against an
+explicit disposable database:
+
+```bash
+ARO163_MIGRATION_TEST_DATABASE_URL=postgresql://... \
+ARO163_ALLOW_DESTRUCTIVE_DB_TEST=1 \
+mix test --no-start test/symphony_elixir/staging_foundation_postgres_test.exs
+```
+
+It snapshots an unrelated sentinel object's ACLs and default privileges, exercises the real
+`SET ROLE` plus `SET LOCAL search_path` connection contract, verifies rollback preservation, and
+proves an unsafe same-name role fails transactionally. Never point it at shared staging or
+production.
 
 ## Secret handling
 

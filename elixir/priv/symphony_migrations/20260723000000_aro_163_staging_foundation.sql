@@ -2,18 +2,9 @@ begin;
 
 create schema if not exists symphony_staging;
 
-do $$
-begin
-  if exists (
-    select 1
-    from pg_namespace
-    where nspname = 'symphony_production'
-  ) then
-    revoke all on schema symphony_production
-      from public, anon, authenticated, service_role;
-  end if;
-end
-$$;
+create temporary table if not exists aro_163_created_roles (
+  role_name name primary key
+) on commit drop;
 
 do $$
 begin
@@ -26,6 +17,7 @@ begin
       noinherit
       noreplication
       nobypassrls;
+    insert into aro_163_created_roles values ('symphony_staging_runtime');
   end if;
 
   if not exists (select 1 from pg_roles where rolname = 'symphony_staging_provisioner') then
@@ -37,7 +29,56 @@ begin
       noinherit
       noreplication
       nobypassrls;
+    insert into aro_163_created_roles values ('symphony_staging_provisioner');
   end if;
+end
+$$;
+
+do $$
+declare
+  role_name name;
+  role_record record;
+  postgres_oid oid := (select oid from pg_roles where rolname = 'postgres');
+begin
+  foreach role_name in array array[
+    'symphony_staging_runtime'::name,
+    'symphony_staging_provisioner'::name
+  ]
+  loop
+    select *
+    into strict role_record
+    from pg_roles
+    where rolname = role_name;
+
+    if role_record.rolconfig is not null
+       or exists (
+         select 1
+         from pg_auth_members memberships
+         where (
+           memberships.roleid = role_record.oid
+           and memberships.member <> postgres_oid
+         )
+         or memberships.member = role_record.oid
+       ) then
+      raise exception using
+        errcode = '42501',
+        message = format('unsafe pre-existing role state for %I', role_name);
+    end if;
+
+    if not exists (
+         select 1
+         from aro_163_created_roles created
+         where created.role_name = role_name
+       )
+       and (
+         not has_schema_privilege(role_name, 'symphony_staging', 'USAGE')
+         or has_schema_privilege(role_name, 'symphony_staging', 'CREATE')
+       ) then
+      raise exception using
+        errcode = '42501',
+        message = format('incompatible pre-existing schema grants for %I', role_name);
+    end if;
+  end loop;
 end
 $$;
 
@@ -63,26 +104,8 @@ grant symphony_staging_runtime, symphony_staging_provisioner to postgres;
 revoke all on schema symphony_staging
   from symphony_staging_runtime, symphony_staging_provisioner;
 
-do $$
-begin
-  if exists (
-    select 1
-    from pg_namespace
-    where nspname = 'symphony_production'
-  ) then
-    revoke all on schema symphony_production
-      from symphony_staging_runtime, symphony_staging_provisioner;
-  end if;
-end
-$$;
-
 grant usage on schema symphony_staging
   to symphony_staging_runtime, symphony_staging_provisioner;
-
-alter role symphony_staging_runtime
-  set search_path = pg_catalog, symphony_staging;
-alter role symphony_staging_provisioner
-  set search_path = pg_catalog, symphony_staging;
 
 create table if not exists symphony_staging.contract_versions (
   contract_name text primary key,
@@ -468,5 +491,17 @@ on conflict (contract_name) do update
 set
   contract_version = excluded.contract_version,
   migration_name = excluded.migration_name;
+
+insert into symphony_staging.contract_versions (
+  contract_name,
+  contract_version,
+  migration_name
+)
+select
+  'aro-163-created-role:' || role_name,
+  1,
+  '20260723000000_aro_163_staging_foundation'
+from aro_163_created_roles
+on conflict (contract_name) do nothing;
 
 commit;
