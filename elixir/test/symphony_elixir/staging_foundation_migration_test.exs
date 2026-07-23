@@ -66,6 +66,26 @@ defmodule SymphonyElixir.StagingFoundationMigrationTest do
              "grant symphony_staging_runtime, symphony_staging_provisioner to postgres"
   end
 
+  test "migration revokes privileges only from ARO-163-owned objects" do
+    sql = File.read!(@migration)
+
+    refute sql =~ ~r/on all (tables|sequences|functions) in schema symphony_staging/i
+
+    for object <- [
+          "symphony_staging.contract_versions",
+          "symphony_staging.nodes",
+          "symphony_staging.node_bindings",
+          "symphony_staging.routing_assignments",
+          "symphony_staging.foundation_audit_events",
+          "symphony_staging.foundation_audit_events_audit_id_seq",
+          "symphony_staging.enforce_node_transition()",
+          "symphony_staging.enforce_node_binding_transition()",
+          "symphony_staging.enforce_routing_revision()"
+        ] do
+      assert sql =~ object
+    end
+  end
+
   test "rollback preserves both environment schemas" do
     sql = File.read!(@rollback)
 

@@ -365,13 +365,22 @@ create policy provisioner_insert_audit_events
   to symphony_staging_provisioner
   with check (true);
 
-revoke all on all tables in schema symphony_staging
+revoke all on table
+  symphony_staging.contract_versions,
+  symphony_staging.nodes,
+  symphony_staging.node_bindings,
+  symphony_staging.routing_assignments,
+  symphony_staging.foundation_audit_events
   from public, anon, authenticated, service_role,
        symphony_staging_runtime, symphony_staging_provisioner;
-revoke all on all sequences in schema symphony_staging
+revoke all on sequence
+  symphony_staging.foundation_audit_events_audit_id_seq
   from public, anon, authenticated, service_role,
        symphony_staging_runtime, symphony_staging_provisioner;
-revoke execute on all functions in schema symphony_staging
+revoke execute on function
+  symphony_staging.enforce_node_transition(),
+  symphony_staging.enforce_node_binding_transition(),
+  symphony_staging.enforce_routing_revision()
   from public, anon, authenticated, service_role,
        symphony_staging_runtime, symphony_staging_provisioner;
 
