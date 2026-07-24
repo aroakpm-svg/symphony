@@ -70,6 +70,7 @@ defmodule SymphonyElixir.NodeEnrollmentMigrationTest do
 
     assert sql =~ "'node_credential_rotated'"
     assert sql =~ "'node_revoked'"
+
     assert lifecycle_script =~
              "-c \"select * from symphony_staging.authenticate_node('$node_id', '$instance_four');\""
 
