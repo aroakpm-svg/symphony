@@ -1,5 +1,9 @@
 begin;
 
+select pg_catalog.pg_advisory_xact_lock(
+  pg_catalog.hashtextextended('aroak:symphony_staging:migrations', 0)
+);
+
 do $$
 begin
   if not exists (
@@ -51,8 +55,6 @@ create table symphony_staging.active_node_instances (
   node_id uuid primary key
     references symphony_staging.node_login_principals(node_id) on delete restrict,
   node_instance_id uuid not null,
-  backend_pid integer not null,
-  backend_started_at timestamptz not null,
   authenticated_at timestamptz not null default clock_timestamp(),
   unique (node_id, node_instance_id)
 );
@@ -226,6 +228,7 @@ set search_path = pg_catalog, symphony_staging
 as $$
 declare
   principal_role name;
+  replacement_role name;
   generated_binding_id uuid := gen_random_uuid();
   generated_credential text :=
     encode(extensions.gen_random_bytes(32), 'base64');
@@ -259,10 +262,41 @@ begin
       message = 'active node not found';
   end if;
 
+  replacement_role :=
+    ('symphony_node_' ||
+      replace(requested_node_id::text, '-', '') ||
+      '_v' || next_credential_version::text)::name;
+
   execute format(
-    'alter role %I password %L',
-    principal_role,
+    'create role %I login password %L nosuperuser nocreatedb ' ||
+    'nocreaterole noinherit noreplication nobypassrls',
+    replacement_role,
     generated_credential
+  );
+
+  execute format(
+    'alter role %I set search_path = pg_catalog, symphony_staging',
+    replacement_role
+  );
+  execute format(
+    'grant usage on schema symphony_staging to %I',
+    replacement_role
+  );
+  execute format(
+    'grant execute on function ' ||
+    'symphony_staging.authenticate_node(uuid, uuid) to %I',
+    replacement_role
+  );
+
+  execute format('alter role %I nologin', principal_role);
+  execute format(
+    'revoke execute on function ' ||
+    'symphony_staging.authenticate_node(uuid, uuid) from %I',
+    principal_role
+  );
+  execute format(
+    'revoke usage on schema symphony_staging from %I',
+    principal_role
   );
 
   update symphony_staging.node_bindings as bindings
@@ -282,6 +316,10 @@ begin
 
   delete from symphony_staging.active_node_instances as instances
   where instances.node_id = requested_node_id;
+
+  update symphony_staging.node_login_principals as principals
+  set login_role = replacement_role
+  where principals.node_id = requested_node_id;
 
   insert into symphony_staging.node_bindings (
     binding_id,
@@ -324,10 +362,70 @@ begin
   return query
   select
     requested_node_id,
-    principal_role,
+    replacement_role,
     generated_credential,
     next_credential_version,
     3;
+end
+$$;
+
+create or replace function symphony_staging.retire_node_instance(
+  requested_node_id uuid,
+  requested_node_instance_id uuid
+)
+returns void
+language plpgsql
+security definer
+set search_path = pg_catalog, symphony_staging
+as $$
+begin
+  if session_user <> 'postgres'
+     and not pg_has_role(
+       session_user,
+       'symphony_staging_provisioner',
+       'USAGE'
+     ) then
+    raise exception using
+      errcode = '42501',
+      message = 'ARO-169 instance retirement requires the staging provisioner';
+  end if;
+
+  perform 1
+  from symphony_staging.nodes nodes
+  join symphony_staging.node_login_principals principals using (node_id)
+  where nodes.node_id = requested_node_id
+  for update of nodes, principals;
+
+  delete from symphony_staging.active_node_instances instances
+  where instances.node_id = requested_node_id
+    and instances.node_instance_id = requested_node_instance_id;
+
+  if not found then
+    raise exception using
+      errcode = '02000',
+      message = 'active node instance not found';
+  end if;
+
+  insert into symphony_staging.foundation_audit_events (
+    event_type,
+    node_id,
+    credential_version,
+    result,
+    reason_code,
+    details
+  )
+  select
+    'node_instance_retired',
+    nodes.node_id,
+    nodes.credential_version,
+    'accepted',
+    'provisioner_confirmed_worker_stopped',
+    jsonb_build_object(
+      'node_instance_id', requested_node_instance_id,
+      'environment', 'staging'
+    )
+  from symphony_staging.nodes nodes
+  where nodes.node_id = requested_node_id;
 end
 $$;
 
@@ -436,7 +534,6 @@ set search_path = pg_catalog, symphony_staging
 as $$
 declare
   authenticated_node_id uuid;
-  current_backend_started_at timestamptz;
   claimed_node_id uuid;
 begin
   if requested_node_id is null or requested_node_instance_id is null then
@@ -445,8 +542,8 @@ begin
       message = 'nodeId and nodeInstanceId are required';
   end if;
 
-  select principals.node_id, activity.backend_start
-  into authenticated_node_id, current_backend_started_at
+  select principals.node_id
+  into authenticated_node_id
   from symphony_staging.node_login_principals principals
   join symphony_staging.nodes nodes
     on nodes.node_id = principals.node_id
@@ -455,16 +552,10 @@ begin
    and bindings.environment = 'staging'
    and bindings.status = 'active'
    and bindings.credential_version = nodes.credential_version
-  join pg_catalog.pg_stat_activity activity
-    on activity.pid = pg_backend_pid()
   where principals.node_id = requested_node_id
     and principals.login_role = session_user
     and principals.revoked_at is null
     and nodes.status = 'active'
-    and (
-      nodes.rotated_at is null
-      or activity.backend_start >= nodes.rotated_at
-    )
   for update of nodes, principals, bindings;
 
   if authenticated_node_id is null then
@@ -491,30 +582,13 @@ begin
 
   insert into symphony_staging.active_node_instances (
     node_id,
-    node_instance_id,
-    backend_pid,
-    backend_started_at
+    node_instance_id
   )
   values (
     authenticated_node_id,
-    requested_node_instance_id,
-    pg_backend_pid(),
-    current_backend_started_at
+    requested_node_instance_id
   )
-  on conflict on constraint active_node_instances_pkey do update
-  set
-    node_instance_id = excluded.node_instance_id,
-    backend_pid = excluded.backend_pid,
-    backend_started_at = excluded.backend_started_at,
-    authenticated_at = clock_timestamp()
-  where not exists (
-    select 1
-    from pg_catalog.pg_stat_activity activity
-    where activity.pid =
-      symphony_staging.active_node_instances.backend_pid
-      and activity.backend_start =
-        symphony_staging.active_node_instances.backend_started_at
-  )
+  on conflict on constraint active_node_instances_pkey do nothing
   returning requested_node_id into claimed_node_id;
 
   if claimed_node_id is null then
@@ -555,6 +629,7 @@ revoke execute on function
   symphony_staging.provision_node(text),
   symphony_staging.rotate_node_credential(uuid),
   symphony_staging.revoke_node(uuid),
+  symphony_staging.retire_node_instance(uuid, uuid),
   symphony_staging.authenticate_node(uuid, uuid)
   from public, anon, authenticated, service_role,
        symphony_staging_runtime, symphony_staging_provisioner;
@@ -564,6 +639,8 @@ grant execute on function symphony_staging.provision_node(text)
 grant execute on function symphony_staging.rotate_node_credential(uuid)
   to symphony_staging_provisioner;
 grant execute on function symphony_staging.revoke_node(uuid)
+  to symphony_staging_provisioner;
+grant execute on function symphony_staging.retire_node_instance(uuid, uuid)
   to symphony_staging_provisioner;
 
 insert into symphony_staging.node_enrollment_contract_manifest (
@@ -583,6 +660,7 @@ from (
       'provision_node',
       'rotate_node_credential',
       'revoke_node',
+      'retire_node_instance',
       'authenticate_node'
     )
   union all

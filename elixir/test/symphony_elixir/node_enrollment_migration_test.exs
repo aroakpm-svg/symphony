@@ -37,8 +37,9 @@ defmodule SymphonyElixir.NodeEnrollmentMigrationTest do
 
     assert sql =~ "principals.login_role = session_user"
     assert sql =~ "active_node_instances"
-    assert sql =~ "pg_stat_activity"
-    assert sql =~ "activity.backend_start"
+    refute sql =~ "pg_stat_activity"
+    assert sql =~ "on conflict on constraint active_node_instances_pkey do nothing"
+    assert sql =~ "retire_node_instance"
     assert sql =~ "node instance reuse rejected"
     assert sql =~ "duplicate node session rejected"
     assert sql =~ "requested_node_instance_id"
@@ -61,7 +62,8 @@ defmodule SymphonyElixir.NodeEnrollmentMigrationTest do
     sql = File.read!(@migration)
     lifecycle_script = File.read!(@lifecycle_script)
 
-    assert sql =~ "alter role %I password %L"
+    assert sql =~ "replacement_role"
+    assert sql =~ "create role %I login password %L"
     assert sql =~ "alter role %I nologin"
     refute sql =~ "pg_terminate_backend"
     assert sql =~ "delete from symphony_staging.active_node_instances"
@@ -80,6 +82,9 @@ defmodule SymphonyElixir.NodeEnrollmentMigrationTest do
 
     assert lifecycle_script =~
              "rotation did not serialize with in-flight authentication"
+
+    assert lifecycle_script =~
+             "retired login role reconnected after choosing its own password"
   end
 
   test "rollback refuses to orphan provisioned identities" do
@@ -90,6 +95,7 @@ defmodule SymphonyElixir.NodeEnrollmentMigrationTest do
     assert sql =~ "contract objects or ACLs drifted"
     assert sql =~ "contract downgrade did not update exactly one row"
     assert sql =~ "in access exclusive mode"
+    assert sql =~ "pg_advisory_xact_lock"
     assert sql =~ "contract_version = 2"
   end
 
@@ -99,5 +105,8 @@ defmodule SymphonyElixir.NodeEnrollmentMigrationTest do
     assert lifecycle_script =~ "rollback unexpectedly accepted a future contract"
     assert lifecycle_script =~ "rollback unexpectedly accepted object drift"
     assert lifecycle_script =~ "rollback unexpectedly accepted ACL drift"
+
+    assert lifecycle_script =~
+             "rollback did not serialize with concurrent contract DDL"
   end
 end

@@ -126,6 +126,18 @@ fi
 
 wait "$first_session_pid"
 
+if PGPASSWORD="$node_credential" \
+  psql -X -q -v ON_ERROR_STOP=1 -d "$node_url" \
+  -c "select * from symphony_staging.authenticate_node('$node_id', '$instance_two');" \
+  >/dev/null 2>&1; then
+  echo "disconnected backend implicitly retired its instance" >&2
+  exit 1
+fi
+
+psql_admin -c \
+  "select symphony_staging.retire_node_instance('$node_id', '$instance_one');" \
+  >/dev/null
+
 PGPASSWORD="$node_credential" \
   psql -X -q -v ON_ERROR_STOP=1 -d "$node_url" \
   -c "select * from symphony_staging.authenticate_node('$node_id', '$instance_two');" \
@@ -139,6 +151,10 @@ if PGPASSWORD="$node_credential" \
   exit 1
 fi
 
+psql_admin -c \
+  "select symphony_staging.retire_node_instance('$node_id', '$instance_two');" \
+  >/dev/null
+
 if PGPASSWORD="$node_credential" \
   psql -X -q -d "postgresql://${login_role}@localhost:1/postgres" \
   -c "select 1" >/dev/null 2>&1; then
@@ -150,6 +166,7 @@ PGPASSWORD="$node_credential" \
   psql -X -q -v ON_ERROR_STOP=1 -d "$node_url" \
   -c "select * from symphony_staging.authenticate_node('$node_id', '$instance_three');" \
   -c "select pg_sleep(8);" \
+  -c "alter role current_user password 'disposable-old-session-choice';" \
   >/dev/null &
 pre_rotation_session_pid=$!
 sleep 2
@@ -175,9 +192,11 @@ unset rotated
 
 test "$credential_version" = "2"
 test "$rotated_contract_version" = "3"
+test "$_rotated_role" != "$login_role"
+rotated_node_url="postgresql://${_rotated_role}@localhost:5432/postgres"
 
 PGPASSWORD="$rotated_credential" \
-  psql -X -q -v ON_ERROR_STOP=1 -d "$node_url" \
+  psql -X -q -v ON_ERROR_STOP=1 -d "$rotated_node_url" \
   -c "select * from symphony_staging.authenticate_node('$node_id', '$instance_four');" \
   >/dev/null
 
@@ -188,10 +207,20 @@ if PGPASSWORD="$node_credential" \
   echo "rotated credential remained valid" >&2
   exit 1
 fi
+
+if PGPASSWORD=disposable-old-session-choice \
+  psql -X -q -d "$node_url" -c "select 1" >/dev/null 2>&1; then
+  echo "retired login role reconnected after choosing its own password" >&2
+  exit 1
+fi
 unset node_credential
 
+psql_admin -c \
+  "select symphony_staging.retire_node_instance('$node_id', '$instance_four');" \
+  >/dev/null
+
 PGPASSWORD="$rotated_credential" \
-  psql -X -q -v ON_ERROR_STOP=1 -d "$node_url" \
+  psql -X -q -v ON_ERROR_STOP=1 -d "$rotated_node_url" \
   -c "select * from symphony_staging.authenticate_node('$node_id', '$instance_five');" \
   -c "select pg_sleep(4);" \
   -c "select * from symphony_staging.authenticate_node('$node_id', '$instance_six');" \
@@ -207,7 +236,7 @@ if wait "$open_session_pid"; then
 fi
 
 if PGPASSWORD="$rotated_credential" \
-  psql -X -q -d "$node_url" -c "select 1" >/dev/null 2>&1; then
+  psql -X -q -d "$rotated_node_url" -c "select 1" >/dev/null 2>&1; then
   echo "revoked credential remained valid" >&2
   exit 1
 fi
@@ -228,6 +257,7 @@ delete from symphony_staging.node_bindings where node_id = '$node_id';
 delete from symphony_staging.node_login_principals where node_id = '$node_id';
 delete from symphony_staging.nodes where node_id = '$node_id';
 drop role "$login_role";
+drop role "$_rotated_role";
 SQL
 
 psql_admin -c "
@@ -263,7 +293,23 @@ if psql_admin \
   exit 1
 fi
 
+psql_admin -c "
+  select pg_advisory_lock(
+    hashtextextended('aroak:symphony_staging:migrations', 0)
+  );
+  select pg_sleep(4);
+" >/dev/null &
+migration_lock_pid=$!
+sleep 1
+rollback_started_at="$(date +%s)"
 psql_admin -f "$migrations_dir/20260724010000_aro_169_node_enrollment.down.sql"
+rollback_elapsed="$(( $(date +%s) - rollback_started_at ))"
+wait "$migration_lock_pid"
+if [ "$rollback_elapsed" -lt 2 ]; then
+  echo "rollback did not serialize with concurrent contract DDL" >&2
+  exit 1
+fi
+
 test "$(psql_admin -A -t -c "select contract_version from symphony_staging.contract_versions where contract_name = 'node-identity-routing-foundation';")" = "2"
 psql_admin -f "$migrations_dir/20260724010000_aro_169_node_enrollment.sql"
 

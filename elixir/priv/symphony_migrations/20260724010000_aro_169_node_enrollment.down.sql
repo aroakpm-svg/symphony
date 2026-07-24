@@ -1,5 +1,9 @@
 begin;
 
+select pg_catalog.pg_advisory_xact_lock(
+  pg_catalog.hashtextextended('aroak:symphony_staging:migrations', 0)
+);
+
 do $$
 declare
   locked_contract_version integer;
@@ -57,6 +61,7 @@ begin
         'provision_node',
         'rotate_node_credential',
         'revoke_node',
+        'retire_node_instance',
         'authenticate_node'
       )
     union all
@@ -125,6 +130,7 @@ end
 $$;
 
 drop function if exists symphony_staging.authenticate_node(uuid, uuid);
+drop function if exists symphony_staging.retire_node_instance(uuid, uuid);
 drop function if exists symphony_staging.revoke_node(uuid);
 drop function if exists symphony_staging.rotate_node_credential(uuid);
 drop function if exists symphony_staging.provision_node(text);
