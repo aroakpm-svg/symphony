@@ -77,6 +77,31 @@ The accepted clone protection is risk reduction, not hardware identity:
 
 Do not describe this contract as complete clone detection.
 
+## ARO-169 enrollment and startup boundary
+
+ARO-169 adds private, transaction-scoped entrypoints for bootstrap provisioning, credential
+rotation/revocation/re-enrollment, and runtime startup authentication. Bootstrap callers assume the
+NOLOGIN provisioner role through a trusted backend; workers receive only a node credential from an
+approved machine-local secret store and assume the NOLOGIN runtime role through that backend.
+Neither actor receives a database administrator, `service_role`, or production credential.
+
+The database persists only SHA-256 credential verifiers. Authentication compares verifiers with a
+fixed-work comparison and rejects wrong versions, revoked/retired bindings, and disabled/retired
+nodes. Each successful startup supplies a newly generated `nodeInstanceId`, atomically superseding
+the prior instance. Before poll, claim, or any external effect, the worker must obtain an affirmative
+startup result and recheck `node_instance_authorized`; timeout, registry unavailability, malformed
+responses, or unknown results are denials and must not fall back to cached authorization.
+
+Provisioning writes the node, one active binding, display alias, routing assignment, masked audit,
+and stable operation record in one transaction. A retry with the same operation ID and fingerprint
+replays the stored result; reuse with different inputs fails closed. Rotation and re-enrollment
+revoke the prior binding and active instance before activating the new version. Revocation disables
+the node. Audit and operation results contain IDs, alias, version, reason, and outcome only.
+
+Apply `20260724090000_aro_169_node_enrollment.sql`; its rollback removes only ARO-169 functions,
+operation/instance tables, and contract marker. Repository merge does not authorize shared-staging
+apply or provisioning any physical node.
+
 ## Routing contract
 
 `routing_assignments` provides:
