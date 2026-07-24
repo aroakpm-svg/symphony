@@ -110,6 +110,11 @@ defmodule SymphonyElixir.StagingReconciliationPostgresTest do
          current_database()
        ) \\gexec
        """},
+      {"outbound managed-role membership",
+       """
+       create role privileged_role nologin;
+       grant privileged_role to symphony_staging_runtime;
+       """},
       {"global default ACL",
        """
        alter default privileges for role postgres
@@ -180,6 +185,11 @@ defmodule SymphonyElixir.StagingReconciliationPostgresTest do
        """
        alter default privileges for role postgres
          grant select on tables to symphony_staging_runtime;
+       """},
+      {"outbound managed-role membership",
+       """
+       create role privileged_role nologin;
+       grant privileged_role to symphony_staging_runtime;
        """}
     ]
 
@@ -253,6 +263,7 @@ defmodule SymphonyElixir.StagingReconciliationPostgresTest do
     drop role if exists anon;
     drop role if exists authenticated;
     drop role if exists service_role;
+    drop role if exists privileged_role;
     """)
   end
 

@@ -57,6 +57,8 @@ defmodule SymphonyElixir.StagingReconciliationMigrationTest do
     assert sql =~ "membership.set_option"
     assert sql =~ "expected_membership_count"
     assert sql =~ "case when current_setting('is_superuser') = 'on' then 1 else 2 end"
+    assert sql =~ "membership.member = role_state.oid"
+    assert sql =~ "membership.grantor = role_state.oid"
   end
 
   test "upgrade resets only known role settings and installs contract v2 policies" do
@@ -120,6 +122,8 @@ defmodule SymphonyElixir.StagingReconciliationMigrationTest do
     assert sql =~ "rollback refused ACL or default-ACL drift"
     assert sql =~ "rollback refused function or schema ACL drift"
     assert sql =~ "pg_db_role_setting"
+    assert sql =~ "managed_role.oid = membership.member"
+    assert sql =~ "managed_role.oid = membership.grantor"
     assert sql =~ "contract_version = 1"
     assert sql =~ "20260723000000_aro_163_staging_foundation"
     assert sql =~ "set search_path = pg_catalog, symphony_staging"

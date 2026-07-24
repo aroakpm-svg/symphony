@@ -28,6 +28,54 @@ begin
            select oid from pg_database where datname = current_database()
          )
      )
+     or exists (
+       select 1
+       from pg_auth_members membership
+       join pg_roles managed_role
+         on managed_role.oid = membership.member
+         or managed_role.oid = membership.grantor
+       where managed_role.rolname in (
+         'symphony_staging_runtime',
+         'symphony_staging_provisioner'
+       )
+     )
+     or exists (
+       select 1
+       from (values
+         ('symphony_staging_runtime'::name),
+         ('symphony_staging_provisioner'::name)
+       ) managed(role_name)
+       where (
+         select count(*)
+         from pg_auth_members membership
+         join pg_roles granted_role on granted_role.oid = membership.roleid
+         where granted_role.rolname = managed.role_name
+       ) <> case when current_setting('is_superuser') = 'on' then 1 else 2 end
+       or (
+         select count(*)
+         from pg_auth_members membership
+         join pg_roles granted_role on granted_role.oid = membership.roleid
+         join pg_roles member_role on member_role.oid = membership.member
+         join pg_roles grantor_role on grantor_role.oid = membership.grantor
+         where granted_role.rolname = managed.role_name
+           and member_role.rolname = 'postgres'
+           and (
+             (
+               grantor_role.rolname = 'postgres'
+               and not membership.admin_option
+               and membership.inherit_option
+               and membership.set_option
+             )
+             or (
+               current_setting('is_superuser') <> 'on'
+               and grantor_role.rolname = 'supabase_admin'
+               and membership.admin_option
+               and not membership.inherit_option
+               and not membership.set_option
+             )
+           )
+       ) <> case when current_setting('is_superuser') = 'on' then 1 else 2 end
+     )
      or not exists (
        select 1
        from symphony_staging.contract_versions
@@ -369,6 +417,54 @@ begin
          and role_setting.setdatabase = (
            select oid from pg_database where datname = current_database()
          )
+     )
+     or exists (
+       select 1
+       from pg_auth_members membership
+       join pg_roles managed_role
+         on managed_role.oid = membership.member
+         or managed_role.oid = membership.grantor
+       where managed_role.rolname in (
+         'symphony_staging_runtime',
+         'symphony_staging_provisioner'
+       )
+     )
+     or exists (
+       select 1
+       from (values
+         ('symphony_staging_runtime'::name),
+         ('symphony_staging_provisioner'::name)
+       ) managed(role_name)
+       where (
+         select count(*)
+         from pg_auth_members membership
+         join pg_roles granted_role on granted_role.oid = membership.roleid
+         where granted_role.rolname = managed.role_name
+       ) <> case when current_setting('is_superuser') = 'on' then 1 else 2 end
+       or (
+         select count(*)
+         from pg_auth_members membership
+         join pg_roles granted_role on granted_role.oid = membership.roleid
+         join pg_roles member_role on member_role.oid = membership.member
+         join pg_roles grantor_role on grantor_role.oid = membership.grantor
+         where granted_role.rolname = managed.role_name
+           and member_role.rolname = 'postgres'
+           and (
+             (
+               grantor_role.rolname = 'postgres'
+               and not membership.admin_option
+               and membership.inherit_option
+               and membership.set_option
+             )
+             or (
+               current_setting('is_superuser') <> 'on'
+               and grantor_role.rolname = 'supabase_admin'
+               and membership.admin_option
+               and not membership.inherit_option
+               and not membership.set_option
+             )
+           )
+       ) <> case when current_setting('is_superuser') = 'on' then 1 else 2 end
      )
      or not exists (
        select 1

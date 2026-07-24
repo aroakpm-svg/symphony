@@ -140,7 +140,9 @@ namespace-owned production object catalogs. The foundation tables are locked bef
 the checked snapshot cannot race a concurrent provisioner. Runtime access to
 `node_bindings.credential_verifier` is an explicit hard failure. A disposable-superuser test
 profile may have only the explicit `postgres SET TRUE` membership; managed shared staging must also
-have the PostgreSQL 17/Supabase administration membership.
+have the PostgreSQL 17/Supabase administration membership. Both profiles reject every outbound
+membership or grantor edge from either managed role, so the roles cannot inherit or `SET ROLE` into
+an unapproved privilege path.
 Rollback is
 `priv/symphony_migrations/20260724000000_aro_168_staging_reconciliation.down.sql`. It is allowed
 only before provisioning data exists, after revalidating every ACL class and setting it preserves,
