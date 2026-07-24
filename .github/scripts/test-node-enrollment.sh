@@ -63,6 +63,10 @@ test -n "$node_credential"
 node_url="postgresql://${login_role}@localhost:5432/postgres"
 instance_one="00000000-0000-4000-8000-000000000169"
 instance_two="00000000-0000-4000-8000-000000000269"
+instance_three="00000000-0000-4000-8000-000000000369"
+instance_four="00000000-0000-4000-8000-000000000469"
+instance_five="00000000-0000-4000-8000-000000000569"
+instance_six="00000000-0000-4000-8000-000000000669"
 
 if PGPASSWORD=wrong psql -X -q -d "$node_url" -c "select 1" >/dev/null 2>&1; then
   echo "wrong credential unexpectedly authenticated" >&2
@@ -87,7 +91,9 @@ fi
 
 PGPASSWORD="$node_credential" \
   psql -X -q -v ON_ERROR_STOP=1 -d "$node_url" \
-  -c "select * from symphony_staging.authenticate_node('$node_id', '$instance_one'); select pg_advisory_unlock_all(); select pg_sleep(8);" \
+  -c "select * from symphony_staging.authenticate_node('$node_id', '$instance_one');" \
+  -c "select pg_advisory_unlock_all();" \
+  -c "select pg_sleep(8);" \
   >/dev/null &
 first_session_pid=$!
 sleep 2
@@ -123,6 +129,14 @@ if PGPASSWORD="$node_credential" \
   exit 1
 fi
 
+PGPASSWORD="$node_credential" \
+  psql -X -q -v ON_ERROR_STOP=1 -d "$node_url" \
+  -c "select * from symphony_staging.authenticate_node('$node_id', '$instance_three');" \
+  -c "select pg_sleep(8);" \
+  >/dev/null &
+pre_rotation_session_pid=$!
+sleep 2
+
 rotated="$(
   psql_admin -A -t -F '|' -c \
     "select * from symphony_staging.rotate_node_credential('$node_id');"
@@ -134,6 +148,13 @@ unset rotated
 test "$credential_version" = "2"
 test "$rotated_contract_version" = "3"
 
+PGPASSWORD="$rotated_credential" \
+  psql -X -q -v ON_ERROR_STOP=1 -d "$node_url" \
+  -c "select * from symphony_staging.authenticate_node('$node_id', '$instance_four');" \
+  >/dev/null
+
+wait "$pre_rotation_session_pid"
+
 if PGPASSWORD="$node_credential" \
   psql -X -q -d "$node_url" -c "select 1" >/dev/null 2>&1; then
   echo "rotated credential remained valid" >&2
@@ -143,7 +164,9 @@ unset node_credential
 
 PGPASSWORD="$rotated_credential" \
   psql -X -q -v ON_ERROR_STOP=1 -d "$node_url" \
-  -c "select * from symphony_staging.authenticate_node('$node_id', '$instance_one'); select pg_sleep(4); select * from symphony_staging.authenticate_node('$node_id', '$instance_two');" \
+  -c "select * from symphony_staging.authenticate_node('$node_id', '$instance_five');" \
+  -c "select pg_sleep(4);" \
+  -c "select * from symphony_staging.authenticate_node('$node_id', '$instance_six');" \
   >/dev/null 2>&1 &
 open_session_pid=$!
 sleep 1

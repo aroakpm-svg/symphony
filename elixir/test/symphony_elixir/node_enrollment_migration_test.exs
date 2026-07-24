@@ -9,6 +9,10 @@ defmodule SymphonyElixir.NodeEnrollmentMigrationTest do
               "../../priv/symphony_migrations/20260724010000_aro_169_node_enrollment.down.sql",
               __DIR__
             )
+  @lifecycle_script Path.expand(
+                      "../../../.github/scripts/test-node-enrollment.sh",
+                      __DIR__
+                    )
 
   test "requires contract v2 and publishes contract v3" do
     sql = File.read!(@migration)
@@ -54,16 +58,23 @@ defmodule SymphonyElixir.NodeEnrollmentMigrationTest do
 
   test "rotation and revocation invalidate credentials without a termination race" do
     sql = File.read!(@migration)
+    lifecycle_script = File.read!(@lifecycle_script)
 
     assert sql =~ "alter role %I password %L"
     assert sql =~ "alter role %I nologin"
     refute sql =~ "pg_terminate_backend"
+    assert sql =~ "delete from symphony_staging.active_node_instances"
 
     assert sql =~
              "'symphony_staging.authenticate_node(uuid, uuid) from %I'"
 
     assert sql =~ "'node_credential_rotated'"
     assert sql =~ "'node_revoked'"
+    assert lifecycle_script =~
+             "-c \"select * from symphony_staging.authenticate_node('$node_id', '$instance_four');\""
+
+    assert lifecycle_script =~
+             "-c \"select * from symphony_staging.authenticate_node('$node_id', '$instance_five');\""
   end
 
   test "rollback refuses to orphan provisioned identities" do

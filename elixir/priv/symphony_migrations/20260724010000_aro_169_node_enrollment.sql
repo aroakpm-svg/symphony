@@ -272,6 +272,9 @@ begin
     updated_at = clock_timestamp()
   where nodes.node_id = requested_node_id;
 
+  delete from symphony_staging.active_node_instances as instances
+  where instances.node_id = requested_node_id;
+
   insert into symphony_staging.node_bindings (
     binding_id,
     node_id,
