@@ -12,12 +12,16 @@ defmodule SymphonyElixir.StagingReconciliationMigrationTest do
 
   test "upgrade is fail closed before its first persistent change" do
     sql = File.read!(@migration)
+    lock = byte_offset!(sql, "lock table")
+    gate_start = byte_offset!(sql, "do $aro_168_gate$")
     gate_end = byte_offset!(sql, "$aro_168_gate$;")
     first_change = byte_offset!(sql, "alter role symphony_staging_runtime reset search_path;")
 
+    assert lock < gate_start
     assert gate_end < first_change
     assert sql =~ "unexpected staging table state"
     assert sql =~ "unexpected staging function state"
+    assert sql =~ "unexpected staging index state"
     assert sql =~ "unexpected row-security state"
     assert sql =~ "unexpected trigger attachment state"
     assert sql =~ "unexpected foundation data state"
@@ -30,6 +34,15 @@ defmodule SymphonyElixir.StagingReconciliationMigrationTest do
     assert sql =~ "unexpected ACL or default-ACL state"
     assert sql =~ "unexpected function or schema ACL state"
     assert sql =~ "production must remain empty"
+  end
+
+  test "upgrade rejects database role settings and global default ACL drift" do
+    sql = File.read!(@migration)
+
+    assert sql =~ "pg_db_role_setting"
+    assert sql =~ "setdatabase"
+    assert sql =~ "database-scoped role settings"
+    assert sql =~ "default_acl.defaclnamespace = 0"
   end
 
   test "upgrade recognizes the managed PostgreSQL 17 membership tuple" do
@@ -102,6 +115,11 @@ defmodule SymphonyElixir.StagingReconciliationMigrationTest do
     refute sql =~ ~r/drop table/i
     refute sql =~ ~r/drop schema/i
     assert sql =~ "rollback refused unexpected v2 state"
+    assert sql =~ "rollback refused direct object ACL drift"
+    assert sql =~ "rollback refused direct column ACL drift"
+    assert sql =~ "rollback refused ACL or default-ACL drift"
+    assert sql =~ "rollback refused function or schema ACL drift"
+    assert sql =~ "pg_db_role_setting"
     assert sql =~ "contract_version = 1"
     assert sql =~ "20260723000000_aro_163_staging_foundation"
     assert sql =~ "set search_path = pg_catalog, symphony_staging"

@@ -1,5 +1,13 @@
 begin;
 
+lock table
+  symphony_staging.contract_versions,
+  symphony_staging.nodes,
+  symphony_staging.node_bindings,
+  symphony_staging.routing_assignments,
+  symphony_staging.foundation_audit_events
+  in access exclusive mode;
+
 do $aro_168_gate$
 declare
   checked_role name;
@@ -47,6 +55,182 @@ begin
   or to_regprocedure('symphony_staging.enforce_node_binding_transition()') is null
   or to_regprocedure('symphony_staging.enforce_routing_revision()') is null then
     raise exception 'ARO-168 unexpected staging function state';
+  end if;
+
+  if exists (
+    with expected(
+      index_name,
+      table_name,
+      is_unique,
+      is_primary,
+      is_valid,
+      is_ready,
+      is_live,
+      key_columns,
+      predicate
+    ) as (
+      values
+        (
+          'contract_versions_pkey',
+          'contract_versions',
+          true,
+          true,
+          true,
+          true,
+          true,
+          array['contract_name']::text[],
+          null::text
+        ),
+        (
+          'nodes_pkey',
+          'nodes',
+          true,
+          true,
+          true,
+          true,
+          true,
+          array['node_id']::text[],
+          null::text
+        ),
+        (
+          'node_bindings_pkey',
+          'node_bindings',
+          true,
+          true,
+          true,
+          true,
+          true,
+          array['binding_id']::text[],
+          null::text
+        ),
+        (
+          'node_bindings_node_id_environment_credential_version_key',
+          'node_bindings',
+          true,
+          false,
+          true,
+          true,
+          true,
+          array['node_id', 'environment', 'credential_version']::text[],
+          null::text
+        ),
+        (
+          'node_bindings_one_active_per_node',
+          'node_bindings',
+          true,
+          false,
+          true,
+          true,
+          true,
+          array['node_id', 'environment']::text[],
+          '(status = ''active''::text)'
+        ),
+        (
+          'node_bindings_one_rotating_per_node',
+          'node_bindings',
+          true,
+          false,
+          true,
+          true,
+          true,
+          array['node_id', 'environment']::text[],
+          '(status = ''rotating''::text)'
+        ),
+        (
+          'routing_assignments_pkey',
+          'routing_assignments',
+          true,
+          true,
+          true,
+          true,
+          true,
+          array['issue_id']::text[],
+          null::text
+        ),
+        (
+          'routing_assignments_target_node_id_idx',
+          'routing_assignments',
+          false,
+          false,
+          true,
+          true,
+          true,
+          array['target_node_id']::text[],
+          null::text
+        ),
+        (
+          'foundation_audit_events_pkey',
+          'foundation_audit_events',
+          true,
+          true,
+          true,
+          true,
+          true,
+          array['audit_id']::text[],
+          null::text
+        )
+    ),
+    actual as (
+      select
+        index_object.relname::text,
+        table_object.relname::text,
+        index.indisunique,
+        index.indisprimary,
+        index.indisvalid,
+        index.indisready,
+        index.indislive,
+        array_agg(column_attribute.attname::text order by key.ordinality),
+        pg_get_expr(index.indpred, index.indrelid)
+      from pg_index index
+      join pg_class index_object on index_object.oid = index.indexrelid
+      join pg_class table_object on table_object.oid = index.indrelid
+      join pg_namespace schema on schema.oid = table_object.relnamespace
+      cross join lateral unnest(index.indkey) with ordinality key(attnum, ordinality)
+      join pg_attribute column_attribute
+        on column_attribute.attrelid = table_object.oid
+       and column_attribute.attnum = key.attnum
+      where schema.nspname = 'symphony_staging'
+        and table_object.relname in (
+          'contract_versions',
+          'nodes',
+          'node_bindings',
+          'routing_assignments',
+          'foundation_audit_events'
+        )
+      group by
+        index_object.relname,
+        table_object.relname,
+        index.indisunique,
+        index.indisprimary,
+        index.indisvalid,
+        index.indisready,
+        index.indislive,
+        index.indpred,
+        index.indrelid
+    )
+    (select * from expected except select * from actual)
+    union all
+    (select * from actual except select * from expected)
+  )
+  or exists (
+    select 1
+    from pg_index index
+    join pg_class table_object on table_object.oid = index.indrelid
+    join pg_namespace schema on schema.oid = table_object.relnamespace
+    where schema.nspname = 'symphony_staging'
+      and table_object.relname in (
+        'contract_versions',
+        'nodes',
+        'node_bindings',
+        'routing_assignments',
+        'foundation_audit_events'
+      )
+      and (
+        index.indexprs is not null
+        or index.indnkeyatts <> index.indnatts
+      )
+  ) then
+    raise exception 'ARO-168 unexpected staging index state';
   end if;
 
   if exists (
@@ -172,6 +356,18 @@ begin
        or role_state.rolconfig is distinct from
          array['search_path=pg_catalog, symphony_staging']::text[] then
       raise exception 'ARO-168 unsafe role attributes for %', checked_role;
+    end if;
+
+    if exists (
+      select 1
+      from pg_db_role_setting role_setting
+      join pg_roles role on role.oid = role_setting.setrole
+      where role.rolname = checked_role
+        and role_setting.setdatabase = (
+          select oid from pg_database where datname = current_database()
+        )
+    ) then
+      raise exception 'ARO-168 database-scoped role settings for %', checked_role;
     end if;
 
     if (
@@ -615,10 +811,13 @@ begin
   or exists (
     select 1
     from pg_default_acl default_acl
-    join pg_namespace schema on schema.oid = default_acl.defaclnamespace
+    left join pg_namespace schema on schema.oid = default_acl.defaclnamespace
     cross join lateral aclexplode(default_acl.defaclacl) acl
     left join pg_roles grantee on grantee.oid = acl.grantee
-    where schema.nspname in ('symphony_staging', 'symphony_production')
+    where (
+        default_acl.defaclnamespace = 0
+        or schema.nspname in ('symphony_staging', 'symphony_production')
+      )
       and coalesce(grantee.rolname, 'PUBLIC') in (
         'PUBLIC',
         'anon',
@@ -757,14 +956,6 @@ begin
 end
 $aro_168_gate$;
 
-lock table
-  symphony_staging.contract_versions,
-  symphony_staging.nodes,
-  symphony_staging.node_bindings,
-  symphony_staging.routing_assignments,
-  symphony_staging.foundation_audit_events
-  in access exclusive mode;
-
 alter role symphony_staging_runtime reset search_path;
 alter role symphony_staging_provisioner reset search_path;
 
@@ -795,6 +986,18 @@ do $aro_168_verify$
 begin
   if (select rolconfig from pg_roles where rolname = 'symphony_staging_runtime') is not null
      or (select rolconfig from pg_roles where rolname = 'symphony_staging_provisioner') is not null
+     or exists (
+       select 1
+       from pg_db_role_setting role_setting
+       join pg_roles role on role.oid = role_setting.setrole
+       where role.rolname in (
+         'symphony_staging_runtime',
+         'symphony_staging_provisioner'
+       )
+         and role_setting.setdatabase = (
+           select oid from pg_database where datname = current_database()
+         )
+     )
      or not exists (
        select 1
        from symphony_staging.contract_versions
@@ -844,6 +1047,25 @@ begin
        'symphony_staging.node_bindings',
        'credential_verifier',
        'SELECT'
+     )
+     or exists (
+       select 1
+       from pg_default_acl default_acl
+       left join pg_namespace schema on schema.oid = default_acl.defaclnamespace
+       cross join lateral aclexplode(default_acl.defaclacl) acl
+       left join pg_roles grantee on grantee.oid = acl.grantee
+       where (
+           default_acl.defaclnamespace = 0
+           or schema.nspname in ('symphony_staging', 'symphony_production')
+         )
+         and coalesce(grantee.rolname, 'PUBLIC') in (
+           'PUBLIC',
+           'anon',
+           'authenticated',
+           'service_role',
+           'symphony_staging_runtime',
+           'symphony_staging_provisioner'
+         )
      ) then
     raise exception 'ARO-168 postcondition failed';
   end if;

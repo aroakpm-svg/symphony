@@ -99,6 +99,22 @@ defmodule SymphonyElixir.StagingReconciliationPostgresTest do
        drop trigger enforce_node_transition
          on symphony_staging.nodes;
        """},
+      {"missing invariant index",
+       """
+       drop index symphony_staging.node_bindings_one_active_per_node;
+       """},
+      {"database-scoped role setting",
+       """
+       select format(
+         'alter role symphony_staging_runtime in database %I set search_path = public',
+         current_database()
+       ) \\gexec
+       """},
+      {"global default ACL",
+       """
+       alter default privileges for role postgres
+         grant select on tables to symphony_staging_runtime;
+       """},
       {"production view", "create view symphony_production.drift_view as select 1 as id;"},
       {"production sequence", "create sequence symphony_production.drift_sequence;"},
       {"runtime verifier disclosure",
@@ -142,6 +158,48 @@ defmodule SymphonyElixir.StagingReconciliationPostgresTest do
     end)
   end
 
+  test "rollback rejects every preserved ACL class without changing contract v2" do
+    drift_cases = [
+      {"direct object ACL",
+       """
+       grant delete on symphony_staging.nodes
+         to symphony_staging_provisioner;
+       """},
+      {"direct column ACL",
+       """
+       grant select (credential_verifier)
+         on symphony_staging.node_bindings
+         to symphony_staging_runtime;
+       """},
+      {"production schema ACL",
+       """
+       grant usage on schema symphony_production
+         to symphony_staging_runtime;
+       """},
+      {"global default ACL",
+       """
+       alter default privileges for role postgres
+         grant select on tables to symphony_staging_runtime;
+       """}
+    ]
+
+    Enum.with_index(drift_cases)
+    |> Enum.each(fn {{label, drift_sql}, index} ->
+      if index > 0 do
+        reset_database()
+        install_legacy_profile()
+      end
+
+      run_sql(File.read!(@migration))
+      run_sql(drift_sql)
+      {output, status} = run_psql(File.read!(@rollback))
+
+      assert status != 0, "#{label} unexpectedly rolled back"
+      assert output =~ "ARO-168", "#{label} did not fail through an ARO-168 gate: #{output}"
+      assert contract_version() == "2|20260724000000_aro_168_staging_reconciliation"
+    end)
+  end
+
   defp install_legacy_profile do
     run_sql("""
     create role anon nologin;
@@ -175,6 +233,19 @@ defmodule SymphonyElixir.StagingReconciliationPostgresTest do
 
   defp reset_database do
     run_sql("""
+    select format(
+      'alter role symphony_staging_runtime in database %I reset all',
+      current_database()
+    )
+    where exists (
+      select 1 from pg_roles where rolname = 'symphony_staging_runtime'
+    ) \\gexec
+    select
+      'alter default privileges for role postgres ' ||
+      'revoke select on tables from symphony_staging_runtime'
+    where exists (
+      select 1 from pg_roles where rolname = 'symphony_staging_runtime'
+    ) \\gexec
     drop schema if exists symphony_staging cascade;
     drop schema if exists symphony_production cascade;
     drop role if exists symphony_staging_runtime;
