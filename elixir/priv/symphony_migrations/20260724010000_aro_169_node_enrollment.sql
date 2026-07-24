@@ -57,12 +57,20 @@ create table symphony_staging.active_node_instances (
   unique (node_id, node_instance_id)
 );
 
+create table symphony_staging.node_enrollment_contract_manifest (
+  singleton boolean primary key default true check (singleton),
+  expected_fingerprint text not null,
+  recorded_at timestamptz not null default clock_timestamp()
+);
+
 alter table symphony_staging.node_instance_history enable row level security;
 alter table symphony_staging.active_node_instances enable row level security;
+alter table symphony_staging.node_enrollment_contract_manifest enable row level security;
 
 revoke all on table
   symphony_staging.node_instance_history,
-  symphony_staging.active_node_instances
+  symphony_staging.active_node_instances,
+  symphony_staging.node_enrollment_contract_manifest
   from public, anon, authenticated, service_role,
        symphony_staging_runtime, symphony_staging_provisioner;
 
@@ -243,7 +251,7 @@ begin
   where principals.node_id = requested_node_id
     and principals.revoked_at is null
     and nodes.status = 'active'
-  for update of principals, nodes;
+  for update of nodes, principals;
 
   if principal_role is null then
     raise exception using
@@ -345,12 +353,14 @@ begin
       message = 'ARO-169 revocation requires the staging provisioner';
   end if;
 
-  select login_role
+  select principals.login_role
   into principal_role
-  from symphony_staging.node_login_principals
-  where node_id = requested_node_id
-    and revoked_at is null
-  for update;
+  from symphony_staging.nodes nodes
+  join symphony_staging.node_login_principals principals using (node_id)
+  where nodes.node_id = requested_node_id
+    and nodes.status = 'active'
+    and principals.revoked_at is null
+  for update of nodes, principals;
 
   if principal_role is null then
     raise exception using
@@ -454,7 +464,8 @@ begin
     and (
       nodes.rotated_at is null
       or activity.backend_start >= nodes.rotated_at
-    );
+    )
+  for update of nodes, principals, bindings;
 
   if authenticated_node_id is null then
     raise exception using
@@ -554,6 +565,81 @@ grant execute on function symphony_staging.rotate_node_credential(uuid)
   to symphony_staging_provisioner;
 grant execute on function symphony_staging.revoke_node(uuid)
   to symphony_staging_provisioner;
+
+insert into symphony_staging.node_enrollment_contract_manifest (
+  expected_fingerprint
+)
+select md5(string_agg(signature, E'\n' order by signature))
+from (
+  select
+    'function:' || procedure.oid::regprocedure::text || ':' ||
+    pg_get_userbyid(procedure.proowner) || ':' ||
+    coalesce(procedure.proacl::text, '') || ':' ||
+    pg_get_functiondef(procedure.oid) as signature
+  from pg_proc procedure
+  join pg_namespace namespace on namespace.oid = procedure.pronamespace
+  where namespace.nspname = 'symphony_staging'
+    and procedure.proname in (
+      'provision_node',
+      'rotate_node_credential',
+      'revoke_node',
+      'authenticate_node'
+    )
+  union all
+  select
+    'table:' || relation.relname || ':' ||
+    pg_get_userbyid(relation.relowner) || ':' ||
+    relation.relrowsecurity::text || ':' ||
+    coalesce(relation.relacl::text, '')
+  from pg_class relation
+  join pg_namespace namespace on namespace.oid = relation.relnamespace
+  where namespace.nspname = 'symphony_staging'
+    and relation.relname in (
+      'node_login_principals',
+      'node_instance_history',
+      'active_node_instances',
+      'node_enrollment_contract_manifest'
+    )
+  union all
+  select
+    'column:' || relation.relname || ':' || attribute.attname || ':' ||
+    format_type(attribute.atttypid, attribute.atttypmod) || ':' ||
+    attribute.attnotnull::text || ':' ||
+    coalesce(pg_get_expr(default_value.adbin, default_value.adrelid), '')
+  from pg_class relation
+  join pg_namespace namespace on namespace.oid = relation.relnamespace
+  join pg_attribute attribute on attribute.attrelid = relation.oid
+  left join pg_attrdef default_value
+    on default_value.adrelid = relation.oid
+   and default_value.adnum = attribute.attnum
+  where namespace.nspname = 'symphony_staging'
+    and relation.relname like 'node\_%' escape '\'
+    and attribute.attnum > 0
+    and not attribute.attisdropped
+  union all
+  select
+    'constraint:' || relation.relname || ':' || constraint_row.conname || ':' ||
+    pg_get_constraintdef(constraint_row.oid, true)
+  from pg_constraint constraint_row
+  join pg_class relation on relation.oid = constraint_row.conrelid
+  join pg_namespace namespace on namespace.oid = relation.relnamespace
+  where namespace.nspname = 'symphony_staging'
+    and relation.relname in (
+      'node_login_principals',
+      'node_instance_history',
+      'active_node_instances',
+      'node_enrollment_contract_manifest'
+    )
+  union all
+  select
+    'policy:' || schemaname || ':' || tablename || ':' || policyname || ':' ||
+    permissive || ':' || roles::text || ':' || cmd || ':' ||
+    coalesce(qual, '') || ':' || coalesce(with_check, '')
+  from pg_policies
+  where schemaname = 'symphony_staging'
+    and tablename like 'node\_%' escape '\'
+) contract_state;
+
 insert into symphony_staging.contract_versions (
   contract_name,
   contract_version,

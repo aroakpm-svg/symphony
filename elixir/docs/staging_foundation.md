@@ -152,6 +152,13 @@ and the v1 contract row. It never drops roles, tables, schemas, or managed membe
 PR review and merge do not authorize shared-staging apply. Preserve the separate human gate before
 applying ARO-168 to `aroak-central-brain-staging`.
 
+ARO-169 startup uses one worker-owned direct PostgreSQL connection for the
+complete process lifetime. Supavisor/PgBouncer transaction and session pooler
+endpoints are not accepted because pool-backend lifetime is not worker
+lifetime. Each ARO-139–141 preflight must verify the direct
+`db.<project-ref>.supabase.co:5432` endpoint and prove disconnect removes the
+recorded backend before provisioning approval.
+
 The suite also checks canonical role attributes, memberships, object and column grants, every RLS
 policy's table, role set, command, permissive mode, `qual`, and `with_check`, rollback
 ownership-marker isolation, and unchanged production-schema ACLs. Positive actor reads assert the

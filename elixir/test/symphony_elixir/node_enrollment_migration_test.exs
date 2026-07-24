@@ -42,6 +42,7 @@ defmodule SymphonyElixir.NodeEnrollmentMigrationTest do
     assert sql =~ "node instance reuse rejected"
     assert sql =~ "duplicate node session rejected"
     assert sql =~ "requested_node_instance_id"
+    assert sql =~ "for update of nodes, principals, bindings"
     refute sql =~ "pg_try_advisory_lock"
     refute sql =~ "in role symphony_staging_runtime"
   end
@@ -76,12 +77,27 @@ defmodule SymphonyElixir.NodeEnrollmentMigrationTest do
 
     assert lifecycle_script =~
              "-c \"select * from symphony_staging.authenticate_node('$node_id', '$instance_five');\""
+
+    assert lifecycle_script =~
+             "rotation did not serialize with in-flight authentication"
   end
 
   test "rollback refuses to orphan provisioned identities" do
     sql = File.read!(@rollback)
 
     assert sql =~ "rollback refused while provisioned node principals exist"
+    assert sql =~ "rollback requires the exact contract v3 marker"
+    assert sql =~ "contract objects or ACLs drifted"
+    assert sql =~ "contract downgrade did not update exactly one row"
+    assert sql =~ "in access exclusive mode"
     assert sql =~ "contract_version = 2"
+  end
+
+  test "behavior suite covers rollback marker, object, and ACL drift" do
+    lifecycle_script = File.read!(@lifecycle_script)
+
+    assert lifecycle_script =~ "rollback unexpectedly accepted a future contract"
+    assert lifecycle_script =~ "rollback unexpectedly accepted object drift"
+    assert lifecycle_script =~ "rollback unexpectedly accepted ACL drift"
   end
 end
