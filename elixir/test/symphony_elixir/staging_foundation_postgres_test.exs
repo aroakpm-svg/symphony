@@ -38,6 +38,7 @@ defmodule SymphonyElixir.StagingFoundationPostgresTest do
     on_exit(fn ->
       run_sql("""
       drop schema if exists symphony_staging cascade;
+      drop schema if exists symphony_production cascade;
       drop table if exists public.aro_163_acl_sentinel;
       drop role if exists aro_163_acl_reader;
       drop role if exists symphony_staging_runtime;
@@ -207,6 +208,16 @@ defmodule SymphonyElixir.StagingFoundationPostgresTest do
 
     run_sql(File.read!(@migration))
 
+    assert run_sql("""
+           select membership.set_option
+           from pg_auth_members membership
+           join pg_roles granted_role on granted_role.oid = membership.roleid
+           join pg_roles member_role on member_role.oid = membership.member
+           where granted_role.rolname = 'symphony_staging_runtime'
+             and member_role.rolname = 'postgres';
+           """)
+           |> String.trim() == "t"
+
     run_sql("""
     begin;
     set local role symphony_staging_runtime;
@@ -221,6 +232,218 @@ defmodule SymphonyElixir.StagingFoundationPostgresTest do
     """)
   end
 
+  test "canonical grants and least-privilege actors prove the installed contract" do
+    run_sql("""
+    create schema symphony_staging;
+    create schema symphony_production;
+    create temporary table aro_163_production_acl_before as
+    select nspacl from pg_namespace where nspname = 'symphony_production';
+    #{File.read!(@migration)}
+    #{File.read!(@migration)}
+    do $$
+    declare
+      checked_role record;
+    begin
+      for checked_role in
+        select rolname, rolcanlogin, rolsuper, rolcreatedb, rolcreaterole, rolinherit,
+               rolreplication, rolbypassrls
+        from pg_roles
+        where rolname in ('symphony_staging_runtime', 'symphony_staging_provisioner')
+      loop
+        if checked_role.rolcanlogin or checked_role.rolsuper or checked_role.rolcreatedb
+           or checked_role.rolcreaterole or checked_role.rolinherit
+           or checked_role.rolreplication or checked_role.rolbypassrls then
+          raise exception 'unsafe canonical role attributes for %', checked_role.rolname;
+        end if;
+      end loop;
+
+      if (select count(*) from pg_roles
+          where rolname in ('symphony_staging_runtime', 'symphony_staging_provisioner')) <> 2
+         or (select count(*)
+             from pg_auth_members membership
+             join pg_roles granted_role on granted_role.oid = membership.roleid
+             join pg_roles member_role on member_role.oid = membership.member
+             where granted_role.rolname in (
+               'symphony_staging_runtime', 'symphony_staging_provisioner'
+             )
+               and member_role.rolname = 'postgres'
+               and membership.set_option) <> 2
+         or exists (
+           select 1
+           from pg_auth_members membership
+           join pg_roles granted_role on granted_role.oid = membership.roleid
+           join pg_roles member_role on member_role.oid = membership.member
+           where granted_role.rolname in (
+             'symphony_staging_runtime', 'symphony_staging_provisioner'
+           )
+             and (member_role.rolname <> 'postgres' or not membership.set_option)
+         ) then
+        raise exception 'canonical role membership state is invalid';
+      end if;
+
+      if not has_schema_privilege(
+           'symphony_staging_runtime', 'symphony_staging', 'USAGE'
+         )
+         or has_schema_privilege(
+           'symphony_staging_runtime', 'symphony_staging', 'CREATE'
+         )
+         or not has_column_privilege(
+           'symphony_staging_runtime',
+           'symphony_staging.nodes',
+           'node_id',
+           'SELECT'
+         )
+         or has_table_privilege(
+           'symphony_staging_runtime', 'symphony_staging.nodes', 'UPDATE'
+         )
+         or has_column_privilege(
+           'symphony_staging_runtime',
+           'symphony_staging.node_bindings',
+           'credential_verifier',
+           'SELECT'
+         )
+         or not has_table_privilege(
+           'symphony_staging_provisioner', 'symphony_staging.nodes', 'INSERT'
+         )
+         or has_table_privilege('anon', 'symphony_staging.nodes', 'SELECT')
+         or has_table_privilege('authenticated', 'symphony_staging.nodes', 'SELECT') then
+        raise exception 'canonical object ACL state is invalid';
+      end if;
+
+      if (select count(*)
+          from pg_policies
+          where schemaname = 'symphony_staging'
+            and policyname in (
+              'runtime_read_contract_versions',
+              'runtime_read_nodes',
+              'runtime_read_node_bindings',
+              'runtime_read_routing_assignments',
+              'runtime_insert_audit_events',
+              'provisioner_manage_contract_versions',
+              'provisioner_manage_nodes',
+              'provisioner_manage_node_bindings',
+              'provisioner_manage_routing_assignments',
+              'provisioner_insert_audit_events'
+            )) <> 10
+         or (select nspacl from pg_namespace where nspname = 'symphony_production')
+           is distinct from (select nspacl from aro_163_production_acl_before) then
+        raise exception 'canonical policy or production ACL state is invalid';
+      end if;
+    end
+    $$;
+    """)
+
+    run_sql("""
+    begin;
+    set local role symphony_staging_provisioner;
+    set local search_path = pg_catalog, symphony_staging;
+    insert into symphony_staging.nodes (
+      node_id, display_alias, status, credential_version
+    ) values ('00000000-0000-4000-8000-000000000163', 'contract-test', 'active', 1);
+    insert into symphony_staging.node_bindings (
+      binding_id, node_id, environment, status, credential_version,
+      credential_verifier, activated_at
+    ) values (
+      '00000000-0000-4000-8000-000000001163',
+      '00000000-0000-4000-8000-000000000163',
+      'staging', 'active', 1, repeat('ab', 32), clock_timestamp()
+    );
+    insert into symphony_staging.foundation_audit_events (
+      event_type, node_id, result, reason_code
+    ) values (
+      'provisioner-contract-test',
+      '00000000-0000-4000-8000-000000000163',
+      'accepted', 'contract-test'
+    );
+    commit;
+    """)
+
+    run_sql("""
+    begin;
+    set local role symphony_staging_runtime;
+    set local search_path = pg_catalog, symphony_staging;
+    select node_id
+    from symphony_staging.nodes
+    where node_id = '00000000-0000-4000-8000-000000000163';
+    select binding_id
+    from symphony_staging.node_bindings
+    where binding_id = '00000000-0000-4000-8000-000000001163';
+    insert into symphony_staging.foundation_audit_events (
+      event_type, node_id, result, reason_code
+    ) values (
+      'runtime-contract-test',
+      '00000000-0000-4000-8000-000000000163',
+      'accepted', 'contract-test'
+    );
+    commit;
+    """)
+
+    assert_sql_denied("""
+    begin;
+    set local role symphony_staging_runtime;
+    update symphony_staging.nodes
+    set display_alias = 'forbidden'
+    where node_id = '00000000-0000-4000-8000-000000000163';
+    """)
+
+    assert_sql_denied("""
+    begin;
+    set local role symphony_staging_runtime;
+    select credential_verifier from symphony_staging.node_bindings;
+    """)
+
+    assert_sql_denied("""
+    begin;
+    set local role symphony_staging_provisioner;
+    insert into symphony_staging.contract_versions (
+      contract_name, contract_version, migration_name
+    ) values ('aro-163-created-role:forged', 1, 'forbidden');
+    """)
+
+    for actor <- ["anon", "authenticated"] do
+      assert_sql_denied("""
+      begin;
+      set local role #{actor};
+      select * from symphony_staging.nodes;
+      """)
+    end
+
+    for actor <- [
+          "symphony_staging_runtime",
+          "symphony_staging_provisioner",
+          "anon",
+          "authenticated"
+        ] do
+      assert_sql_denied("""
+      begin;
+      set local role #{actor};
+      create table symphony_production.forbidden (id integer);
+      """)
+    end
+
+    run_sql("""
+    #{File.read!(@rollback)}
+    #{File.read!(@migration)}
+    do $$
+    begin
+      if (select count(*)
+          from pg_auth_members membership
+          join pg_roles granted_role on granted_role.oid = membership.roleid
+          join pg_roles member_role on member_role.oid = membership.member
+          where granted_role.rolname in (
+            'symphony_staging_runtime', 'symphony_staging_provisioner'
+          )
+            and member_role.rolname = 'postgres'
+            and membership.set_option) <> 2
+         or (select nspacl from pg_namespace where nspname = 'symphony_production')
+           is not null then
+        raise exception 'rollback and reapply changed canonical privilege state';
+      end if;
+    end
+    $$;
+    """)
+  end
+
   defp foundation_table_exists? do
     {output, 0} =
       run_psql("select to_regclass('symphony_staging.contract_versions') is not null;")
@@ -232,6 +455,12 @@ defmodule SymphonyElixir.StagingFoundationPostgresTest do
     {output, status} = run_psql(sql)
     assert status == 0, output
     output
+  end
+
+  defp assert_sql_denied(sql) do
+    {output, status} = run_psql(sql)
+    assert status != 0, "expected permission denial, command succeeded"
+    assert output =~ ~r/(permission denied|violates row-level security)/i, output
   end
 
   defp run_psql(sql) do

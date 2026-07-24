@@ -29,7 +29,11 @@ They are deliberately `NOLOGIN`. A later approved provisioning flow can bind a l
 the appropriate permission role without putting a password in Git, Linear, Codex, migration output,
 or logs. Permission verification uses `SET ROLE`, so no durable test password is required. The
 migration grants both permission-role memberships to `postgres` with `SET TRUE`, repairing an
-accepted pre-existing membership that had `SET FALSE`.
+accepted pre-existing membership that had `SET FALSE`. Acceptance does not treat a successful
+superuser `SET ROLE` as evidence of that repair: it inspects `pg_auth_members.set_option` directly.
+The disposable behavior suite switches `current_user` to each permission role and to `anon` and
+`authenticated` before exercising allowed and denied operations, so owner or superuser bypass
+cannot satisfy runtime security assertions.
 
 `ALTER ROLE ... SET search_path` is intentionally not used: PostgreSQL does not apply a `NOLOGIN`
 permission role's role settings when a login session later runs `SET ROLE`. Every transaction must
@@ -112,6 +116,11 @@ Validation must prove:
 7. `symphony_production` access denied for both staging roles;
 8. `anon` and `authenticated` remain denied;
 9. migration checksum and exact implementation SHA are recorded.
+
+The suite also checks canonical role attributes, memberships, object and column grants, RLS policy
+presence, rollback ownership-marker isolation, and unchanged production-schema ACLs. The migration
+owner is used only for setup, migration, catalog inspection, and teardown; runtime and provisioner
+behavior is verified after switching to the exact non-admin actor.
 
 The behavior-level Postgres regression suite is intentionally destructive and only runs against an
 explicit disposable database:
