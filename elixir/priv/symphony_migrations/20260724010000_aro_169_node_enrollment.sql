@@ -84,14 +84,19 @@ begin
 
   execute format(
     'create role %I login password %L nosuperuser nocreatedb ' ||
-    'nocreaterole noinherit noreplication nobypassrls ' ||
-    'in role symphony_staging_runtime',
+    'nocreaterole noinherit noreplication nobypassrls',
     generated_login_role,
     generated_credential
   );
 
   execute format(
     'alter role %I set search_path = pg_catalog, symphony_staging',
+    generated_login_role
+  );
+
+  execute format(
+    'grant execute on function ' ||
+    'symphony_staging.authenticate_node(uuid, uuid) to %I',
     generated_login_role
   );
 
@@ -214,11 +219,6 @@ begin
       message = 'active node not found';
   end if;
 
-  perform pg_terminate_backend(activity.pid)
-  from pg_stat_activity activity
-  where activity.usename = principal_role
-    and activity.pid <> pg_backend_pid();
-
   execute format(
     'alter role %I password %L',
     principal_role,
@@ -325,10 +325,11 @@ begin
 
   execute format('alter role %I nologin', principal_role);
 
-  perform pg_terminate_backend(activity.pid)
-  from pg_stat_activity activity
-  where activity.usename = principal_role
-    and activity.pid <> pg_backend_pid();
+  execute format(
+    'revoke execute on function ' ||
+    'symphony_staging.authenticate_node(uuid, uuid) from %I',
+    principal_role
+  );
 
   update symphony_staging.node_bindings as bindings
   set
@@ -464,9 +465,6 @@ grant execute on function symphony_staging.rotate_node_credential(uuid)
   to symphony_staging_provisioner;
 grant execute on function symphony_staging.revoke_node(uuid)
   to symphony_staging_provisioner;
-grant execute on function symphony_staging.authenticate_node(uuid, uuid)
-  to symphony_staging_runtime;
-
 insert into symphony_staging.contract_versions (
   contract_name,
   contract_version,

@@ -35,6 +35,7 @@ defmodule SymphonyElixir.NodeEnrollmentMigrationTest do
     assert sql =~ "pg_try_advisory_lock"
     assert sql =~ "duplicate node session rejected"
     assert sql =~ "requested_node_instance_id"
+    refute sql =~ "in role symphony_staging_runtime"
   end
 
   test "removes public and API execution paths" do
@@ -44,15 +45,18 @@ defmodule SymphonyElixir.NodeEnrollmentMigrationTest do
              "from public, anon, authenticated, service_role,\n       symphony_staging_runtime"
 
     assert sql =~
-             "grant execute on function symphony_staging.authenticate_node(uuid, uuid)\n  to symphony_staging_runtime"
+             "'symphony_staging.authenticate_node(uuid, uuid) to %I'"
   end
 
-  test "rotation and revocation invalidate existing credentials and sessions" do
+  test "rotation and revocation invalidate credentials without a termination race" do
     sql = File.read!(@migration)
 
     assert sql =~ "alter role %I password %L"
     assert sql =~ "alter role %I nologin"
-    assert sql =~ "pg_terminate_backend"
+    refute sql =~ "pg_terminate_backend"
+
+    assert sql =~
+             "'symphony_staging.authenticate_node(uuid, uuid) from %I'"
     assert sql =~ "'node_credential_rotated'"
     assert sql =~ "'node_revoked'"
   end

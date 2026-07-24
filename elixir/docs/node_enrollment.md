@@ -9,14 +9,19 @@ or ARO-141 may provision a physical computer.
   256-bit credential inside one PostgreSQL transaction.
 - The plaintext credential is returned once. Only its SHA-256 verifier is
   stored in `node_bindings`.
-- Each node connects with its own restricted PostgreSQL login. The login
-  inherits only `symphony_staging_runtime` and cannot access production.
+- Each node connects with its own restricted PostgreSQL login. The login is
+  not a member of `symphony_staging_runtime`, has no table privileges, and
+  cannot access production.
 - `authenticate_node` matches `session_user` to the requested node and active
   binding. A session advisory lock rejects a simultaneous duplicate or clone.
-- Rotation returns a new credential once, terminates old sessions, revokes the
-  old binding, and advances the credential version atomically.
-- Revocation changes the login to `NOLOGIN`, terminates existing sessions, and
-  disables the node and active binding atomically.
+- Provisioning grants each login only direct execution of `authenticate_node`.
+  Future runtime entry points must repeat the active-node and session-lock gate;
+  they must never grant direct table access to node logins.
+- Rotation returns a new credential once, revokes the old binding, and advances
+  the credential version atomically.
+- Revocation changes the login to `NOLOGIN`, removes its authentication execute
+  grant, and disables the node and active binding atomically. An already-open
+  transport connection remains unprivileged and cannot use runtime tables.
 - PostgreSQL releases the session lock when the connection closes, so a clean
   restart or a restart after connection loss can authenticate with a new random
   `nodeInstanceId`.

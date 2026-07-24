@@ -71,22 +71,30 @@ fi
 
 if PGPASSWORD="$node_credential" \
   psql -X -q -v ON_ERROR_STOP=1 -d "$node_url" \
-  -c "set role symphony_staging_runtime; select * from symphony_production.forbidden;" \
+  -c "select * from symphony_production.forbidden;" \
   >/dev/null 2>&1; then
   echo "node role unexpectedly accessed production" >&2
   exit 1
 fi
 
+if PGPASSWORD="$node_credential" \
+  psql -X -q -d "$node_url" \
+  -c "set role symphony_staging_runtime; select * from symphony_staging.nodes;" \
+  >/dev/null 2>&1; then
+  echo "node login unexpectedly bypassed authentication with SET ROLE" >&2
+  exit 1
+fi
+
 PGPASSWORD="$node_credential" \
   psql -X -q -v ON_ERROR_STOP=1 -d "$node_url" \
-  -c "set role symphony_staging_runtime; select * from symphony_staging.authenticate_node('$node_id', '$instance_one'); select pg_sleep(8);" \
+  -c "select * from symphony_staging.authenticate_node('$node_id', '$instance_one'); select pg_sleep(8);" \
   >/dev/null 2>&1 &
 first_session_pid=$!
 sleep 2
 
 if PGPASSWORD="$node_credential" \
   psql -X -q -v ON_ERROR_STOP=1 -d "$node_url" \
-  -c "set role symphony_staging_runtime; select * from symphony_staging.authenticate_node('$node_id', '$instance_two');" \
+  -c "select * from symphony_staging.authenticate_node('$node_id', '$instance_two');" \
   >/dev/null 2>&1; then
   echo "duplicate node session unexpectedly authenticated" >&2
   kill "$first_session_pid" 2>/dev/null || true
@@ -97,7 +105,7 @@ wait "$first_session_pid"
 
 PGPASSWORD="$node_credential" \
   psql -X -q -v ON_ERROR_STOP=1 -d "$node_url" \
-  -c "set role symphony_staging_runtime; select * from symphony_staging.authenticate_node('$node_id', '$instance_two');" \
+  -c "select * from symphony_staging.authenticate_node('$node_id', '$instance_two');" \
   >/dev/null
 
 if PGPASSWORD="$node_credential" \
@@ -127,10 +135,17 @@ unset node_credential
 
 PGPASSWORD="$rotated_credential" \
   psql -X -q -v ON_ERROR_STOP=1 -d "$node_url" \
-  -c "set role symphony_staging_runtime; select * from symphony_staging.authenticate_node('$node_id', '$instance_one');" \
-  >/dev/null
+  -c "select * from symphony_staging.authenticate_node('$node_id', '$instance_one'); select pg_sleep(4); select * from symphony_staging.authenticate_node('$node_id', '$instance_two');" \
+  >/dev/null 2>&1 &
+open_session_pid=$!
+sleep 1
 
 psql_admin -c "select symphony_staging.revoke_node('$node_id');" >/dev/null
+
+if wait "$open_session_pid"; then
+  echo "open session retained authentication after durable revocation" >&2
+  exit 1
+fi
 
 if PGPASSWORD="$rotated_credential" \
   psql -X -q -d "$node_url" -c "select 1" >/dev/null 2>&1; then
