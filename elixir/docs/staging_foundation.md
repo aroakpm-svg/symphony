@@ -132,7 +132,13 @@ ARO-168 reconciles only that exact legacy state:
 - do not add retrospective role-ownership markers.
 
 The migration validates the complete approved legacy profile before its first write and aborts on
-any role, membership, policy, foundation-data, schema-object, or production-boundary drift.
+any role, membership, policy, foundation-data, schema-object, or production-boundary drift. The
+exact gate compares effective RLS mode, complete policy semantics, trigger attachments, foundation
+ownership, direct table/column/sequence/function grants, grant options, relevant default ACLs, and
+all supported namespace-owned production object catalogs. Runtime access to
+`node_bindings.credential_verifier` is an explicit hard failure. A disposable-superuser test
+profile may have only the explicit `postgres SET TRUE` membership; managed shared staging must also
+have the PostgreSQL 17/Supabase administration membership.
 Rollback is
 `priv/symphony_migrations/20260724000000_aro_168_staging_reconciliation.down.sql`. It is allowed
 only before provisioning data exists and restores only the two policies, two known role settings,

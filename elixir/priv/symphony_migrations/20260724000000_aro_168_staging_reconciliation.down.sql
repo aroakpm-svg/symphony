@@ -29,7 +29,35 @@ begin
          where schemaname = 'symphony_staging'
            and policyname = 'provisioner_manage_contract_versions')
           is distinct from
-          '(contract_name !~~ ''aro-163-created-role:%''::text)' then
+          '(contract_name !~~ ''aro-163-created-role:%''::text)'
+     or (select permissive from pg_policies
+         where schemaname = 'symphony_staging'
+           and policyname = 'runtime_read_contract_versions')
+          is distinct from 'PERMISSIVE'
+     or (select permissive from pg_policies
+         where schemaname = 'symphony_staging'
+           and policyname = 'provisioner_manage_contract_versions')
+          is distinct from 'PERMISSIVE'
+     or exists (
+       select 1
+       from pg_class object
+       join pg_namespace schema on schema.oid = object.relnamespace
+       where schema.nspname = 'symphony_staging'
+         and object.relname in (
+           'contract_versions',
+           'nodes',
+           'node_bindings',
+           'routing_assignments',
+           'foundation_audit_events'
+         )
+         and (not object.relrowsecurity or object.relforcerowsecurity)
+     )
+     or has_column_privilege(
+       'symphony_staging_runtime',
+       'symphony_staging.node_bindings',
+       'credential_verifier',
+       'SELECT'
+     ) then
     raise exception 'ARO-168 rollback refused unexpected v2 state';
   end if;
 end
