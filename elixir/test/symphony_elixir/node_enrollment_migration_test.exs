@@ -32,9 +32,13 @@ defmodule SymphonyElixir.NodeEnrollmentMigrationTest do
     sql = File.read!(@migration)
 
     assert sql =~ "principals.login_role = session_user"
-    assert sql =~ "pg_try_advisory_lock"
+    assert sql =~ "active_node_instances"
+    assert sql =~ "pg_stat_activity"
+    assert sql =~ "activity.backend_start"
+    assert sql =~ "node instance reuse rejected"
     assert sql =~ "duplicate node session rejected"
     assert sql =~ "requested_node_instance_id"
+    refute sql =~ "pg_try_advisory_lock"
     refute sql =~ "in role symphony_staging_runtime"
   end
 

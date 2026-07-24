@@ -13,19 +13,21 @@ or ARO-141 may provision a physical computer.
   not a member of `symphony_staging_runtime`, has no table privileges, and
   cannot access production.
 - `authenticate_node` matches `session_user` to the requested node and active
-  binding. A session advisory lock rejects a simultaneous duplicate or clone.
+  binding. A server-owned instance row records the PostgreSQL backend PID and
+  backend start time; a second instance is rejected while that backend exists.
 - Provisioning grants each login only staging schema usage and direct execution
   of `authenticate_node`.
-  Future runtime entry points must repeat the active-node and session-lock gate;
+  Future runtime entry points must repeat the active-node and current-instance gate;
   they must never grant direct table access to node logins.
 - Rotation returns a new credential once, revokes the old binding, and advances
   the credential version atomically.
 - Revocation changes the login to `NOLOGIN`, removes its authentication execute
   grant, and disables the node and active binding atomically. An already-open
   transport connection remains unprivileged and cannot use runtime tables.
-- PostgreSQL releases the session lock when the connection closes, so a clean
-  restart or a restart after connection loss can authenticate with a new random
-  `nodeInstanceId`.
+- A client cannot clear the instance gate with advisory-lock functions. After
+  the recorded PostgreSQL backend disappears, a restart can atomically replace
+  the stale row with a new random `nodeInstanceId`. Instance history prevents
+  reuse of an old ID.
 - Neither function is callable by `PUBLIC`, Supabase API roles, or
   `service_role`.
 

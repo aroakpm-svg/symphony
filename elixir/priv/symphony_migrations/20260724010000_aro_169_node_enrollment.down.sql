@@ -17,6 +17,8 @@ drop function if exists symphony_staging.authenticate_node(uuid, uuid);
 drop function if exists symphony_staging.revoke_node(uuid);
 drop function if exists symphony_staging.rotate_node_credential(uuid);
 drop function if exists symphony_staging.provision_node(text);
+drop table if exists symphony_staging.active_node_instances;
+drop table if exists symphony_staging.node_instance_history;
 drop table if exists symphony_staging.node_login_principals;
 
 update symphony_staging.contract_versions

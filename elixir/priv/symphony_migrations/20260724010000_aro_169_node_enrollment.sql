@@ -39,6 +39,33 @@ revoke all on table symphony_staging.node_login_principals
 grant select, insert, update on symphony_staging.node_login_principals
   to symphony_staging_provisioner;
 
+create table symphony_staging.node_instance_history (
+  node_id uuid not null
+    references symphony_staging.node_login_principals(node_id) on delete restrict,
+  node_instance_id uuid not null,
+  authenticated_at timestamptz not null default clock_timestamp(),
+  primary key (node_id, node_instance_id)
+);
+
+create table symphony_staging.active_node_instances (
+  node_id uuid primary key
+    references symphony_staging.node_login_principals(node_id) on delete restrict,
+  node_instance_id uuid not null,
+  backend_pid integer not null,
+  backend_started_at timestamptz not null,
+  authenticated_at timestamptz not null default clock_timestamp(),
+  unique (node_id, node_instance_id)
+);
+
+alter table symphony_staging.node_instance_history enable row level security;
+alter table symphony_staging.active_node_instances enable row level security;
+
+revoke all on table
+  symphony_staging.node_instance_history,
+  symphony_staging.active_node_instances
+  from public, anon, authenticated, service_role,
+       symphony_staging_runtime, symphony_staging_provisioner;
+
 create or replace function symphony_staging.provision_node(
   requested_display_alias text
 )
@@ -395,8 +422,9 @@ security definer
 set search_path = pg_catalog, symphony_staging
 as $$
 declare
-  lock_key bigint;
   authenticated_node_id uuid;
+  current_backend_started_at timestamptz;
+  claimed_node_id uuid;
 begin
   if requested_node_id is null or requested_node_instance_id is null then
     raise exception using
@@ -404,8 +432,8 @@ begin
       message = 'nodeId and nodeInstanceId are required';
   end if;
 
-  select principals.node_id
-  into authenticated_node_id
+  select principals.node_id, activity.backend_start
+  into authenticated_node_id, current_backend_started_at
   from symphony_staging.node_login_principals principals
   join symphony_staging.nodes nodes
     on nodes.node_id = principals.node_id
@@ -414,10 +442,16 @@ begin
    and bindings.environment = 'staging'
    and bindings.status = 'active'
    and bindings.credential_version = nodes.credential_version
+  join pg_catalog.pg_stat_activity activity
+    on activity.pid = pg_backend_pid()
   where principals.node_id = requested_node_id
     and principals.login_role = session_user
     and principals.revoked_at is null
-    and nodes.status = 'active';
+    and nodes.status = 'active'
+    and (
+      nodes.rotated_at is null
+      or activity.backend_start >= nodes.rotated_at
+    );
 
   if authenticated_node_id is null then
     raise exception using
@@ -425,9 +459,51 @@ begin
       message = 'node authentication rejected';
   end if;
 
-  lock_key := hashtextextended(authenticated_node_id::text, 169);
+  begin
+    insert into symphony_staging.node_instance_history (
+      node_id,
+      node_instance_id
+    )
+    values (
+      authenticated_node_id,
+      requested_node_instance_id
+    );
+  exception
+    when unique_violation then
+      raise exception using
+        errcode = '28000',
+        message = 'node instance reuse rejected';
+  end;
 
-  if not pg_try_advisory_lock(lock_key) then
+  insert into symphony_staging.active_node_instances (
+    node_id,
+    node_instance_id,
+    backend_pid,
+    backend_started_at
+  )
+  values (
+    authenticated_node_id,
+    requested_node_instance_id,
+    pg_backend_pid(),
+    current_backend_started_at
+  )
+  on conflict (node_id) do update
+  set
+    node_instance_id = excluded.node_instance_id,
+    backend_pid = excluded.backend_pid,
+    backend_started_at = excluded.backend_started_at,
+    authenticated_at = clock_timestamp()
+  where not exists (
+    select 1
+    from pg_catalog.pg_stat_activity activity
+    where activity.pid =
+      symphony_staging.active_node_instances.backend_pid
+      and activity.backend_start =
+        symphony_staging.active_node_instances.backend_started_at
+  )
+  returning node_id into claimed_node_id;
+
+  if claimed_node_id is null then
     raise exception using
       errcode = '55006',
       message = 'duplicate node session rejected';
@@ -446,7 +522,7 @@ begin
     nodes.node_id,
     nodes.credential_version,
     'accepted',
-    'session_lock_acquired',
+    'server_instance_claimed',
     jsonb_build_object(
       'node_instance_id',
       requested_node_instance_id,
