@@ -95,6 +95,11 @@ begin
   );
 
   execute format(
+    'grant usage on schema symphony_staging to %I',
+    generated_login_role
+  );
+
+  execute format(
     'grant execute on function ' ||
     'symphony_staging.authenticate_node(uuid, uuid) to %I',
     generated_login_role
@@ -328,6 +333,11 @@ begin
   execute format(
     'revoke execute on function ' ||
     'symphony_staging.authenticate_node(uuid, uuid) from %I',
+    principal_role
+  );
+
+  execute format(
+    'revoke usage on schema symphony_staging from %I',
     principal_role
   );
 

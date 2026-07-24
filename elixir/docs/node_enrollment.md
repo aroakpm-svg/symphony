@@ -14,7 +14,8 @@ or ARO-141 may provision a physical computer.
   cannot access production.
 - `authenticate_node` matches `session_user` to the requested node and active
   binding. A session advisory lock rejects a simultaneous duplicate or clone.
-- Provisioning grants each login only direct execution of `authenticate_node`.
+- Provisioning grants each login only staging schema usage and direct execution
+  of `authenticate_node`.
   Future runtime entry points must repeat the active-node and session-lock gate;
   they must never grant direct table access to node logins.
 - Rotation returns a new credential once, revokes the old binding, and advances
