@@ -117,6 +117,41 @@ Validation must prove:
 8. `anon` and `authenticated` remain denied;
 9. migration checksum and exact implementation SHA are recorded.
 
+## Shared staging reconciliation
+
+Shared staging originally received an earlier ARO-163 contract before the final PR #4 hardening.
+ARO-168 reconciles only that exact legacy state:
+
+- apply `priv/symphony_migrations/20260724000000_aro_168_staging_reconciliation.sql`;
+- record contract version `2` and migration name
+  `20260724000000_aro_168_staging_reconciliation`;
+- reset only the legacy role-level `search_path`;
+- isolate `aro-163-created-role:*` rows from runtime and provisioner policies;
+- preserve both the explicit `postgres` `SET TRUE` membership and Supabase's managed PostgreSQL 17
+  `ADMIN TRUE / INHERIT FALSE / SET FALSE` membership;
+- do not add retrospective role-ownership markers.
+
+The migration validates the complete approved legacy profile before its first write and aborts on
+any role, membership, policy, foundation-data, schema-object, or production-boundary drift. The
+exact gate compares effective RLS mode, complete policy semantics, trigger attachments, foundation
+ownership, invariant indexes, direct table/column/sequence/function grants, grant options,
+schema-scoped and global default ACLs, database-scoped role settings, and all supported
+namespace-owned production object catalogs. The foundation tables are locked before the gate so
+the checked snapshot cannot race a concurrent provisioner. Runtime access to
+`node_bindings.credential_verifier` is an explicit hard failure. A disposable-superuser test
+profile may have only the explicit `postgres SET TRUE` membership; managed shared staging must also
+have the PostgreSQL 17/Supabase administration membership. Both profiles reject every outbound
+membership or grantor edge from either managed role, so the roles cannot inherit or `SET ROLE` into
+an unapproved privilege path.
+Rollback is
+`priv/symphony_migrations/20260724000000_aro_168_staging_reconciliation.down.sql`. It is allowed
+only before provisioning data exists, after revalidating every ACL class and setting it preserves,
+and restores only the two policies, two known role settings,
+and the v1 contract row. It never drops roles, tables, schemas, or managed memberships.
+
+PR review and merge do not authorize shared-staging apply. Preserve the separate human gate before
+applying ARO-168 to `aroak-central-brain-staging`.
+
 The suite also checks canonical role attributes, memberships, object and column grants, every RLS
 policy's table, role set, command, permissive mode, `qual`, and `with_check`, rollback
 ownership-marker isolation, and unchanged production-schema ACLs. Positive actor reads assert the
