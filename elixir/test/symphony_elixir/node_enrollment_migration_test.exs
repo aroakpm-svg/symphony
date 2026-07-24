@@ -57,6 +57,7 @@ defmodule SymphonyElixir.NodeEnrollmentMigrationTest do
 
     assert sql =~
              "'symphony_staging.authenticate_node(uuid, uuid) from %I'"
+
     assert sql =~ "'node_credential_rotated'"
     assert sql =~ "'node_revoked'"
   end
