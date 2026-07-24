@@ -152,6 +152,13 @@ and the v1 contract row. It never drops roles, tables, schemas, or managed membe
 PR review and merge do not authorize shared-staging apply. Preserve the separate human gate before
 applying ARO-168 to `aroak-central-brain-staging`.
 
+ARO-169 does not treat PostgreSQL backend or pooler lifetime as worker identity.
+Its server-owned active-instance row remains until the bootstrap provisioner
+explicitly retires the exact instance after trusted confirmation that the old
+worker stopped. Unknown stop state and registry failure leave the row intact
+and fail closed. ARO-139–141 must define that machine-local stop confirmation
+before provisioning approval.
+
 The suite also checks canonical role attributes, memberships, object and column grants, every RLS
 policy's table, role set, command, permissive mode, `qual`, and `with_check`, rollback
 ownership-marker isolation, and unchanged production-schema ACLs. Positive actor reads assert the
