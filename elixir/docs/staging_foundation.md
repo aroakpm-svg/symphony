@@ -27,7 +27,9 @@ The migration creates two `NOLOGIN`, `NOINHERIT`, non-admin permission roles:
 
 They are deliberately `NOLOGIN`. A later approved provisioning flow can bind a login credential to
 the appropriate permission role without putting a password in Git, Linear, Codex, migration output,
-or logs. Permission verification uses `SET ROLE`, so no durable test password is required.
+or logs. Permission verification uses `SET ROLE`, so no durable test password is required. The
+migration grants both permission-role memberships to `postgres` with `SET TRUE`, repairing an
+accepted pre-existing membership that had `SET FALSE`.
 
 `ALTER ROLE ... SET search_path` is intentionally not used: PostgreSQL does not apply a `NOLOGIN`
 permission role's role settings when a login session later runs `SET ROLE`. Every transaction must

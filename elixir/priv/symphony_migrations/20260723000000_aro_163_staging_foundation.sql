@@ -107,7 +107,8 @@ alter role symphony_staging_provisioner with
   noreplication
   nobypassrls;
 
-grant symphony_staging_runtime, symphony_staging_provisioner to postgres;
+grant symphony_staging_runtime, symphony_staging_provisioner to postgres
+  with set true;
 
 revoke all on schema symphony_staging
   from symphony_staging_runtime, symphony_staging_provisioner;

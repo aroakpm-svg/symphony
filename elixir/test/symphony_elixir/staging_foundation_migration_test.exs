@@ -62,7 +62,7 @@ defmodule SymphonyElixir.StagingFoundationMigrationTest do
     end
 
     assert sql =~
-             "grant symphony_staging_runtime, symphony_staging_provisioner to postgres"
+             "grant symphony_staging_runtime, symphony_staging_provisioner to postgres\n  with set true"
 
     assert sql =~ "unsafe pre-existing role state"
     assert sql =~ "incompatible pre-existing schema grants"

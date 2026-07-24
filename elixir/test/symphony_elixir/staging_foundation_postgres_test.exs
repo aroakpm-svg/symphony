@@ -196,6 +196,31 @@ defmodule SymphonyElixir.StagingFoundationPostgresTest do
            |> String.trim() == "t"
   end
 
+  test "apply repairs SET FALSE on an accepted pre-existing role membership" do
+    run_sql("""
+    create schema symphony_staging;
+    create role symphony_staging_runtime
+      nologin nosuperuser nocreatedb nocreaterole noinherit noreplication nobypassrls;
+    grant usage on schema symphony_staging to symphony_staging_runtime;
+    grant symphony_staging_runtime to postgres with set false;
+    """)
+
+    run_sql(File.read!(@migration))
+
+    run_sql("""
+    begin;
+    set local role symphony_staging_runtime;
+    do $$
+    begin
+      if current_role <> 'symphony_staging_runtime' then
+        raise exception 'SET FALSE membership was not repaired';
+      end if;
+    end
+    $$;
+    rollback;
+    """)
+  end
+
   defp foundation_table_exists? do
     {output, 0} =
       run_psql("select to_regclass('symphony_staging.contract_versions') is not null;")
