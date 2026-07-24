@@ -117,10 +117,23 @@ Validation must prove:
 8. `anon` and `authenticated` remain denied;
 9. migration checksum and exact implementation SHA are recorded.
 
-The suite also checks canonical role attributes, memberships, object and column grants, RLS policy
-presence, rollback ownership-marker isolation, and unchanged production-schema ACLs. The migration
-owner is used only for setup, migration, catalog inspection, and teardown; runtime and provisioner
-behavior is verified after switching to the exact non-admin actor.
+The suite also checks canonical role attributes, memberships, object and column grants, every RLS
+policy's table, role set, command, permissive mode, `qual`, and `with_check`, rollback
+ownership-marker isolation, and unchanged production-schema ACLs. Positive actor reads assert the
+exact node, binding, routing, and revision returned; provisioner writes assert their persisted
+effect instead of accepting only a successful command exit. The migration owner is used only for
+setup, migration, catalog inspection, and teardown; runtime and provisioner behavior is verified
+after switching to the exact non-admin actor.
+
+### Acceptance evidence matrix
+
+| Invariant | Canonical state | Actor and observed result | Lifecycle coverage |
+| --- | --- | --- | --- |
+| Hardened permission roles | `pg_roles` and `pg_auth_members.set_option` | Runtime and provisioner can be assumed only through the approved membership | apply, compatible legacy role, reapply, rollback/reapply |
+| Exact object capabilities | schema, table, column, sequence, and function ACL catalogs | Provisioner writes persist; runtime returns exact node, binding, routing, revision, and audit values; forbidden operations return permission/RLS denial | apply, reapply, rollback/reapply |
+| Canonical RLS | complete bidirectional `pg_policies` comparison, including table, role, command, mode, `qual`, and `with_check` | Routing reads and provisioner mutations exercise the policies; ownership markers remain hidden and immutable | apply and reapply |
+| Shared and production isolation | normalized schema/object/default ACL snapshots | Runtime, provisioner, anon, and authenticated cannot create in production; unrelated staging sentinel access survives | apply, transactional failure, rollback, reapply |
+| Credential secrecy | runtime column ACL excludes `credential_verifier` | Runtime verifier read returns a permission denial | apply and reapply |
 
 The behavior-level Postgres regression suite is intentionally destructive and only runs against an
 explicit disposable database:

@@ -310,21 +310,72 @@ defmodule SymphonyElixir.StagingFoundationPostgresTest do
         raise exception 'canonical object ACL state is invalid';
       end if;
 
-      if (select count(*)
-          from pg_policies
-          where schemaname = 'symphony_staging'
-            and policyname in (
-              'runtime_read_contract_versions',
-              'runtime_read_nodes',
-              'runtime_read_node_bindings',
-              'runtime_read_routing_assignments',
-              'runtime_insert_audit_events',
-              'provisioner_manage_contract_versions',
-              'provisioner_manage_nodes',
-              'provisioner_manage_node_bindings',
-              'provisioner_manage_routing_assignments',
-              'provisioner_insert_audit_events'
-            )) <> 10
+      if exists (
+           with expected(
+             tablename, policyname, permissive, roles, cmd, qual, with_check
+           ) as (
+             values
+               (
+                 'contract_versions',
+                 'runtime_read_contract_versions',
+                 'PERMISSIVE',
+                 array['symphony_staging_runtime']::name[],
+                 'SELECT',
+                 '(contract_name !~~ ''aro-163-created-role:%''::text)',
+                 null
+               ),
+               (
+                 'nodes', 'runtime_read_nodes', 'PERMISSIVE',
+                 array['symphony_staging_runtime']::name[], 'SELECT', 'true', null
+               ),
+               (
+                 'node_bindings', 'runtime_read_node_bindings', 'PERMISSIVE',
+                 array['symphony_staging_runtime']::name[], 'SELECT', 'true', null
+               ),
+               (
+                 'routing_assignments', 'runtime_read_routing_assignments', 'PERMISSIVE',
+                 array['symphony_staging_runtime']::name[], 'SELECT', 'true', null
+               ),
+               (
+                 'foundation_audit_events', 'runtime_insert_audit_events', 'PERMISSIVE',
+                 array['symphony_staging_runtime']::name[], 'INSERT', null, 'true'
+               ),
+               (
+                 'contract_versions',
+                 'provisioner_manage_contract_versions',
+                 'PERMISSIVE',
+                 array['symphony_staging_provisioner']::name[],
+                 'ALL',
+                 '(contract_name !~~ ''aro-163-created-role:%''::text)',
+                 '(contract_name !~~ ''aro-163-created-role:%''::text)'
+               ),
+               (
+                 'nodes', 'provisioner_manage_nodes', 'PERMISSIVE',
+                 array['symphony_staging_provisioner']::name[], 'ALL', 'true', 'true'
+               ),
+               (
+                 'node_bindings', 'provisioner_manage_node_bindings', 'PERMISSIVE',
+                 array['symphony_staging_provisioner']::name[], 'ALL', 'true', 'true'
+               ),
+               (
+                 'routing_assignments', 'provisioner_manage_routing_assignments', 'PERMISSIVE',
+                 array['symphony_staging_provisioner']::name[], 'ALL', 'true', 'true'
+               ),
+               (
+                 'foundation_audit_events', 'provisioner_insert_audit_events', 'PERMISSIVE',
+                 array['symphony_staging_provisioner']::name[], 'INSERT', null, 'true'
+               )
+           ),
+           actual as (
+             select
+               tablename, policyname, permissive, roles, cmd, qual, with_check
+             from pg_policies
+             where schemaname = 'symphony_staging'
+           )
+           (select * from expected except select * from actual)
+           union all
+           (select * from actual except select * from expected)
+         )
          or (select nspacl from pg_namespace where nspname = 'symphony_production')
            is distinct from (select nspacl from aro_163_production_acl_before) then
         raise exception 'canonical policy or production ACL state is invalid';
@@ -348,6 +399,14 @@ defmodule SymphonyElixir.StagingFoundationPostgresTest do
       '00000000-0000-4000-8000-000000000163',
       'staging', 'active', 1, repeat('ab', 32), clock_timestamp()
     );
+    insert into symphony_staging.routing_assignments (
+      issue_id, routing_policy, target_node_id, routing_revision, contract_version
+    ) values (
+      'ARO-163', 'exclusive', '00000000-0000-4000-8000-000000000163', 1, 1
+    );
+    update symphony_staging.nodes
+    set display_alias = 'contract-test-updated'
+    where node_id = '00000000-0000-4000-8000-000000000163';
     insert into symphony_staging.foundation_audit_events (
       event_type, node_id, result, reason_code
     ) values (
@@ -358,25 +417,65 @@ defmodule SymphonyElixir.StagingFoundationPostgresTest do
     commit;
     """)
 
-    run_sql("""
-    begin;
-    set local role symphony_staging_runtime;
-    set local search_path = pg_catalog, symphony_staging;
-    select node_id
-    from symphony_staging.nodes
-    where node_id = '00000000-0000-4000-8000-000000000163';
-    select binding_id
-    from symphony_staging.node_bindings
-    where binding_id = '00000000-0000-4000-8000-000000001163';
-    insert into symphony_staging.foundation_audit_events (
-      event_type, node_id, result, reason_code
-    ) values (
-      'runtime-contract-test',
-      '00000000-0000-4000-8000-000000000163',
-      'accepted', 'contract-test'
-    );
-    commit;
-    """)
+    assert run_sql("""
+           select
+             node.display_alias,
+             binding.status,
+             routing.routing_policy,
+             routing.routing_revision,
+             count(audit.audit_id)
+           from symphony_staging.nodes node
+           join symphony_staging.node_bindings binding using (node_id)
+           join symphony_staging.routing_assignments routing
+             on routing.target_node_id = node.node_id
+           join symphony_staging.foundation_audit_events audit using (node_id)
+           where node.node_id = '00000000-0000-4000-8000-000000000163'
+           group by
+             node.display_alias,
+             binding.status,
+             routing.routing_policy,
+             routing.routing_revision;
+           """)
+           |> String.trim() == "contract-test-updated|active|exclusive|1|1"
+
+    runtime_output =
+      run_sql("""
+      begin;
+      set local role symphony_staging_runtime;
+      set local search_path = pg_catalog, symphony_staging;
+      select
+        node.node_id,
+        node.display_alias,
+        binding.binding_id,
+        routing.issue_id,
+        routing.routing_revision
+      from symphony_staging.nodes node
+      join symphony_staging.node_bindings binding using (node_id)
+      join symphony_staging.routing_assignments routing
+        on routing.target_node_id = node.node_id
+      where node.node_id = '00000000-0000-4000-8000-000000000163';
+      insert into symphony_staging.foundation_audit_events (
+        event_type, node_id, result, reason_code
+      ) values (
+        'runtime-contract-test',
+        '00000000-0000-4000-8000-000000000163',
+        'accepted', 'contract-test'
+      );
+      commit;
+      """)
+
+    assert runtime_output =~
+             "00000000-0000-4000-8000-000000000163|" <>
+               "contract-test-updated|" <>
+               "00000000-0000-4000-8000-000000001163|ARO-163|1"
+
+    assert run_sql("""
+           select count(*)
+           from symphony_staging.foundation_audit_events
+           where node_id = '00000000-0000-4000-8000-000000000163'
+             and event_type in ('provisioner-contract-test', 'runtime-contract-test');
+           """)
+           |> String.trim() == "2"
 
     assert_sql_denied("""
     begin;
