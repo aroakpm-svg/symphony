@@ -88,7 +88,7 @@ fi
 PGPASSWORD="$node_credential" \
   psql -X -q -v ON_ERROR_STOP=1 -d "$node_url" \
   -c "select * from symphony_staging.authenticate_node('$node_id', '$instance_one'); select pg_advisory_unlock_all(); select pg_sleep(8);" \
-  >/dev/null 2>&1 &
+  >/dev/null &
 first_session_pid=$!
 sleep 2
 
