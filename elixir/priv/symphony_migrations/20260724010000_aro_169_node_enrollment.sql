@@ -487,7 +487,7 @@ begin
     pg_backend_pid(),
     current_backend_started_at
   )
-  on conflict (node_id) do update
+  on conflict on constraint active_node_instances_pkey do update
   set
     node_instance_id = excluded.node_instance_id,
     backend_pid = excluded.backend_pid,
