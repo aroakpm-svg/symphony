@@ -225,15 +225,15 @@ begin
     generated_credential
   );
 
-  update symphony_staging.node_bindings
+  update symphony_staging.node_bindings as bindings
   set
     status = 'revoked',
     revoked_at = clock_timestamp()
-  where node_id = requested_node_id
-    and environment = 'staging'
-    and status = 'active';
+  where bindings.node_id = requested_node_id
+    and bindings.environment = 'staging'
+    and bindings.status = 'active';
 
-  update symphony_staging.nodes
+  update symphony_staging.nodes as nodes
   set
     credential_version = next_credential_version,
     rotated_at = clock_timestamp(),
@@ -330,15 +330,15 @@ begin
   where activity.usename = principal_role
     and activity.pid <> pg_backend_pid();
 
-  update symphony_staging.node_bindings
+  update symphony_staging.node_bindings as bindings
   set
     status = 'revoked',
     revoked_at = clock_timestamp()
-  where node_id = requested_node_id
-    and environment = 'staging'
-    and status = 'active';
+  where bindings.node_id = requested_node_id
+    and bindings.environment = 'staging'
+    and bindings.status = 'active';
 
-  update symphony_staging.nodes
+  update symphony_staging.nodes as nodes
   set
     status = 'disabled',
     revoked_at = clock_timestamp(),
@@ -346,9 +346,9 @@ begin
   where nodes.node_id = requested_node_id
     and status = 'active';
 
-  update symphony_staging.node_login_principals
+  update symphony_staging.node_login_principals as principals
   set revoked_at = clock_timestamp()
-  where node_login_principals.node_id = requested_node_id;
+  where principals.node_id = requested_node_id;
 
   insert into symphony_staging.foundation_audit_events (
     event_type,
