@@ -501,7 +501,7 @@ begin
       and activity.backend_start =
         symphony_staging.active_node_instances.backend_started_at
   )
-  returning node_id into claimed_node_id;
+  returning requested_node_id into claimed_node_id;
 
   if claimed_node_id is null then
     raise exception using
