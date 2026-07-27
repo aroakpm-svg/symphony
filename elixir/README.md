@@ -215,6 +215,21 @@ The observability UI now runs on a minimal Phoenix stack:
 make all
 ```
 
+### Pull-request scope contract lint
+
+PR descriptions must use the structured `Scope Contract` in
+[`../.github/pull_request_template.md`](../.github/pull_request_template.md). Check a description
+locally with:
+
+```bash
+mix pr_body.check --file /path/to/pr_body.md
+```
+
+The lint statically validates the contract; it does not classify review findings or move tracker
+issues. Severity and ownership are separate. Later routing may consume the typed contract only
+under its own policy; unknown ownership must remain in review for follow-up or human disposition.
+When this lint applies to an existing PR, update its description to the structured contract.
+
 Run the real external end-to-end test only when you want Symphony to create disposable Linear
 resources and launch a real `codex app-server` session:
 

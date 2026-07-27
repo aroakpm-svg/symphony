@@ -419,6 +419,19 @@ If a check cannot run, say exactly why and what human action is needed.
 
 Review Feedback Intake
 
+Pull-Request Scope Contract
+
+Every PR description must use the repository's structured Scope Contract when the PR-body lint
+applies; migrate an existing PR description before expecting that lint to pass. The contract is a
+static boundary only: it does not classify findings or move issues in this change. Severity and
+scope ownership are separate, so do not treat finding severity as proof that the current PR owns
+the work.
+
+Later review-routing policy may consume the typed contract. It may return a finding to the same PR
+only after proving that the finding violates a declared invariant or acceptance criterion, or that
+the PR introduced the defect. If ownership is unknown, fail closed: keep the issue In Review for a
+follow-up or human disposition.
+
 Review Convergence Runtime
 
 After a PR enters In Review, Symphony's Review Monitor owns machine-verifiable convergence. A
