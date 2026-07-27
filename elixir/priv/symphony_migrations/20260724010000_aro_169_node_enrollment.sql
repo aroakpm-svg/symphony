@@ -69,6 +69,28 @@ revoke all on table
   from public, anon, authenticated, service_role,
        symphony_staging_runtime, symphony_staging_provisioner;
 
+drop policy if exists provisioner_manage_contract_versions
+  on symphony_staging.contract_versions;
+drop policy if exists provisioner_manage_nodes
+  on symphony_staging.nodes;
+drop policy if exists provisioner_manage_node_bindings
+  on symphony_staging.node_bindings;
+drop policy if exists provisioner_manage_routing_assignments
+  on symphony_staging.routing_assignments;
+drop policy if exists provisioner_insert_audit_events
+  on symphony_staging.foundation_audit_events;
+
+revoke all on table
+  symphony_staging.contract_versions,
+  symphony_staging.nodes,
+  symphony_staging.node_bindings,
+  symphony_staging.routing_assignments,
+  symphony_staging.foundation_audit_events
+  from symphony_staging_provisioner;
+revoke all on sequence
+  symphony_staging.foundation_audit_events_audit_id_seq
+  from symphony_staging_provisioner;
+
 create table symphony_staging.node_instance_history (
   node_id uuid not null
     references symphony_staging.node_login_principals(node_id) on delete restrict,
@@ -1124,7 +1146,13 @@ from (
       'node_lifecycle_operations',
       'node_instance_history',
       'active_node_instances',
-      'node_enrollment_contract_manifest'
+      'node_enrollment_contract_manifest',
+      'contract_versions',
+      'nodes',
+      'node_bindings',
+      'routing_assignments',
+      'foundation_audit_events',
+      'foundation_audit_events_audit_id_seq'
     )
   union all
   select
@@ -1141,7 +1169,12 @@ from (
       'node_lifecycle_operations',
       'node_instance_history',
       'active_node_instances',
-      'node_enrollment_contract_manifest'
+      'node_enrollment_contract_manifest',
+      'contract_versions',
+      'nodes',
+      'node_bindings',
+      'routing_assignments',
+      'foundation_audit_events'
     )
   union all
   select
@@ -1157,7 +1190,19 @@ from (
     on default_value.adrelid = relation.oid
    and default_value.adnum = attribute.attnum
   where namespace.nspname = 'symphony_staging'
-    and relation.relname like 'node\_%' escape '\'
+    and relation.relname in (
+      'node_login_principals',
+      'node_principal_history',
+      'node_lifecycle_operations',
+      'node_instance_history',
+      'active_node_instances',
+      'node_enrollment_contract_manifest',
+      'contract_versions',
+      'nodes',
+      'node_bindings',
+      'routing_assignments',
+      'foundation_audit_events'
+    )
     and attribute.attnum > 0
     and not attribute.attisdropped
   union all
@@ -1174,7 +1219,12 @@ from (
       'node_lifecycle_operations',
       'node_instance_history',
       'active_node_instances',
-      'node_enrollment_contract_manifest'
+      'node_enrollment_contract_manifest',
+      'contract_versions',
+      'nodes',
+      'node_bindings',
+      'routing_assignments',
+      'foundation_audit_events'
     )
   union all
   select
@@ -1183,7 +1233,47 @@ from (
     coalesce(qual, '') || ':' || coalesce(with_check, '')
   from pg_policies
   where schemaname = 'symphony_staging'
-    and tablename like 'node\_%' escape '\'
+    and tablename in (
+      'node_login_principals',
+      'node_principal_history',
+      'node_lifecycle_operations',
+      'node_instance_history',
+      'active_node_instances',
+      'node_enrollment_contract_manifest',
+      'contract_versions',
+      'nodes',
+      'node_bindings',
+      'routing_assignments',
+      'foundation_audit_events'
+    )
+  union all
+  select
+    'trigger:' || relation.relname || ':' || trigger_row.tgname || ':' ||
+    trigger_row.tgenabled::text || ':' ||
+    pg_get_triggerdef(trigger_row.oid, true) || ':' ||
+    trigger_function.oid::regprocedure::text || ':' ||
+    pg_get_userbyid(trigger_function.proowner) || ':' ||
+    coalesce(trigger_function.proacl::text, '') || ':' ||
+    pg_get_functiondef(trigger_function.oid)
+  from pg_trigger trigger_row
+  join pg_class relation on relation.oid = trigger_row.tgrelid
+  join pg_namespace namespace on namespace.oid = relation.relnamespace
+  join pg_proc trigger_function on trigger_function.oid = trigger_row.tgfoid
+  where namespace.nspname = 'symphony_staging'
+    and not trigger_row.tgisinternal
+    and relation.relname in (
+      'node_login_principals',
+      'node_principal_history',
+      'node_lifecycle_operations',
+      'node_instance_history',
+      'active_node_instances',
+      'node_enrollment_contract_manifest',
+      'contract_versions',
+      'nodes',
+      'node_bindings',
+      'routing_assignments',
+      'foundation_audit_events'
+    )
 ) contract_state;
 
 insert into symphony_staging.contract_versions (

@@ -63,8 +63,9 @@ Bootstrap logins may receive SET-capable membership and explicitly `SET ROLE`;
 node logins never receive this membership or a shared database credential.
 Every lifecycle entry point verifies PostgreSQL `SET` capability; generic or
 inherit-only membership is not authorization. The provisioner role has no
-direct lifecycle-table privileges; all mutations remain behind the
-security-definer lifecycle entry points.
+direct lifecycle or foundation-table privileges; all mutations remain behind
+the security-definer lifecycle entry points. Rollback restores the ARO-168 v2
+provisioner grants and policies exactly.
 
 The caller must save a returned credential directly into an approved
 machine-local secret store. It must never be passed on a command line, written
@@ -77,8 +78,8 @@ present. Applying it to shared staging requires separate human approval. This
 repository change does not provision any physical computer.
 
 Rollback locks and verifies the exact v3 marker plus the recorded table,
-column, constraint, index, policy, function, ownership, table ACL, and column
-ACL fingerprint
+column, constraint, index, policy, trigger and trigger-function, function,
+ownership, table ACL, column ACL, and sequence fingerprint
 before its first destructive statement. It fails closed on future-contract,
 object, index, or ACL drift, requires exactly one downgrade row, and refuses
 while any provisioned principal history exists. ARO-169 up/down migrations also

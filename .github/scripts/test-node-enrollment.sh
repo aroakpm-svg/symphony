@@ -267,6 +267,15 @@ if psql_admin -c "
   echo "inherit-only provisioner member bypassed lifecycle table boundary" >&2
   exit 1
 fi
+if psql_admin -c "
+  set session authorization aro169_disposable_inherit_only;
+  update symphony_staging.nodes
+  set credential_version = credential_version + 1
+  where node_id = '$node_id';
+" >/dev/null 2>&1; then
+  echo "inherit-only provisioner member bypassed foundation table boundary" >&2
+  exit 1
+fi
 psql_admin <<'SQL'
 revoke symphony_staging_provisioner from aro169_disposable_inherit_only;
 drop role aro169_disposable_inherit_only;
@@ -571,6 +580,20 @@ if psql_admin \
   echo "rollback unexpectedly accepted column ACL drift" >&2
   exit 1
 fi
+if psql_admin \
+  -c "begin;
+      create function symphony_staging.aro169_drift_trigger()
+      returns trigger language plpgsql
+      set search_path = pg_catalog
+      as \$\$ begin return new; end \$\$;
+      create trigger aro169_drift_trigger
+      before update on symphony_staging.nodes
+      for each row execute function symphony_staging.aro169_drift_trigger();" \
+  -f "$migrations_dir/20260724010000_aro_169_node_enrollment.down.sql" \
+  >/dev/null 2>&1; then
+  echo "rollback unexpectedly accepted trigger drift" >&2
+  exit 1
+fi
 
 psql_admin -c "
   select pg_advisory_lock(
@@ -590,6 +613,8 @@ if [ "$rollback_elapsed" -lt 2 ]; then
 fi
 
 test "$(psql_admin -A -t -c "select contract_version from symphony_staging.contract_versions where contract_name = 'node-identity-routing-foundation';")" = "2"
+test "$(psql_admin -A -t -c "select has_table_privilege('symphony_staging_provisioner', 'symphony_staging.nodes', 'SELECT,INSERT,UPDATE');")" = "t"
+test "$(psql_admin -A -t -c "select count(*) from pg_policies where schemaname = 'symphony_staging' and policyname in ('provisioner_manage_nodes', 'provisioner_manage_node_bindings', 'provisioner_manage_routing_assignments') and roles = array['symphony_staging_provisioner']::name[];")" = "3"
 psql_admin -f "$migrations_dir/20260724010000_aro_169_node_enrollment.sql"
 
 echo "ARO-169 disposable PostgreSQL lifecycle passed without printing credentials"

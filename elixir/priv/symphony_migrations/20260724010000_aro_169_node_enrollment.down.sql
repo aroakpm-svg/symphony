@@ -82,7 +82,13 @@ begin
         'node_lifecycle_operations',
         'node_instance_history',
         'active_node_instances',
-        'node_enrollment_contract_manifest'
+        'node_enrollment_contract_manifest',
+        'contract_versions',
+        'nodes',
+        'node_bindings',
+        'routing_assignments',
+        'foundation_audit_events',
+        'foundation_audit_events_audit_id_seq'
       )
     union all
     select
@@ -99,7 +105,12 @@ begin
         'node_lifecycle_operations',
         'node_instance_history',
         'active_node_instances',
-        'node_enrollment_contract_manifest'
+        'node_enrollment_contract_manifest',
+        'contract_versions',
+        'nodes',
+        'node_bindings',
+        'routing_assignments',
+        'foundation_audit_events'
       )
     union all
     select
@@ -115,7 +126,19 @@ begin
       on default_value.adrelid = relation.oid
      and default_value.adnum = attribute.attnum
     where namespace.nspname = 'symphony_staging'
-      and relation.relname like 'node\_%' escape '\'
+      and relation.relname in (
+        'node_login_principals',
+        'node_principal_history',
+        'node_lifecycle_operations',
+        'node_instance_history',
+        'active_node_instances',
+        'node_enrollment_contract_manifest',
+        'contract_versions',
+        'nodes',
+        'node_bindings',
+        'routing_assignments',
+        'foundation_audit_events'
+      )
       and attribute.attnum > 0
       and not attribute.attisdropped
     union all
@@ -133,7 +156,12 @@ begin
         'node_lifecycle_operations',
         'node_instance_history',
         'active_node_instances',
-        'node_enrollment_contract_manifest'
+        'node_enrollment_contract_manifest',
+        'contract_versions',
+        'nodes',
+        'node_bindings',
+        'routing_assignments',
+        'foundation_audit_events'
       )
     union all
     select
@@ -142,7 +170,47 @@ begin
       coalesce(qual, '') || ':' || coalesce(with_check, '')
     from pg_policies
     where schemaname = 'symphony_staging'
-      and tablename like 'node\_%' escape '\'
+      and tablename in (
+        'node_login_principals',
+        'node_principal_history',
+        'node_lifecycle_operations',
+        'node_instance_history',
+        'active_node_instances',
+        'node_enrollment_contract_manifest',
+        'contract_versions',
+        'nodes',
+        'node_bindings',
+        'routing_assignments',
+        'foundation_audit_events'
+      )
+    union all
+    select
+      'trigger:' || relation.relname || ':' || trigger_row.tgname || ':' ||
+      trigger_row.tgenabled::text || ':' ||
+      pg_get_triggerdef(trigger_row.oid, true) || ':' ||
+      trigger_function.oid::regprocedure::text || ':' ||
+      pg_get_userbyid(trigger_function.proowner) || ':' ||
+      coalesce(trigger_function.proacl::text, '') || ':' ||
+      pg_get_functiondef(trigger_function.oid)
+    from pg_trigger trigger_row
+    join pg_class relation on relation.oid = trigger_row.tgrelid
+    join pg_namespace namespace on namespace.oid = relation.relnamespace
+    join pg_proc trigger_function on trigger_function.oid = trigger_row.tgfoid
+    where namespace.nspname = 'symphony_staging'
+      and not trigger_row.tgisinternal
+      and relation.relname in (
+        'node_login_principals',
+        'node_principal_history',
+        'node_lifecycle_operations',
+        'node_instance_history',
+        'active_node_instances',
+        'node_enrollment_contract_manifest',
+        'contract_versions',
+        'nodes',
+        'node_bindings',
+        'routing_assignments',
+        'foundation_audit_events'
+      )
   ) contract_state;
 
   if recorded_fingerprint is null
@@ -166,6 +234,48 @@ drop table if exists symphony_staging.node_lifecycle_operations;
 drop table if exists symphony_staging.node_login_principals;
 drop table if exists symphony_staging.node_principal_history;
 drop table if exists symphony_staging.node_enrollment_contract_manifest;
+
+grant select, insert, update on
+  symphony_staging.contract_versions,
+  symphony_staging.nodes,
+  symphony_staging.node_bindings,
+  symphony_staging.routing_assignments
+  to symphony_staging_provisioner;
+grant insert on symphony_staging.foundation_audit_events
+  to symphony_staging_provisioner;
+grant usage, select on sequence
+  symphony_staging.foundation_audit_events_audit_id_seq
+  to symphony_staging_provisioner;
+
+create policy provisioner_manage_contract_versions
+  on symphony_staging.contract_versions
+  for all
+  to symphony_staging_provisioner
+  using (contract_name not like 'aro-163-created-role:%')
+  with check (contract_name not like 'aro-163-created-role:%');
+create policy provisioner_manage_nodes
+  on symphony_staging.nodes
+  for all
+  to symphony_staging_provisioner
+  using (true)
+  with check (true);
+create policy provisioner_manage_node_bindings
+  on symphony_staging.node_bindings
+  for all
+  to symphony_staging_provisioner
+  using (true)
+  with check (true);
+create policy provisioner_manage_routing_assignments
+  on symphony_staging.routing_assignments
+  for all
+  to symphony_staging_provisioner
+  using (true)
+  with check (true);
+create policy provisioner_insert_audit_events
+  on symphony_staging.foundation_audit_events
+  for insert
+  to symphony_staging_provisioner
+  with check (true);
 
 do $$
 begin

@@ -85,8 +85,14 @@ defmodule SymphonyElixir.NodeEnrollmentMigrationTest do
     assert lifecycle_script =~
              "inherit-only provisioner member bypassed lifecycle table boundary"
 
+    assert lifecycle_script =~
+             "inherit-only provisioner member bypassed foundation table boundary"
+
     refute sql =~ "grant select, insert, update on symphony_staging.node_login_principals"
     refute sql =~ "create policy provisioner_manage_node_login_principals"
+    assert sql =~ "drop policy if exists provisioner_manage_nodes"
+    assert sql =~ "revoke all on table"
+    assert File.read!(@rollback) =~ "create policy provisioner_manage_nodes"
   end
 
   test "removes public and API execution paths" do
@@ -152,8 +158,11 @@ defmodule SymphonyElixir.NodeEnrollmentMigrationTest do
     assert lifecycle_script =~ "rollback unexpectedly accepted index drift"
     assert lifecycle_script =~ "rollback unexpectedly accepted ACL drift"
     assert lifecycle_script =~ "rollback unexpectedly accepted column ACL drift"
+    assert lifecycle_script =~ "rollback unexpectedly accepted trigger drift"
     assert File.read!(@migration) =~ "'index:'"
     assert File.read!(@rollback) =~ "'index:'"
+    assert File.read!(@migration) =~ "'trigger:'"
+    assert File.read!(@rollback) =~ "'trigger:'"
     assert File.read!(@migration) =~ "attribute.attacl::text"
     assert File.read!(@rollback) =~ "attribute.attacl::text"
 
