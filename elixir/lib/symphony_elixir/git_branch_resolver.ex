@@ -107,9 +107,6 @@ defmodule SymphonyElixir.GitBranchResolver do
         {:ok, output} when is_binary(output) ->
           {:ok, output}
 
-        {:error, %Failure{} = failure} ->
-          {:error, failure}
-
         {:error, {:workspace_hook_timeout, _timed_command, timeout_ms}} ->
           failure(
             :command_timeout,

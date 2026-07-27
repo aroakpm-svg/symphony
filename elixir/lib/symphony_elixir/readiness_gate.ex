@@ -688,9 +688,6 @@ defmodule SymphonyElixir.ReadinessGate do
           failed_command
         )
 
-      {:error, %Failure{} = failure} ->
-        {:error, failure}
-
       other ->
         failure(
           :command_failed,
