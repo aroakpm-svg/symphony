@@ -159,6 +159,23 @@ worker stopped. Unknown stop state and registry failure leave the row intact
 and fail closed. ARO-139–141 must define that machine-local stop confirmation
 before provisioning approval.
 
+ARO-169 separates three responsibilities:
+
+- The bootstrap provisioner holds only SET-capable membership in the
+  `NOLOGIN` provisioner role, supplies stable lifecycle operation IDs, and
+  performs provisioning, rotation, revocation, re-enrollment, and confirmed
+  instance retirement.
+- A node runtime holds only its individual node login credential, calls the
+  authentication entry point with a fresh instance ID, and receives no table,
+  shared management-role, or production access.
+- The machine-local secret store owns the one-time plaintext credential. The
+  database keeps only its verifier plus non-secret operation and principal
+  history. A response-loss retry never replays plaintext.
+
+Initial issue routing is created in the same provisioning transaction as the
+node, binding, alias, principal, and masked audit. ARO-164 still owns later
+claim, lease, heartbeat, fallback, capacity, and generation behavior.
+
 The suite also checks canonical role attributes, memberships, object and column grants, every RLS
 policy's table, role set, command, permissive mode, `qual`, and `with_check`, rollback
 ownership-marker isolation, and unchanged production-schema ACLs. Positive actor reads assert the

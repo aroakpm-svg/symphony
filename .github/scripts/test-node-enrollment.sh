@@ -49,16 +49,73 @@ psql_admin -f "$migrations_dir/20260724010000_aro_169_node_enrollment.sql"
 
 provisioned="$(
   psql_admin -A -t -F '|' -c \
-    "select * from symphony_staging.provision_node('disposable-node');"
+    "select * from symphony_staging.provision_node(
+      '16900000-0000-4000-8000-000000000001',
+      'disposable-node',
+      'ARO-169-disposable',
+      'exclusive'
+    );"
 )"
-IFS='|' read -r node_id _binding_id login_role node_credential contract_version \
+IFS='|' read -r node_id _binding_id login_role node_credential contract_version credential_returned \
   <<<"$provisioned"
 unset provisioned
 
 test "$contract_version" = "3"
+test "$credential_returned" = "t"
 test -n "$node_id"
 test -n "$login_role"
 test -n "$node_credential"
+test "$(psql_admin -A -t -c "select target_node_id = '$node_id' and routing_policy = 'exclusive' from symphony_staging.routing_assignments where issue_id = 'ARO-169-disposable';")" = "t"
+
+replayed="$(
+  psql_admin -A -t -F '|' -c \
+    "select * from symphony_staging.provision_node(
+      '16900000-0000-4000-8000-000000000001',
+      'disposable-node',
+      'ARO-169-disposable',
+      'exclusive'
+    );"
+)"
+IFS='|' read -r replayed_node_id _ _ replayed_credential _ replayed_secret \
+  <<<"$replayed"
+unset replayed
+test "$replayed_node_id" = "$node_id"
+test -z "$replayed_credential"
+test "$replayed_secret" = "f"
+
+if psql_admin -c "select * from symphony_staging.provision_node(
+  '16900000-0000-4000-8000-000000000001',
+  'different-request',
+  'ARO-169-disposable',
+  'exclusive'
+);" >/dev/null 2>&1; then
+  echo "operation ID unexpectedly accepted a different request" >&2
+  exit 1
+fi
+
+for _attempt in 1 2; do
+  psql_admin -c "select * from symphony_staging.provision_node(
+    '16900000-0000-4000-8000-000000000002',
+    'concurrent-node',
+    'ARO-169-concurrent',
+    'exclusive'
+  );" >/dev/null &
+done
+wait
+test "$(psql_admin -A -t -c "select count(*) from symphony_staging.node_lifecycle_operations where operation_id = '16900000-0000-4000-8000-000000000002';")" = "1"
+test "$(psql_admin -A -t -c "select count(*) from symphony_staging.routing_assignments where issue_id = 'ARO-169-concurrent';")" = "1"
+
+if psql_admin -c "select * from symphony_staging.provision_node(
+  '16900000-0000-4000-8000-000000000003',
+  'routing-conflict',
+  'ARO-169-disposable',
+  'exclusive'
+);" >/dev/null 2>&1; then
+  echo "routing conflict unexpectedly provisioned a partial node" >&2
+  exit 1
+fi
+test "$(psql_admin -A -t -c "select count(*) from symphony_staging.node_lifecycle_operations where operation_id = '16900000-0000-4000-8000-000000000003';")" = "0"
+test "$(psql_admin -A -t -c "select count(*) from symphony_staging.nodes where display_alias = 'routing-conflict';")" = "0"
 
 node_url="postgresql://${login_role}@localhost:5432/postgres"
 instance_one="00000000-0000-4000-8000-000000000169"
@@ -134,9 +191,26 @@ if PGPASSWORD="$node_credential" \
   exit 1
 fi
 
+psql_admin <<SQL
+create role aro169_disposable_bootstrap nologin noinherit;
+grant symphony_staging_provisioner to aro169_disposable_bootstrap
+  with inherit false, set true;
+set session authorization aro169_disposable_bootstrap;
+set role symphony_staging_provisioner;
+select * from symphony_staging.retire_node_instance(
+  '16900000-0000-4000-8000-000000000101',
+  '$node_id',
+  '$instance_one'
+);
+reset session authorization;
+drop role aro169_disposable_bootstrap;
+SQL
 psql_admin -c \
-  "select symphony_staging.retire_node_instance('$node_id', '$instance_one');" \
-  >/dev/null
+  "select * from symphony_staging.retire_node_instance(
+    '16900000-0000-4000-8000-000000000101',
+    '$node_id',
+    '$instance_one'
+  );" >/dev/null
 
 PGPASSWORD="$node_credential" \
   psql -X -q -v ON_ERROR_STOP=1 -d "$node_url" \
@@ -152,7 +226,11 @@ if PGPASSWORD="$node_credential" \
 fi
 
 psql_admin -c \
-  "select symphony_staging.retire_node_instance('$node_id', '$instance_two');" \
+  "select * from symphony_staging.retire_node_instance(
+    '16900000-0000-4000-8000-000000000102',
+    '$node_id',
+    '$instance_two'
+  );" \
   >/dev/null
 
 if PGPASSWORD="$node_credential" \
@@ -174,7 +252,10 @@ sleep 2
 rotation_started_at="$(date +%s)"
 rotated="$(
   psql_admin -A -t -F '|' -c \
-    "select * from symphony_staging.rotate_node_credential('$node_id');"
+    "select * from symphony_staging.rotate_node_credential(
+      '16900000-0000-4000-8000-000000000201',
+      '$node_id'
+    );"
 )"
 rotation_elapsed="$(( $(date +%s) - rotation_started_at ))"
 if [ "$rotation_elapsed" -lt 2 ]; then
@@ -187,11 +268,12 @@ drop trigger test_delay_authentication
 drop function symphony_staging.test_delay_authentication();
 SQL
 IFS='|' read -r _rotated_node_id _rotated_role rotated_credential \
-  credential_version rotated_contract_version <<<"$rotated"
+  credential_version rotated_contract_version rotated_secret <<<"$rotated"
 unset rotated
 
 test "$credential_version" = "2"
 test "$rotated_contract_version" = "3"
+test "$rotated_secret" = "t"
 test "$_rotated_role" != "$login_role"
 rotated_node_url="postgresql://${_rotated_role}@localhost:5432/postgres"
 
@@ -216,7 +298,11 @@ fi
 unset node_credential
 
 psql_admin -c \
-  "select symphony_staging.retire_node_instance('$node_id', '$instance_four');" \
+  "select * from symphony_staging.retire_node_instance(
+    '16900000-0000-4000-8000-000000000103',
+    '$node_id',
+    '$instance_four'
+  );" \
   >/dev/null
 
 PGPASSWORD="$rotated_credential" \
@@ -228,7 +314,10 @@ PGPASSWORD="$rotated_credential" \
 open_session_pid=$!
 sleep 1
 
-psql_admin -c "select symphony_staging.revoke_node('$node_id');" >/dev/null
+psql_admin -c "select * from symphony_staging.revoke_node(
+  '16900000-0000-4000-8000-000000000301',
+  '$node_id'
+);" >/dev/null
 
 if wait "$open_session_pid"; then
   echo "open session retained authentication after durable revocation" >&2
@@ -242,6 +331,36 @@ if PGPASSWORD="$rotated_credential" \
 fi
 unset rotated_credential
 
+reenrolled="$(
+  psql_admin -A -t -F '|' -c \
+    "select * from symphony_staging.reenroll_node(
+      '16900000-0000-4000-8000-000000000401',
+      '$node_id'
+    );"
+)"
+IFS='|' read -r _reenrolled_node_id reenrolled_role reenrolled_credential \
+  reenrolled_version reenrolled_contract reenrolled_secret <<<"$reenrolled"
+unset reenrolled
+test "$_reenrolled_node_id" = "$node_id"
+test "$reenrolled_version" = "3"
+test "$reenrolled_contract" = "3"
+test "$reenrolled_secret" = "t"
+test "$(psql_admin -A -t -c "select count(*) from symphony_staging.node_principal_history where node_id = '$node_id';")" = "3"
+
+reenroll_replay="$(
+  psql_admin -A -t -F '|' -c \
+    "select * from symphony_staging.reenroll_node(
+      '16900000-0000-4000-8000-000000000401',
+      '$node_id'
+    );"
+)"
+IFS='|' read -r _ _ replayed_reenroll_credential _ _ replayed_reenroll_secret \
+  <<<"$reenroll_replay"
+unset reenroll_replay
+test -z "$replayed_reenroll_credential"
+test "$replayed_reenroll_secret" = "f"
+unset reenrolled_credential
+
 if psql_admin -f \
   "$migrations_dir/20260724010000_aro_169_node_enrollment.down.sql" \
   >/dev/null 2>&1; then
@@ -250,14 +369,70 @@ if psql_admin -f \
 fi
 
 psql_admin <<SQL
+select format(
+  'revoke execute on function symphony_staging.authenticate_node(uuid, uuid) from %I',
+  login_role
+)
+from symphony_staging.node_principal_history
+where node_id = (
+  select node_id from symphony_staging.node_lifecycle_operations
+  where operation_id = '16900000-0000-4000-8000-000000000002'
+)
+\gexec
+select format('revoke usage on schema symphony_staging from %I', login_role)
+from symphony_staging.node_principal_history
+where node_id = (
+  select node_id from symphony_staging.node_lifecycle_operations
+  where operation_id = '16900000-0000-4000-8000-000000000002'
+)
+\gexec
+select format('drop role %I', login_role)
+from symphony_staging.node_principal_history
+where node_id = (
+  select node_id from symphony_staging.node_lifecycle_operations
+  where operation_id = '16900000-0000-4000-8000-000000000002'
+)
+\gexec
+delete from symphony_staging.foundation_audit_events
+where node_id = (
+  select node_id from symphony_staging.node_lifecycle_operations
+  where operation_id = '16900000-0000-4000-8000-000000000002'
+);
+delete from symphony_staging.routing_assignments where issue_id = 'ARO-169-concurrent';
+delete from symphony_staging.node_principal_history
+where node_id = (
+  select node_id from symphony_staging.node_lifecycle_operations
+  where operation_id = '16900000-0000-4000-8000-000000000002'
+);
+delete from symphony_staging.node_login_principals
+where node_id = (
+  select node_id from symphony_staging.node_lifecycle_operations
+  where operation_id = '16900000-0000-4000-8000-000000000002'
+);
+delete from symphony_staging.node_bindings
+where node_id = (
+  select node_id from symphony_staging.node_lifecycle_operations
+  where operation_id = '16900000-0000-4000-8000-000000000002'
+);
+delete from symphony_staging.node_lifecycle_operations
+where operation_id = '16900000-0000-4000-8000-000000000002';
+delete from symphony_staging.nodes where display_alias = 'concurrent-node';
+
+revoke execute on function symphony_staging.authenticate_node(uuid, uuid)
+  from "$reenrolled_role";
+revoke usage on schema symphony_staging from "$reenrolled_role";
 delete from symphony_staging.foundation_audit_events where node_id = '$node_id';
 delete from symphony_staging.active_node_instances where node_id = '$node_id';
 delete from symphony_staging.node_instance_history where node_id = '$node_id';
+delete from symphony_staging.routing_assignments where target_node_id = '$node_id';
+delete from symphony_staging.node_lifecycle_operations where node_id = '$node_id';
 delete from symphony_staging.node_bindings where node_id = '$node_id';
 delete from symphony_staging.node_login_principals where node_id = '$node_id';
+delete from symphony_staging.node_principal_history where node_id = '$node_id';
 delete from symphony_staging.nodes where node_id = '$node_id';
 drop role "$login_role";
 drop role "$_rotated_role";
+drop role "$reenrolled_role";
 SQL
 
 psql_admin -c "

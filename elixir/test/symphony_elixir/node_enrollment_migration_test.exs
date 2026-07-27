@@ -32,6 +32,24 @@ defmodule SymphonyElixir.NodeEnrollmentMigrationTest do
     refute sql =~ "linear"
   end
 
+  test "lifecycle operations are stable, atomic, and do not replay credentials" do
+    sql = File.read!(@migration)
+    lifecycle_script = File.read!(@lifecycle_script)
+
+    assert sql =~ "create table symphony_staging.node_lifecycle_operations"
+    assert sql =~ "operation_id uuid primary key"
+    assert sql =~ "request_fingerprint text not null"
+    assert sql =~ "credential_returned boolean"
+    assert sql =~ "null::text"
+    assert sql =~ "insert into symphony_staging.routing_assignments"
+    assert sql =~ "create or replace function symphony_staging.reenroll_node"
+
+    assert lifecycle_script =~ "concurrent-node"
+    assert lifecycle_script =~ "routing conflict unexpectedly provisioned a partial node"
+    assert lifecycle_script =~ "replayed_reenroll_credential"
+    assert lifecycle_script =~ "node_principal_history"
+  end
+
   test "authentication binds the database principal and rejects duplicates" do
     sql = File.read!(@migration)
 
@@ -46,6 +64,18 @@ defmodule SymphonyElixir.NodeEnrollmentMigrationTest do
     assert sql =~ "for update of nodes, principals, bindings"
     refute sql =~ "pg_try_advisory_lock"
     refute sql =~ "in role symphony_staging_runtime"
+  end
+
+  test "SET-only provisioner membership is an accepted caller boundary" do
+    sql = File.read!(@migration)
+    lifecycle_script = File.read!(@lifecycle_script)
+
+    assert sql =~ "'MEMBER'"
+    refute sql =~ "\n       'USAGE'\n"
+    assert lifecycle_script =~
+             "grant symphony_staging_provisioner to aro169_disposable_bootstrap"
+
+    assert lifecycle_script =~ "set role symphony_staging_provisioner"
   end
 
   test "removes public and API execution paths" do
@@ -73,6 +103,8 @@ defmodule SymphonyElixir.NodeEnrollmentMigrationTest do
 
     assert sql =~ "'node_credential_rotated'"
     assert sql =~ "'node_revoked'"
+    assert sql =~ "node_principal_history"
+    assert sql =~ "'node_reenrolled'"
 
     assert lifecycle_script =~
              "-c \"select * from symphony_staging.authenticate_node('$node_id', '$instance_four');\""
@@ -97,6 +129,8 @@ defmodule SymphonyElixir.NodeEnrollmentMigrationTest do
     assert sql =~ "in access exclusive mode"
     assert sql =~ "pg_advisory_xact_lock"
     assert sql =~ "contract_version = 2"
+    assert sql =~ "node_principal_history"
+    assert sql =~ "node_lifecycle_operations"
   end
 
   test "behavior suite covers rollback marker, object, and ACL drift" do

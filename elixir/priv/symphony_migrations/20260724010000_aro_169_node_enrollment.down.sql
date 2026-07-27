@@ -27,6 +27,8 @@ begin
 
   lock table
     symphony_staging.node_login_principals,
+    symphony_staging.node_principal_history,
+    symphony_staging.node_lifecycle_operations,
     symphony_staging.node_instance_history,
     symphony_staging.active_node_instances,
     symphony_staging.node_enrollment_contract_manifest
@@ -34,7 +36,7 @@ begin
 
   if exists (
     select 1
-    from symphony_staging.node_login_principals
+    from symphony_staging.node_principal_history
   ) then
     raise exception using
       errcode = '55000',
@@ -61,6 +63,7 @@ begin
         'provision_node',
         'rotate_node_credential',
         'revoke_node',
+        'reenroll_node',
         'retire_node_instance',
         'authenticate_node'
       )
@@ -75,6 +78,8 @@ begin
     where namespace.nspname = 'symphony_staging'
       and relation.relname in (
         'node_login_principals',
+        'node_principal_history',
+        'node_lifecycle_operations',
         'node_instance_history',
         'active_node_instances',
         'node_enrollment_contract_manifest'
@@ -106,6 +111,8 @@ begin
     where namespace.nspname = 'symphony_staging'
       and relation.relname in (
         'node_login_principals',
+        'node_principal_history',
+        'node_lifecycle_operations',
         'node_instance_history',
         'active_node_instances',
         'node_enrollment_contract_manifest'
@@ -130,13 +137,16 @@ end
 $$;
 
 drop function if exists symphony_staging.authenticate_node(uuid, uuid);
-drop function if exists symphony_staging.retire_node_instance(uuid, uuid);
-drop function if exists symphony_staging.revoke_node(uuid);
-drop function if exists symphony_staging.rotate_node_credential(uuid);
-drop function if exists symphony_staging.provision_node(text);
+drop function if exists symphony_staging.retire_node_instance(uuid, uuid, uuid);
+drop function if exists symphony_staging.reenroll_node(uuid, uuid);
+drop function if exists symphony_staging.revoke_node(uuid, uuid);
+drop function if exists symphony_staging.rotate_node_credential(uuid, uuid);
+drop function if exists symphony_staging.provision_node(uuid, text, text, text);
 drop table if exists symphony_staging.active_node_instances;
 drop table if exists symphony_staging.node_instance_history;
+drop table if exists symphony_staging.node_lifecycle_operations;
 drop table if exists symphony_staging.node_login_principals;
+drop table if exists symphony_staging.node_principal_history;
 drop table if exists symphony_staging.node_enrollment_contract_manifest;
 
 do $$
