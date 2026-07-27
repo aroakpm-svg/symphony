@@ -1039,6 +1039,55 @@ defmodule Mix.Tasks.PrBody.CheckTest do
     end)
   end
 
+  test "preserves invalid fence-marker and tab-indentation semantics at the real Mix entry" do
+    # Mutations caught: flattening invalid fence markers or tabs into ordinary Scope Contract prose.
+    in_temp_repo(fn ->
+      write_template!(@template)
+
+      invalid_cases = [
+        {
+          String.replace(
+            @valid_body,
+            "- Existing generic PR body checks still run.",
+            "- Existing generic PR body checks still run.\n  ```bad`info"
+          ),
+          "Scope Contract Invariants has malformed bullet: ```bad`info"
+        },
+        {
+          String.replace(
+            @valid_body,
+            "Enforce typed PR scope contracts.",
+            "\tIO.puts(\"tab-indented Work Item code\")"
+          ),
+          "Scope Contract Work Item has malformed bullet: IO.puts(\"tab-indented Work Item code\")"
+        },
+        {
+          String.replace(
+            @valid_body,
+            "- Existing generic PR body checks still run.",
+            "- Existing generic PR body checks still run.\n\t\tIO.puts(\"nested tab code\")"
+          ),
+          "Scope Contract Invariants has malformed bullet: IO.puts(\"nested tab code\")"
+        }
+      ]
+
+      Enum.each(invalid_cases, fn {body, expected_error} ->
+        File.write!("body.md", body)
+        assert capture_invalid_body_output() =~ expected_error
+      end)
+
+      valid_continuation =
+        String.replace(
+          @valid_body,
+          "- Existing generic PR body checks still run.",
+          "- Existing generic PR body checks still run.\n\tthrough one tab stop."
+        )
+
+      File.write!("body.md", valid_continuation)
+      assert capture_io(fn -> Check.run(["lint", "--file", "body.md"]) end) =~ "PR body format OK"
+    end)
+  end
+
   defp capture_invalid_body_output do
     capture_io(:stderr, fn ->
       assert_raise Mix.Error, ~r/PR body format invalid/, fn ->

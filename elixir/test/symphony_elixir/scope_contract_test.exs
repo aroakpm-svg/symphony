@@ -1345,4 +1345,54 @@ defmodule SymphonyElixir.ScopeContractTest do
 
     assert {:error, [{:malformed_section_heading, "#####"}]} = ScopeContract.parse_pr_body(body)
   end
+
+  test "rejects an indented fence marker whose backtick info makes it an invalid opening fence" do
+    # Mutation caught: dropping :fence_marker classification and appending the invalid marker as continuation prose.
+    body =
+      String.replace(
+        @complete_contract,
+        "- The parser reads only explicit Scope Contract headings.",
+        "- The parser reads only explicit Scope Contract headings.\n  ```bad`info"
+      )
+
+    assert {:error, [{:malformed_bullet, :invariants, "```bad`info"}]} = ScopeContract.parse_pr_body(body)
+  end
+
+  test "uses tab stops to distinguish Work Item code, list continuation, and nested code" do
+    # Mutation caught: leaving tabs in token text instead of advancing the canonical indentation column.
+    work_item_body =
+      String.replace(
+        @complete_contract,
+        "Add a typed PR scope contract parser.",
+        "\tIO.puts(\"tab-indented Work Item code\")"
+      )
+
+    assert {:error, [{:malformed_bullet, :work_item, "IO.puts(\"tab-indented Work Item code\")"}]} =
+             ScopeContract.parse_pr_body(work_item_body)
+
+    continuation_body =
+      String.replace(
+        @complete_contract,
+        "- The parser reads only explicit Scope Contract headings.",
+        "- The parser reads only explicit Scope Contract headings.\n\tthrough one tab stop."
+      )
+
+    assert {:ok,
+            %{
+              invariants: [
+                "The parser reads only explicit Scope Contract headings. through one tab stop.",
+                "Invalid contracts fail closed."
+              ]
+            }} = ScopeContract.parse_pr_body(continuation_body)
+
+    code_body =
+      String.replace(
+        @complete_contract,
+        "- The parser reads only explicit Scope Contract headings.",
+        "- The parser reads only explicit Scope Contract headings.\n\t\tIO.puts(\"nested tab code\")"
+      )
+
+    assert {:error, [{:malformed_bullet, :invariants, "IO.puts(\"nested tab code\")"}]} =
+             ScopeContract.parse_pr_body(code_body)
+  end
 end
