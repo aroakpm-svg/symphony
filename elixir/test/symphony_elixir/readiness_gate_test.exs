@@ -468,6 +468,73 @@ defmodule SymphonyElixir.ReadinessGateTest do
              ReadinessGate.check(fixture.workspace, issue, workspace_created_now: true)
   end
 
+  test "independent materialization preserves an ignored file that the canonical head tracks" do
+    fixture = git_fixture!("main")
+    on_exit(fn -> cleanup_fixture(fixture) end)
+    issue = issue("ARO-110-IGNORED-INDEPENDENT", "codex/aro-110-ignored-independent")
+    collision = "independent-collision.txt"
+
+    push_tracked_file!(fixture, fixture.default_branch, collision, "canonical contents\n")
+    preserve_ignored_file!(fixture.workspace, collision, "local ignored contents\n")
+
+    assert {:error,
+            %Failure{
+              code: :command_failed,
+              command: command
+            }} = ReadinessGate.check(fixture.workspace, issue, workspace_created_now: true)
+
+    assert command =~ "git switch --no-overwrite-ignore -c #{issue.branch_name}"
+    assert git!(fixture.workspace, ["branch", "--show-current"]) == fixture.default_branch
+    assert git!(fixture.workspace, ["branch", "--list", issue.branch_name]) == ""
+    assert File.read!(Path.join(fixture.workspace, collision)) == "local ignored contents\n"
+  end
+
+  test "remote continuation materialization preserves an ignored file tracked by the issue branch" do
+    fixture = git_fixture!("main")
+    on_exit(fn -> cleanup_fixture(fixture) end)
+    issue = issue("ARO-110-IGNORED-REMOTE", "codex/aro-110-ignored-remote")
+    collision = "remote-collision.txt"
+
+    push_tracked_file!(fixture, issue.branch_name, collision, "remote contents\n")
+    preserve_ignored_file!(fixture.workspace, collision, "local ignored contents\n")
+
+    assert {:error, %Failure{code: :command_failed, command: command}} =
+             ReadinessGate.check(fixture.workspace, issue, workspace_created_now: true)
+
+    assert command =~ "git switch --no-overwrite-ignore -c #{issue.branch_name}"
+    assert git!(fixture.workspace, ["branch", "--show-current"]) == fixture.default_branch
+    assert git!(fixture.workspace, ["branch", "--list", issue.branch_name]) == ""
+    assert File.read!(Path.join(fixture.workspace, collision)) == "local ignored contents\n"
+  end
+
+  test "stacked materialization preserves an ignored file tracked by the exact upstream" do
+    fixture = git_fixture!("main")
+    on_exit(fn -> cleanup_fixture(fixture) end)
+    issue_branch = "codex/aro-110-ignored-stacked"
+    upstream_branch = "stack/aro-110-ignored-base"
+    collision = "stacked-collision.txt"
+
+    upstream_sha =
+      push_tracked_file!(fixture, upstream_branch, collision, "stacked contents\n")
+
+    issue =
+      issue("ARO-110-IGNORED-STACKED", issue_branch)
+      |> Map.put(
+        :readiness_base,
+        {:stacked, [%StackedBase{branch: upstream_branch, head_sha: upstream_sha}]}
+      )
+
+    preserve_ignored_file!(fixture.workspace, collision, "local ignored contents\n")
+
+    assert {:error, %Failure{code: :command_failed, command: command}} =
+             ReadinessGate.check(fixture.workspace, issue, workspace_created_now: true)
+
+    assert command =~ "git switch --no-overwrite-ignore -c #{issue.branch_name}"
+    assert git!(fixture.workspace, ["branch", "--show-current"]) == fixture.default_branch
+    assert git!(fixture.workspace, ["branch", "--list", issue.branch_name]) == ""
+    assert File.read!(Path.join(fixture.workspace, collision)) == "local ignored contents\n"
+  end
+
   test "branch creation never invokes reset, rebase, force checkout, or branch deletion" do
     fixture = git_fixture!("main")
     on_exit(fn -> cleanup_fixture(fixture) end)
@@ -493,13 +560,15 @@ defmodule SymphonyElixir.ReadinessGateTest do
            end)
 
     assert [
-             ["switch", "-c", ^issue_branch, _base_sha],
+             ["switch", "--no-overwrite-ignore", "-c", ^issue_branch, _base_sha],
              ["branch", "--show-current"],
              ["rev-parse", "--verify", "HEAD^{commit}"],
              ["status", "--porcelain=v1", "--untracked-files=all"]
            ] =
              commands
-             |> Enum.drop_while(fn args -> Enum.take(args, 3) != ["switch", "-c", issue_branch] end)
+             |> Enum.drop_while(fn args ->
+               Enum.take(args, 4) != ["switch", "--no-overwrite-ignore", "-c", issue_branch]
+             end)
              |> Enum.take(4)
   end
 
@@ -549,7 +618,8 @@ defmodule SymphonyElixir.ReadinessGateTest do
     runner = fn args ->
       result = Workspace.run_git_command(fixture.workspace, args)
 
-      if Enum.take(args, 3) == ["switch", "-c", issue.branch_name] do
+      if Enum.take(args, 4) ==
+           ["switch", "--no-overwrite-ignore", "-c", issue.branch_name] do
         File.write!(concurrent_path, "preserve concurrent file\n")
       end
 
@@ -764,7 +834,8 @@ defmodule SymphonyElixir.ReadinessGateTest do
       runner = fn args ->
         result = Workspace.run_git_command(fixture.workspace, args)
 
-        if Enum.take(args, 3) == ["switch", "-c", issue.branch_name] do
+        if Enum.take(args, 4) ==
+             ["switch", "--no-overwrite-ignore", "-c", issue.branch_name] do
           mutate.(fixture, issue)
         end
 
@@ -859,6 +930,32 @@ defmodule SymphonyElixir.ReadinessGateTest do
     sha = git!(fixture.seed, ["rev-parse", "HEAD"])
     git!(fixture.seed, ["switch", fixture.default_branch])
     sha
+  end
+
+  defp push_tracked_file!(fixture, branch, filename, contents) do
+    git!(fixture.seed, ["switch", fixture.default_branch])
+
+    if branch != fixture.default_branch do
+      git!(fixture.seed, ["switch", "-c", branch])
+    end
+
+    File.write!(Path.join(fixture.seed, filename), contents)
+    git!(fixture.seed, ["add", filename])
+    git!(fixture.seed, ["commit", "-m", "track #{filename} on #{branch}"])
+    git!(fixture.seed, ["push", "origin", branch])
+    sha = git!(fixture.seed, ["rev-parse", "HEAD"])
+
+    if branch != fixture.default_branch do
+      git!(fixture.seed, ["switch", fixture.default_branch])
+    end
+
+    sha
+  end
+
+  defp preserve_ignored_file!(workspace, filename, contents) do
+    File.write!(Path.join([workspace, ".git", "info", "exclude"]), "#{filename}\n", [:append])
+    File.write!(Path.join(workspace, filename), contents)
+    assert git!(workspace, ["status", "--porcelain=v1", "--untracked-files=all"]) == ""
   end
 
   defp push_orphan_branch!(fixture, branch) do

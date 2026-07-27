@@ -30,20 +30,20 @@ defmodule SymphonyElixir.GitBranchResolverTest do
   end
 
   test "public branch validation rejects every unsafe name shape and non-string input" do
-    Enum.each(["main", "release/2026-q3", "codex/ARO_123-fix"], fn branch ->
+    Enum.each(["main", "release/2026-q3", "codex/ARO_123-fix", "@"], fn branch ->
       assert GitBranchResolver.valid_branch?(branch)
     end)
 
     Enum.each(
       [
         "",
-        "@",
         "-leading",
         ".hidden",
         "/rooted",
         "trailing/",
         "trailing.",
         "name.lock",
+        "@{-1}",
         "bad..name",
         "bad@{name",
         "bad//name",
@@ -67,6 +67,21 @@ defmodule SymphonyElixir.GitBranchResolverTest do
 
     assert {:error, %Failure{code: :branch_ref_invalid, command: nil}} =
              GitBranchResolver.lookup_branch("/workspace", "bad..name", command_runner: runner)
+  end
+
+  test "public branch validation delegates to Git without evaluating branch text as a shell" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-branch-validation-#{System.unique_integer([:positive])}"
+      )
+
+    side_effect = Path.join(test_root, "must-not-exist")
+    File.mkdir_p!(test_root)
+    on_exit(fn -> File.rm_rf(test_root) end)
+
+    refute GitBranchResolver.valid_branch?("valid; touch #{side_effect}")
+    refute File.exists?(side_effect)
   end
 
   test "resolves a slash-containing non-main default ref and verifies the fetched SHA" do

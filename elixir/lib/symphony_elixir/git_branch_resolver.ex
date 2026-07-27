@@ -74,16 +74,14 @@ defmodule SymphonyElixir.GitBranchResolver do
 
   @spec valid_branch?(String.t()) :: boolean()
   def valid_branch?(branch) when is_binary(branch) do
-    branch != "" and
-      branch != "@" and
-      not String.starts_with?(branch, ["-", ".", "/"]) and
-      not String.ends_with?(branch, ["/", ".", ".lock"]) and
-      not String.contains?(branch, ["..", "@{", "//", "\\"]) and
-      not Regex.match?(~r/[\x00-\x20\x7f~^:?*\[]/, branch) and
-      Enum.all?(String.split(branch, "/"), fn component ->
-        component != "" and not String.starts_with?(component, ".") and
-          not String.ends_with?(component, ".lock")
-      end)
+    case System.cmd("git", ["check-ref-format", "--branch", branch], stderr_to_stdout: true) do
+      {output, 0} -> output_lines(output) == [branch]
+      {_output, _status} -> false
+    end
+  rescue
+    _error -> false
+  catch
+    _kind, _reason -> false
   end
 
   def valid_branch?(_branch), do: false

@@ -38,13 +38,21 @@ defmodule SymphonyElixir.AgentRunner do
     Logger.info("Starting worker attempt for #{issue_context(issue)} worker_host=#{worker_host_for_log(worker_host)}")
 
     case Workspace.prepare_for_issue(issue, worker_host) do
-      {:ok, %{path: workspace, created_now: created_now?}} ->
+      {:ok, %{path: workspace, readiness_state: readiness_state} = preparation} ->
         send_worker_runtime_info(codex_update_recipient, issue, worker_host, workspace)
 
         run_result =
           try do
             with :ok <- Workspace.preflight(workspace, issue, worker_host),
-                 :ok <- verify_readiness(workspace, issue, worker_host, created_now?, opts),
+                 {:ok, receipt} <-
+                   verify_readiness(workspace, issue, worker_host, readiness_state, opts),
+                 :ok <-
+                   persist_readiness(
+                     preparation,
+                     issue,
+                     receipt,
+                     worker_host
+                   ),
                  :ok <- Workspace.run_before_run_hook(workspace, issue, worker_host) do
               run_codex_turns(workspace, issue, codex_update_recipient, opts, worker_host)
             else
@@ -55,6 +63,9 @@ defmodule SymphonyElixir.AgentRunner do
                 {:deferred_workspace_preflight_failure, reason}
 
               {:error, {:readiness_gate_failed, %ReadinessGate.Failure{}} = reason} ->
+                {:deferred_workspace_preflight_failure, reason}
+
+              {:error, {:readiness_state_failed, _state_reason} = reason} ->
                 {:deferred_workspace_preflight_failure, reason}
 
               other ->
@@ -73,7 +84,21 @@ defmodule SymphonyElixir.AgentRunner do
         end
 
       {:error, reason} ->
-        {:error, reason}
+        case readiness_state_error_workspace(reason) do
+          {:ok, workspace} ->
+            send_worker_runtime_info(codex_update_recipient, issue, worker_host, workspace)
+
+            handle_workspace_preflight_failure(
+              codex_update_recipient,
+              issue,
+              worker_host,
+              workspace,
+              {:readiness_state_failed, reason}
+            )
+
+          :error ->
+            {:error, reason}
+        end
     end
   end
 
@@ -145,9 +170,13 @@ defmodule SymphonyElixir.AgentRunner do
     "workspace readiness failed code=#{failure.code} command=#{failure.command || "n/a"} detail=#{inline_text(failure.detail)} action=#{inline_text(failure.operator_action)}"
   end
 
-  defp verify_readiness(workspace, issue, worker_host, created_now?, opts) do
+  defp hard_blocker_message({:readiness_state_failed, reason}) do
+    "workspace readiness state failed detail=#{inline_text(inspect(reason))} action=Preserve the workspace and repair or recreate its durable readiness state before retrying."
+  end
+
+  defp verify_readiness(workspace, issue, worker_host, readiness_state, opts) do
     readiness_opts =
-      [workspace_created_now: created_now?, worker_host: worker_host]
+      [workspace_readiness_state: readiness_state, worker_host: worker_host]
       |> maybe_put_readiness_command_runner(Keyword.get(opts, :readiness_command_runner))
 
     case ReadinessGate.check(workspace, issue, readiness_opts) do
@@ -156,12 +185,33 @@ defmodule SymphonyElixir.AgentRunner do
           "Workspace readiness verified for #{issue_context(issue)} classification=#{receipt.classification} issue_branch=#{receipt.issue_branch} head_sha=#{receipt.head_sha} canonical_ref=#{receipt.canonical.ref} canonical_sha=#{receipt.canonical.fetched_sha}"
         )
 
-        :ok
+        {:ok, receipt}
 
       {:error, %ReadinessGate.Failure{} = failure} ->
         {:error, {:readiness_gate_failed, failure}}
     end
   end
+
+  defp persist_readiness(preparation, issue, receipt, worker_host) do
+    case Workspace.mark_readiness_ready(preparation, issue, receipt, worker_host) do
+      :ok -> :ok
+      {:error, reason} -> {:error, {:readiness_state_failed, reason}}
+    end
+  end
+
+  defp readiness_state_error_workspace({kind, workspace, _detail})
+       when kind in [
+              :workspace_readiness_identity_mismatch,
+              :workspace_readiness_state_changed,
+              :workspace_readiness_state_invalid,
+              :workspace_readiness_state_missing,
+              :workspace_readiness_state_read_failed,
+              :workspace_readiness_state_write_failed
+            ] and is_binary(workspace) do
+    {:ok, workspace}
+  end
+
+  defp readiness_state_error_workspace(_reason), do: :error
 
   defp maybe_put_readiness_command_runner(opts, runner) when is_function(runner, 1) do
     Keyword.put(opts, :command_runner, runner)

@@ -8,6 +8,7 @@ defmodule SymphonyElixir.ReadinessGate do
   alias SymphonyElixir.Linear.Issue
   alias SymphonyElixir.Linear.Issue.StackedBase
   alias SymphonyElixir.Workspace
+  alias SymphonyElixir.Workspace.ReadinessState
 
   defmodule Receipt do
     @moduledoc "Typed pre-dispatch branch readiness evidence."
@@ -43,7 +44,7 @@ defmodule SymphonyElixir.ReadinessGate do
   @spec check(Path.t(), Issue.t(), keyword()) :: {:ok, Receipt.t()} | {:error, Failure.t()}
   def check(workspace, %Issue{} = issue, opts \\ [])
       when is_binary(workspace) and is_list(opts) do
-    with {:ok, created_now?} <- workspace_created_now(opts),
+    with {:ok, provenance} <- workspace_provenance(workspace, issue, opts),
          {:ok, issue_branch} <- issue_branch(issue),
          {:ok, canonical} <- resolve_canonical(workspace, opts),
          :ok <- validate_issue_branch_not_canonical(issue_branch, canonical),
@@ -53,7 +54,7 @@ defmodule SymphonyElixir.ReadinessGate do
         workspace,
         issue,
         issue_branch,
-        created_now?,
+        provenance,
         canonical,
         state,
         remote_issue_branch,
@@ -66,7 +67,7 @@ defmodule SymphonyElixir.ReadinessGate do
          workspace,
          _issue,
          issue_branch,
-         false,
+         :ready,
          canonical,
          %{current_branch: issue_branch, head_sha: head_sha} = state,
          remote_issue_branch,
@@ -89,12 +90,13 @@ defmodule SymphonyElixir.ReadinessGate do
          workspace,
          _issue,
          issue_branch,
-         true,
+         provenance,
          canonical,
          %{current_branch: issue_branch, head_sha: head_sha} = state,
          %GitReceipt{fetched_sha: head_sha},
          opts
-       ) do
+       )
+       when provenance in [:fresh_unverified, :legacy_unverified] do
     workspace
     |> command_runner(opts)
     |> finish_continuation(issue_branch, state, canonical)
@@ -104,12 +106,13 @@ defmodule SymphonyElixir.ReadinessGate do
          _workspace,
          _issue,
          issue_branch,
-         true,
+         provenance,
          _canonical,
          %{current_branch: issue_branch, head_sha: local_sha},
          :missing,
          _opts
-       ) do
+       )
+       when provenance == :fresh_unverified do
     failure(
       :new_issue_branch_already_exists,
       "new workspace already has local branch #{issue_branch} at #{local_sha}",
@@ -121,16 +124,34 @@ defmodule SymphonyElixir.ReadinessGate do
          _workspace,
          _issue,
          issue_branch,
-         true,
+         provenance,
          _canonical,
          %{current_branch: issue_branch, head_sha: local_sha},
          %GitReceipt{fetched_sha: remote_sha},
          _opts
-       ) do
+       )
+       when provenance in [:fresh_unverified, :legacy_unverified] do
     failure(
       :new_issue_branch_remote_mismatch,
       "fresh local branch #{issue_branch} is #{local_sha}, but origin advertises #{remote_sha}",
       "Preserve the local branch and reconcile it manually with the exact remote branch before retrying."
+    )
+  end
+
+  defp classify(
+         _workspace,
+         _issue,
+         issue_branch,
+         :legacy_unverified,
+         _canonical,
+         state,
+         :missing,
+         _opts
+       ) do
+    failure(
+      :legacy_workspace_provenance_unverified,
+      "legacy workspace on #{state.current_branch}@#{state.head_sha} has no same-name remote evidence for #{issue_branch}",
+      "Publish or restore one exact same-name remote branch, or recreate the workspace explicitly before retrying."
     )
   end
 
@@ -478,7 +499,8 @@ defmodule SymphonyElixir.ReadinessGate do
        ) do
     runner = command_runner(workspace, opts)
 
-    with {:ok, _output} <- run(runner, ["switch", "-c", issue_branch, base_sha]),
+    with {:ok, _output} <-
+           run(runner, ["switch", "--no-overwrite-ignore", "-c", issue_branch, base_sha]),
          {:ok, final_state} <- inspect_materialized_workspace(runner) do
       verify_created_branch(
         final_state,
@@ -586,18 +608,96 @@ defmodule SymphonyElixir.ReadinessGate do
      }}
   end
 
-  defp workspace_created_now(opts) do
+  defp workspace_provenance(workspace, %Issue{} = issue, opts) do
+    case Keyword.fetch(opts, :workspace_readiness_state) do
+      {:ok, %ReadinessState{} = state} ->
+        parse_workspace_readiness_state(state, workspace, issue)
+
+      {:ok, _invalid_state} ->
+        invalid_workspace_provenance("workspace_readiness_state is not typed")
+
+      :error ->
+        legacy_workspace_created_now(opts)
+    end
+  end
+
+  defp parse_workspace_readiness_state(
+         %ReadinessState{version: 1} = state,
+         workspace,
+         %Issue{} = issue
+       ) do
+    with :ok <- validate_workspace_readiness_identity(state, workspace, issue) do
+      workspace_readiness_mode(state)
+    end
+  end
+
+  defp parse_workspace_readiness_state(_state, _workspace, _issue) do
+    invalid_workspace_provenance("workspace readiness schema version is unsupported")
+  end
+
+  defp validate_workspace_readiness_identity(state, workspace, issue) do
+    if state.issue_id == issue.id and state.issue_identifier == issue.identifier and
+         state.issue_branch == issue.branch_name and state.workspace_path == workspace do
+      :ok
+    else
+      invalid_workspace_provenance("workspace readiness identity does not match the issue and path")
+    end
+  end
+
+  defp workspace_readiness_mode(%ReadinessState{
+         provenance: :created,
+         phase: :unverified,
+         verified_head_sha: nil
+       }),
+       do: {:ok, :fresh_unverified}
+
+  defp workspace_readiness_mode(%ReadinessState{
+         provenance: :legacy,
+         phase: :unverified,
+         verified_head_sha: nil
+       }),
+       do: {:ok, :legacy_unverified}
+
+  defp workspace_readiness_mode(%ReadinessState{
+         provenance: provenance,
+         phase: :ready,
+         verified_head_sha: verified_head_sha
+       })
+       when provenance in [:created, :legacy] and is_binary(verified_head_sha) do
+    if Regex.match?(@sha_pattern, verified_head_sha) do
+      {:ok, :ready}
+    else
+      invalid_workspace_provenance("workspace readiness verified head is invalid")
+    end
+  end
+
+  defp workspace_readiness_mode(_state) do
+    invalid_workspace_provenance("workspace readiness phase or provenance is invalid")
+  end
+
+  defp legacy_workspace_created_now(opts) do
     case Keyword.fetch(opts, :workspace_created_now) do
-      {:ok, value} when is_boolean(value) ->
-        {:ok, value}
+      {:ok, true} ->
+        {:ok, :fresh_unverified}
+
+      {:ok, false} ->
+        {:ok, :ready}
 
       _ ->
         failure(
           :workspace_provenance_missing,
-          "readiness requires created_now evidence from Workspace",
+          "readiness requires durable state or created_now evidence from Workspace",
           "Retry through AgentRunner so workspace creation/reuse provenance is supplied."
         )
     end
+  end
+
+  defp invalid_workspace_provenance(detail) do
+    failure(
+      :workspace_provenance_invalid,
+      detail,
+      "Preserve the workspace and repair or recreate its durable readiness state before retrying."
+    )
   end
 
   defp issue_branch(%Issue{branch_name: branch}) when is_binary(branch) do

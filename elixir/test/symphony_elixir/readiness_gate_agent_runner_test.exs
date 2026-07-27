@@ -49,6 +49,18 @@ defmodule SymphonyElixir.ReadinessGateAgentRunnerTest do
 
     assert git!(blocker.workspace_path, ["branch", "--show-current"]) == issue.branch_name
     assert git!(blocker.workspace_path, ["rev-parse", "HEAD"]) == stale_sha
+
+    # A process restart reuses the directory (`created_now: false`). Durable
+    # provenance must keep the blocked workspace in the fresh/unverified state.
+    assert :ok = AgentRunner.run(issue, self())
+
+    assert_receive {:agent_hard_blocker, "issue-ARO-201", restarted_blocker}
+    assert restarted_blocker.error =~ "workspace readiness failed"
+    assert restarted_blocker.error =~ "new_issue_branch_already_exists"
+    refute File.exists?(before_run_marker)
+    refute File.exists?(app_server_marker)
+    assert restarted_blocker.workspace_path == blocker.workspace_path
+    assert git!(restarted_blocker.workspace_path, ["rev-parse", "HEAD"]) == stale_sha
   end
 
   test "canonical default as tracker issue branch hard-blocks before before_run and AppServer" do
@@ -143,9 +155,16 @@ defmodule SymphonyElixir.ReadinessGateAgentRunnerTest do
       codex_command: "#{fake_codex} app-server"
     )
 
-    assert {:ok, workspace} = Workspace.create_for_issue(issue)
+    assert {:ok, %{path: workspace, readiness_state: readiness_state} = preparation} =
+             Workspace.prepare_for_issue(issue)
+
     configure_identity!(workspace)
-    git!(workspace, ["switch", "-c", issue.branch_name])
+
+    assert {:ok, readiness_receipt} =
+             SymphonyElixir.ReadinessGate.check(workspace, issue, workspace_readiness_state: readiness_state)
+
+    assert :ok = Workspace.mark_readiness_ready(preparation, issue, readiness_receipt)
+
     File.write!(Path.join(workspace, "continuation.txt"), "preserve continuation\n")
     git!(workspace, ["add", "continuation.txt"])
     git!(workspace, ["commit", "-m", "continuation work"])

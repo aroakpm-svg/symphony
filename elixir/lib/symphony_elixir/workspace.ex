@@ -7,9 +7,54 @@ defmodule SymphonyElixir.Workspace do
   alias SymphonyElixir.{Config, PathSafety, SSH}
 
   @remote_workspace_marker "__SYMPHONY_WORKSPACE__"
+  @remote_readiness_marker "__SYMPHONY_READINESS_STATE__"
+  @readiness_state_suffix ".symphony-readiness-v1.json"
+  @readiness_state_version 1
+  @max_readiness_state_bytes 65_536
+  @sha_pattern ~r/\A(?:[0-9a-fA-F]{40}|[0-9a-fA-F]{64})\z/
+
+  defmodule ReadinessState do
+    @moduledoc "Typed durable workspace provenance used by the pre-dispatch readiness gate."
+
+    @enforce_keys [
+      :version,
+      :provenance,
+      :phase,
+      :issue_id,
+      :issue_identifier,
+      :issue_branch,
+      :workspace_path,
+      :verified_head_sha
+    ]
+    defstruct [
+      :version,
+      :provenance,
+      :phase,
+      :issue_id,
+      :issue_identifier,
+      :issue_branch,
+      :workspace_path,
+      :verified_head_sha
+    ]
+
+    @type t :: %__MODULE__{
+            version: pos_integer(),
+            provenance: :created | :legacy,
+            phase: :unverified | :ready,
+            issue_id: String.t() | nil,
+            issue_identifier: String.t(),
+            issue_branch: String.t() | nil,
+            workspace_path: Path.t(),
+            verified_head_sha: String.t() | nil
+          }
+  end
 
   @type worker_host :: String.t() | nil
-  @type preparation :: %{path: Path.t(), created_now: boolean()}
+  @type preparation :: %{
+          path: Path.t(),
+          created_now: boolean(),
+          readiness_state: ReadinessState.t()
+        }
 
   @spec create_for_issue(map() | String.t() | nil, worker_host()) ::
           {:ok, Path.t()} | {:error, term()}
@@ -31,13 +76,430 @@ defmodule SymphonyElixir.Workspace do
       with {:ok, workspace} <- workspace_path_for_issue(safe_id, worker_host),
            :ok <- validate_workspace_path(workspace, worker_host),
            {:ok, workspace, created?} <- ensure_workspace(workspace, worker_host),
+           {:ok, readiness_state} <-
+             prepare_readiness_state(workspace, issue_context, created?, worker_host),
            :ok <- maybe_run_after_create_hook(workspace, issue_context, created?, worker_host) do
-        {:ok, %{path: workspace, created_now: created?}}
+        {:ok,
+         %{
+           path: workspace,
+           created_now: created?,
+           readiness_state: readiness_state
+         }}
       end
     rescue
       error in [ArgumentError, ErlangError, File.Error] ->
         Logger.error("Workspace creation failed #{issue_log_context(issue_context)} worker_host=#{worker_host_for_log(worker_host)} error=#{Exception.message(error)}")
         {:error, error}
+    end
+  end
+
+  @spec readiness_state_path(Path.t()) :: Path.t()
+  def readiness_state_path(workspace) when is_binary(workspace) do
+    workspace <> @readiness_state_suffix
+  end
+
+  @spec mark_readiness_ready(preparation(), map() | String.t() | nil, map()) ::
+          :ok | {:error, term()}
+  def mark_readiness_ready(preparation, issue_or_identifier, receipt) do
+    mark_readiness_ready(preparation, issue_or_identifier, receipt, nil)
+  end
+
+  @spec mark_readiness_ready(preparation(), map() | String.t() | nil, map(), worker_host()) ::
+          :ok | {:error, term()}
+  def mark_readiness_ready(
+        %{path: workspace, readiness_state: %ReadinessState{} = expected_state},
+        issue_or_identifier,
+        receipt,
+        worker_host
+      )
+      when is_binary(workspace) do
+    issue_context = issue_context(issue_or_identifier)
+
+    with :ok <- validate_readiness_identity(expected_state, workspace, issue_context),
+         :ok <- validate_readiness_receipt(receipt, expected_state, workspace),
+         {:ok, %ReadinessState{} = current_state} <-
+           read_existing_readiness_state(workspace, worker_host),
+         :ok <- compare_readiness_state(current_state, expected_state, workspace) do
+      ready_state = %{
+        expected_state
+        | phase: :ready,
+          verified_head_sha: String.downcase(receipt.head_sha)
+      }
+
+      write_readiness_state(workspace, ready_state, worker_host)
+    end
+  end
+
+  def mark_readiness_ready(%{path: workspace}, _issue_or_identifier, _receipt, _worker_host)
+      when is_binary(workspace) do
+    {:error, {:workspace_readiness_state_invalid, workspace, "typed preparation state is missing"}}
+  end
+
+  def mark_readiness_ready(_preparation, _issue_or_identifier, _receipt, _worker_host) do
+    {:error, {:workspace_readiness_state_invalid, "unknown", "typed preparation state is missing"}}
+  end
+
+  defp prepare_readiness_state(workspace, issue_context, true, worker_host) do
+    state = new_readiness_state(workspace, issue_context, :created)
+
+    case write_readiness_state(workspace, state, worker_host) do
+      :ok -> {:ok, state}
+      {:error, _reason} = error -> error
+    end
+  end
+
+  defp prepare_readiness_state(workspace, issue_context, false, worker_host) do
+    case read_readiness_state(workspace, worker_host) do
+      {:ok, :missing} ->
+        state = new_readiness_state(workspace, issue_context, :legacy)
+
+        case write_readiness_state(workspace, state, worker_host) do
+          :ok -> {:ok, state}
+          {:error, _reason} = error -> error
+        end
+
+      {:ok, %ReadinessState{} = state} ->
+        case validate_readiness_identity(state, workspace, issue_context) do
+          :ok -> {:ok, state}
+          {:error, _reason} = error -> error
+        end
+
+      {:error, _reason} = error ->
+        error
+    end
+  end
+
+  defp new_readiness_state(workspace, issue_context, provenance) do
+    %ReadinessState{
+      version: @readiness_state_version,
+      provenance: provenance,
+      phase: :unverified,
+      issue_id: issue_context.issue_id,
+      issue_identifier: issue_context.issue_identifier,
+      issue_branch: issue_context.issue_branch,
+      workspace_path: workspace,
+      verified_head_sha: nil
+    }
+  end
+
+  defp validate_readiness_identity(%ReadinessState{} = state, workspace, issue_context) do
+    expected = %{
+      issue_id: issue_context.issue_id,
+      issue_identifier: issue_context.issue_identifier,
+      issue_branch: issue_context.issue_branch,
+      workspace_path: workspace
+    }
+
+    mismatches =
+      expected
+      |> Enum.flat_map(fn {field, expected_value} ->
+        actual_value = Map.fetch!(state, field)
+
+        if actual_value == expected_value do
+          []
+        else
+          ["#{field} expected=#{inspect(expected_value)} actual=#{inspect(actual_value)}"]
+        end
+      end)
+      |> Enum.sort()
+
+    case mismatches do
+      [] ->
+        :ok
+
+      _ ->
+        {:error, {:workspace_readiness_identity_mismatch, workspace, "persisted readiness identity mismatch: #{Enum.join(mismatches, "; ")}"}}
+    end
+  end
+
+  defp validate_readiness_receipt(receipt, expected_state, workspace) do
+    cond do
+      not is_struct(receipt, SymphonyElixir.ReadinessGate.Receipt) ->
+        {:error, {:workspace_readiness_receipt_mismatch, workspace, :receipt_type}}
+
+      receipt.issue_branch != expected_state.issue_branch ->
+        {:error, {:workspace_readiness_receipt_mismatch, workspace, :issue_branch}}
+
+      not (is_binary(receipt.head_sha) and Regex.match?(@sha_pattern, receipt.head_sha)) ->
+        {:error, {:workspace_readiness_receipt_mismatch, workspace, :head_sha}}
+
+      true ->
+        :ok
+    end
+  end
+
+  defp compare_readiness_state(%ReadinessState{} = state, %ReadinessState{} = state, _workspace),
+    do: :ok
+
+  defp compare_readiness_state(_current_state, _expected_state, workspace) do
+    {:error, {:workspace_readiness_state_changed, workspace, "persisted readiness state changed during verification"}}
+  end
+
+  defp read_existing_readiness_state(workspace, worker_host) do
+    case read_readiness_state(workspace, worker_host) do
+      {:ok, %ReadinessState{} = state} ->
+        {:ok, state}
+
+      {:ok, :missing} ->
+        {:error, {:workspace_readiness_state_missing, workspace, "persisted readiness state disappeared during verification"}}
+
+      {:error, _reason} = error ->
+        error
+    end
+  end
+
+  defp read_readiness_state(workspace, nil) do
+    state_path = readiness_state_path(workspace)
+
+    case File.lstat(state_path) do
+      {:error, :enoent} ->
+        {:ok, :missing}
+
+      {:ok, %File.Stat{type: :regular, size: size}}
+      when size <= @max_readiness_state_bytes ->
+        case File.read(state_path) do
+          {:ok, json} -> decode_readiness_state(json, workspace)
+          {:error, reason} -> readiness_state_read_error(workspace, reason)
+        end
+
+      {:ok, %File.Stat{type: :regular, size: size}} ->
+        {:error, {:workspace_readiness_state_invalid, workspace, "readiness state exceeds #{@max_readiness_state_bytes} bytes: #{size}"}}
+
+      {:ok, %File.Stat{type: type}} ->
+        {:error, {:workspace_readiness_state_invalid, workspace, "readiness state must be a regular file, got #{type}"}}
+
+      {:error, reason} ->
+        readiness_state_read_error(workspace, reason)
+    end
+  end
+
+  defp read_readiness_state(workspace, worker_host) when is_binary(worker_host) do
+    state_path = readiness_state_path(workspace)
+
+    script =
+      [
+        "set -eu",
+        remote_shell_assign("readiness_state", state_path),
+        "if [ ! -e \"$readiness_state\" ]; then",
+        "  printf '%s\\t%s\\n' '#{@remote_readiness_marker}' 'missing'",
+        "elif [ -L \"$readiness_state\" ] || [ ! -f \"$readiness_state\" ]; then",
+        "  printf '%s\\t%s\\n' '#{@remote_readiness_marker}' 'invalid-type'",
+        "else",
+        "  state_size=\"$(wc -c < \"$readiness_state\")\"",
+        "  if [ \"$state_size\" -gt #{@max_readiness_state_bytes} ]; then",
+        "    printf '%s\\t%s\\t%s\\n' '#{@remote_readiness_marker}' 'too-large' \"$state_size\"",
+        "  else",
+        "    printf '%s\\t%s\\t' '#{@remote_readiness_marker}' 'present'",
+        "    cat \"$readiness_state\"",
+        "    printf '\\n'",
+        "  fi",
+        "fi"
+      ]
+      |> Enum.join("\n")
+
+    case run_remote_command(worker_host, script, Config.settings!().hooks.timeout_ms) do
+      {:ok, {output, 0}} ->
+        parse_remote_readiness_state(output, workspace)
+
+      {:ok, {output, status}} ->
+        readiness_state_read_error(
+          workspace,
+          "worker=#{worker_host} status=#{status} output=#{sanitize_hook_output_for_log(output)}"
+        )
+
+      {:error, reason} ->
+        readiness_state_read_error(workspace, reason)
+    end
+  end
+
+  defp parse_remote_readiness_state(output, workspace) do
+    result =
+      output
+      |> IO.iodata_to_binary()
+      |> String.split("\n", trim: true)
+      |> Enum.find_value(&parse_remote_readiness_state_line/1)
+
+    case result do
+      {:ok, :missing} ->
+        {:ok, :missing}
+
+      {:present, json} ->
+        decode_readiness_state(json, workspace)
+
+      {:invalid, detail} ->
+        {:error, {:workspace_readiness_state_invalid, workspace, "remote readiness state #{detail}"}}
+
+      nil ->
+        readiness_state_read_error(workspace, "remote state command returned no typed marker")
+    end
+  end
+
+  defp parse_remote_readiness_state_line(line) do
+    case String.split(line, "\t", parts: 3) do
+      [@remote_readiness_marker, "missing"] -> {:ok, :missing}
+      [@remote_readiness_marker, "present", json] -> {:present, json}
+      [@remote_readiness_marker, "invalid-type"] -> {:invalid, "must be a regular file"}
+      [@remote_readiness_marker, "too-large", size] -> {:invalid, "is too large: #{size}"}
+      _ -> nil
+    end
+  end
+
+  defp decode_readiness_state(json, workspace) do
+    case Jason.decode(json) do
+      {:ok,
+       %{
+         "version" => @readiness_state_version,
+         "provenance" => provenance,
+         "phase" => phase,
+         "issue_id" => issue_id,
+         "issue_identifier" => issue_identifier,
+         "issue_branch" => issue_branch,
+         "workspace_path" => workspace_path,
+         "verified_head_sha" => verified_head_sha
+       } = decoded}
+      when map_size(decoded) == 8 ->
+        build_readiness_state(
+          workspace,
+          provenance,
+          phase,
+          issue_id,
+          issue_identifier,
+          issue_branch,
+          workspace_path,
+          verified_head_sha
+        )
+
+      {:ok, _decoded} ->
+        {:error, {:workspace_readiness_state_invalid, workspace, "readiness state JSON has an unsupported schema"}}
+
+      {:error, %Jason.DecodeError{} = error} ->
+        {:error, {:workspace_readiness_state_invalid, workspace, "readiness state JSON is malformed: #{Exception.message(error)}"}}
+    end
+  end
+
+  defp build_readiness_state(
+         workspace,
+         provenance,
+         phase,
+         issue_id,
+         issue_identifier,
+         issue_branch,
+         workspace_path,
+         verified_head_sha
+       ) do
+    with {:ok, provenance_atom} <- parse_readiness_provenance(provenance),
+         {:ok, phase_atom} <- parse_readiness_phase(phase, verified_head_sha),
+         true <- is_nil(issue_id) or is_binary(issue_id),
+         true <- is_binary(issue_identifier) and issue_identifier != "",
+         true <- is_nil(issue_branch) or is_binary(issue_branch),
+         true <- is_binary(workspace_path) and workspace_path != "" do
+      {:ok,
+       %ReadinessState{
+         version: @readiness_state_version,
+         provenance: provenance_atom,
+         phase: phase_atom,
+         issue_id: issue_id,
+         issue_identifier: issue_identifier,
+         issue_branch: issue_branch,
+         workspace_path: workspace_path,
+         verified_head_sha: normalize_verified_head(verified_head_sha)
+       }}
+    else
+      _ ->
+        {:error, {:workspace_readiness_state_invalid, workspace, "readiness state JSON contains invalid typed values"}}
+    end
+  end
+
+  defp parse_readiness_provenance("created"), do: {:ok, :created}
+  defp parse_readiness_provenance("legacy"), do: {:ok, :legacy}
+  defp parse_readiness_provenance(_provenance), do: :error
+
+  defp parse_readiness_phase("unverified", nil), do: {:ok, :unverified}
+
+  defp parse_readiness_phase("ready", sha) when is_binary(sha) do
+    if Regex.match?(@sha_pattern, sha), do: {:ok, :ready}, else: :error
+  end
+
+  defp parse_readiness_phase(_phase, _sha), do: :error
+
+  defp normalize_verified_head(nil), do: nil
+  defp normalize_verified_head(sha), do: String.downcase(sha)
+
+  defp write_readiness_state(workspace, %ReadinessState{} = state, nil) do
+    state_path = readiness_state_path(workspace)
+    temporary_path = state_path <> ".tmp.#{System.unique_integer([:positive, :monotonic])}"
+    json = encode_readiness_state(state)
+
+    result =
+      with :ok <- File.write(temporary_path, json, [:binary, :exclusive]),
+           :ok <- File.chmod(temporary_path, 0o600) do
+        File.rename(temporary_path, state_path)
+      end
+
+    case result do
+      :ok ->
+        :ok
+
+      {:error, reason} ->
+        File.rm(temporary_path)
+
+        {:error, {:workspace_readiness_state_write_failed, workspace, sanitize_hook_output_for_log(inspect(reason))}}
+    end
+  end
+
+  defp write_readiness_state(workspace, %ReadinessState{} = state, worker_host)
+       when is_binary(worker_host) do
+    state_path = readiness_state_path(workspace)
+    json = encode_readiness_state(state)
+
+    script =
+      [
+        "set -eu",
+        "umask 077",
+        remote_shell_assign("readiness_state", state_path),
+        "readiness_tmp=\"${readiness_state}.tmp.$$\"",
+        "trap 'rm -f \"$readiness_tmp\"' EXIT HUP INT TERM",
+        "printf '%s' #{shell_escape(json)} > \"$readiness_tmp\"",
+        "chmod 600 \"$readiness_tmp\"",
+        "mv -f \"$readiness_tmp\" \"$readiness_state\"",
+        "trap - EXIT HUP INT TERM"
+      ]
+      |> Enum.join("\n")
+
+    case run_remote_command(worker_host, script, Config.settings!().hooks.timeout_ms) do
+      {:ok, {_output, 0}} ->
+        :ok
+
+      {:ok, {output, status}} ->
+        {:error, {:workspace_readiness_state_write_failed, workspace, "worker=#{worker_host} status=#{status} output=#{sanitize_hook_output_for_log(output)}"}}
+
+      {:error, reason} ->
+        {:error, {:workspace_readiness_state_write_failed, workspace, sanitize_hook_output_for_log(inspect(reason))}}
+    end
+  end
+
+  defp encode_readiness_state(%ReadinessState{} = state) do
+    Jason.encode!(%{
+      "version" => state.version,
+      "provenance" => Atom.to_string(state.provenance),
+      "phase" => Atom.to_string(state.phase),
+      "issue_id" => state.issue_id,
+      "issue_identifier" => state.issue_identifier,
+      "issue_branch" => state.issue_branch,
+      "workspace_path" => state.workspace_path,
+      "verified_head_sha" => state.verified_head_sha
+    })
+  end
+
+  defp readiness_state_read_error(workspace, reason) do
+    {:error, {:workspace_readiness_state_read_failed, workspace, sanitize_hook_output_for_log(inspect(reason))}}
+  end
+
+  defp remove_local_readiness_state(state_path) do
+    case File.rm(state_path) do
+      :ok -> :ok
+      {:error, :enoent} -> :ok
+      {:error, reason} -> {:error, {:workspace_readiness_state_remove_failed, state_path, reason}, ""}
     end
   end
 
@@ -99,16 +561,11 @@ defmodule SymphonyElixir.Workspace do
 
   @spec remove(Path.t(), worker_host()) :: {:ok, [String.t()]} | {:error, term(), String.t()}
   def remove(workspace, nil) do
-    case File.exists?(workspace) do
-      true ->
-        case validate_workspace_path(workspace, nil) do
-          :ok ->
-            maybe_run_before_remove_hook(workspace, nil)
-            File.rm_rf(workspace)
+    state_path = readiness_state_path(workspace)
 
-          {:error, reason} ->
-            {:error, reason, ""}
-        end
+    case File.exists?(workspace) or File.exists?(state_path) do
+      true ->
+        remove_existing_local_workspace(workspace, state_path)
 
       false ->
         File.rm_rf(workspace)
@@ -120,8 +577,11 @@ defmodule SymphonyElixir.Workspace do
 
     script =
       [
+        "set -eu",
         remote_shell_assign("workspace", workspace),
-        "rm -rf \"$workspace\""
+        remote_shell_assign("readiness_state", readiness_state_path(workspace)),
+        "rm -rf \"$workspace\"",
+        "rm -f \"$readiness_state\""
       ]
       |> Enum.join("\n")
 
@@ -131,6 +591,21 @@ defmodule SymphonyElixir.Workspace do
 
       {:ok, {output, status}} ->
         {:error, {:workspace_remove_failed, worker_host, status, output}, ""}
+
+      {:error, reason} ->
+        {:error, reason, ""}
+    end
+  end
+
+  defp remove_existing_local_workspace(workspace, state_path) do
+    case validate_workspace_path(workspace, nil) do
+      :ok ->
+        maybe_run_before_remove_hook(workspace, nil)
+
+        with {:ok, removed} <- File.rm_rf(workspace),
+             :ok <- remove_local_readiness_state(state_path) do
+          {:ok, removed}
+        end
 
       {:error, reason} ->
         {:error, reason, ""}
@@ -804,24 +1279,27 @@ defmodule SymphonyElixir.Workspace do
   defp worker_host_for_log(nil), do: "local"
   defp worker_host_for_log(worker_host), do: worker_host
 
-  defp issue_context(%{id: issue_id, identifier: identifier}) do
+  defp issue_context(%{id: issue_id, identifier: identifier} = issue) do
     %{
       issue_id: issue_id,
-      issue_identifier: identifier || "issue"
+      issue_identifier: identifier || "issue",
+      issue_branch: Map.get(issue, :branch_name)
     }
   end
 
   defp issue_context(identifier) when is_binary(identifier) do
     %{
       issue_id: nil,
-      issue_identifier: identifier
+      issue_identifier: identifier,
+      issue_branch: nil
     }
   end
 
   defp issue_context(_identifier) do
     %{
       issue_id: nil,
-      issue_identifier: "issue"
+      issue_identifier: "issue",
+      issue_branch: nil
     }
   end
 
