@@ -527,10 +527,10 @@ Dispatch gating behavior:
 
 ### 5.6 Pull-Request Scope Contract (Static Validation Boundary)
 
-A pull-request description MAY carry a typed scope contract that states the work item, invariants,
-acceptance criteria, non-goals, dependencies, and follow-ups. Contract validation is static: it
-MUST reject missing, malformed, duplicate, or placeholder fields without inferring meaning from
-free-form prose.
+Any pull-request description evaluated by `pr_body.check` MUST contain a typed scope contract that
+states the work item, invariants, acceptance criteria, non-goals, dependencies, and follow-ups.
+Contract validation is static: it MUST reject a missing contract and missing, malformed, duplicate,
+or placeholder fields without inferring meaning from free-form prose.
 
 - Finding severity and scope ownership are separate concepts. Severity alone MUST NOT establish
   whether a finding belongs to the current pull request.
