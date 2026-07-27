@@ -195,13 +195,25 @@ defmodule SymphonyElixir.Workspace do
         end
 
       {:ok, %ReadinessState{} = state} ->
-        case validate_readiness_identity(state, workspace, issue_context) do
-          :ok -> {:ok, state}
-          {:error, _reason} = error -> error
+        case reconcile_readiness_identity(state, workspace, issue_context) do
+          {:ok, ^state} ->
+            {:ok, state}
+
+          {:ok, enriched_state} ->
+            persist_enriched_readiness_state(workspace, enriched_state, worker_host)
+
+          {:error, _reason} = error ->
+            error
         end
 
       {:error, _reason} = error ->
         error
+    end
+  end
+
+  defp persist_enriched_readiness_state(workspace, enriched_state, worker_host) do
+    with :ok <- write_readiness_state(workspace, enriched_state, worker_host) do
+      {:ok, enriched_state}
     end
   end
 
@@ -247,6 +259,46 @@ defmodule SymphonyElixir.Workspace do
         {:error, {:workspace_readiness_identity_mismatch, workspace, "persisted readiness identity mismatch: #{Enum.join(mismatches, "; ")}"}}
     end
   end
+
+  defp reconcile_readiness_identity(%ReadinessState{} = state, workspace, issue_context) do
+    case validate_readiness_identity(state, workspace, issue_context) do
+      :ok ->
+        {:ok, state}
+
+      {:error, _reason} = identity_error ->
+        if readiness_identity_enrichable?(state, workspace, issue_context) do
+          {:ok,
+           %{
+             state
+             | issue_id: issue_context.issue_id,
+               issue_branch: issue_context.issue_branch
+           }}
+        else
+          identity_error
+        end
+    end
+  end
+
+  defp readiness_identity_enrichable?(state, workspace, issue_context) do
+    state.phase == :unverified and
+      state.workspace_path == workspace and
+      state.issue_identifier == issue_context.issue_identifier and
+      complete_issue_identity?(issue_context) and
+      missing_or_matching_identity?(state.issue_id, issue_context.issue_id) and
+      missing_or_matching_identity?(state.issue_branch, issue_context.issue_branch) and
+      (is_nil(state.issue_id) or is_nil(state.issue_branch))
+  end
+
+  defp complete_issue_identity?(issue_context) do
+    non_empty_binary?(issue_context.issue_id) and
+      non_empty_binary?(issue_context.issue_identifier) and
+      non_empty_binary?(issue_context.issue_branch)
+  end
+
+  defp missing_or_matching_identity?(nil, _expected), do: true
+  defp missing_or_matching_identity?(actual, expected), do: actual == expected
+
+  defp non_empty_binary?(value), do: is_binary(value) and value != ""
 
   defp validate_readiness_receipt(receipt, expected_state, workspace) do
     cond do

@@ -76,6 +76,93 @@ defmodule SymphonyElixir.WorkspaceReadinessStateTest do
     refute File.exists?(state_path)
   end
 
+  test "unverified identifier-only readiness identity enriches once from an exact typed issue" do
+    test_root = temporary_root!("identity-enrichment")
+    workspace_root = Path.join(test_root, "workspaces")
+    issue = issue("ARO-301-ENRICH", "codex/aro-301-enrich")
+
+    write_workflow_file!(Workflow.workflow_file_path(), workspace_root: workspace_root)
+
+    assert {:ok, workspace} = Workspace.create_for_issue(issue.identifier)
+    state_path = Workspace.readiness_state_path(workspace)
+
+    assert %{"issue_id" => nil, "issue_branch" => nil, "phase" => "unverified"} =
+             state_path |> File.read!() |> Jason.decode!()
+
+    assert {:ok,
+            %{
+              path: ^workspace,
+              created_now: false,
+              readiness_state: %{
+                phase: :unverified,
+                issue_id: "issue-ARO-301-ENRICH",
+                issue_identifier: "ARO-301-ENRICH",
+                issue_branch: "codex/aro-301-enrich",
+                workspace_path: ^workspace
+              }
+            }} = Workspace.prepare_for_issue(issue)
+
+    assert %{
+             "issue_id" => "issue-ARO-301-ENRICH",
+             "issue_branch" => "codex/aro-301-enrich",
+             "phase" => "unverified"
+           } = state_path |> File.read!() |> Jason.decode!()
+
+    assert {:error, {:workspace_readiness_identity_mismatch, ^workspace, downgrade_detail}} =
+             Workspace.prepare_for_issue(issue.identifier)
+
+    assert downgrade_detail =~ "issue_id"
+
+    conflicting_issue = %{issue | id: "different-id", branch_name: "codex/different"}
+
+    assert {:error, {:workspace_readiness_identity_mismatch, ^workspace, conflict_detail}} =
+             Workspace.prepare_for_issue(conflicting_issue)
+
+    assert conflict_detail =~ "issue_id"
+    assert conflict_detail =~ "issue_branch"
+  end
+
+  test "identity enrichment rejects ready state and partial typed input without changing the sidecar" do
+    test_root = temporary_root!("identity-enrichment-rejections")
+    workspace_root = Path.join(test_root, "workspaces")
+    partial_issue = issue("ARO-301-PARTIAL", "codex/aro-301-partial")
+    ready_issue = issue("ARO-301-READY", "codex/aro-301-ready")
+
+    write_workflow_file!(Workflow.workflow_file_path(), workspace_root: workspace_root)
+
+    assert {:ok, partial_workspace} = Workspace.create_for_issue(partial_issue.identifier)
+    partial_state_path = Workspace.readiness_state_path(partial_workspace)
+    partial_json = File.read!(partial_state_path)
+
+    assert {:error, {:workspace_readiness_identity_mismatch, ^partial_workspace, partial_detail}} =
+             Workspace.prepare_for_issue(%{
+               id: partial_issue.id,
+               identifier: partial_issue.identifier
+             })
+
+    assert partial_detail =~ "issue_id"
+    assert File.read!(partial_state_path) == partial_json
+
+    assert {:ok, ready_workspace} = Workspace.create_for_issue(ready_issue.identifier)
+    ready_state_path = Workspace.readiness_state_path(ready_workspace)
+
+    ready_json =
+      ready_state_path
+      |> File.read!()
+      |> Jason.decode!()
+      |> Map.put("phase", "ready")
+      |> Map.put("verified_head_sha", @sha)
+      |> Jason.encode!()
+
+    File.write!(ready_state_path, ready_json)
+
+    assert {:error, {:workspace_readiness_identity_mismatch, ^ready_workspace, ready_detail}} =
+             Workspace.prepare_for_issue(ready_issue)
+
+    assert ready_detail =~ "issue_id"
+    assert File.read!(ready_state_path) == ready_json
+  end
+
   test "malformed, cross-issue, and workspace-mismatched state all fail closed" do
     test_root = temporary_root!("invalid-state")
     workspace_root = Path.join(test_root, "workspaces")
