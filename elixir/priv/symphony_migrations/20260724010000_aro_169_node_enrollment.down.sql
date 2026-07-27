@@ -117,6 +117,35 @@ begin
       )
     union all
     select
+      'inventory-relation:' || relation.relname || ':' || relation.relkind::text
+    from pg_class relation
+    join pg_namespace namespace on namespace.oid = relation.relnamespace
+    where namespace.nspname = 'symphony_staging'
+    union all
+    select
+      'inventory-function:' || procedure.oid::regprocedure::text
+    from pg_proc procedure
+    join pg_namespace namespace on namespace.oid = procedure.pronamespace
+    where namespace.nspname = 'symphony_staging'
+    union all
+    select
+      'inventory-type:' || type_object.typname || ':' ||
+      type_object.typtype::text || ':' || type_object.typcategory::text
+    from pg_type type_object
+    join pg_namespace namespace on namespace.oid = type_object.typnamespace
+    where namespace.nspname = 'symphony_staging'
+    union all
+    select 'inventory-operator:' || operator_object.oid::regoperator::text
+    from pg_operator operator_object
+    join pg_namespace namespace on namespace.oid = operator_object.oprnamespace
+    where namespace.nspname = 'symphony_staging'
+    union all
+    select 'inventory-collation:' || collation_object.collname
+    from pg_collation collation_object
+    join pg_namespace namespace on namespace.oid = collation_object.collnamespace
+    where namespace.nspname = 'symphony_staging'
+    union all
+    select
       'function:' || procedure.oid::regprocedure::text || ':' ||
       pg_get_userbyid(procedure.proowner) || ':' ||
       coalesce(procedure.proacl::text, '') || ':' ||

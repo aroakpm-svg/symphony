@@ -104,6 +104,49 @@ psql_admin -c "
     revoke select on tables from service_role;
 " >/dev/null
 
+psql_admin <<'SQL'
+create role aro169_unlisted_role nologin;
+alter default privileges in schema symphony_staging
+  grant select on tables to aro169_unlisted_role;
+SQL
+if psql_admin -f "$migrations_dir/20260724010000_aro_169_node_enrollment.sql" \
+  >/dev/null 2>&1; then
+  echo "v3 apply unexpectedly accepted unlisted-role default ACL drift" >&2
+  exit 1
+fi
+psql_admin <<'SQL'
+alter default privileges in schema symphony_staging
+  revoke select on tables from aro169_unlisted_role;
+grant usage on schema symphony_staging to aro169_unlisted_role;
+SQL
+if psql_admin -f "$migrations_dir/20260724010000_aro_169_node_enrollment.sql" \
+  >/dev/null 2>&1; then
+  echo "v3 apply unexpectedly accepted unlisted schema ACL drift" >&2
+  exit 1
+fi
+psql_admin <<'SQL'
+revoke usage on schema symphony_staging from aro169_unlisted_role;
+alter table symphony_staging.nodes disable trigger enforce_node_transition;
+SQL
+if psql_admin -f "$migrations_dir/20260724010000_aro_169_node_enrollment.sql" \
+  >/dev/null 2>&1; then
+  echo "v3 apply unexpectedly accepted disabled foundation trigger" >&2
+  exit 1
+fi
+psql_admin <<'SQL'
+alter table symphony_staging.nodes enable trigger enforce_node_transition;
+create table symphony_staging.aro169_unexpected_v2_object(id integer);
+SQL
+if psql_admin -f "$migrations_dir/20260724010000_aro_169_node_enrollment.sql" \
+  >/dev/null 2>&1; then
+  echo "v3 apply unexpectedly accepted extra staging object" >&2
+  exit 1
+fi
+psql_admin <<'SQL'
+drop table symphony_staging.aro169_unexpected_v2_object;
+drop role aro169_unlisted_role;
+SQL
+
 psql_admin -f "$migrations_dir/20260724010000_aro_169_node_enrollment.sql"
 
 provisioned="$(
@@ -714,6 +757,18 @@ if psql_admin -f "$migrations_dir/20260724010000_aro_169_node_enrollment.down.sq
 fi
 psql_admin -c "
   alter table symphony_staging.nodes no force row level security;
+" >/dev/null
+
+psql_admin -c "
+  create table symphony_staging.aro169_unexpected_v3_object(id integer);
+" >/dev/null
+if psql_admin -f "$migrations_dir/20260724010000_aro_169_node_enrollment.down.sql" \
+  >/dev/null 2>&1; then
+  echo "rollback unexpectedly accepted extra staging object" >&2
+  exit 1
+fi
+psql_admin -c "
+  drop table symphony_staging.aro169_unexpected_v3_object;
 " >/dev/null
 
 psql_admin -c "

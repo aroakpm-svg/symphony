@@ -26,6 +26,11 @@ defmodule SymphonyElixir.NodeEnrollmentMigrationTest do
     assert sql =~ "unsafe ARO-168 ACL or default-ACL state"
     assert sql =~ "unsafe ARO-168 function or schema ACL state"
     assert sql =~ "unsafe ARO-168 ownership or row-security state"
+    assert sql =~ "unsafe ARO-168 relation inventory"
+    assert sql =~ "unsafe ARO-168 function inventory or definition"
+    assert sql =~ "unsafe ARO-168 trigger state"
+    assert sql =~ "unsafe ARO-168 index state"
+    assert sql =~ "unsafe ARO-168 sequence configuration"
     assert sql =~ "unsafe ARO-168 RLS policy state"
     assert sql =~ "'node-identity-routing-foundation',\n  3"
 
@@ -175,6 +180,7 @@ defmodule SymphonyElixir.NodeEnrollmentMigrationTest do
     assert lifecycle_script =~ "rollback unexpectedly accepted managed-role attribute drift"
     assert lifecycle_script =~ "rollback unexpectedly accepted schema ACL drift"
     assert lifecycle_script =~ "rollback unexpectedly accepted FORCE RLS drift"
+    assert lifecycle_script =~ "rollback unexpectedly accepted extra staging object"
     assert File.read!(@migration) =~ "'index:'"
     assert File.read!(@rollback) =~ "'index:'"
     assert File.read!(@migration) =~ "'trigger:'"
@@ -193,6 +199,10 @@ defmodule SymphonyElixir.NodeEnrollmentMigrationTest do
     assert File.read!(@rollback) =~ "'default-acl:'"
     assert File.read!(@migration) =~ "relation.relforcerowsecurity::text"
     assert File.read!(@rollback) =~ "relation.relforcerowsecurity::text"
+    assert File.read!(@migration) =~ "'inventory-relation:'"
+    assert File.read!(@rollback) =~ "'inventory-relation:'"
+    assert File.read!(@migration) =~ "'inventory-function:'"
+    assert File.read!(@rollback) =~ "'inventory-function:'"
 
     assert lifecycle_script =~
              "rollback did not serialize with concurrent contract DDL"

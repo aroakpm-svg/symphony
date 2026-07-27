@@ -23,6 +23,288 @@ begin
       message = 'ARO-169 requires the reconciled ARO-168 contract v2';
   end if;
 
+  if exists (
+    with expected(object_name, object_kind) as (
+      values
+        ('contract_versions', 'r'::"char"),
+        ('contract_versions_pkey', 'i'::"char"),
+        ('nodes', 'r'::"char"),
+        ('nodes_pkey', 'i'::"char"),
+        ('node_bindings', 'r'::"char"),
+        ('node_bindings_pkey', 'i'::"char"),
+        ('node_bindings_node_id_environment_credential_version_key', 'i'::"char"),
+        ('node_bindings_one_active_per_node', 'i'::"char"),
+        ('node_bindings_one_rotating_per_node', 'i'::"char"),
+        ('routing_assignments', 'r'::"char"),
+        ('routing_assignments_pkey', 'i'::"char"),
+        ('routing_assignments_target_node_id_idx', 'i'::"char"),
+        ('foundation_audit_events', 'r'::"char"),
+        ('foundation_audit_events_pkey', 'i'::"char"),
+        ('foundation_audit_events_audit_id_seq', 'S'::"char")
+    ),
+    actual as (
+      select relation.relname::text, relation.relkind
+      from pg_class relation
+      join pg_namespace namespace on namespace.oid = relation.relnamespace
+      where namespace.nspname = 'symphony_staging'
+    )
+    (select * from expected except select * from actual)
+    union all
+    (select * from actual except select * from expected)
+  ) then
+    raise exception using
+      errcode = '55000',
+      message = 'ARO-169 unsafe ARO-168 relation inventory';
+  end if;
+
+  if exists (
+    with expected(
+      function_name,
+      source_hash,
+      return_type,
+      argument_count,
+      security_definer,
+      volatility,
+      role_config,
+      language_name
+    ) as (
+      values
+        (
+          'enforce_node_transition',
+          '8099b4db79335d1b44c7d6d51b4dea50',
+          'trigger',
+          0::smallint,
+          false,
+          'v'::"char",
+          array['search_path=pg_catalog, symphony_staging']::text[],
+          'plpgsql'
+        ),
+        (
+          'enforce_node_binding_transition',
+          'e42862b88958f9d797b5da93134f8a7c',
+          'trigger',
+          0::smallint,
+          false,
+          'v'::"char",
+          array['search_path=pg_catalog, symphony_staging']::text[],
+          'plpgsql'
+        ),
+        (
+          'enforce_routing_revision',
+          'fb1dd9b95bb3dd713331adc980876b56',
+          'trigger',
+          0::smallint,
+          false,
+          'v'::"char",
+          array['search_path=pg_catalog, symphony_staging']::text[],
+          'plpgsql'
+        )
+    ),
+    actual as (
+      select
+        procedure.proname::text,
+        md5(procedure.prosrc),
+        procedure.prorettype::regtype::text,
+        procedure.pronargs,
+        procedure.prosecdef,
+        procedure.provolatile,
+        procedure.proconfig,
+        language.lanname::text
+      from pg_proc procedure
+      join pg_namespace namespace on namespace.oid = procedure.pronamespace
+      join pg_language language on language.oid = procedure.prolang
+      where namespace.nspname = 'symphony_staging'
+    )
+    (select * from expected except select * from actual)
+    union all
+    (select * from actual except select * from expected)
+  ) then
+    raise exception using
+      errcode = '55000',
+      message = 'ARO-169 unsafe ARO-168 function inventory or definition';
+  end if;
+
+  if exists (
+    select 1
+    from pg_type type_object
+    join pg_namespace namespace on namespace.oid = type_object.typnamespace
+    where namespace.nspname = 'symphony_staging'
+      and type_object.typrelid = 0
+      and type_object.typelem = 0
+  )
+  or exists (
+    select 1 from pg_operator object
+    join pg_namespace namespace on namespace.oid = object.oprnamespace
+    where namespace.nspname = 'symphony_staging'
+  )
+  or exists (
+    select 1 from pg_collation object
+    join pg_namespace namespace on namespace.oid = object.collnamespace
+    where namespace.nspname = 'symphony_staging'
+  )
+  or exists (
+    select 1 from pg_conversion object
+    join pg_namespace namespace on namespace.oid = object.connamespace
+    where namespace.nspname = 'symphony_staging'
+  )
+  or exists (
+    select 1 from pg_opclass object
+    join pg_namespace namespace on namespace.oid = object.opcnamespace
+    where namespace.nspname = 'symphony_staging'
+  )
+  or exists (
+    select 1 from pg_opfamily object
+    join pg_namespace namespace on namespace.oid = object.opfnamespace
+    where namespace.nspname = 'symphony_staging'
+  )
+  or exists (
+    select 1 from pg_ts_config object
+    join pg_namespace namespace on namespace.oid = object.cfgnamespace
+    where namespace.nspname = 'symphony_staging'
+  )
+  or exists (
+    select 1 from pg_ts_dict object
+    join pg_namespace namespace on namespace.oid = object.dictnamespace
+    where namespace.nspname = 'symphony_staging'
+  )
+  or exists (
+    select 1 from pg_ts_parser object
+    join pg_namespace namespace on namespace.oid = object.prsnamespace
+    where namespace.nspname = 'symphony_staging'
+  )
+  or exists (
+    select 1 from pg_ts_template object
+    join pg_namespace namespace on namespace.oid = object.tmplnamespace
+    where namespace.nspname = 'symphony_staging'
+  ) then
+    raise exception using
+      errcode = '55000',
+      message = 'ARO-169 unsafe ARO-168 auxiliary object inventory';
+  end if;
+
+  if exists (
+    with expected(trigger_name, table_name, function_name, enabled, trigger_type) as (
+      values
+        ('enforce_node_transition', 'nodes',
+         'enforce_node_transition', 'O'::"char", 19::smallint),
+        ('enforce_node_binding_transition', 'node_bindings',
+         'enforce_node_binding_transition', 'O'::"char", 19::smallint),
+        ('enforce_routing_revision', 'routing_assignments',
+         'enforce_routing_revision', 'O'::"char", 19::smallint)
+    ),
+    actual as (
+      select
+        trigger_row.tgname::text,
+        relation.relname::text,
+        procedure.proname::text,
+        trigger_row.tgenabled,
+        trigger_row.tgtype
+      from pg_trigger trigger_row
+      join pg_class relation on relation.oid = trigger_row.tgrelid
+      join pg_namespace namespace on namespace.oid = relation.relnamespace
+      join pg_proc procedure on procedure.oid = trigger_row.tgfoid
+      where namespace.nspname = 'symphony_staging'
+        and not trigger_row.tgisinternal
+    )
+    (select * from expected except select * from actual)
+    union all
+    (select * from actual except select * from expected)
+  ) then
+    raise exception using
+      errcode = '55000',
+      message = 'ARO-169 unsafe ARO-168 trigger state';
+  end if;
+
+  if exists (
+    with expected(
+      index_name,
+      table_name,
+      is_unique,
+      is_primary,
+      key_columns,
+      predicate
+    ) as (
+      values
+        ('contract_versions_pkey', 'contract_versions', true, true,
+         array['contract_name']::text[], null::text),
+        ('nodes_pkey', 'nodes', true, true,
+         array['node_id']::text[], null::text),
+        ('node_bindings_pkey', 'node_bindings', true, true,
+         array['binding_id']::text[], null::text),
+        ('node_bindings_node_id_environment_credential_version_key',
+         'node_bindings', true, false,
+         array['node_id', 'environment', 'credential_version']::text[], null::text),
+        ('node_bindings_one_active_per_node', 'node_bindings', true, false,
+         array['node_id', 'environment']::text[], '(status = ''active''::text)'),
+        ('node_bindings_one_rotating_per_node', 'node_bindings', true, false,
+         array['node_id', 'environment']::text[], '(status = ''rotating''::text)'),
+        ('routing_assignments_pkey', 'routing_assignments', true, true,
+         array['issue_id']::text[], null::text),
+        ('routing_assignments_target_node_id_idx', 'routing_assignments', false, false,
+         array['target_node_id']::text[], null::text),
+        ('foundation_audit_events_pkey', 'foundation_audit_events', true, true,
+         array['audit_id']::text[], null::text)
+    ),
+    actual as (
+      select
+        index_relation.relname::text,
+        relation.relname::text,
+        index_state.indisunique,
+        index_state.indisprimary,
+        array_agg(attribute.attname::text order by key.ordinality),
+        pg_get_expr(index_state.indpred, index_state.indrelid)
+      from pg_index index_state
+      join pg_class index_relation on index_relation.oid = index_state.indexrelid
+      join pg_class relation on relation.oid = index_state.indrelid
+      join pg_namespace namespace on namespace.oid = relation.relnamespace
+      cross join lateral unnest(index_state.indkey)
+        with ordinality key(attnum, ordinality)
+      join pg_attribute attribute
+        on attribute.attrelid = relation.oid
+       and attribute.attnum = key.attnum
+      where namespace.nspname = 'symphony_staging'
+        and index_state.indisvalid
+        and index_state.indisready
+        and index_state.indislive
+        and index_state.indexprs is null
+        and index_state.indnkeyatts = index_state.indnatts
+      group by
+        index_relation.relname,
+        relation.relname,
+        index_state.indisunique,
+        index_state.indisprimary,
+        index_state.indpred,
+        index_state.indrelid
+    )
+    (select * from expected except select * from actual)
+    union all
+    (select * from actual except select * from expected)
+  ) then
+    raise exception using
+      errcode = '55000',
+      message = 'ARO-169 unsafe ARO-168 index state';
+  end if;
+
+  if not exists (
+    select 1
+    from pg_sequence sequence_state
+    join pg_class relation on relation.oid = sequence_state.seqrelid
+    join pg_namespace namespace on namespace.oid = relation.relnamespace
+    where namespace.nspname = 'symphony_staging'
+      and relation.relname = 'foundation_audit_events_audit_id_seq'
+      and sequence_state.seqtypid::regtype::text = 'bigint'
+      and sequence_state.seqstart = 1
+      and sequence_state.seqincrement = 1
+      and sequence_state.seqmin = 1
+      and sequence_state.seqmax = 9223372036854775807
+      and sequence_state.seqcache = 1
+      and not sequence_state.seqcycle
+  ) then
+    raise exception using
+      errcode = '55000',
+      message = 'ARO-169 unsafe ARO-168 sequence configuration';
+  end if;
+
   foreach managed_role in array array[
     'symphony_staging_runtime'::name,
     'symphony_staging_provisioner'::name
@@ -339,20 +621,11 @@ begin
     from pg_default_acl default_acl
     left join pg_namespace namespace
       on namespace.oid = default_acl.defaclnamespace
-    cross join lateral aclexplode(default_acl.defaclacl) acl
-    left join pg_roles grantee on grantee.oid = acl.grantee
     where (
         default_acl.defaclnamespace = 0
         or namespace.nspname in ('symphony_staging', 'symphony_production')
       )
-      and coalesce(grantee.rolname, 'PUBLIC') in (
-        'PUBLIC',
-        'anon',
-        'authenticated',
-        'service_role',
-        'symphony_staging_runtime',
-        'symphony_staging_provisioner'
-      )
+      and pg_get_userbyid(default_acl.defaclrole) = 'postgres'
   ) then
     raise exception using
       errcode = '55000',
@@ -379,30 +652,39 @@ begin
       )
   )
   or exists (
+    with expected(schema_name, grantee_name, privilege_type, is_grantable) as (
+      values
+        ('symphony_staging', 'postgres', 'CREATE', false),
+        ('symphony_staging', 'postgres', 'USAGE', false),
+        ('symphony_staging', 'symphony_staging_runtime', 'USAGE', false),
+        ('symphony_staging', 'symphony_staging_provisioner', 'USAGE', false),
+        ('symphony_production', 'postgres', 'CREATE', false),
+        ('symphony_production', 'postgres', 'USAGE', false)
+    ),
+    actual as (
+      select
+        namespace.nspname::text,
+        coalesce(grantee.rolname, 'PUBLIC')::text,
+        acl.privilege_type::text,
+        acl.is_grantable
+      from pg_namespace namespace
+      cross join lateral aclexplode(coalesce(
+        namespace.nspacl,
+        acldefault('n', namespace.nspowner)
+      )) acl
+      left join pg_roles grantee on grantee.oid = acl.grantee
+      where namespace.nspname in ('symphony_staging', 'symphony_production')
+        and pg_get_userbyid(namespace.nspowner) = 'postgres'
+    )
+    (select * from expected except select * from actual)
+    union all
+    (select * from actual except select * from expected)
+  )
+  or exists (
     select 1
     from pg_namespace namespace
-    cross join lateral aclexplode(coalesce(
-      namespace.nspacl,
-      acldefault('n', namespace.nspowner)
-    )) acl
-    left join pg_roles grantee on grantee.oid = acl.grantee
     where namespace.nspname in ('symphony_staging', 'symphony_production')
-      and (
-        acl.is_grantable and acl.grantee <> namespace.nspowner
-        or coalesce(grantee.rolname, 'PUBLIC') in (
-          'PUBLIC',
-          'anon',
-          'authenticated',
-          'service_role'
-        )
-        or (
-          namespace.nspname = 'symphony_production'
-          and coalesce(grantee.rolname, 'PUBLIC') in (
-            'symphony_staging_runtime',
-            'symphony_staging_provisioner'
-          )
-        )
-      )
+      and pg_get_userbyid(namespace.nspowner) <> 'postgres'
   ) then
     raise exception using
       errcode = '55000',
@@ -1628,6 +1910,35 @@ from (
       default_acl.defaclnamespace = 0
       or namespace.nspname in ('symphony_staging', 'symphony_production')
     )
+  union all
+  select
+    'inventory-relation:' || relation.relname || ':' || relation.relkind::text
+  from pg_class relation
+  join pg_namespace namespace on namespace.oid = relation.relnamespace
+  where namespace.nspname = 'symphony_staging'
+  union all
+  select
+    'inventory-function:' || procedure.oid::regprocedure::text
+  from pg_proc procedure
+  join pg_namespace namespace on namespace.oid = procedure.pronamespace
+  where namespace.nspname = 'symphony_staging'
+  union all
+  select
+    'inventory-type:' || type_object.typname || ':' ||
+    type_object.typtype::text || ':' || type_object.typcategory::text
+  from pg_type type_object
+  join pg_namespace namespace on namespace.oid = type_object.typnamespace
+  where namespace.nspname = 'symphony_staging'
+  union all
+  select 'inventory-operator:' || operator_object.oid::regoperator::text
+  from pg_operator operator_object
+  join pg_namespace namespace on namespace.oid = operator_object.oprnamespace
+  where namespace.nspname = 'symphony_staging'
+  union all
+  select 'inventory-collation:' || collation_object.collname
+  from pg_collation collation_object
+  join pg_namespace namespace on namespace.oid = collation_object.collnamespace
+  where namespace.nspname = 'symphony_staging'
   union all
   select
     'function:' || procedure.oid::regprocedure::text || ':' ||
