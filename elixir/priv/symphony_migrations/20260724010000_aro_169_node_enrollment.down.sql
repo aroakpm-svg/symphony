@@ -146,6 +146,93 @@ begin
     where namespace.nspname = 'symphony_staging'
     union all
     select
+      'inventory-conversion:' || conversion_object.conname || ':' ||
+      pg_get_userbyid(conversion_object.conowner) || ':' ||
+      conversion_object.conforencoding::text || ':' ||
+      conversion_object.contoencoding::text || ':' ||
+      conversion_object.conproc::regprocedure::text || ':' ||
+      conversion_object.condefault::text
+    from pg_conversion conversion_object
+    join pg_namespace namespace on namespace.oid = conversion_object.connamespace
+    where namespace.nspname = 'symphony_staging'
+    union all
+    select
+      'inventory-opclass:' || opclass_object.opcname || ':' ||
+      pg_get_userbyid(opclass_object.opcowner) || ':' ||
+      access_method.amname || ':' ||
+      opclass_object.opcintype::regtype::text || ':' ||
+      opclass_object.opckeytype::regtype::text || ':' ||
+      family_namespace.nspname || '.' || family.opfname || ':' ||
+      opclass_object.opcdefault::text
+    from pg_opclass opclass_object
+    join pg_namespace namespace on namespace.oid = opclass_object.opcnamespace
+    join pg_am access_method on access_method.oid = opclass_object.opcmethod
+    join pg_opfamily family on family.oid = opclass_object.opcfamily
+    join pg_namespace family_namespace on family_namespace.oid = family.opfnamespace
+    where namespace.nspname = 'symphony_staging'
+    union all
+    select
+      'inventory-opfamily:' || family.opfname || ':' ||
+      pg_get_userbyid(family.opfowner) || ':' || access_method.amname
+    from pg_opfamily family
+    join pg_namespace namespace on namespace.oid = family.opfnamespace
+    join pg_am access_method on access_method.oid = family.opfmethod
+    where namespace.nspname = 'symphony_staging'
+    union all
+    select
+      'inventory-ts-config:' || config.cfgname || ':' ||
+      pg_get_userbyid(config.cfgowner) || ':' ||
+      parser_namespace.nspname || '.' || parser.prsname
+    from pg_ts_config config
+    join pg_namespace namespace on namespace.oid = config.cfgnamespace
+    join pg_ts_parser parser on parser.oid = config.cfgparser
+    join pg_namespace parser_namespace on parser_namespace.oid = parser.prsnamespace
+    where namespace.nspname = 'symphony_staging'
+    union all
+    select
+      'inventory-ts-config-map:' || config.cfgname || ':' ||
+      mapping.maptokentype::text || ':' || mapping.mapseqno::text || ':' ||
+      dictionary_namespace.nspname || '.' || dictionary.dictname
+    from pg_ts_config config
+    join pg_namespace namespace on namespace.oid = config.cfgnamespace
+    join pg_ts_config_map mapping on mapping.mapcfg = config.oid
+    join pg_ts_dict dictionary on dictionary.oid = mapping.mapdict
+    join pg_namespace dictionary_namespace
+      on dictionary_namespace.oid = dictionary.dictnamespace
+    where namespace.nspname = 'symphony_staging'
+    union all
+    select
+      'inventory-ts-dict:' || dictionary.dictname || ':' ||
+      pg_get_userbyid(dictionary.dictowner) || ':' ||
+      template_namespace.nspname || '.' || template.tmplname || ':' ||
+      coalesce(dictionary.dictinitoption, '')
+    from pg_ts_dict dictionary
+    join pg_namespace namespace on namespace.oid = dictionary.dictnamespace
+    join pg_ts_template template on template.oid = dictionary.dicttemplate
+    join pg_namespace template_namespace
+      on template_namespace.oid = template.tmplnamespace
+    where namespace.nspname = 'symphony_staging'
+    union all
+    select
+      'inventory-ts-parser:' || parser.prsname || ':' ||
+      parser.prsstart::regprocedure::text || ':' ||
+      parser.prstoken::regprocedure::text || ':' ||
+      parser.prsend::regprocedure::text || ':' ||
+      parser.prsheadline::regprocedure::text || ':' ||
+      parser.prslextype::regprocedure::text
+    from pg_ts_parser parser
+    join pg_namespace namespace on namespace.oid = parser.prsnamespace
+    where namespace.nspname = 'symphony_staging'
+    union all
+    select
+      'inventory-ts-template:' || template.tmplname || ':' ||
+      coalesce(template.tmplinit::regprocedure::text, '') || ':' ||
+      template.tmpllexize::regprocedure::text
+    from pg_ts_template template
+    join pg_namespace namespace on namespace.oid = template.tmplnamespace
+    where namespace.nspname = 'symphony_staging'
+    union all
+    select
       'function:' || procedure.oid::regprocedure::text || ':' ||
       pg_get_userbyid(procedure.proowner) || ':' ||
       coalesce(procedure.proacl::text, '') || ':' ||

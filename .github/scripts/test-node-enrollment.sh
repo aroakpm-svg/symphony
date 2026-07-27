@@ -135,6 +135,61 @@ if psql_admin -f "$migrations_dir/20260724010000_aro_169_node_enrollment.sql" \
 fi
 psql_admin <<'SQL'
 alter table symphony_staging.nodes enable trigger enforce_node_transition;
+create function public.enforce_node_transition()
+returns trigger language plpgsql
+as $$ begin return new; end $$;
+drop trigger enforce_node_transition on symphony_staging.nodes;
+create trigger enforce_node_transition
+before update on symphony_staging.nodes
+for each row execute function public.enforce_node_transition();
+SQL
+if psql_admin -f "$migrations_dir/20260724010000_aro_169_node_enrollment.sql" \
+  >/dev/null 2>&1; then
+  echo "v3 apply unexpectedly accepted drifted trigger function namespace" >&2
+  exit 1
+fi
+psql_admin <<'SQL'
+drop trigger enforce_node_transition on symphony_staging.nodes;
+create trigger enforce_node_transition
+before update on symphony_staging.nodes
+for each row execute function symphony_staging.enforce_node_transition();
+drop function public.enforce_node_transition();
+drop index symphony_staging.routing_assignments_target_node_id_idx;
+create index routing_assignments_target_node_id_idx
+  on symphony_staging.routing_assignments using hash (target_node_id);
+SQL
+if psql_admin -f "$migrations_dir/20260724010000_aro_169_node_enrollment.sql" \
+  >/dev/null 2>&1; then
+  echo "v3 apply unexpectedly accepted drifted index access method" >&2
+  exit 1
+fi
+psql_admin <<'SQL'
+drop index symphony_staging.routing_assignments_target_node_id_idx;
+create index routing_assignments_target_node_id_idx
+  on symphony_staging.routing_assignments (target_node_id);
+alter table symphony_staging.routing_assignments
+  drop constraint routing_assignments_routing_revision_check;
+SQL
+if psql_admin -f "$migrations_dir/20260724010000_aro_169_node_enrollment.sql" \
+  >/dev/null 2>&1; then
+  echo "v3 apply unexpectedly accepted drifted foundation constraint" >&2
+  exit 1
+fi
+psql_admin <<'SQL'
+alter table symphony_staging.routing_assignments
+  add constraint routing_assignments_routing_revision_check
+  check (routing_revision > 0);
+alter table symphony_staging.nodes
+  alter column credential_version set default 2;
+SQL
+if psql_admin -f "$migrations_dir/20260724010000_aro_169_node_enrollment.sql" \
+  >/dev/null 2>&1; then
+  echo "v3 apply unexpectedly accepted drifted foundation column default" >&2
+  exit 1
+fi
+psql_admin <<'SQL'
+alter table symphony_staging.nodes
+  alter column credential_version set default 1;
 create table symphony_staging.aro169_unexpected_v2_object(id integer);
 SQL
 if psql_admin -f "$migrations_dir/20260724010000_aro_169_node_enrollment.sql" \
@@ -769,6 +824,19 @@ if psql_admin -f "$migrations_dir/20260724010000_aro_169_node_enrollment.down.sq
 fi
 psql_admin -c "
   drop table symphony_staging.aro169_unexpected_v3_object;
+" >/dev/null
+
+psql_admin -c "
+  create text search dictionary symphony_staging.aro169_drift_dictionary
+    (template = pg_catalog.simple);
+" >/dev/null
+if psql_admin -f "$migrations_dir/20260724010000_aro_169_node_enrollment.down.sql" \
+  >/dev/null 2>&1; then
+  echo "rollback unexpectedly accepted auxiliary catalog object drift" >&2
+  exit 1
+fi
+psql_admin -c "
+  drop text search dictionary symphony_staging.aro169_drift_dictionary;
 " >/dev/null
 
 psql_admin -c "

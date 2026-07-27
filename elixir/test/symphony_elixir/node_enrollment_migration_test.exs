@@ -30,9 +30,14 @@ defmodule SymphonyElixir.NodeEnrollmentMigrationTest do
     assert sql =~ "unsafe ARO-168 function inventory or definition"
     assert sql =~ "unsafe ARO-168 trigger state"
     assert sql =~ "unsafe ARO-168 index state"
+    assert sql =~ "unsafe ARO-168 column/default/identity state"
+    assert sql =~ "unsafe ARO-168 constraint state"
+    assert sql =~ "pg_get_triggerdef(trigger_row.oid, true)"
+    assert sql =~ "procedure.oid::regprocedure::text"
+    assert sql =~ "pg_get_indexdef(index_relation.oid)"
     assert sql =~ "unsafe ARO-168 sequence configuration"
     assert sql =~ "unsafe ARO-168 RLS policy state"
-    assert sql =~ "'node-identity-routing-foundation',\n  3"
+    assert sql =~ ~r/'node-identity-routing-foundation',\r?\n  3/
 
     assert lifecycle_script =~
              "v3 apply unexpectedly accepted drifted v2 authorization state"
@@ -115,7 +120,7 @@ defmodule SymphonyElixir.NodeEnrollmentMigrationTest do
     sql = File.read!(@migration)
 
     assert sql =~
-             "from public, anon, authenticated, service_role,\n       symphony_staging_runtime"
+             ~r/from public, anon, authenticated, service_role,\r?\n       symphony_staging_runtime/
 
     assert sql =~
              "'symphony_staging.authenticate_node(uuid, uuid) to %I'"
@@ -181,6 +186,22 @@ defmodule SymphonyElixir.NodeEnrollmentMigrationTest do
     assert lifecycle_script =~ "rollback unexpectedly accepted schema ACL drift"
     assert lifecycle_script =~ "rollback unexpectedly accepted FORCE RLS drift"
     assert lifecycle_script =~ "rollback unexpectedly accepted extra staging object"
+
+    assert lifecycle_script =~
+             "v3 apply unexpectedly accepted drifted trigger function namespace"
+
+    assert lifecycle_script =~
+             "v3 apply unexpectedly accepted drifted index access method"
+
+    assert lifecycle_script =~
+             "v3 apply unexpectedly accepted drifted foundation constraint"
+
+    assert lifecycle_script =~
+             "v3 apply unexpectedly accepted drifted foundation column default"
+
+    assert lifecycle_script =~
+             "rollback unexpectedly accepted auxiliary catalog object drift"
+
     assert File.read!(@migration) =~ "'index:'"
     assert File.read!(@rollback) =~ "'index:'"
     assert File.read!(@migration) =~ "'trigger:'"
@@ -203,6 +224,16 @@ defmodule SymphonyElixir.NodeEnrollmentMigrationTest do
     assert File.read!(@rollback) =~ "'inventory-relation:'"
     assert File.read!(@migration) =~ "'inventory-function:'"
     assert File.read!(@rollback) =~ "'inventory-function:'"
+    assert File.read!(@migration) =~ "'inventory-conversion:'"
+    assert File.read!(@rollback) =~ "'inventory-conversion:'"
+    assert File.read!(@migration) =~ "'inventory-opclass:'"
+    assert File.read!(@rollback) =~ "'inventory-opclass:'"
+    assert File.read!(@migration) =~ "'inventory-opfamily:'"
+    assert File.read!(@rollback) =~ "'inventory-opfamily:'"
+    assert File.read!(@migration) =~ "'inventory-ts-config:'"
+    assert File.read!(@rollback) =~ "'inventory-ts-config:'"
+    assert File.read!(@migration) =~ "'inventory-ts-dict:'"
+    assert File.read!(@rollback) =~ "'inventory-ts-dict:'"
 
     assert lifecycle_script =~
              "rollback did not serialize with concurrent contract DDL"

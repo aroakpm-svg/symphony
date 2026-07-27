@@ -59,6 +59,135 @@ begin
 
   if exists (
     with expected(
+      table_name, column_name, ordinal, type_name, not_null,
+      identity_kind, generated_kind, default_expression
+    ) as (
+      values
+        ('contract_versions', 'contract_name', 1, 'text', true, '', '', ''),
+        ('contract_versions', 'contract_version', 2, 'integer', true, '', '', ''),
+        ('contract_versions', 'migration_name', 3, 'text', true, '', '', ''),
+        ('contract_versions', 'installed_at', 4, 'timestamp with time zone', true, '', '', 'clock_timestamp()'),
+        ('nodes', 'node_id', 1, 'uuid', true, '', '', ''),
+        ('nodes', 'display_alias', 2, 'text', false, '', '', ''),
+        ('nodes', 'status', 3, 'text', true, '', '', ''),
+        ('nodes', 'credential_version', 4, 'integer', true, '', '', '1'),
+        ('nodes', 'created_at', 5, 'timestamp with time zone', true, '', '', 'clock_timestamp()'),
+        ('nodes', 'updated_at', 6, 'timestamp with time zone', true, '', '', 'clock_timestamp()'),
+        ('nodes', 'rotated_at', 7, 'timestamp with time zone', false, '', '', ''),
+        ('nodes', 'revoked_at', 8, 'timestamp with time zone', false, '', '', ''),
+        ('nodes', 'retired_at', 9, 'timestamp with time zone', false, '', '', ''),
+        ('node_bindings', 'binding_id', 1, 'uuid', true, '', '', ''),
+        ('node_bindings', 'node_id', 2, 'uuid', true, '', '', ''),
+        ('node_bindings', 'environment', 3, 'text', true, '', '', ''),
+        ('node_bindings', 'status', 4, 'text', true, '', '', ''),
+        ('node_bindings', 'credential_version', 5, 'integer', true, '', '', ''),
+        ('node_bindings', 'credential_verifier', 6, 'text', true, '', '', ''),
+        ('node_bindings', 'created_at', 7, 'timestamp with time zone', true, '', '', 'clock_timestamp()'),
+        ('node_bindings', 'activated_at', 8, 'timestamp with time zone', false, '', '', ''),
+        ('node_bindings', 'rotated_at', 9, 'timestamp with time zone', false, '', '', ''),
+        ('node_bindings', 'revoked_at', 10, 'timestamp with time zone', false, '', '', ''),
+        ('node_bindings', 'retired_at', 11, 'timestamp with time zone', false, '', '', ''),
+        ('routing_assignments', 'issue_id', 1, 'text', true, '', '', ''),
+        ('routing_assignments', 'routing_policy', 2, 'text', true, '', '', ''),
+        ('routing_assignments', 'target_node_id', 3, 'uuid', false, '', '', ''),
+        ('routing_assignments', 'routing_revision', 4, 'bigint', true, '', '', ''),
+        ('routing_assignments', 'contract_version', 5, 'integer', true, '', '', ''),
+        ('routing_assignments', 'updated_at', 6, 'timestamp with time zone', true, '', '', 'clock_timestamp()'),
+        ('foundation_audit_events', 'audit_id', 1, 'bigint', true, 'a', '', ''),
+        ('foundation_audit_events', 'event_type', 2, 'text', true, '', '', ''),
+        ('foundation_audit_events', 'node_id', 3, 'uuid', false, '', '', ''),
+        ('foundation_audit_events', 'binding_id', 4, 'uuid', false, '', '', ''),
+        ('foundation_audit_events', 'issue_id', 5, 'text', false, '', '', ''),
+        ('foundation_audit_events', 'routing_revision', 6, 'bigint', false, '', '', ''),
+        ('foundation_audit_events', 'credential_version', 7, 'integer', false, '', '', ''),
+        ('foundation_audit_events', 'result', 8, 'text', true, '', '', ''),
+        ('foundation_audit_events', 'reason_code', 9, 'text', true, '', '', ''),
+        ('foundation_audit_events', 'details', 10, 'jsonb', true, '', '', '''{}''::jsonb'),
+        ('foundation_audit_events', 'occurred_at', 11, 'timestamp with time zone', true, '', '', 'clock_timestamp()')
+    ),
+    actual as (
+      select
+        relation.relname::text,
+        attribute.attname::text,
+        attribute.attnum::integer,
+        format_type(attribute.atttypid, attribute.atttypmod),
+        attribute.attnotnull,
+        attribute.attidentity::text,
+        attribute.attgenerated::text,
+        coalesce(pg_get_expr(default_value.adbin, default_value.adrelid), '')
+      from pg_class relation
+      join pg_namespace namespace on namespace.oid = relation.relnamespace
+      join pg_attribute attribute on attribute.attrelid = relation.oid
+      left join pg_attrdef default_value
+        on default_value.adrelid = relation.oid
+       and default_value.adnum = attribute.attnum
+      where namespace.nspname = 'symphony_staging'
+        and relation.relkind = 'r'
+        and attribute.attnum > 0
+        and not attribute.attisdropped
+    )
+    (select * from expected except select * from actual)
+    union all
+    (select * from actual except select * from expected)
+  ) then
+    raise exception using
+      errcode = '55000',
+      message = 'ARO-169 unsafe ARO-168 column/default/identity state';
+  end if;
+
+  if exists (
+    with expected(table_name, constraint_name, constraint_definition) as (
+      values
+        ('contract_versions', 'contract_versions_pkey', 'PRIMARY KEY (contract_name)'),
+        ('contract_versions', 'contract_versions_contract_version_check', 'CHECK (contract_version > 0)'),
+        ('nodes', 'nodes_pkey', 'PRIMARY KEY (node_id)'),
+        ('nodes', 'nodes_status_check', 'CHECK (status = ANY (ARRAY[''active''::text, ''disabled''::text, ''retired''::text]))'),
+        ('nodes', 'nodes_credential_version_check', 'CHECK (credential_version > 0)'),
+        ('nodes', 'nodes_check', 'CHECK (status <> ''active''::text OR revoked_at IS NULL AND retired_at IS NULL)'),
+        ('nodes', 'nodes_check1', 'CHECK (status <> ''disabled''::text OR revoked_at IS NOT NULL AND retired_at IS NULL)'),
+        ('nodes', 'nodes_check2', 'CHECK (status <> ''retired''::text OR retired_at IS NOT NULL)'),
+        ('node_bindings', 'node_bindings_pkey', 'PRIMARY KEY (binding_id)'),
+        ('node_bindings', 'node_bindings_node_id_fkey', 'FOREIGN KEY (node_id) REFERENCES symphony_staging.nodes(node_id) ON DELETE RESTRICT'),
+        ('node_bindings', 'node_bindings_environment_check', 'CHECK (environment = ''staging''::text)'),
+        ('node_bindings', 'node_bindings_status_check', 'CHECK (status = ANY (ARRAY[''pending''::text, ''active''::text, ''rotating''::text, ''revoked''::text, ''retired''::text]))'),
+        ('node_bindings', 'node_bindings_credential_version_check', 'CHECK (credential_version > 0)'),
+        ('node_bindings', 'node_bindings_credential_verifier_check', 'CHECK (credential_verifier ~ ''^[A-Fa-f0-9]{64}$''::text)'),
+        ('node_bindings', 'node_bindings_check', 'CHECK (status <> ''active''::text OR activated_at IS NOT NULL)'),
+        ('node_bindings', 'node_bindings_check1', 'CHECK (status <> ''rotating''::text OR rotated_at IS NOT NULL)'),
+        ('node_bindings', 'node_bindings_check2', 'CHECK (status <> ''revoked''::text OR revoked_at IS NOT NULL)'),
+        ('node_bindings', 'node_bindings_check3', 'CHECK (status <> ''retired''::text OR retired_at IS NOT NULL)'),
+        ('node_bindings', 'node_bindings_node_id_environment_credential_version_key', 'UNIQUE (node_id, environment, credential_version)'),
+        ('routing_assignments', 'routing_assignments_pkey', 'PRIMARY KEY (issue_id)'),
+        ('routing_assignments', 'routing_assignments_target_node_id_fkey', 'FOREIGN KEY (target_node_id) REFERENCES symphony_staging.nodes(node_id) ON DELETE RESTRICT'),
+        ('routing_assignments', 'routing_assignments_routing_policy_check', 'CHECK (routing_policy = ANY (ARRAY[''unassigned''::text, ''preferred-with-fallback''::text, ''exclusive''::text]))'),
+        ('routing_assignments', 'routing_assignments_routing_revision_check', 'CHECK (routing_revision > 0)'),
+        ('routing_assignments', 'routing_assignments_contract_version_check', 'CHECK (contract_version > 0)'),
+        ('routing_assignments', 'routing_assignments_check', 'CHECK (routing_policy = ''unassigned''::text AND target_node_id IS NULL OR routing_policy = ANY (ARRAY[''preferred-with-fallback''::text, ''exclusive''::text]) AND target_node_id IS NOT NULL)'),
+        ('foundation_audit_events', 'foundation_audit_events_pkey', 'PRIMARY KEY (audit_id)'),
+        ('foundation_audit_events', 'foundation_audit_events_result_check', 'CHECK (result = ANY (ARRAY[''accepted''::text, ''rejected''::text, ''unknown''::text]))'),
+        ('foundation_audit_events', 'foundation_audit_events_check', 'CHECK (jsonb_typeof(details) = ''object''::text)')
+    ),
+    actual as (
+      select
+        relation.relname::text,
+        constraint_row.conname::text,
+        pg_get_constraintdef(constraint_row.oid, true)
+      from pg_constraint constraint_row
+      join pg_class relation on relation.oid = constraint_row.conrelid
+      join pg_namespace namespace on namespace.oid = relation.relnamespace
+      where namespace.nspname = 'symphony_staging'
+    )
+    (select * from expected except select * from actual)
+    union all
+    (select * from actual except select * from expected)
+  ) then
+    raise exception using
+      errcode = '55000',
+      message = 'ARO-169 unsafe ARO-168 constraint state';
+  end if;
+
+  if exists (
+    with expected(
       function_name,
       source_hash,
       return_type,
@@ -183,22 +312,27 @@ begin
   end if;
 
   if exists (
-    with expected(trigger_name, table_name, function_name, enabled, trigger_type) as (
+    with expected(
+      trigger_name, table_name, function_identity, enabled, trigger_definition
+    ) as (
       values
         ('enforce_node_transition', 'nodes',
-         'enforce_node_transition', 'O'::"char", 19::smallint),
+         'symphony_staging.enforce_node_transition()', 'O'::"char",
+         'CREATE TRIGGER enforce_node_transition BEFORE UPDATE ON symphony_staging.nodes FOR EACH ROW EXECUTE FUNCTION symphony_staging.enforce_node_transition()'),
         ('enforce_node_binding_transition', 'node_bindings',
-         'enforce_node_binding_transition', 'O'::"char", 19::smallint),
+         'symphony_staging.enforce_node_binding_transition()', 'O'::"char",
+         'CREATE TRIGGER enforce_node_binding_transition BEFORE UPDATE ON symphony_staging.node_bindings FOR EACH ROW EXECUTE FUNCTION symphony_staging.enforce_node_binding_transition()'),
         ('enforce_routing_revision', 'routing_assignments',
-         'enforce_routing_revision', 'O'::"char", 19::smallint)
+         'symphony_staging.enforce_routing_revision()', 'O'::"char",
+         'CREATE TRIGGER enforce_routing_revision BEFORE UPDATE ON symphony_staging.routing_assignments FOR EACH ROW EXECUTE FUNCTION symphony_staging.enforce_routing_revision()')
     ),
     actual as (
       select
         trigger_row.tgname::text,
         relation.relname::text,
-        procedure.proname::text,
+        procedure.oid::regprocedure::text,
         trigger_row.tgenabled,
-        trigger_row.tgtype
+        pg_get_triggerdef(trigger_row.oid, true)
       from pg_trigger trigger_row
       join pg_class relation on relation.oid = trigger_row.tgrelid
       join pg_namespace namespace on namespace.oid = relation.relnamespace
@@ -216,65 +350,39 @@ begin
   end if;
 
   if exists (
-    with expected(
-      index_name,
-      table_name,
-      is_unique,
-      is_primary,
-      key_columns,
-      predicate
-    ) as (
+    with expected(index_name, index_definition) as (
       values
-        ('contract_versions_pkey', 'contract_versions', true, true,
-         array['contract_name']::text[], null::text),
-        ('nodes_pkey', 'nodes', true, true,
-         array['node_id']::text[], null::text),
-        ('node_bindings_pkey', 'node_bindings', true, true,
-         array['binding_id']::text[], null::text),
+        ('contract_versions_pkey',
+         'CREATE UNIQUE INDEX contract_versions_pkey ON symphony_staging.contract_versions USING btree (contract_name)'),
+        ('nodes_pkey',
+         'CREATE UNIQUE INDEX nodes_pkey ON symphony_staging.nodes USING btree (node_id)'),
+        ('node_bindings_pkey',
+         'CREATE UNIQUE INDEX node_bindings_pkey ON symphony_staging.node_bindings USING btree (binding_id)'),
         ('node_bindings_node_id_environment_credential_version_key',
-         'node_bindings', true, false,
-         array['node_id', 'environment', 'credential_version']::text[], null::text),
-        ('node_bindings_one_active_per_node', 'node_bindings', true, false,
-         array['node_id', 'environment']::text[], '(status = ''active''::text)'),
-        ('node_bindings_one_rotating_per_node', 'node_bindings', true, false,
-         array['node_id', 'environment']::text[], '(status = ''rotating''::text)'),
-        ('routing_assignments_pkey', 'routing_assignments', true, true,
-         array['issue_id']::text[], null::text),
-        ('routing_assignments_target_node_id_idx', 'routing_assignments', false, false,
-         array['target_node_id']::text[], null::text),
-        ('foundation_audit_events_pkey', 'foundation_audit_events', true, true,
-         array['audit_id']::text[], null::text)
+         'CREATE UNIQUE INDEX node_bindings_node_id_environment_credential_version_key ON symphony_staging.node_bindings USING btree (node_id, environment, credential_version)'),
+        ('node_bindings_one_active_per_node',
+         'CREATE UNIQUE INDEX node_bindings_one_active_per_node ON symphony_staging.node_bindings USING btree (node_id, environment) WHERE (status = ''active''::text)'),
+        ('node_bindings_one_rotating_per_node',
+         'CREATE UNIQUE INDEX node_bindings_one_rotating_per_node ON symphony_staging.node_bindings USING btree (node_id, environment) WHERE (status = ''rotating''::text)'),
+        ('routing_assignments_pkey',
+         'CREATE UNIQUE INDEX routing_assignments_pkey ON symphony_staging.routing_assignments USING btree (issue_id)'),
+        ('routing_assignments_target_node_id_idx',
+         'CREATE INDEX routing_assignments_target_node_id_idx ON symphony_staging.routing_assignments USING btree (target_node_id)'),
+        ('foundation_audit_events_pkey',
+         'CREATE UNIQUE INDEX foundation_audit_events_pkey ON symphony_staging.foundation_audit_events USING btree (audit_id)')
     ),
     actual as (
       select
         index_relation.relname::text,
-        relation.relname::text,
-        index_state.indisunique,
-        index_state.indisprimary,
-        array_agg(attribute.attname::text order by key.ordinality),
-        pg_get_expr(index_state.indpred, index_state.indrelid)
+        pg_get_indexdef(index_relation.oid)
       from pg_index index_state
       join pg_class index_relation on index_relation.oid = index_state.indexrelid
       join pg_class relation on relation.oid = index_state.indrelid
       join pg_namespace namespace on namespace.oid = relation.relnamespace
-      cross join lateral unnest(index_state.indkey)
-        with ordinality key(attnum, ordinality)
-      join pg_attribute attribute
-        on attribute.attrelid = relation.oid
-       and attribute.attnum = key.attnum
       where namespace.nspname = 'symphony_staging'
         and index_state.indisvalid
         and index_state.indisready
         and index_state.indislive
-        and index_state.indexprs is null
-        and index_state.indnkeyatts = index_state.indnatts
-      group by
-        index_relation.relname,
-        relation.relname,
-        index_state.indisunique,
-        index_state.indisprimary,
-        index_state.indpred,
-        index_state.indrelid
     )
     (select * from expected except select * from actual)
     union all
@@ -1938,6 +2046,93 @@ from (
   select 'inventory-collation:' || collation_object.collname
   from pg_collation collation_object
   join pg_namespace namespace on namespace.oid = collation_object.collnamespace
+  where namespace.nspname = 'symphony_staging'
+  union all
+  select
+    'inventory-conversion:' || conversion_object.conname || ':' ||
+    pg_get_userbyid(conversion_object.conowner) || ':' ||
+    conversion_object.conforencoding::text || ':' ||
+    conversion_object.contoencoding::text || ':' ||
+    conversion_object.conproc::regprocedure::text || ':' ||
+    conversion_object.condefault::text
+  from pg_conversion conversion_object
+  join pg_namespace namespace on namespace.oid = conversion_object.connamespace
+  where namespace.nspname = 'symphony_staging'
+  union all
+  select
+    'inventory-opclass:' || opclass_object.opcname || ':' ||
+    pg_get_userbyid(opclass_object.opcowner) || ':' ||
+    access_method.amname || ':' ||
+    opclass_object.opcintype::regtype::text || ':' ||
+    opclass_object.opckeytype::regtype::text || ':' ||
+    family_namespace.nspname || '.' || family.opfname || ':' ||
+    opclass_object.opcdefault::text
+  from pg_opclass opclass_object
+  join pg_namespace namespace on namespace.oid = opclass_object.opcnamespace
+  join pg_am access_method on access_method.oid = opclass_object.opcmethod
+  join pg_opfamily family on family.oid = opclass_object.opcfamily
+  join pg_namespace family_namespace on family_namespace.oid = family.opfnamespace
+  where namespace.nspname = 'symphony_staging'
+  union all
+  select
+    'inventory-opfamily:' || family.opfname || ':' ||
+    pg_get_userbyid(family.opfowner) || ':' || access_method.amname
+  from pg_opfamily family
+  join pg_namespace namespace on namespace.oid = family.opfnamespace
+  join pg_am access_method on access_method.oid = family.opfmethod
+  where namespace.nspname = 'symphony_staging'
+  union all
+  select
+    'inventory-ts-config:' || config.cfgname || ':' ||
+    pg_get_userbyid(config.cfgowner) || ':' ||
+    parser_namespace.nspname || '.' || parser.prsname
+  from pg_ts_config config
+  join pg_namespace namespace on namespace.oid = config.cfgnamespace
+  join pg_ts_parser parser on parser.oid = config.cfgparser
+  join pg_namespace parser_namespace on parser_namespace.oid = parser.prsnamespace
+  where namespace.nspname = 'symphony_staging'
+  union all
+  select
+    'inventory-ts-config-map:' || config.cfgname || ':' ||
+    mapping.maptokentype::text || ':' || mapping.mapseqno::text || ':' ||
+    dictionary_namespace.nspname || '.' || dictionary.dictname
+  from pg_ts_config config
+  join pg_namespace namespace on namespace.oid = config.cfgnamespace
+  join pg_ts_config_map mapping on mapping.mapcfg = config.oid
+  join pg_ts_dict dictionary on dictionary.oid = mapping.mapdict
+  join pg_namespace dictionary_namespace
+    on dictionary_namespace.oid = dictionary.dictnamespace
+  where namespace.nspname = 'symphony_staging'
+  union all
+  select
+    'inventory-ts-dict:' || dictionary.dictname || ':' ||
+    pg_get_userbyid(dictionary.dictowner) || ':' ||
+    template_namespace.nspname || '.' || template.tmplname || ':' ||
+    coalesce(dictionary.dictinitoption, '')
+  from pg_ts_dict dictionary
+  join pg_namespace namespace on namespace.oid = dictionary.dictnamespace
+  join pg_ts_template template on template.oid = dictionary.dicttemplate
+  join pg_namespace template_namespace
+    on template_namespace.oid = template.tmplnamespace
+  where namespace.nspname = 'symphony_staging'
+  union all
+  select
+    'inventory-ts-parser:' || parser.prsname || ':' ||
+    parser.prsstart::regprocedure::text || ':' ||
+    parser.prstoken::regprocedure::text || ':' ||
+    parser.prsend::regprocedure::text || ':' ||
+    parser.prsheadline::regprocedure::text || ':' ||
+    parser.prslextype::regprocedure::text
+  from pg_ts_parser parser
+  join pg_namespace namespace on namespace.oid = parser.prsnamespace
+  where namespace.nspname = 'symphony_staging'
+  union all
+  select
+    'inventory-ts-template:' || template.tmplname || ':' ||
+    coalesce(template.tmplinit::regprocedure::text, '') || ':' ||
+    template.tmpllexize::regprocedure::text
+  from pg_ts_template template
+  join pg_namespace namespace on namespace.oid = template.tmplnamespace
   where namespace.nspname = 'symphony_staging'
   union all
   select
