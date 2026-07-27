@@ -86,28 +86,37 @@ defmodule SymphonyElixir.ScopeContract do
 
   defp collect_sections(lines) do
     {sections, errors, _current} =
-      Enum.reduce(lines, {%{}, [], nil}, fn line, {sections, errors, current} ->
-        case section_heading(line) do
-          {:known, field} ->
-            if Map.has_key?(sections, field) do
-              {sections, errors ++ [{:duplicate_section, field}], :ignore}
-            else
-              {Map.put(sections, field, []), errors, field}
-            end
-
-          {:unknown, heading} ->
-            {sections, errors ++ [{:unexpected_section, heading}], :ignore}
-
-          :content ->
-            if Map.has_key?(sections, current) do
-              {Map.update!(sections, current, &(&1 ++ [line])), errors, current}
-            else
-              {sections, errors, current}
-            end
-        end
-      end)
+      Enum.reduce(lines, {%{}, [], nil}, &collect_section_line/2)
 
     {sections, errors}
+  end
+
+  defp collect_section_line(line, state) do
+    case section_heading(line) do
+      {:known, field} -> collect_known_section(field, state)
+      {:unknown, heading} -> collect_unknown_section(heading, state)
+      :content -> collect_section_content(line, state)
+    end
+  end
+
+  defp collect_known_section(field, {sections, errors, _current}) do
+    if Map.has_key?(sections, field) do
+      {sections, errors ++ [{:duplicate_section, field}], :ignore}
+    else
+      {Map.put(sections, field, []), errors, field}
+    end
+  end
+
+  defp collect_unknown_section(heading, {sections, errors, _current}) do
+    {sections, errors ++ [{:unexpected_section, heading}], :ignore}
+  end
+
+  defp collect_section_content(line, {sections, errors, current} = state) do
+    if Map.has_key?(sections, current) do
+      {Map.update!(sections, current, &(&1 ++ [line])), errors, current}
+    else
+      state
+    end
   end
 
   defp section_heading(line) do
@@ -187,31 +196,30 @@ defmodule SymphonyElixir.ScopeContract do
   end
 
   defp normalize_bullets(field, lines) do
-    {values, errors} =
-      Enum.reduce(lines, {[], []}, fn line, {values, errors} ->
-        case line do
-          "None" ->
-            {values ++ ["None"], errors}
-
-          "-" ->
-            {values, errors ++ [{:blank_bullet, field}]}
-
-          <<"- ", value::binary>> ->
-            value = String.trim(value)
-
-            if value == "" do
-              {values, errors ++ [{:blank_bullet, field}]}
-            else
-              {values ++ [value], errors}
-            end
-
-          _ ->
-            {values, errors ++ [{:malformed_bullet, field, line}]}
-        end
-      end)
+    {values, errors} = Enum.reduce(lines, {[], []}, &normalize_bullet(field, &1, &2))
 
     {values, errors}
   end
+
+  defp normalize_bullet(_field, "None", {values, errors}), do: {values ++ ["None"], errors}
+
+  defp normalize_bullet(field, "-", {values, errors}) do
+    {values, errors ++ [{:blank_bullet, field}]}
+  end
+
+  defp normalize_bullet(field, <<"- ", value::binary>>, state) do
+    append_normalized_bullet(field, String.trim(value), state)
+  end
+
+  defp normalize_bullet(field, line, {values, errors}) do
+    {values, errors ++ [{:malformed_bullet, field, line}]}
+  end
+
+  defp append_normalized_bullet(field, "", {values, errors}) do
+    {values, errors ++ [{:blank_bullet, field}]}
+  end
+
+  defp append_normalized_bullet(_field, value, {values, errors}), do: {values ++ [value], errors}
 
   defp validate_normalized_list(field, ["None"]) when field in @optional_none_fields, do: {[], []}
 
@@ -230,21 +238,24 @@ defmodule SymphonyElixir.ScopeContract do
 
   defp acceptance_criterion_errors(values) do
     {_identifiers, errors} =
-      Enum.reduce(values, {MapSet.new(), []}, fn value, {identifiers, errors} ->
-        case acceptance_criterion_identifier(value) do
-          {:ok, identifier} ->
-            if MapSet.member?(identifiers, identifier) do
-              {identifiers, errors ++ [{:duplicate_acceptance_criterion, identifier}]}
-            else
-              {MapSet.put(identifiers, identifier), errors}
-            end
-
-          :error ->
-            {identifiers, errors ++ [{:malformed_acceptance_criterion, value}]}
-        end
-      end)
+      Enum.reduce(values, {MapSet.new(), []}, &collect_acceptance_criterion/2)
 
     errors
+  end
+
+  defp collect_acceptance_criterion(value, {identifiers, errors}) do
+    case acceptance_criterion_identifier(value) do
+      {:ok, identifier} -> collect_acceptance_identifier(identifier, identifiers, errors)
+      :error -> {identifiers, errors ++ [{:malformed_acceptance_criterion, value}]}
+    end
+  end
+
+  defp collect_acceptance_identifier(identifier, identifiers, errors) do
+    if MapSet.member?(identifiers, identifier) do
+      {identifiers, errors ++ [{:duplicate_acceptance_criterion, identifier}]}
+    else
+      {MapSet.put(identifiers, identifier), errors}
+    end
   end
 
   defp nonblank_lines(lines), do: lines |> Enum.map(&String.trim/1) |> Enum.reject(&(&1 == ""))
