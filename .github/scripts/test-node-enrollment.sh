@@ -64,6 +64,46 @@ revoke update on symphony_staging.nodes from aro169_v2_drift_writer;
 drop role aro169_v2_drift_writer;
 SQL
 
+psql_admin -c "
+  revoke select (node_id) on symphony_staging.nodes
+    from symphony_staging_runtime;
+" >/dev/null
+if psql_admin -f "$migrations_dir/20260724010000_aro_169_node_enrollment.sql" \
+  >/dev/null 2>&1; then
+  echo "v3 apply unexpectedly accepted v2 column ACL drift" >&2
+  exit 1
+fi
+psql_admin -c "
+  grant select (node_id) on symphony_staging.nodes
+    to symphony_staging_runtime;
+" >/dev/null
+
+psql_admin -c "
+  grant select on symphony_staging.nodes to service_role;
+" >/dev/null
+if psql_admin -f "$migrations_dir/20260724010000_aro_169_node_enrollment.sql" \
+  >/dev/null 2>&1; then
+  echo "v3 apply unexpectedly accepted unrelated-role ACL drift" >&2
+  exit 1
+fi
+psql_admin -c "
+  revoke select on symphony_staging.nodes from service_role;
+" >/dev/null
+
+psql_admin -c "
+  alter default privileges in schema symphony_staging
+    grant select on tables to service_role;
+" >/dev/null
+if psql_admin -f "$migrations_dir/20260724010000_aro_169_node_enrollment.sql" \
+  >/dev/null 2>&1; then
+  echo "v3 apply unexpectedly accepted default ACL drift" >&2
+  exit 1
+fi
+psql_admin -c "
+  alter default privileges in schema symphony_staging
+    revoke select on tables from service_role;
+" >/dev/null
+
 psql_admin -f "$migrations_dir/20260724010000_aro_169_node_enrollment.sql"
 
 provisioned="$(
@@ -638,6 +678,42 @@ fi
 psql_admin -c "
   alter sequence symphony_staging.foundation_audit_events_audit_id_seq
     increment by 1 cache 1 no cycle;
+" >/dev/null
+
+psql_admin -c "
+  alter role symphony_staging_provisioner login;
+" >/dev/null
+if psql_admin -f "$migrations_dir/20260724010000_aro_169_node_enrollment.down.sql" \
+  >/dev/null 2>&1; then
+  echo "rollback unexpectedly accepted managed-role attribute drift" >&2
+  exit 1
+fi
+psql_admin -c "
+  alter role symphony_staging_provisioner nologin;
+" >/dev/null
+
+psql_admin -c "
+  grant create on schema symphony_staging to service_role;
+" >/dev/null
+if psql_admin -f "$migrations_dir/20260724010000_aro_169_node_enrollment.down.sql" \
+  >/dev/null 2>&1; then
+  echo "rollback unexpectedly accepted schema ACL drift" >&2
+  exit 1
+fi
+psql_admin -c "
+  revoke create on schema symphony_staging from service_role;
+" >/dev/null
+
+psql_admin -c "
+  alter table symphony_staging.nodes force row level security;
+" >/dev/null
+if psql_admin -f "$migrations_dir/20260724010000_aro_169_node_enrollment.down.sql" \
+  >/dev/null 2>&1; then
+  echo "rollback unexpectedly accepted FORCE RLS drift" >&2
+  exit 1
+fi
+psql_admin -c "
+  alter table symphony_staging.nodes no force row level security;
 " >/dev/null
 
 psql_admin -c "

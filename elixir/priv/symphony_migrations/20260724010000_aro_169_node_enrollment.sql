@@ -117,6 +117,47 @@ begin
   end if;
 
   if exists (
+    select 1
+    from pg_class relation
+    join pg_namespace namespace on namespace.oid = relation.relnamespace
+    where namespace.nspname = 'symphony_staging'
+      and relation.relname in (
+        'contract_versions',
+        'nodes',
+        'node_bindings',
+        'routing_assignments',
+        'foundation_audit_events',
+        'foundation_audit_events_audit_id_seq'
+      )
+      and (
+        pg_get_userbyid(relation.relowner) <> 'postgres'
+        or (
+          relation.relkind <> 'S'
+          and (
+            not relation.relrowsecurity
+            or relation.relforcerowsecurity
+          )
+        )
+      )
+  )
+  or exists (
+    select 1
+    from pg_proc procedure
+    join pg_namespace namespace on namespace.oid = procedure.pronamespace
+    where namespace.nspname = 'symphony_staging'
+      and procedure.proname in (
+        'enforce_node_transition',
+        'enforce_node_binding_transition',
+        'enforce_routing_revision'
+      )
+      and pg_get_userbyid(procedure.proowner) <> 'postgres'
+  ) then
+    raise exception using
+      errcode = '55000',
+      message = 'ARO-169 unsafe ARO-168 ownership or row-security state';
+  end if;
+
+  if exists (
     with expected(object_name, grantee_name, privilege_type) as (
       values
         ('contract_versions', 'symphony_staging_runtime', 'SELECT'),
@@ -169,6 +210,220 @@ begin
     raise exception using
       errcode = '55000',
       message = 'ARO-169 unsafe ARO-168 direct object ACL state';
+  end if;
+
+  if exists (
+    with expected(table_name, column_name, grantee_name, privilege_type) as (
+      values
+        ('nodes', 'node_id', 'symphony_staging_runtime', 'SELECT'),
+        ('nodes', 'display_alias', 'symphony_staging_runtime', 'SELECT'),
+        ('nodes', 'status', 'symphony_staging_runtime', 'SELECT'),
+        ('nodes', 'credential_version', 'symphony_staging_runtime', 'SELECT'),
+        ('nodes', 'created_at', 'symphony_staging_runtime', 'SELECT'),
+        ('nodes', 'updated_at', 'symphony_staging_runtime', 'SELECT'),
+        ('nodes', 'rotated_at', 'symphony_staging_runtime', 'SELECT'),
+        ('nodes', 'revoked_at', 'symphony_staging_runtime', 'SELECT'),
+        ('nodes', 'retired_at', 'symphony_staging_runtime', 'SELECT'),
+        ('node_bindings', 'binding_id', 'symphony_staging_runtime', 'SELECT'),
+        ('node_bindings', 'node_id', 'symphony_staging_runtime', 'SELECT'),
+        ('node_bindings', 'environment', 'symphony_staging_runtime', 'SELECT'),
+        ('node_bindings', 'status', 'symphony_staging_runtime', 'SELECT'),
+        ('node_bindings', 'credential_version', 'symphony_staging_runtime', 'SELECT'),
+        ('node_bindings', 'created_at', 'symphony_staging_runtime', 'SELECT'),
+        ('node_bindings', 'activated_at', 'symphony_staging_runtime', 'SELECT'),
+        ('node_bindings', 'rotated_at', 'symphony_staging_runtime', 'SELECT'),
+        ('node_bindings', 'revoked_at', 'symphony_staging_runtime', 'SELECT'),
+        ('node_bindings', 'retired_at', 'symphony_staging_runtime', 'SELECT'),
+        ('foundation_audit_events', 'event_type', 'symphony_staging_runtime', 'INSERT'),
+        ('foundation_audit_events', 'node_id', 'symphony_staging_runtime', 'INSERT'),
+        ('foundation_audit_events', 'binding_id', 'symphony_staging_runtime', 'INSERT'),
+        ('foundation_audit_events', 'issue_id', 'symphony_staging_runtime', 'INSERT'),
+        ('foundation_audit_events', 'routing_revision', 'symphony_staging_runtime', 'INSERT'),
+        ('foundation_audit_events', 'credential_version', 'symphony_staging_runtime', 'INSERT'),
+        ('foundation_audit_events', 'result', 'symphony_staging_runtime', 'INSERT'),
+        ('foundation_audit_events', 'reason_code', 'symphony_staging_runtime', 'INSERT'),
+        ('foundation_audit_events', 'details', 'symphony_staging_runtime', 'INSERT')
+    ),
+    actual as (
+      select
+        relation.relname::text,
+        attribute.attname::text,
+        grantee.rolname::text,
+        acl.privilege_type::text
+      from pg_attribute attribute
+      join pg_class relation on relation.oid = attribute.attrelid
+      join pg_namespace namespace on namespace.oid = relation.relnamespace
+      cross join lateral aclexplode(attribute.attacl) acl
+      join pg_roles grantee on grantee.oid = acl.grantee
+      where namespace.nspname = 'symphony_staging'
+        and relation.relname in (
+          'contract_versions',
+          'nodes',
+          'node_bindings',
+          'routing_assignments',
+          'foundation_audit_events'
+        )
+        and attribute.attnum > 0
+        and not attribute.attisdropped
+        and grantee.rolname in (
+          'symphony_staging_runtime',
+          'symphony_staging_provisioner'
+        )
+    )
+    (select * from expected except select * from actual)
+    union all
+    (select * from actual except select * from expected)
+  ) then
+    raise exception using
+      errcode = '55000',
+      message = 'ARO-169 unsafe ARO-168 direct column ACL state';
+  end if;
+
+  if exists (
+    select 1
+    from pg_class relation
+    join pg_namespace namespace on namespace.oid = relation.relnamespace
+    cross join lateral aclexplode(coalesce(
+      relation.relacl,
+      acldefault(
+        case when relation.relkind = 'S' then 'S'::"char" else 'r'::"char" end,
+        relation.relowner
+      )
+    )) acl
+    left join pg_roles grantee on grantee.oid = acl.grantee
+    where namespace.nspname = 'symphony_staging'
+      and relation.relname in (
+        'contract_versions',
+        'nodes',
+        'node_bindings',
+        'routing_assignments',
+        'foundation_audit_events',
+        'foundation_audit_events_audit_id_seq'
+      )
+      and (
+        acl.is_grantable and acl.grantee <> relation.relowner
+        or coalesce(grantee.rolname, 'PUBLIC') not in (
+          'postgres',
+          'symphony_staging_runtime',
+          'symphony_staging_provisioner'
+        )
+      )
+  )
+  or exists (
+    select 1
+    from pg_attribute attribute
+    join pg_class relation on relation.oid = attribute.attrelid
+    join pg_namespace namespace on namespace.oid = relation.relnamespace
+    cross join lateral aclexplode(attribute.attacl) acl
+    left join pg_roles grantee on grantee.oid = acl.grantee
+    where namespace.nspname = 'symphony_staging'
+      and relation.relname in (
+        'contract_versions',
+        'nodes',
+        'node_bindings',
+        'routing_assignments',
+        'foundation_audit_events'
+      )
+      and attribute.attnum > 0
+      and not attribute.attisdropped
+      and (
+        acl.is_grantable
+        or coalesce(grantee.rolname, 'PUBLIC') not in (
+          'symphony_staging_runtime',
+          'symphony_staging_provisioner'
+        )
+      )
+  )
+  or exists (
+    select 1
+    from pg_default_acl default_acl
+    left join pg_namespace namespace
+      on namespace.oid = default_acl.defaclnamespace
+    cross join lateral aclexplode(default_acl.defaclacl) acl
+    left join pg_roles grantee on grantee.oid = acl.grantee
+    where (
+        default_acl.defaclnamespace = 0
+        or namespace.nspname in ('symphony_staging', 'symphony_production')
+      )
+      and coalesce(grantee.rolname, 'PUBLIC') in (
+        'PUBLIC',
+        'anon',
+        'authenticated',
+        'service_role',
+        'symphony_staging_runtime',
+        'symphony_staging_provisioner'
+      )
+  ) then
+    raise exception using
+      errcode = '55000',
+      message = 'ARO-169 unsafe ARO-168 ACL or default-ACL state';
+  end if;
+
+  if exists (
+    select 1
+    from pg_proc procedure
+    join pg_namespace namespace on namespace.oid = procedure.pronamespace
+    cross join lateral aclexplode(coalesce(
+      procedure.proacl,
+      acldefault('f', procedure.proowner)
+    )) acl
+    where namespace.nspname = 'symphony_staging'
+      and procedure.proname in (
+        'enforce_node_transition',
+        'enforce_node_binding_transition',
+        'enforce_routing_revision'
+      )
+      and (
+        acl.grantee <> procedure.proowner
+        or acl.is_grantable and acl.grantee <> procedure.proowner
+      )
+  )
+  or exists (
+    select 1
+    from pg_namespace namespace
+    cross join lateral aclexplode(coalesce(
+      namespace.nspacl,
+      acldefault('n', namespace.nspowner)
+    )) acl
+    left join pg_roles grantee on grantee.oid = acl.grantee
+    where namespace.nspname in ('symphony_staging', 'symphony_production')
+      and (
+        acl.is_grantable and acl.grantee <> namespace.nspowner
+        or coalesce(grantee.rolname, 'PUBLIC') in (
+          'PUBLIC',
+          'anon',
+          'authenticated',
+          'service_role'
+        )
+        or (
+          namespace.nspname = 'symphony_production'
+          and coalesce(grantee.rolname, 'PUBLIC') in (
+            'symphony_staging_runtime',
+            'symphony_staging_provisioner'
+          )
+        )
+      )
+  ) then
+    raise exception using
+      errcode = '55000',
+      message = 'ARO-169 unsafe ARO-168 function or schema ACL state';
+  end if;
+
+  if exists (
+    select 1
+    from pg_class relation
+    join pg_namespace namespace on namespace.oid = relation.relnamespace
+    where namespace.nspname = 'symphony_production'
+  )
+  or exists (
+    select 1
+    from pg_proc procedure
+    join pg_namespace namespace on namespace.oid = procedure.pronamespace
+    where namespace.nspname = 'symphony_production'
+  ) then
+    raise exception using
+      errcode = '55000',
+      message = 'ARO-169 requires an empty production schema';
   end if;
 
   if exists (
@@ -1336,6 +1591,45 @@ from (
       on membership.member = ancestor_roles.role_oid
   )
   select
+    'role:' || role_state.rolname || ':' ||
+    role_state.rolsuper::text || ':' ||
+    role_state.rolinherit::text || ':' ||
+    role_state.rolcreaterole::text || ':' ||
+    role_state.rolcreatedb::text || ':' ||
+    role_state.rolcanlogin::text || ':' ||
+    role_state.rolreplication::text || ':' ||
+    role_state.rolconnlimit::text || ':' ||
+    coalesce(role_state.rolvaliduntil::text, '') || ':' ||
+    role_state.rolbypassrls::text || ':' ||
+    coalesce(role_state.rolconfig::text, '') as signature
+  from pg_roles role_state
+  where role_state.rolname in (
+    'symphony_staging_runtime',
+    'symphony_staging_provisioner'
+  )
+  union all
+  select
+    'schema:' || namespace.nspname || ':' ||
+    pg_get_userbyid(namespace.nspowner) || ':' ||
+    coalesce(namespace.nspacl::text, '')
+  from pg_namespace namespace
+  where namespace.nspname in ('symphony_staging', 'symphony_production')
+  union all
+  select
+    'default-acl:' || pg_get_userbyid(default_acl.defaclrole) || ':' ||
+    coalesce(namespace.nspname, '') || ':' ||
+    default_acl.defaclobjtype::text || ':' ||
+    default_acl.defaclacl::text
+  from pg_default_acl default_acl
+  left join pg_namespace namespace
+    on namespace.oid = default_acl.defaclnamespace
+  where pg_get_userbyid(default_acl.defaclrole) = 'postgres'
+    and (
+      default_acl.defaclnamespace = 0
+      or namespace.nspname in ('symphony_staging', 'symphony_production')
+    )
+  union all
+  select
     'function:' || procedure.oid::regprocedure::text || ':' ||
     pg_get_userbyid(procedure.proowner) || ':' ||
     coalesce(procedure.proacl::text, '') || ':' ||
@@ -1367,6 +1661,7 @@ from (
     'table:' || relation.relname || ':' ||
     pg_get_userbyid(relation.relowner) || ':' ||
     relation.relrowsecurity::text || ':' ||
+    relation.relforcerowsecurity::text || ':' ||
     coalesce(relation.relacl::text, '')
   from pg_class relation
   join pg_namespace namespace on namespace.oid = relation.relnamespace

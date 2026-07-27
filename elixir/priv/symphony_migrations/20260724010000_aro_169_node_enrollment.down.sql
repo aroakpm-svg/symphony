@@ -78,6 +78,45 @@ begin
         on membership.member = ancestor_roles.role_oid
     )
     select
+      'role:' || role_state.rolname || ':' ||
+      role_state.rolsuper::text || ':' ||
+      role_state.rolinherit::text || ':' ||
+      role_state.rolcreaterole::text || ':' ||
+      role_state.rolcreatedb::text || ':' ||
+      role_state.rolcanlogin::text || ':' ||
+      role_state.rolreplication::text || ':' ||
+      role_state.rolconnlimit::text || ':' ||
+      coalesce(role_state.rolvaliduntil::text, '') || ':' ||
+      role_state.rolbypassrls::text || ':' ||
+      coalesce(role_state.rolconfig::text, '') as signature
+    from pg_roles role_state
+    where role_state.rolname in (
+      'symphony_staging_runtime',
+      'symphony_staging_provisioner'
+    )
+    union all
+    select
+      'schema:' || namespace.nspname || ':' ||
+      pg_get_userbyid(namespace.nspowner) || ':' ||
+      coalesce(namespace.nspacl::text, '')
+    from pg_namespace namespace
+    where namespace.nspname in ('symphony_staging', 'symphony_production')
+    union all
+    select
+      'default-acl:' || pg_get_userbyid(default_acl.defaclrole) || ':' ||
+      coalesce(namespace.nspname, '') || ':' ||
+      default_acl.defaclobjtype::text || ':' ||
+      default_acl.defaclacl::text
+    from pg_default_acl default_acl
+    left join pg_namespace namespace
+      on namespace.oid = default_acl.defaclnamespace
+    where pg_get_userbyid(default_acl.defaclrole) = 'postgres'
+      and (
+        default_acl.defaclnamespace = 0
+        or namespace.nspname in ('symphony_staging', 'symphony_production')
+      )
+    union all
+    select
       'function:' || procedure.oid::regprocedure::text || ':' ||
       pg_get_userbyid(procedure.proowner) || ':' ||
       coalesce(procedure.proacl::text, '') || ':' ||
@@ -109,6 +148,7 @@ begin
       'table:' || relation.relname || ':' ||
       pg_get_userbyid(relation.relowner) || ':' ||
       relation.relrowsecurity::text || ':' ||
+      relation.relforcerowsecurity::text || ':' ||
       coalesce(relation.relacl::text, '')
     from pg_class relation
     join pg_namespace namespace on namespace.oid = relation.relnamespace
