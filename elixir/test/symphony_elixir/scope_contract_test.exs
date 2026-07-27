@@ -433,4 +433,80 @@ defmodule SymphonyElixir.ScopeContractTest do
 
     assert {:error, [{:duplicate_acceptance_criterion, "AC-1"}]} = ScopeContract.parse_pr_body(body)
   end
+
+  test "aggregates malformed bullets and malformed acceptance criteria from one list" do
+    # Mutation caught: returning structural bullet errors before validating usable acceptance-criteria entries.
+    body = """
+    #### Scope Contract
+
+    ##### Work Item
+
+    Add a typed PR scope contract parser.
+
+    ##### Invariants
+
+    - Invalid contracts fail closed.
+
+    ##### Acceptance Criteria
+
+    malformed bullet
+    - Missing a stable identifier.
+
+    ##### Non-Goals
+
+    - Do not change review routing.
+
+    ##### Dependencies
+
+    None
+
+    ##### Follow-Ups
+
+    None
+    """
+
+    assert {:error,
+            [
+              {:malformed_bullet, :acceptance_criteria, "malformed bullet"},
+              {:malformed_acceptance_criterion, "Missing a stable identifier."}
+            ]} = ScopeContract.parse_pr_body(body)
+  end
+
+  test "aggregates malformed bullets and required None policy errors from one list" do
+    # Mutation caught: skipping required None policy validation after a sibling bullet normalization error.
+    body = """
+    #### Scope Contract
+
+    ##### Work Item
+
+    Add a typed PR scope contract parser.
+
+    ##### Invariants
+
+    malformed bullet
+    - None
+
+    ##### Acceptance Criteria
+
+    - AC-1: Parse a complete scope contract.
+
+    ##### Non-Goals
+
+    - Do not change review routing.
+
+    ##### Dependencies
+
+    None
+
+    ##### Follow-Ups
+
+    None
+    """
+
+    assert {:error,
+            [
+              {:malformed_bullet, :invariants, "malformed bullet"},
+              {:none_not_allowed, :invariants}
+            ]} = ScopeContract.parse_pr_body(body)
+  end
 end

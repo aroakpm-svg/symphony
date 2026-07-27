@@ -180,10 +180,9 @@ defmodule SymphonyElixir.ScopeContract do
         {[], [{:empty_section, field}]}
 
       true ->
-        case normalize_bullets(field, values) do
-          {_normalized_values, [_error | _rest] = errors} -> {[], errors}
-          {normalized_values, []} -> validate_normalized_list(field, normalized_values)
-        end
+        {normalized_values, normalization_errors} = normalize_bullets(field, values)
+        {normalized_value, semantic_errors} = validate_normalized_list(field, normalized_values)
+        {normalized_value, normalization_errors ++ semantic_errors}
     end
   end
 
