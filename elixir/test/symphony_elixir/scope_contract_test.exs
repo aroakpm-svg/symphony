@@ -925,4 +925,92 @@ defmodule SymphonyElixir.ScopeContractTest do
     assert hd(invariants) == "invariant 1"
     assert List.last(invariants) == "invariant 40000"
   end
+
+  test "keeps None typed when a continuation follows in required and optional lists" do
+    # Mutation caught: rewriting the None sentinel into ordinary text when an indented continuation follows it.
+    body = """
+    #### Scope Contract
+
+    ##### Work Item
+
+    Preserve typed normalized items.
+
+    ##### Invariants
+
+    - None
+      must remain a sentinel.
+
+    ##### Acceptance Criteria
+
+    - AC-1: Fail closed on invalid sentinel continuations.
+
+    ##### Non-Goals
+
+    - Do not change review routing.
+
+    ##### Dependencies
+
+    - None
+      must remain standalone.
+
+    ##### Follow-Ups
+
+    None
+    """
+
+    assert {:error,
+            [
+              {:malformed_bullet, :invariants, "must remain a sentinel."},
+              {:none_not_allowed, :invariants},
+              {:malformed_bullet, :dependencies, "must remain standalone."},
+              {:none_must_be_explicit, :dependencies}
+            ]} = ScopeContract.parse_pr_body(body)
+  end
+
+  test "does not consume indented Markdown block starts as paragraph continuations" do
+    # Mutation caught: classifying every indented line as wrapped prose regardless of Markdown block structure.
+    body = """
+    #### Scope Contract
+
+    ##### Work Item
+
+    Preserve Markdown list structure.
+
+    ##### Invariants
+
+    - Keep the first invariant.
+      - Nested dash item.
+      * Alternate star item.
+      + Alternate plus item.
+      1. Ordered item.
+      ## ATX heading.
+      > Block quote.
+
+    ##### Acceptance Criteria
+
+    - AC-1: Reject nested Markdown blocks.
+
+    ##### Non-Goals
+
+    - Do not change review routing.
+
+    ##### Dependencies
+
+    None
+
+    ##### Follow-Ups
+
+    None
+    """
+
+    assert {:error,
+            [
+              {:malformed_bullet, :invariants, "- Nested dash item."},
+              {:malformed_bullet, :invariants, "* Alternate star item."},
+              {:malformed_bullet, :invariants, "+ Alternate plus item."},
+              {:malformed_bullet, :invariants, "1. Ordered item."},
+              {:malformed_bullet, :invariants, "## ATX heading."},
+              {:malformed_bullet, :invariants, "> Block quote."}
+            ]} = ScopeContract.parse_pr_body(body)
+  end
 end

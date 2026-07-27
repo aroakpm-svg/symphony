@@ -793,6 +793,74 @@ defmodule Mix.Tasks.PrBody.CheckTest do
     end)
   end
 
+  test "fails closed for None continuations and indented Markdown blocks through the shared parser" do
+    # Mutation caught: flattening typed None or nested Markdown structures before Mix formats parser errors.
+    in_temp_repo(fn ->
+      write_template!(@template)
+
+      body = """
+      #### Context
+
+      Context text.
+
+      #### TL;DR
+
+      Short summary.
+
+      #### Summary
+
+      - First change.
+
+      #### Alternatives
+
+      - Alternative considered.
+
+      #### Test Plan
+
+      - [x] Ran targeted checks.
+
+      #### Scope Contract
+
+      ##### Work Item
+
+      Enforce typed PR scope contracts.
+
+      ##### Invariants
+
+      - None
+        must remain a sentinel.
+
+      ##### Acceptance Criteria
+
+      - AC-1: Invalid scope contracts fail closed.
+
+      ##### Non-Goals
+
+      - Do not change review routing.
+        * Nested Markdown block.
+
+      ##### Dependencies
+
+      - None
+        must remain standalone.
+
+      ##### Follow-Ups
+
+      None
+      """
+
+      File.write!("body.md", body)
+
+      error_output = capture_invalid_body_output()
+
+      assert error_output =~ "Scope Contract Invariants has malformed bullet: must remain a sentinel."
+      assert error_output =~ "Scope Contract Invariants cannot be None"
+      assert error_output =~ "Scope Contract Non-Goals has malformed bullet: * Nested Markdown block."
+      assert error_output =~ "Scope Contract Dependencies has malformed bullet: must remain standalone."
+      assert error_output =~ "Scope Contract Dependencies must use None by itself"
+    end)
+  end
+
   defp capture_invalid_body_output do
     capture_io(:stderr, fn ->
       assert_raise Mix.Error, ~r/PR body format invalid/, fn ->

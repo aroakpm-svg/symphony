@@ -17,6 +17,14 @@ defmodule SymphonyElixir.ScopeContract do
   @scope_contract_heading "#### Scope Contract"
   @opening_fence ~r/^( {0,3})(`{3,}|~{3,})(.*)$/
   @closing_fence ~r/^( {0,3})(`{3,}|~{3,})[ \t]*$/
+  @markdown_block_starts [
+    ~r/^[*+-](?:[ \t]+|$)/,
+    ~r/^\d{1,9}[.)](?:[ \t]+|$)/,
+    ~r/^[#]{1,6}(?:[ \t]+|$)/,
+    ~r/^>/,
+    ~r/^(?:`{3,}|~{3,})/,
+    ~r/^(?:(?:\*[ \t]*){3,}|(?:-[ \t]*){3,}|(?:_[ \t]*){3,})$/
+  ]
 
   @enforce_keys [:work_item, :invariants, :acceptance_criteria, :non_goals, :dependencies, :follow_ups]
   defstruct [:work_item, :invariants, :acceptance_criteria, :non_goals, :dependencies, :follow_ups]
@@ -47,6 +55,8 @@ defmodule SymphonyElixir.ScopeContract do
           dependencies: [String.t()],
           follow_ups: [String.t()]
         }
+
+  @typep normalized_item :: {:value, String.t()} | {:none, :standalone | :continued}
 
   @spec parse_pr_body(String.t()) :: {:ok, t()} | {:error, [error()]}
   def parse_pr_body(pr_body) do
@@ -212,6 +222,7 @@ defmodule SymphonyElixir.ScopeContract do
     end
   end
 
+  @spec normalize_bullets(field(), [String.t()]) :: {[normalized_item()], [error()]}
   defp normalize_bullets(field, lines) do
     {reversed_values, reversed_errors} = Enum.reduce(lines, {[], []}, &normalize_bullet(field, &1, &2))
 
@@ -219,21 +230,29 @@ defmodule SymphonyElixir.ScopeContract do
   end
 
   defp normalize_bullet(field, line, state) do
-    normalize_bullet_value(field, line, String.trim(line), state)
+    value = String.trim(line)
+
+    if continuation_line?(line) and markdown_block_start?(value) do
+      malformed_bullet(field, value, state)
+    else
+      normalize_bullet_value(field, line, value, state)
+    end
   end
 
-  defp normalize_bullet_value(_field, _line, "None", {values, errors}), do: {["None" | values], errors}
-
-  defp normalize_bullet_value(field, _line, "-", {values, errors}) do
-    {values, [{:blank_bullet, field} | errors]}
+  defp normalize_bullet_value(_field, _line, "None", {items, errors}) do
+    {[{:none, :standalone} | items], errors}
   end
 
-  defp normalize_bullet_value(_field, _line, <<"- ", value::binary>>, {values, errors}) do
-    {[String.trim(value) | values], errors}
+  defp normalize_bullet_value(field, _line, "-", {items, errors}) do
+    {items, [{:blank_bullet, field} | errors]}
   end
 
-  defp normalize_bullet_value(field, _line, <<"-", _rest::binary>> = value, {values, errors}) do
-    {values, [{:malformed_bullet, field, value} | errors]}
+  defp normalize_bullet_value(_field, _line, <<"- ", value::binary>>, {items, errors}) do
+    {[normalized_item(String.trim(value)) | items], errors}
+  end
+
+  defp normalize_bullet_value(field, _line, <<"-", _rest::binary>> = value, {items, errors}) do
+    {items, [{:malformed_bullet, field, value} | errors]}
   end
 
   defp normalize_bullet_value(field, line, value, state) do
@@ -244,8 +263,12 @@ defmodule SymphonyElixir.ScopeContract do
     end
   end
 
-  defp append_continuation(_field, value, {[previous | values], errors}) do
-    {[previous <> " " <> value | values], errors}
+  defp append_continuation(_field, value, {[{:value, previous} | items], errors}) do
+    {[{:value, previous <> " " <> value} | items], errors}
+  end
+
+  defp append_continuation(field, value, {[{:none, _state} | items], errors}) do
+    {[{:none, :continued} | items], [{:malformed_bullet, field, value} | errors]}
   end
 
   defp append_continuation(field, value, {[], errors}) do
@@ -256,26 +279,32 @@ defmodule SymphonyElixir.ScopeContract do
     {values, [{:malformed_bullet, field, value} | errors]}
   end
 
-  defp validate_normalized_list(field, ["None"]) when field in @optional_none_fields, do: {[], []}
+  defp validate_normalized_list(field, [{:none, :standalone}]) when field in @optional_none_fields, do: {[], []}
 
-  defp validate_normalized_list(:acceptance_criteria, values) do
-    criterion_values = Enum.reject(values, &(&1 == "None"))
+  defp validate_normalized_list(:acceptance_criteria, items) do
+    criterion_values = normalized_values(items)
     criterion_errors = acceptance_criterion_errors(criterion_values)
 
-    if "None" in values do
+    if none_item?(items) do
       {[], [{:none_not_allowed, :acceptance_criteria} | criterion_errors]}
     else
-      {values, criterion_errors}
+      {criterion_values, criterion_errors}
     end
   end
 
-  defp validate_normalized_list(field, values) do
-    if "None" in values do
+  defp validate_normalized_list(field, items) do
+    if none_item?(items) do
       {[], [{none_error(field), field}]}
     else
-      {values, []}
+      {normalized_values(items), []}
     end
   end
+
+  defp normalized_item("None"), do: {:none, :standalone}
+  defp normalized_item(value), do: {:value, value}
+
+  defp normalized_values(items), do: for({:value, value} <- items, do: value)
+  defp none_item?(items), do: Enum.any?(items, &match?({:none, _state}, &1))
 
   defp acceptance_criterion_errors(values) do
     {_identifiers, reversed_errors} =
@@ -346,6 +375,7 @@ defmodule SymphonyElixir.ScopeContract do
   defp scope_contract_heading?({_line, true}), do: false
 
   defp continuation_line?(line), do: Regex.match?(~r/^(?: {2,}| *\t)/, line)
+  defp markdown_block_start?(value), do: Enum.any?(@markdown_block_starts, &Regex.match?(&1, value))
 
   defp acceptance_criterion_identifier(value) do
     case Regex.run(~r/^(AC-[1-9][0-9]*):\s+\S/, value) do
