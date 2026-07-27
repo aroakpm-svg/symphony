@@ -40,8 +40,7 @@ begin
        or managed_state.rolinherit
        or managed_state.rolreplication
        or managed_state.rolbypassrls
-       or managed_state.rolconfig is distinct from
-         array['search_path=pg_catalog, symphony_staging']::text[] then
+       or managed_state.rolconfig is not null then
       raise exception using
         errcode = '55000',
         message = format('ARO-169 unsafe ARO-168 role state for %s', managed_role);
