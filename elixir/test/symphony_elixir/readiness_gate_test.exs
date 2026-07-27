@@ -393,6 +393,76 @@ defmodule SymphonyElixir.ReadinessGateTest do
     assert git!(mismatch_fixture.workspace, ["branch", "--show-current"]) == original_branch
   end
 
+  test "blocks a fresh workspace when its local issue branch exists but is not checked out" do
+    fixture = git_fixture!("main")
+    on_exit(fn -> cleanup_fixture(fixture) end)
+    issue = issue("ARO-106-FRESH-LOCAL", "codex/aro-106-fresh-local")
+    git!(fixture.workspace, ["branch", issue.branch_name])
+
+    assert {:error,
+            %Failure{
+              code: :continuation_branch_not_checked_out,
+              detail: detail
+            }} = ReadinessGate.check(fixture.workspace, issue, workspace_created_now: true)
+
+    assert detail =~ issue.branch_name
+    assert git!(fixture.workspace, ["branch", "--show-current"]) == "main"
+  end
+
+  test "propagates an inspect command failure after live checkout verification" do
+    fixture = git_fixture!("main")
+    on_exit(fn -> cleanup_fixture(fixture) end)
+    issue = issue("ARO-106-INSPECT", "codex/aro-106-inspect")
+    refs_args = ["for-each-ref", "--format=%(refname)", "refs/heads/#{issue.branch_name}"]
+
+    runner = fn
+      ^refs_args -> {:error, {:workspace_hook_timeout, "ignored", 25}}
+      args -> Workspace.run_git_command(fixture.workspace, args)
+    end
+
+    assert {:error,
+            %Failure{
+              code: :command_timeout,
+              command: "git for-each-ref --format=%(refname) refs/heads/" <> _branch
+            }} =
+             ReadinessGate.check(fixture.workspace, issue,
+               workspace_created_now: true,
+               command_runner: runner
+             )
+  end
+
+  test "propagates a resolver failure while rereading a continuation checkout" do
+    fixture = git_fixture!("main")
+    on_exit(fn -> cleanup_fixture(fixture) end)
+    issue = issue("ARO-106-REREAD", "codex/aro-106-reread")
+    git!(fixture.workspace, ["switch", "-c", issue.branch_name])
+    branch_reads = :atomics.new(1, [])
+
+    runner = fn
+      ["branch", "--show-current"] = args ->
+        if :atomics.add_get(branch_reads, 1, 1) == 2 do
+          {:error, {:workspace_hook_timeout, "ignored", 25}}
+        else
+          Workspace.run_git_command(fixture.workspace, args)
+        end
+
+      args ->
+        Workspace.run_git_command(fixture.workspace, args)
+    end
+
+    assert {:error,
+            %Failure{
+              code: :command_timeout,
+              command: "git branch --show-current"
+            }} =
+             ReadinessGate.check(fixture.workspace, issue,
+               workspace_created_now: false,
+               command_runner: runner
+             )
+
+    assert git!(fixture.workspace, ["branch", "--show-current"]) == issue.branch_name
+  end
+
   test "blocks dirty independent workspaces rather than hiding changes" do
     fixture = git_fixture!("main")
     on_exit(fn -> cleanup_fixture(fixture) end)

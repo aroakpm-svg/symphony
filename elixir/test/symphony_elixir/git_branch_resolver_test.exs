@@ -94,6 +94,29 @@ defmodule SymphonyElixir.GitBranchResolverTest do
     refute File.exists?(side_effect)
   end
 
+  test "public branch validation rejects mismatched success evidence and preserves timeout failures" do
+    assert {:error,
+            %Failure{
+              code: :branch_ref_invalid,
+              detail: mismatched_detail
+            }} =
+             GitBranchResolver.validate_branch("main", fn
+               ["check-ref-format", "--branch", "main"] -> {:ok, "other\n"}
+             end)
+
+    assert mismatched_detail =~ "unexpected validation output"
+
+    assert {:error,
+            %Failure{
+              code: :command_timeout,
+              command: "git check-ref-format --branch main"
+            }} =
+             GitBranchResolver.validate_branch("main", fn
+               ["check-ref-format", "--branch", "main"] ->
+                 {:error, {:workspace_hook_timeout, "ignored", 25}}
+             end)
+  end
+
   test "explicit branch validation uses the worker command seam and preserves literal at" do
     test_pid = self()
 
