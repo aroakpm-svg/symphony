@@ -5,6 +5,11 @@ select pg_catalog.pg_advisory_xact_lock(
 );
 
 do $$
+declare
+  managed_role name;
+  managed_state record;
+  expected_membership_count integer :=
+    case when current_setting('is_superuser') = 'on' then 1 else 2 end;
 begin
   if not exists (
     select 1
@@ -16,6 +21,196 @@ begin
     raise exception using
       errcode = '55000',
       message = 'ARO-169 requires the reconciled ARO-168 contract v2';
+  end if;
+
+  foreach managed_role in array array[
+    'symphony_staging_runtime'::name,
+    'symphony_staging_provisioner'::name
+  ]
+  loop
+    select *
+    into strict managed_state
+    from pg_roles
+    where rolname = managed_role;
+
+    if managed_state.rolcanlogin
+       or managed_state.rolsuper
+       or managed_state.rolcreatedb
+       or managed_state.rolcreaterole
+       or managed_state.rolinherit
+       or managed_state.rolreplication
+       or managed_state.rolbypassrls
+       or managed_state.rolconfig is distinct from
+         array['search_path=pg_catalog, symphony_staging']::text[] then
+      raise exception using
+        errcode = '55000',
+        message = format('ARO-169 unsafe ARO-168 role state for %s', managed_role);
+    end if;
+
+    if (
+      select count(*)
+      from pg_auth_members membership
+      join pg_roles granted_role on granted_role.oid = membership.roleid
+      where granted_role.rolname = managed_role
+    ) <> expected_membership_count
+    or (
+      select count(*)
+      from pg_auth_members membership
+      join pg_roles granted_role on granted_role.oid = membership.roleid
+      join pg_roles member_role on member_role.oid = membership.member
+      join pg_roles grantor_role on grantor_role.oid = membership.grantor
+      where granted_role.rolname = managed_role
+        and member_role.rolname = 'postgres'
+        and (
+          (
+            grantor_role.rolname = 'postgres'
+            and not membership.admin_option
+            and membership.inherit_option
+            and membership.set_option
+          )
+          or (
+            current_setting('is_superuser') <> 'on'
+            and grantor_role.rolname = 'supabase_admin'
+            and membership.admin_option
+            and not membership.inherit_option
+            and not membership.set_option
+          )
+        )
+    ) <> expected_membership_count
+    or exists (
+      select 1
+      from pg_auth_members membership
+      where membership.member = managed_state.oid
+         or membership.grantor = managed_state.oid
+    ) then
+      raise exception using
+        errcode = '55000',
+        message = format(
+          'ARO-169 unsafe ARO-168 membership graph for %s',
+          managed_role
+        );
+    end if;
+
+    if not has_schema_privilege(managed_role, 'symphony_staging', 'USAGE')
+       or has_schema_privilege(managed_role, 'symphony_staging', 'CREATE')
+       or has_schema_privilege(managed_role, 'symphony_production', 'USAGE')
+       or has_schema_privilege(managed_role, 'symphony_production', 'CREATE') then
+      raise exception using
+        errcode = '55000',
+        message = format(
+          'ARO-169 unsafe ARO-168 schema privileges for %s',
+          managed_role
+        );
+    end if;
+  end loop;
+
+  if exists (
+    select 1
+    from (values ('anon'), ('authenticated'), ('service_role')) actor(role_name)
+    where has_schema_privilege(actor.role_name, 'symphony_staging', 'USAGE')
+       or has_schema_privilege(actor.role_name, 'symphony_staging', 'CREATE')
+       or has_schema_privilege(actor.role_name, 'symphony_production', 'USAGE')
+       or has_schema_privilege(actor.role_name, 'symphony_production', 'CREATE')
+  ) then
+    raise exception using
+      errcode = '55000',
+      message = 'ARO-169 unsafe ARO-168 public role environment access';
+  end if;
+
+  if exists (
+    with expected(object_name, grantee_name, privilege_type) as (
+      values
+        ('contract_versions', 'symphony_staging_runtime', 'SELECT'),
+        ('routing_assignments', 'symphony_staging_runtime', 'SELECT'),
+        ('foundation_audit_events_audit_id_seq', 'symphony_staging_runtime', 'SELECT'),
+        ('foundation_audit_events_audit_id_seq', 'symphony_staging_runtime', 'USAGE'),
+        ('contract_versions', 'symphony_staging_provisioner', 'SELECT'),
+        ('contract_versions', 'symphony_staging_provisioner', 'INSERT'),
+        ('contract_versions', 'symphony_staging_provisioner', 'UPDATE'),
+        ('nodes', 'symphony_staging_provisioner', 'SELECT'),
+        ('nodes', 'symphony_staging_provisioner', 'INSERT'),
+        ('nodes', 'symphony_staging_provisioner', 'UPDATE'),
+        ('node_bindings', 'symphony_staging_provisioner', 'SELECT'),
+        ('node_bindings', 'symphony_staging_provisioner', 'INSERT'),
+        ('node_bindings', 'symphony_staging_provisioner', 'UPDATE'),
+        ('routing_assignments', 'symphony_staging_provisioner', 'SELECT'),
+        ('routing_assignments', 'symphony_staging_provisioner', 'INSERT'),
+        ('routing_assignments', 'symphony_staging_provisioner', 'UPDATE'),
+        ('foundation_audit_events', 'symphony_staging_provisioner', 'INSERT'),
+        ('foundation_audit_events_audit_id_seq', 'symphony_staging_provisioner', 'SELECT'),
+        ('foundation_audit_events_audit_id_seq', 'symphony_staging_provisioner', 'USAGE')
+    ),
+    actual as (
+      select
+        relation.relname::text,
+        grantee.rolname::text,
+        acl.privilege_type::text
+      from pg_class relation
+      join pg_namespace namespace on namespace.oid = relation.relnamespace
+      cross join lateral aclexplode(relation.relacl) acl
+      join pg_roles grantee on grantee.oid = acl.grantee
+      where namespace.nspname = 'symphony_staging'
+        and relation.relname in (
+          'contract_versions',
+          'nodes',
+          'node_bindings',
+          'routing_assignments',
+          'foundation_audit_events',
+          'foundation_audit_events_audit_id_seq'
+        )
+        and grantee.rolname in (
+          'symphony_staging_runtime',
+          'symphony_staging_provisioner'
+        )
+    )
+    (select * from expected except select * from actual)
+    union all
+    (select * from actual except select * from expected)
+  ) then
+    raise exception using
+      errcode = '55000',
+      message = 'ARO-169 unsafe ARO-168 direct object ACL state';
+  end if;
+
+  if exists (
+    with expected(tablename, policyname, permissive, roles, cmd, qual, with_check) as (
+      values
+        ('contract_versions', 'runtime_read_contract_versions',
+         'PERMISSIVE', array['symphony_staging_runtime']::name[], 'SELECT',
+         '(contract_name !~~ ''aro-163-created-role:%''::text)', null),
+        ('nodes', 'runtime_read_nodes',
+         'PERMISSIVE', array['symphony_staging_runtime']::name[], 'SELECT', 'true', null),
+        ('node_bindings', 'runtime_read_node_bindings',
+         'PERMISSIVE', array['symphony_staging_runtime']::name[], 'SELECT', 'true', null),
+        ('routing_assignments', 'runtime_read_routing_assignments',
+         'PERMISSIVE', array['symphony_staging_runtime']::name[], 'SELECT', 'true', null),
+        ('foundation_audit_events', 'runtime_insert_audit_events',
+         'PERMISSIVE', array['symphony_staging_runtime']::name[], 'INSERT', null, 'true'),
+        ('contract_versions', 'provisioner_manage_contract_versions',
+         'PERMISSIVE', array['symphony_staging_provisioner']::name[], 'ALL',
+         '(contract_name !~~ ''aro-163-created-role:%''::text)',
+         '(contract_name !~~ ''aro-163-created-role:%''::text)'),
+        ('nodes', 'provisioner_manage_nodes',
+         'PERMISSIVE', array['symphony_staging_provisioner']::name[], 'ALL', 'true', 'true'),
+        ('node_bindings', 'provisioner_manage_node_bindings',
+         'PERMISSIVE', array['symphony_staging_provisioner']::name[], 'ALL', 'true', 'true'),
+        ('routing_assignments', 'provisioner_manage_routing_assignments',
+         'PERMISSIVE', array['symphony_staging_provisioner']::name[], 'ALL', 'true', 'true'),
+        ('foundation_audit_events', 'provisioner_insert_audit_events',
+         'PERMISSIVE', array['symphony_staging_provisioner']::name[], 'INSERT', null, 'true')
+    ),
+    actual as (
+      select tablename, policyname, permissive, roles, cmd, qual, with_check
+      from pg_policies
+      where schemaname = 'symphony_staging'
+    )
+    (select * from expected except select * from actual)
+    union all
+    (select * from actual except select * from expected)
+  ) then
+    raise exception using
+      errcode = '55000',
+      message = 'ARO-169 unsafe ARO-168 RLS policy state';
   end if;
 end
 $$;
@@ -1115,6 +1310,32 @@ insert into symphony_staging.node_enrollment_contract_manifest (
 )
 select md5(string_agg(signature, E'\n' order by signature))
 from (
+  with recursive descendant_roles(role_oid) as (
+    select oid
+    from pg_roles
+    where rolname in (
+      'symphony_staging_runtime',
+      'symphony_staging_provisioner'
+    )
+    union
+    select membership.member
+    from descendant_roles
+    join pg_auth_members membership
+      on membership.roleid = descendant_roles.role_oid
+  ),
+  ancestor_roles(role_oid) as (
+    select oid
+    from pg_roles
+    where rolname in (
+      'symphony_staging_runtime',
+      'symphony_staging_provisioner'
+    )
+    union
+    select membership.roleid
+    from ancestor_roles
+    join pg_auth_members membership
+      on membership.member = ancestor_roles.role_oid
+  )
   select
     'function:' || procedure.oid::regprocedure::text || ':' ||
     pg_get_userbyid(procedure.proowner) || ':' ||
@@ -1131,6 +1352,17 @@ from (
       'retire_node_instance',
       'authenticate_node'
     )
+  union all
+  select
+    'membership:' || granted_role.rolname || ':' || member_role.rolname || ':' ||
+    grantor_role.rolname || ':' || membership.admin_option::text || ':' ||
+    membership.inherit_option::text || ':' || membership.set_option::text
+  from pg_auth_members membership
+  join pg_roles granted_role on granted_role.oid = membership.roleid
+  join pg_roles member_role on member_role.oid = membership.member
+  join pg_roles grantor_role on grantor_role.oid = membership.grantor
+  where membership.roleid in (select role_oid from descendant_roles)
+     or membership.member in (select role_oid from ancestor_roles)
   union all
   select
     'table:' || relation.relname || ':' ||
@@ -1154,6 +1386,21 @@ from (
       'foundation_audit_events',
       'foundation_audit_events_audit_id_seq'
     )
+  union all
+  select
+    'sequence:' || relation.relname || ':' ||
+    sequence_state.seqtypid::regtype::text || ':' ||
+    sequence_state.seqstart::text || ':' ||
+    sequence_state.seqincrement::text || ':' ||
+    sequence_state.seqmin::text || ':' ||
+    sequence_state.seqmax::text || ':' ||
+    sequence_state.seqcache::text || ':' ||
+    sequence_state.seqcycle::text
+  from pg_sequence sequence_state
+  join pg_class relation on relation.oid = sequence_state.seqrelid
+  join pg_namespace namespace on namespace.oid = relation.relnamespace
+  where namespace.nspname = 'symphony_staging'
+    and relation.relname = 'foundation_audit_events_audit_id_seq'
   union all
   select
     'index:' || relation.relname || ':' || index_relation.relname || ':' ||

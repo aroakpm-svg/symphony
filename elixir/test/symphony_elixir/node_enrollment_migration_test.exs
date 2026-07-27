@@ -16,10 +16,16 @@ defmodule SymphonyElixir.NodeEnrollmentMigrationTest do
 
   test "requires contract v2 and publishes contract v3" do
     sql = File.read!(@migration)
+    lifecycle_script = File.read!(@lifecycle_script)
 
     assert sql =~ "contract_version = 2"
     assert sql =~ "ARO-169 requires the reconciled ARO-168 contract v2"
+    assert sql =~ "unsafe ARO-168 membership graph"
+    assert sql =~ "unsafe ARO-168 direct object ACL state"
+    assert sql =~ "unsafe ARO-168 RLS policy state"
     assert sql =~ "'node-identity-routing-foundation',\n  3"
+    assert lifecycle_script =~
+             "v3 apply unexpectedly accepted drifted v2 authorization state"
   end
 
   test "uses independent login credentials and stores only a verifier" do
@@ -159,10 +165,16 @@ defmodule SymphonyElixir.NodeEnrollmentMigrationTest do
     assert lifecycle_script =~ "rollback unexpectedly accepted ACL drift"
     assert lifecycle_script =~ "rollback unexpectedly accepted column ACL drift"
     assert lifecycle_script =~ "rollback unexpectedly accepted trigger drift"
+    assert lifecycle_script =~ "rollback unexpectedly accepted membership drift"
+    assert lifecycle_script =~ "rollback unexpectedly accepted sequence drift"
     assert File.read!(@migration) =~ "'index:'"
     assert File.read!(@rollback) =~ "'index:'"
     assert File.read!(@migration) =~ "'trigger:'"
     assert File.read!(@rollback) =~ "'trigger:'"
+    assert File.read!(@migration) =~ "'membership:'"
+    assert File.read!(@rollback) =~ "'membership:'"
+    assert File.read!(@migration) =~ "sequence_state.seqincrement"
+    assert File.read!(@rollback) =~ "sequence_state.seqincrement"
     assert File.read!(@migration) =~ "attribute.attacl::text"
     assert File.read!(@rollback) =~ "attribute.attacl::text"
 

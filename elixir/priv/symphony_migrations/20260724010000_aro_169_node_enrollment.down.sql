@@ -51,6 +51,32 @@ begin
   select md5(string_agg(signature, E'\n' order by signature))
   into current_fingerprint
   from (
+    with recursive descendant_roles(role_oid) as (
+      select oid
+      from pg_roles
+      where rolname in (
+        'symphony_staging_runtime',
+        'symphony_staging_provisioner'
+      )
+      union
+      select membership.member
+      from descendant_roles
+      join pg_auth_members membership
+        on membership.roleid = descendant_roles.role_oid
+    ),
+    ancestor_roles(role_oid) as (
+      select oid
+      from pg_roles
+      where rolname in (
+        'symphony_staging_runtime',
+        'symphony_staging_provisioner'
+      )
+      union
+      select membership.roleid
+      from ancestor_roles
+      join pg_auth_members membership
+        on membership.member = ancestor_roles.role_oid
+    )
     select
       'function:' || procedure.oid::regprocedure::text || ':' ||
       pg_get_userbyid(procedure.proowner) || ':' ||
@@ -67,6 +93,17 @@ begin
         'retire_node_instance',
         'authenticate_node'
       )
+    union all
+    select
+      'membership:' || granted_role.rolname || ':' || member_role.rolname || ':' ||
+      grantor_role.rolname || ':' || membership.admin_option::text || ':' ||
+      membership.inherit_option::text || ':' || membership.set_option::text
+    from pg_auth_members membership
+    join pg_roles granted_role on granted_role.oid = membership.roleid
+    join pg_roles member_role on member_role.oid = membership.member
+    join pg_roles grantor_role on grantor_role.oid = membership.grantor
+    where membership.roleid in (select role_oid from descendant_roles)
+       or membership.member in (select role_oid from ancestor_roles)
     union all
     select
       'table:' || relation.relname || ':' ||
@@ -90,6 +127,21 @@ begin
         'foundation_audit_events',
         'foundation_audit_events_audit_id_seq'
       )
+    union all
+    select
+      'sequence:' || relation.relname || ':' ||
+      sequence_state.seqtypid::regtype::text || ':' ||
+      sequence_state.seqstart::text || ':' ||
+      sequence_state.seqincrement::text || ':' ||
+      sequence_state.seqmin::text || ':' ||
+      sequence_state.seqmax::text || ':' ||
+      sequence_state.seqcache::text || ':' ||
+      sequence_state.seqcycle::text
+    from pg_sequence sequence_state
+    join pg_class relation on relation.oid = sequence_state.seqrelid
+    join pg_namespace namespace on namespace.oid = relation.relnamespace
+    where namespace.nspname = 'symphony_staging'
+      and relation.relname = 'foundation_audit_events_audit_id_seq'
     union all
     select
       'index:' || relation.relname || ':' || index_relation.relname || ':' ||

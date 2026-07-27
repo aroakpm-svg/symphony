@@ -45,6 +45,25 @@ alter role symphony_staging_provisioner
 SQL
 
 psql_admin -f "$migrations_dir/20260724000000_aro_168_staging_reconciliation.sql"
+
+psql_admin <<'SQL'
+create role aro169_v2_drift_writer nologin noinherit;
+grant update on symphony_staging.nodes to aro169_v2_drift_writer;
+grant aro169_v2_drift_writer to symphony_staging_provisioner
+  with inherit true, set false;
+SQL
+if psql_admin -f "$migrations_dir/20260724010000_aro_169_node_enrollment.sql" \
+  >/dev/null 2>&1; then
+  echo "v3 apply unexpectedly accepted drifted v2 authorization state" >&2
+  exit 1
+fi
+test "$(psql_admin -A -t -c "select to_regclass('symphony_staging.node_login_principals') is null;")" = "t"
+psql_admin <<'SQL'
+revoke aro169_v2_drift_writer from symphony_staging_provisioner;
+revoke update on symphony_staging.nodes from aro169_v2_drift_writer;
+drop role aro169_v2_drift_writer;
+SQL
+
 psql_admin -f "$migrations_dir/20260724010000_aro_169_node_enrollment.sql"
 
 provisioned="$(
@@ -594,6 +613,32 @@ if psql_admin \
   echo "rollback unexpectedly accepted trigger drift" >&2
   exit 1
 fi
+psql_admin -c "
+  grant symphony_staging_provisioner to service_role
+    with inherit false, set true;
+" >/dev/null
+if psql_admin -f "$migrations_dir/20260724010000_aro_169_node_enrollment.down.sql" \
+  >/dev/null 2>&1; then
+  echo "rollback unexpectedly accepted membership drift" >&2
+  exit 1
+fi
+psql_admin -c "
+  revoke symphony_staging_provisioner from service_role;
+" >/dev/null
+
+psql_admin -c "
+  alter sequence symphony_staging.foundation_audit_events_audit_id_seq
+    increment by 2 cache 3 cycle;
+" >/dev/null
+if psql_admin -f "$migrations_dir/20260724010000_aro_169_node_enrollment.down.sql" \
+  >/dev/null 2>&1; then
+  echo "rollback unexpectedly accepted sequence drift" >&2
+  exit 1
+fi
+psql_admin -c "
+  alter sequence symphony_staging.foundation_audit_events_audit_id_seq
+    increment by 1 cache 1 no cycle;
+" >/dev/null
 
 psql_admin -c "
   select pg_advisory_lock(

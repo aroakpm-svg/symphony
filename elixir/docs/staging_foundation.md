@@ -169,6 +169,9 @@ ARO-169 separates three responsibilities:
   inherited EXECUTE through an inherit-only membership is rejected. The
   provisioner role has no direct lifecycle or foundation-table privileges, so
   inherited membership cannot bypass the function boundary.
+- ARO-169 revalidates the complete applicable ARO-168 authorization profile
+  before apply and fingerprints managed membership options plus sequence
+  configuration for fail-closed rollback.
 - A node runtime holds only its individual node login credential, calls the
   authentication entry point with a fresh instance ID, and receives no table,
   shared management-role, or production access.

@@ -67,6 +67,11 @@ direct lifecycle or foundation-table privileges; all mutations remain behind
 the security-definer lifecycle entry points. Rollback restores the ARO-168 v2
 provisioner grants and policies exactly.
 
+Before v3 creates any object, it revalidates the ARO-168 v2 role attributes,
+membership graph and membership options, schema access, direct object ACLs,
+RLS policies, and production isolation. A matching mutable version row alone
+is not sufficient.
+
 The caller must save a returned credential directly into an approved
 machine-local secret store. It must never be passed on a command line, written
 to a workspace file, committed, logged, or copied to a synchronized location.
@@ -80,6 +85,9 @@ repository change does not provision any physical computer.
 Rollback locks and verifies the exact v3 marker plus the recorded table,
 column, constraint, index, policy, trigger and trigger-function, function,
 ownership, table ACL, column ACL, and sequence fingerprint
+The fingerprint includes the managed role membership graph and ADMIN,
+INHERIT, and SET options, plus the complete stable `pg_sequence`
+configuration.
 before its first destructive statement. It fails closed on future-contract,
 object, index, or ACL drift, requires exactly one downgrade row, and refuses
 while any provisioned principal history exists. ARO-169 up/down migrations also
