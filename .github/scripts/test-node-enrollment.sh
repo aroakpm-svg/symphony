@@ -74,6 +74,38 @@ drop function public.aro169_grant_drift();
 revoke usage on schema symphony_staging from service_role;
 SQL
 
+psql_admin -c "
+  alter role symphony_staging_provisioner in database postgres
+    set statement_timeout = '1ms';
+" >/dev/null
+if psql_admin -f "$migrations_dir/20260724010000_aro_169_node_enrollment.sql" \
+  >/dev/null 2>&1; then
+  echo "v3 apply unexpectedly accepted database-scoped managed-role settings" >&2
+  exit 1
+fi
+test "$(psql_admin -A -t -c "select to_regclass('symphony_staging.node_login_principals') is null;")" = "t"
+psql_admin -c "
+  alter role symphony_staging_provisioner in database postgres
+    reset statement_timeout;
+" >/dev/null
+
+psql_admin <<'SQL'
+create view public.aro169_external_nodes
+with (security_invoker = false)
+as select node_id, display_alias from symphony_staging.nodes;
+grant select on public.aro169_external_nodes to service_role;
+SQL
+if psql_admin -f "$migrations_dir/20260724010000_aro_169_node_enrollment.sql" \
+  >/dev/null 2>&1; then
+  echo "v3 apply unexpectedly accepted an external dependent view" >&2
+  exit 1
+fi
+test "$(psql_admin -A -t -c "select to_regclass('symphony_staging.node_login_principals') is null;")" = "t"
+psql_admin <<'SQL'
+revoke select on public.aro169_external_nodes from service_role;
+drop view public.aro169_external_nodes;
+SQL
+
 for publication_kind in all_tables staging_schema explicit_relation; do
   case "$publication_kind" in
     all_tables)
@@ -1080,6 +1112,36 @@ fi
 psql_admin -c "
   alter role symphony_staging_provisioner nologin;
 " >/dev/null
+
+psql_admin -c "
+  alter role symphony_staging_provisioner in database postgres
+    set statement_timeout = '1ms';
+" >/dev/null
+if psql_admin -f "$migrations_dir/20260724010000_aro_169_node_enrollment.down.sql" \
+  >/dev/null 2>&1; then
+  echo "rollback unexpectedly accepted database-scoped managed-role settings" >&2
+  exit 1
+fi
+psql_admin -c "
+  alter role symphony_staging_provisioner in database postgres
+    reset statement_timeout;
+" >/dev/null
+
+psql_admin <<'SQL'
+create view public.aro169_external_nodes
+with (security_invoker = false)
+as select node_id, display_alias from symphony_staging.nodes;
+grant select on public.aro169_external_nodes to service_role;
+SQL
+if psql_admin -f "$migrations_dir/20260724010000_aro_169_node_enrollment.down.sql" \
+  >/dev/null 2>&1; then
+  echo "rollback unexpectedly accepted an external dependent view" >&2
+  exit 1
+fi
+psql_admin <<'SQL'
+revoke select on public.aro169_external_nodes from service_role;
+drop view public.aro169_external_nodes;
+SQL
 
 psql_admin -c "
   grant create on schema symphony_staging to service_role;

@@ -96,6 +96,19 @@ begin
     )
     union all
     select
+      'db-role-setting:' || role_state.rolname || ':' ||
+      coalesce(database_state.datname, '') || ':' ||
+      database_role_setting.setconfig::text
+    from pg_db_role_setting database_role_setting
+    join pg_roles role_state on role_state.oid = database_role_setting.setrole
+    left join pg_database database_state
+      on database_state.oid = database_role_setting.setdatabase
+    where role_state.rolname in (
+      'symphony_staging_runtime',
+      'symphony_staging_provisioner'
+    )
+    union all
+    select
       'schema:' || namespace.nspname || ':' ||
       pg_get_userbyid(namespace.nspowner) || ':' ||
       coalesce(namespace.nspacl::text, '')
@@ -151,6 +164,59 @@ begin
       event_trigger.evtfoid::regprocedure::text || ':' ||
       coalesce(event_trigger.evttags::text, '')
     from pg_event_trigger event_trigger
+    union all
+    select
+      'external-rewrite:' || external_namespace.nspname || '.' ||
+      external_relation.relname || ':' || rewrite.rulename || ':' ||
+      managed_namespace.nspname || '.' || managed_relation.relname
+    from pg_depend dependency
+    join pg_class managed_relation
+      on dependency.refclassid = 'pg_class'::regclass
+     and dependency.refobjid = managed_relation.oid
+    join pg_namespace managed_namespace
+      on managed_namespace.oid = managed_relation.relnamespace
+    join pg_rewrite rewrite
+      on dependency.classid = 'pg_rewrite'::regclass
+     and dependency.objid = rewrite.oid
+    join pg_class external_relation on external_relation.oid = rewrite.ev_class
+    join pg_namespace external_namespace
+      on external_namespace.oid = external_relation.relnamespace
+    where managed_namespace.nspname in ('symphony_staging', 'symphony_production')
+      and external_namespace.nspname not in ('symphony_staging', 'symphony_production')
+    union all
+    select
+      'cross-schema-inheritance:' || child_namespace.nspname || '.' ||
+      child_relation.relname || ':' || parent_namespace.nspname || '.' ||
+      parent_relation.relname || ':' || inheritance.inhseqno::text
+    from pg_inherits inheritance
+    join pg_class child_relation on child_relation.oid = inheritance.inhrelid
+    join pg_namespace child_namespace on child_namespace.oid = child_relation.relnamespace
+    join pg_class parent_relation on parent_relation.oid = inheritance.inhparent
+    join pg_namespace parent_namespace on parent_namespace.oid = parent_relation.relnamespace
+    where (
+      child_namespace.nspname in ('symphony_staging', 'symphony_production')
+      and parent_namespace.nspname not in ('symphony_staging', 'symphony_production')
+    ) or (
+      parent_namespace.nspname in ('symphony_staging', 'symphony_production')
+      and child_namespace.nspname not in ('symphony_staging', 'symphony_production')
+    )
+    union all
+    select
+      'external-procedure-dependency:' || external_procedure.oid::regprocedure::text ||
+      ':' || managed_namespace.nspname || '.' || managed_relation.relname
+    from pg_depend dependency
+    join pg_class managed_relation
+      on dependency.refclassid = 'pg_class'::regclass
+     and dependency.refobjid = managed_relation.oid
+    join pg_namespace managed_namespace
+      on managed_namespace.oid = managed_relation.relnamespace
+    join pg_proc external_procedure
+      on dependency.classid = 'pg_proc'::regclass
+     and dependency.objid = external_procedure.oid
+    join pg_namespace external_namespace
+      on external_namespace.oid = external_procedure.pronamespace
+    where managed_namespace.nspname in ('symphony_staging', 'symphony_production')
+      and external_namespace.nspname not in ('symphony_staging', 'symphony_production')
     union all
     select
       'runtime-extension:' || extension.extname || ':' ||
