@@ -45,7 +45,7 @@ defmodule SymphonyElixir.ReadinessGate do
   def check(workspace, %Issue{} = issue, opts \\ [])
       when is_binary(workspace) and is_list(opts) do
     with {:ok, provenance} <- workspace_provenance(workspace, issue, opts),
-         {:ok, issue_branch} <- issue_branch(issue),
+         {:ok, issue_branch} <- issue_branch(workspace, issue, opts),
          {:ok, canonical} <- resolve_canonical(workspace, opts),
          :ok <- validate_issue_branch_not_canonical(issue_branch, canonical),
          {:ok, state} <- inspect_workspace(workspace, issue_branch, opts),
@@ -139,6 +139,38 @@ defmodule SymphonyElixir.ReadinessGate do
   end
 
   defp classify(
+         workspace,
+         _issue,
+         issue_branch,
+         :legacy_unverified,
+         canonical,
+         %{current_branch: issue_branch} = state,
+         :missing,
+         opts
+       ) do
+    workspace
+    |> command_runner(opts)
+    |> finish_continuation(issue_branch, state, canonical)
+  end
+
+  defp classify(
+         _workspace,
+         _issue,
+         issue_branch,
+         :ready,
+         _canonical,
+         state,
+         _remote_issue_branch,
+         _opts
+       ) do
+    failure(
+      :verified_continuation_missing,
+      "durable readiness expects continuation #{issue_branch}, but the workspace is on #{state.current_branch}@#{state.head_sha}",
+      "Preserve the verified workspace and restore or check out the exact issue branch manually before retrying."
+    )
+  end
+
+  defp classify(
          _workspace,
          _issue,
          issue_branch,
@@ -150,8 +182,8 @@ defmodule SymphonyElixir.ReadinessGate do
        ) do
     failure(
       :legacy_workspace_provenance_unverified,
-      "legacy workspace on #{state.current_branch}@#{state.head_sha} has no same-name remote evidence for #{issue_branch}",
-      "Publish or restore one exact same-name remote branch, or recreate the workspace explicitly before retrying."
+      "legacy workspace on #{state.current_branch}@#{state.head_sha} has no checked-out local continuation for #{issue_branch}",
+      "Preserve the workspace and check out the exact local issue branch, or publish one exact same-name remote branch before retrying."
     )
   end
 
@@ -258,7 +290,12 @@ defmodule SymphonyElixir.ReadinessGate do
          :missing,
          opts
        ) do
-    with {:ok, evidence} <- one_stacked_evidence(candidates, issue_branch),
+    with {:ok, evidence} <-
+           one_stacked_evidence(
+             candidates,
+             issue_branch,
+             command_runner(workspace, opts)
+           ),
          {:ok, upstream} <- lookup_stacked_branch(workspace, evidence, opts) do
       create_and_verify_branch(
         workspace,
@@ -292,21 +329,21 @@ defmodule SymphonyElixir.ReadinessGate do
   defp inspect_workspace(workspace, issue_branch, opts) do
     runner = command_runner(workspace, opts)
 
-    with {:ok, current_output} <- run(runner, ["branch", "--show-current"]),
-         {:ok, current_branch} <- parse_current_branch(current_output),
-         {:ok, head_output} <- run(runner, ["rev-parse", "--verify", "HEAD^{commit}"]),
-         {:ok, head_sha} <- parse_sha(head_output, :workspace_head_invalid),
+    with {:ok, checkout} <- GitBranchResolver.current_checkout(runner),
          {:ok, refs_output} <-
            run(runner, ["for-each-ref", "--format=%(refname)", "refs/heads/#{issue_branch}"]),
          {:ok, status} <- run(runner, ["status", "--porcelain=v1", "--untracked-files=all"]) do
       {:ok,
        %{
-         current_branch: current_branch,
-         head_sha: head_sha,
+         current_branch: checkout.branch,
+         head_sha: checkout.head_sha,
          local_issue_branch?: local_branch?(refs_output, issue_branch),
          dirty: String.trim(status) != "",
          status: sanitize(String.trim(status))
        }}
+    else
+      {:error, %GitBranchResolver.Failure{} = failure} -> from_resolver_failure(failure)
+      {:error, %Failure{} = failure} -> {:error, failure}
     end
   end
 
@@ -367,11 +404,12 @@ defmodule SymphonyElixir.ReadinessGate do
   end
 
   defp reread_branch_and_head(runner) do
-    with {:ok, branch_output} <- run(runner, ["branch", "--show-current"]),
-         {:ok, current_branch} <- parse_current_branch(branch_output),
-         {:ok, head_output} <- run(runner, ["rev-parse", "--verify", "HEAD^{commit}"]),
-         {:ok, head_sha} <- parse_sha(head_output, :workspace_head_invalid) do
-      {:ok, %{current_branch: current_branch, head_sha: head_sha}}
+    case GitBranchResolver.current_checkout(runner) do
+      {:ok, checkout} ->
+        {:ok, %{current_branch: checkout.branch, head_sha: checkout.head_sha}}
+
+      {:error, %GitBranchResolver.Failure{} = failure} ->
+        from_resolver_failure(failure)
     end
   end
 
@@ -389,40 +427,11 @@ defmodule SymphonyElixir.ReadinessGate do
     )
   end
 
-  defp parse_current_branch(output) do
-    case lines(output) do
-      [] ->
-        failure(
-          :detached_head,
-          "workspace HEAD is detached",
-          "Attach HEAD to the exact issue branch or recreate a clean workspace, then retry."
-        )
-
-      [branch] ->
-        if GitBranchResolver.valid_branch?(branch) do
-          {:ok, branch}
-        else
-          failure(
-            :workspace_branch_invalid,
-            "workspace reported invalid branch #{inspect(branch)}",
-            "Repair the workspace branch name without resetting work, then retry."
-          )
-        end
-
-      branches ->
-        failure(
-          :workspace_branch_ambiguous,
-          "workspace reported multiple current branches: #{Enum.join(branches, ", ")}",
-          "Repair the workspace symbolic HEAD, then retry."
-        )
-    end
-  end
-
   defp local_branch?(output, issue_branch) do
     Enum.member?(lines(output), "refs/heads/#{issue_branch}")
   end
 
-  defp one_stacked_evidence([], _issue_branch) do
+  defp one_stacked_evidence([], _issue_branch, _runner) do
     failure(
       :stacked_evidence_missing,
       "explicit stacked readiness has no upstream evidence",
@@ -430,9 +439,9 @@ defmodule SymphonyElixir.ReadinessGate do
     )
   end
 
-  defp one_stacked_evidence([%StackedBase{} = evidence], issue_branch) do
+  defp one_stacked_evidence([%StackedBase{} = evidence], issue_branch, runner) do
     with branch when is_binary(branch) <- evidence.branch,
-         true <- GitBranchResolver.valid_branch?(branch),
+         :ok <- GitBranchResolver.validate_branch(branch, runner, :stacked_evidence_invalid),
          false <- branch == issue_branch,
          head_sha when is_binary(head_sha) <- evidence.head_sha,
          true <- Regex.match?(@sha_pattern, head_sha) do
@@ -447,7 +456,7 @@ defmodule SymphonyElixir.ReadinessGate do
     end
   end
 
-  defp one_stacked_evidence([_invalid], _issue_branch) do
+  defp one_stacked_evidence([_invalid], _issue_branch, _runner) do
     failure(
       :stacked_evidence_invalid,
       "explicit stacked readiness evidence has an invalid type",
@@ -455,7 +464,7 @@ defmodule SymphonyElixir.ReadinessGate do
     )
   end
 
-  defp one_stacked_evidence(_candidates, _issue_branch) do
+  defp one_stacked_evidence(_candidates, _issue_branch, _runner) do
     failure(
       :stacked_evidence_ambiguous,
       "explicit stacked readiness has multiple upstream candidates",
@@ -700,17 +709,16 @@ defmodule SymphonyElixir.ReadinessGate do
     )
   end
 
-  defp issue_branch(%Issue{branch_name: branch}) when is_binary(branch) do
-    normalized = String.trim(branch)
+  defp issue_branch(workspace, %Issue{branch_name: branch}, opts) when is_binary(branch) do
+    runner = command_runner(workspace, opts)
 
-    if normalized == branch and GitBranchResolver.valid_branch?(normalized) do
-      {:ok, normalized}
-    else
-      invalid_issue_branch(branch)
+    case GitBranchResolver.validate_branch(branch, runner, :issue_branch_missing_or_invalid) do
+      :ok -> {:ok, branch}
+      {:error, %GitBranchResolver.Failure{} = failure} -> from_resolver_failure(failure)
     end
   end
 
-  defp issue_branch(%Issue{branch_name: branch}), do: invalid_issue_branch(branch)
+  defp issue_branch(_workspace, %Issue{branch_name: branch}, _opts), do: invalid_issue_branch(branch)
 
   defp invalid_issue_branch(branch) do
     failure(
@@ -796,28 +804,6 @@ defmodule SymphonyElixir.ReadinessGate do
           command
         )
     end
-  end
-
-  defp parse_sha(output, error_code) do
-    case lines(output) do
-      [sha] when is_binary(sha) ->
-        if Regex.match?(@sha_pattern, sha) do
-          {:ok, String.downcase(sha)}
-        else
-          invalid_workspace_sha(error_code, sha)
-        end
-
-      values ->
-        invalid_workspace_sha(error_code, Enum.join(values, ", "))
-    end
-  end
-
-  defp invalid_workspace_sha(error_code, value) do
-    failure(
-      error_code,
-      "workspace did not report one full commit SHA: #{sanitize(value)}",
-      "Preserve the workspace and repair its Git HEAD manually before retrying."
-    )
   end
 
   defp ready(classification, issue_branch, head_sha, canonical, upstream \\ nil) do

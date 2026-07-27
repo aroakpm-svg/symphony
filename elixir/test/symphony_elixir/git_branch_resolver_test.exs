@@ -31,7 +31,7 @@ defmodule SymphonyElixir.GitBranchResolverTest do
 
   test "public branch validation rejects every unsafe name shape and non-string input" do
     Enum.each(["main", "release/2026-q3", "codex/ARO_123-fix", "@"], fn branch ->
-      assert GitBranchResolver.valid_branch?(branch)
+      assert :ok = GitBranchResolver.validate_branch(branch, &branch_validation_result/1)
     end)
 
     Enum.each(
@@ -60,13 +60,18 @@ defmodule SymphonyElixir.GitBranchResolverTest do
         nil,
         42
       ],
-      fn branch -> refute GitBranchResolver.valid_branch?(branch) end
+      fn branch ->
+        assert {:error, %Failure{code: :branch_ref_invalid}} =
+                 GitBranchResolver.validate_branch(branch, &branch_validation_result/1)
+      end
     )
 
-    runner = fn _args -> flunk("invalid branch must fail before invoking Git") end
-
-    assert {:error, %Failure{code: :branch_ref_invalid, command: nil}} =
-             GitBranchResolver.lookup_branch("/workspace", "bad..name", command_runner: runner)
+    assert {:error,
+            %Failure{
+              code: :branch_ref_invalid,
+              command: "git check-ref-format --branch bad..name"
+            }} =
+             GitBranchResolver.lookup_branch("/workspace", "bad..name", command_runner: &branch_validation_result/1)
   end
 
   test "public branch validation delegates to Git without evaluating branch text as a shell" do
@@ -80,8 +85,32 @@ defmodule SymphonyElixir.GitBranchResolverTest do
     File.mkdir_p!(test_root)
     on_exit(fn -> File.rm_rf(test_root) end)
 
-    refute GitBranchResolver.valid_branch?("valid; touch #{side_effect}")
+    assert {:error, %Failure{code: :branch_ref_invalid}} =
+             GitBranchResolver.validate_branch(
+               "valid; touch #{side_effect}",
+               &branch_validation_result/1
+             )
+
     refute File.exists?(side_effect)
+  end
+
+  test "explicit branch validation uses the worker command seam and preserves literal at" do
+    test_pid = self()
+
+    runner = fn args ->
+      send(test_pid, {:git_command, args})
+
+      case args do
+        ["check-ref-format", "--branch", "@"] -> {:ok, "@\n"}
+        ["ls-remote", "--heads", "origin", "refs/heads/@"] -> {:ok, ""}
+      end
+    end
+
+    assert {:ok, :missing} =
+             GitBranchResolver.lookup_branch("/remote/workspace", "@", command_runner: runner)
+
+    assert_receive {:git_command, ["check-ref-format", "--branch", "@"]}
+    assert_receive {:git_command, ["ls-remote", "--heads", "origin", "refs/heads/@"]}
   end
 
   test "public branch validation fails closed when the Git executable is unavailable" do
@@ -101,7 +130,9 @@ defmodule SymphonyElixir.GitBranchResolverTest do
 
     System.put_env("PATH", test_root)
 
-    refute GitBranchResolver.valid_branch?("main")
+    runner = fn args -> Workspace.run_git_command(test_root, args) end
+
+    assert {:error, %Failure{}} = GitBranchResolver.validate_branch("main", runner)
   end
 
   test "resolves a slash-containing non-main default ref and verifies the fetched SHA" do
@@ -113,6 +144,9 @@ defmodule SymphonyElixir.GitBranchResolverTest do
       case args do
         ["ls-remote", "--symref", "origin", "HEAD"] ->
           {:ok, "ref: refs/heads/release/2026-q3\tHEAD\n#{@sha}\tHEAD\n"}
+
+        ["check-ref-format", "--branch", "release/2026-q3"] ->
+          {:ok, "release/2026-q3\n"}
 
         ["fetch", "--no-tags", "origin", "refs/heads/release/2026-q3"] ->
           {:ok, ""}
@@ -151,7 +185,10 @@ defmodule SymphonyElixir.GitBranchResolverTest do
     ]
 
     Enum.each(cases, fn {output, expected_code} ->
-      runner = fn ["ls-remote", "--symref", "origin", "HEAD"] -> {:ok, output} end
+      runner = fn
+        ["ls-remote", "--symref", "origin", "HEAD"] -> {:ok, output}
+        args -> branch_validation_result(args)
+      end
 
       assert {:error, %Failure{code: ^expected_code, operator_action: action}} =
                GitBranchResolver.resolve("/workspace", command_runner: runner)
@@ -164,6 +201,9 @@ defmodule SymphonyElixir.GitBranchResolverTest do
     runner = fn
       ["ls-remote", "--symref", "origin", "HEAD"] ->
         {:ok, "ref: refs/heads/main\tHEAD\n#{@sha}\tHEAD\n"}
+
+      ["check-ref-format", "--branch", "main"] ->
+        {:ok, "main\n"}
 
       ["fetch", "--no-tags", "origin", "refs/heads/main"] ->
         {:ok, ""}
@@ -239,6 +279,9 @@ defmodule SymphonyElixir.GitBranchResolverTest do
       ["ls-remote", "--symref", "origin", "HEAD"] ->
         {:ok, "ref: refs/heads/main\tHEAD\n#{@sha64}\tHEAD\n"}
 
+      ["check-ref-format", "--branch", "main"] ->
+        {:ok, "main\n"}
+
       ["fetch", "--no-tags", "origin", "refs/heads/main"] ->
         {:ok, ""}
 
@@ -255,6 +298,9 @@ defmodule SymphonyElixir.GitBranchResolverTest do
 
   test "looks up and fetches one exact explicit remote branch" do
     runner = fn
+      ["check-ref-format", "--branch", "stack/base"] ->
+        {:ok, "stack/base\n"}
+
       ["ls-remote", "--heads", "origin", "refs/heads/stack/base"] ->
         {:ok, "#{@sha}\trefs/heads/stack/base\n"}
 
@@ -275,15 +321,20 @@ defmodule SymphonyElixir.GitBranchResolverTest do
   end
 
   test "explicit remote branch lookup distinguishes missing and ambiguous evidence" do
-    missing_runner = fn ["ls-remote", "--heads", "origin", "refs/heads/missing"] ->
-      {:ok, ""}
+    missing_runner = fn
+      ["check-ref-format", "--branch", "missing"] -> {:ok, "missing\n"}
+      ["ls-remote", "--heads", "origin", "refs/heads/missing"] -> {:ok, ""}
     end
 
     assert {:ok, :missing} =
              GitBranchResolver.lookup_branch("/workspace", "missing", command_runner: missing_runner)
 
-    ambiguous_runner = fn ["ls-remote", "--heads", "origin", "refs/heads/duplicate"] ->
-      {:ok, "#{@sha}\trefs/heads/duplicate\n#{@moved_sha}\trefs/heads/duplicate\n"}
+    ambiguous_runner = fn
+      ["check-ref-format", "--branch", "duplicate"] ->
+        {:ok, "duplicate\n"}
+
+      ["ls-remote", "--heads", "origin", "refs/heads/duplicate"] ->
+        {:ok, "#{@sha}\trefs/heads/duplicate\n#{@moved_sha}\trefs/heads/duplicate\n"}
     end
 
     assert {:error, %Failure{code: :branch_head_ambiguous}} =
@@ -301,6 +352,9 @@ defmodule SymphonyElixir.GitBranchResolverTest do
 
     Enum.each(cases, fn {name, advertised_output, fetched_output, expected_code} ->
       runner = fn
+        ["check-ref-format", "--branch", "target"] ->
+          {:ok, "target\n"}
+
         ["ls-remote", "--heads", "origin", ^ref] ->
           {:ok, advertised_output}
 
@@ -345,6 +399,9 @@ defmodule SymphonyElixir.GitBranchResolverTest do
       case "$*" in
         *"ls-remote"*"--symref"*"origin"*"HEAD"*)
           printf '%s\n' 'ref: refs/heads/release/ssh\tHEAD' '#{@sha}\tHEAD'
+          ;;
+        *"check-ref-format"*"--branch"*"release/ssh"*)
+          printf '%s\n' 'release/ssh'
           ;;
         *"fetch"*"refs/heads/release/ssh"*)
           ;;
@@ -407,6 +464,13 @@ defmodule SymphonyElixir.GitBranchResolverTest do
   end
 
   defp git!(repo, args), do: cmd!("git", ["-C", repo | args])
+
+  defp branch_validation_result(["check-ref-format", "--branch", branch]) do
+    case System.cmd("git", ["check-ref-format", "--branch", to_string(branch)], stderr_to_stdout: true) do
+      {output, 0} -> {:ok, output}
+      {output, status} -> {:error, {:git_command_failed, "git check-ref-format --branch", status, output}}
+    end
+  end
 
   defp cmd!(executable, args) do
     case System.cmd(executable, args, stderr_to_stdout: true) do

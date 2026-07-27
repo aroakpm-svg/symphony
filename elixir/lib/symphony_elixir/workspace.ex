@@ -4,7 +4,7 @@ defmodule SymphonyElixir.Workspace do
   """
 
   require Logger
-  alias SymphonyElixir.{Config, PathSafety, SSH}
+  alias SymphonyElixir.{Config, GitBranchResolver, PathSafety, SSH}
 
   @remote_workspace_marker "__SYMPHONY_WORKSPACE__"
   @remote_readiness_marker "__SYMPHONY_READINESS_STATE__"
@@ -107,19 +107,43 @@ defmodule SymphonyElixir.Workspace do
   @spec mark_readiness_ready(preparation(), map() | String.t() | nil, map(), worker_host()) ::
           :ok | {:error, term()}
   def mark_readiness_ready(
-        %{path: workspace, readiness_state: %ReadinessState{} = expected_state},
+        preparation,
         issue_or_identifier,
         receipt,
         worker_host
+      ) do
+    mark_readiness_ready(preparation, issue_or_identifier, receipt, worker_host, [])
+  end
+
+  @spec mark_readiness_ready(
+          preparation(),
+          map() | String.t() | nil,
+          map(),
+          worker_host(),
+          keyword()
+        ) :: :ok | {:error, term()}
+  def mark_readiness_ready(
+        %{path: workspace, readiness_state: %ReadinessState{} = expected_state},
+        issue_or_identifier,
+        receipt,
+        worker_host,
+        opts
       )
-      when is_binary(workspace) do
+      when is_binary(workspace) and is_list(opts) do
     issue_context = issue_context(issue_or_identifier)
 
     with :ok <- validate_readiness_identity(expected_state, workspace, issue_context),
          :ok <- validate_readiness_receipt(receipt, expected_state, workspace),
          {:ok, %ReadinessState{} = current_state} <-
            read_existing_readiness_state(workspace, worker_host),
-         :ok <- compare_readiness_state(current_state, expected_state, workspace) do
+         :ok <- compare_readiness_state(current_state, expected_state, workspace),
+         :ok <-
+           verify_live_readiness_checkout(
+             workspace,
+             receipt,
+             worker_host,
+             opts
+           ) do
       ready_state = %{
         expected_state
         | phase: :ready,
@@ -130,12 +154,24 @@ defmodule SymphonyElixir.Workspace do
     end
   end
 
-  def mark_readiness_ready(%{path: workspace}, _issue_or_identifier, _receipt, _worker_host)
+  def mark_readiness_ready(
+        %{path: workspace},
+        _issue_or_identifier,
+        _receipt,
+        _worker_host,
+        _opts
+      )
       when is_binary(workspace) do
     {:error, {:workspace_readiness_state_invalid, workspace, "typed preparation state is missing"}}
   end
 
-  def mark_readiness_ready(_preparation, _issue_or_identifier, _receipt, _worker_host) do
+  def mark_readiness_ready(
+        _preparation,
+        _issue_or_identifier,
+        _receipt,
+        _worker_host,
+        _opts
+      ) do
     {:error, {:workspace_readiness_state_invalid, "unknown", "typed preparation state is missing"}}
   end
 
@@ -233,6 +269,32 @@ defmodule SymphonyElixir.Workspace do
 
   defp compare_readiness_state(_current_state, _expected_state, workspace) do
     {:error, {:workspace_readiness_state_changed, workspace, "persisted readiness state changed during verification"}}
+  end
+
+  defp verify_live_readiness_checkout(workspace, receipt, worker_host, opts) do
+    runner =
+      case Keyword.get(opts, :command_runner) do
+        runner when is_function(runner, 1) -> runner
+        nil -> fn args -> run_git_command(workspace, args, worker_host) end
+      end
+
+    expected_branch = receipt.issue_branch
+    expected_head = String.downcase(receipt.head_sha)
+
+    case GitBranchResolver.current_checkout(runner) do
+      {:ok, %{branch: ^expected_branch, head_sha: ^expected_head}} ->
+        :ok
+
+      {:ok, checkout} ->
+        readiness_checkout_changed(workspace, expected_branch, expected_head, checkout)
+
+      {:error, %GitBranchResolver.Failure{} = failure} ->
+        {:error, {:workspace_changed_before_readiness_persist, workspace, "expected #{expected_branch}@#{expected_head}; live checkout could not be verified: #{failure.detail}"}}
+    end
+  end
+
+  defp readiness_checkout_changed(workspace, expected_branch, expected_head, checkout) do
+    {:error, {:workspace_changed_before_readiness_persist, workspace, "expected #{expected_branch}@#{expected_head}, found #{checkout.branch}@#{checkout.head_sha}"}}
   end
 
   defp read_existing_readiness_state(workspace, worker_host) do

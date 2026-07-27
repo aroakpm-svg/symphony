@@ -56,7 +56,9 @@ defmodule SymphonyElixir.WorkspaceReadinessStateTest do
              Workspace.mark_readiness_ready(
                initial_preparation,
                issue,
-               readiness_receipt(issue)
+               readiness_receipt(issue),
+               nil,
+               command_runner: readiness_checkout_runner(issue)
              )
 
     assert {:ok,
@@ -150,7 +152,7 @@ defmodule SymphonyElixir.WorkspaceReadinessStateTest do
              Workspace.prepare_for_issue(issue)
   end
 
-  test "legacy state with missing or ambiguous same-name remote evidence remains blocked" do
+  test "legacy state accepts an exact local continuation without a remote and blocks ambiguous remote evidence" do
     fixture = git_fixture!("legacy-unverified")
     issue = issue("ARO-304", "codex/aro-304")
     legacy_workspace = Path.join(fixture.workspace_root, issue.identifier)
@@ -172,14 +174,22 @@ defmodule SymphonyElixir.WorkspaceReadinessStateTest do
                } = legacy_state
            } = preparation
 
-    assert {:error,
-            %Failure{
-              code: :legacy_workspace_provenance_unverified,
-              operator_action: missing_action
+    local_sha = git!(workspace, ["rev-parse", "HEAD"])
+
+    assert {:ok,
+            %Receipt{
+              classification: :continuation,
+              issue_branch: "codex/aro-304",
+              head_sha: ^local_sha
             }} =
              ReadinessGate.check(workspace, issue, workspace_readiness_state: legacy_state)
 
-    assert missing_action =~ "same-name remote"
+    git!(workspace, ["switch", "main"])
+
+    assert {:error, %Failure{code: :legacy_workspace_provenance_unverified}} =
+             ReadinessGate.check(workspace, issue, workspace_readiness_state: legacy_state)
+
+    git!(workspace, ["switch", issue.branch_name])
 
     issue_ref = "refs/heads/#{issue.branch_name}"
     other_sha = String.duplicate("b", 40)
@@ -197,6 +207,46 @@ defmodule SymphonyElixir.WorkspaceReadinessStateTest do
                workspace_readiness_state: legacy_state,
                command_runner: ambiguous_runner
              )
+  end
+
+  test "readiness persistence rejects a branch or HEAD changed after the gate receipt" do
+    cases = [
+      {"branch", fn workspace, _issue -> git!(workspace, ["switch", "main"]) end},
+      {"head",
+       fn workspace, _issue ->
+         File.write!(Path.join(workspace, "concurrent.txt"), "preserve\n")
+         git!(workspace, ["add", "concurrent.txt"])
+         git!(workspace, ["commit", "-m", "concurrent persistence change"])
+       end}
+    ]
+
+    Enum.with_index(cases, 1)
+    |> Enum.each(fn {{name, mutate}, index} ->
+      fixture = git_fixture!("persist-#{index}")
+      issue = issue("ARO-306-#{index}", "codex/aro-306-#{index}")
+
+      write_workflow_file!(Workflow.workflow_file_path(),
+        workspace_root: fixture.workspace_root,
+        hook_after_create: "git clone #{fixture.remote} ."
+      )
+
+      assert {:ok, %{path: workspace, readiness_state: state} = preparation} =
+               Workspace.prepare_for_issue(issue)
+
+      configure_identity!(workspace)
+
+      assert {:ok, %Receipt{} = receipt} =
+               ReadinessGate.check(workspace, issue, workspace_readiness_state: state)
+
+      mutate.(workspace, issue)
+
+      assert {:error, {:workspace_changed_before_readiness_persist, ^workspace, detail}} =
+               Workspace.mark_readiness_ready(preparation, issue, receipt),
+             name
+
+      assert detail =~ "expected #{receipt.issue_branch}@#{receipt.head_sha}", name
+      assert {:ok, %{readiness_state: %{phase: :unverified}}} = Workspace.prepare_for_issue(issue)
+    end)
   end
 
   test "SSH workspace state uses the same durable state machine across preparations and removal" do
@@ -250,7 +300,8 @@ defmodule SymphonyElixir.WorkspaceReadinessStateTest do
                preparation,
                issue,
                readiness_receipt(issue),
-               "worker-state"
+               "worker-state",
+               command_runner: readiness_checkout_runner(issue)
              )
 
     assert {:ok,
@@ -299,6 +350,14 @@ defmodule SymphonyElixir.WorkspaceReadinessStateTest do
       canonical: canonical,
       upstream: nil
     }
+  end
+
+  defp readiness_checkout_runner(issue) do
+    fn
+      ["branch", "--show-current"] -> {:ok, issue.branch_name <> "\n"}
+      ["check-ref-format", "--branch", branch] -> {:ok, branch <> "\n"}
+      ["rev-parse", "--verify", "HEAD^{commit}"] -> {:ok, @sha <> "\n"}
+    end
   end
 
   defp temporary_root!(suffix) do

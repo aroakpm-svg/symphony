@@ -51,7 +51,8 @@ defmodule SymphonyElixir.AgentRunner do
                      preparation,
                      issue,
                      receipt,
-                     worker_host
+                     worker_host,
+                     opts
                    ),
                  :ok <- Workspace.run_before_run_hook(workspace, issue, worker_host) do
               run_codex_turns(workspace, issue, codex_update_recipient, opts, worker_host)
@@ -87,6 +88,8 @@ defmodule SymphonyElixir.AgentRunner do
         case readiness_state_error_workspace(reason) do
           {:ok, workspace} ->
             send_worker_runtime_info(codex_update_recipient, issue, worker_host, workspace)
+
+            Workspace.run_after_run_hook(workspace, issue, worker_host)
 
             handle_workspace_preflight_failure(
               codex_update_recipient,
@@ -192,8 +195,20 @@ defmodule SymphonyElixir.AgentRunner do
     end
   end
 
-  defp persist_readiness(preparation, issue, receipt, worker_host) do
-    case Workspace.mark_readiness_ready(preparation, issue, receipt, worker_host) do
+  defp persist_readiness(preparation, issue, receipt, worker_host, opts) do
+    persistence_opts =
+      case Keyword.get(opts, :readiness_command_runner) do
+        runner when is_function(runner, 1) -> [command_runner: runner]
+        _runner -> []
+      end
+
+    case Workspace.mark_readiness_ready(
+           preparation,
+           issue,
+           receipt,
+           worker_host,
+           persistence_opts
+         ) do
       :ok -> :ok
       {:error, reason} -> {:error, {:readiness_state_failed, reason}}
     end
@@ -206,7 +221,8 @@ defmodule SymphonyElixir.AgentRunner do
               :workspace_readiness_state_invalid,
               :workspace_readiness_state_missing,
               :workspace_readiness_state_read_failed,
-              :workspace_readiness_state_write_failed
+              :workspace_readiness_state_write_failed,
+              :workspace_changed_before_readiness_persist
             ] and is_binary(workspace) do
     {:ok, workspace}
   end

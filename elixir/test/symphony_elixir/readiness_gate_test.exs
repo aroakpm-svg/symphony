@@ -60,8 +60,14 @@ defmodule SymphonyElixir.ReadinessGateTest do
     end)
   end
 
-  test "rejects missing, non-string, padded, and malformed tracker branch evidence before Git access" do
-    runner = fn _args -> flunk("invalid issue branch must fail before invoking Git") end
+  test "rejects non-string branch evidence before Git and validates string evidence on the worker" do
+    runner = fn
+      ["check-ref-format", "--branch", branch] ->
+        {:error, {:git_command_failed, "git check-ref-format --branch #{branch}", 128, "fatal: invalid branch"}}
+
+      args ->
+        flunk("invalid issue branch must stop after worker validation, got #{inspect(args)}")
+    end
 
     cases = [
       {nil, "nil"},
@@ -204,11 +210,12 @@ defmodule SymphonyElixir.ReadinessGateTest do
     assert [
              ["merge-base", "--is-ancestor", ^remote_sha, ^local_sha],
              ["branch", "--show-current"],
+             ["check-ref-format", "--branch", "codex/aro-102-ahead"],
              ["rev-parse", "--verify", "HEAD^{commit}"]
            ] =
              commands
              |> Enum.drop_while(&(&1 != ["merge-base", "--is-ancestor", remote_sha, local_sha]))
-             |> Enum.take(3)
+             |> Enum.take(4)
   end
 
   test "blocks a reused continuation branch that is behind its same-name remote" do
@@ -380,7 +387,7 @@ defmodule SymphonyElixir.ReadinessGateTest do
     git!(mismatch_fixture.workspace, ["branch", mismatch_issue.branch_name])
     original_branch = git!(mismatch_fixture.workspace, ["branch", "--show-current"])
 
-    assert {:error, %Failure{code: :continuation_branch_not_checked_out}} =
+    assert {:error, %Failure{code: :verified_continuation_missing}} =
              ReadinessGate.check(mismatch_fixture.workspace, mismatch_issue, workspace_created_now: false)
 
     assert git!(mismatch_fixture.workspace, ["branch", "--show-current"]) == original_branch
@@ -604,6 +611,7 @@ defmodule SymphonyElixir.ReadinessGateTest do
     assert [
              ["switch", "--no-overwrite-ignore", "-c", ^issue_branch, _base_sha],
              ["branch", "--show-current"],
+             ["check-ref-format", "--branch", ^issue_branch],
              ["rev-parse", "--verify", "HEAD^{commit}"],
              ["status", "--porcelain=v1", "--untracked-files=all"]
            ] =
@@ -611,7 +619,7 @@ defmodule SymphonyElixir.ReadinessGateTest do
              |> Enum.drop_while(fn args ->
                Enum.take(args, 4) != ["switch", "--no-overwrite-ignore", "-c", issue_branch]
              end)
-             |> Enum.take(4)
+             |> Enum.take(5)
   end
 
   test "blocks and preserves a continuation branch whose HEAD changes during remote lookup" do
@@ -898,6 +906,86 @@ defmodule SymphonyElixir.ReadinessGateTest do
       assert String.downcase(action) =~ "preserve", name
       assert git!(fixture.workspace, ["show-ref", "--verify", "refs/heads/#{issue.branch_name}"]) != ""
     end)
+  end
+
+  test "durable ready provenance never recreates a missing continuation branch" do
+    fixture = git_fixture!("main")
+    on_exit(fn -> cleanup_fixture(fixture) end)
+    issue = issue("ARO-119", "codex/aro-119")
+    verified_sha = git!(fixture.workspace, ["rev-parse", "HEAD"])
+
+    state = %ReadinessState{
+      version: 1,
+      provenance: :legacy,
+      phase: :ready,
+      issue_id: issue.id,
+      issue_identifier: issue.identifier,
+      issue_branch: issue.branch_name,
+      workspace_path: fixture.workspace,
+      verified_head_sha: verified_sha
+    }
+
+    assert {:error,
+            %Failure{
+              code: :verified_continuation_missing,
+              operator_action: action
+            }} =
+             ReadinessGate.check(fixture.workspace, issue, workspace_readiness_state: state)
+
+    assert String.downcase(action) =~ "preserve"
+    assert git!(fixture.workspace, ["branch", "--show-current"]) == "main"
+
+    assert git!(fixture.workspace, [
+             "for-each-ref",
+             "--format=%(refname)",
+             "refs/heads/#{issue.branch_name}"
+           ]) == ""
+  end
+
+  test "issue, current, remote, and stacked branches share worker-side Git validation" do
+    fixture = git_fixture!("main")
+    on_exit(fn -> cleanup_fixture(fixture) end)
+    upstream_branch = "stack/aro-120"
+    upstream_sha = push_branch!(fixture, upstream_branch, "stacked base\n")
+
+    issue =
+      issue("ARO-120", "codex/aro-120")
+      |> Map.put(
+        :readiness_base,
+        {:stacked, [%StackedBase{branch: upstream_branch, head_sha: upstream_sha}]}
+      )
+
+    test_pid = self()
+
+    runner = fn args ->
+      if Enum.take(args, 2) == ["check-ref-format", "--branch"] do
+        send(test_pid, {:validated_branch, List.last(args)})
+      end
+
+      Workspace.run_git_command(fixture.workspace, args)
+    end
+
+    assert {:ok, %Receipt{classification: :explicit_stack}} =
+             ReadinessGate.check(fixture.workspace, issue,
+               workspace_created_now: true,
+               command_runner: runner
+             )
+
+    validated =
+      Stream.repeatedly(fn ->
+        receive do
+          {:validated_branch, branch} -> branch
+        after
+          0 -> :done
+        end
+      end)
+      |> Enum.take_while(&(&1 != :done))
+      |> MapSet.new()
+
+    assert MapSet.subset?(
+             MapSet.new([issue.branch_name, "main", upstream_branch]),
+             validated
+           )
   end
 
   defp issue(identifier, branch_name) do

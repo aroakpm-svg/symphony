@@ -34,6 +34,18 @@ defmodule SymphonyElixir.GitBranchResolver do
           }
   end
 
+  defmodule Checkout do
+    @moduledoc "Typed live worker checkout evidence."
+
+    @enforce_keys [:branch, :head_sha]
+    defstruct [:branch, :head_sha]
+
+    @type t :: %__MODULE__{
+            branch: String.t(),
+            head_sha: String.t()
+          }
+  end
+
   @type command_runner :: ([String.t()] -> {:ok, String.t()} | {:error, term()})
 
   @sha_pattern ~r/\A(?:[0-9a-fA-F]{40}|[0-9a-fA-F]{64})\z/
@@ -44,7 +56,7 @@ defmodule SymphonyElixir.GitBranchResolver do
     args = ["ls-remote", "--symref", "origin", "HEAD"]
 
     with {:ok, output} <- run(runner, args),
-         {:ok, ref, branch, advertised_sha} <- parse_canonical_head(output),
+         {:ok, ref, branch, advertised_sha} <- parse_canonical_head(output, runner),
          {:ok, fetched_sha} <- fetch_and_verify(runner, ref, advertised_sha, :canonical_head_moved) do
       {:ok,
        %Receipt{
@@ -63,7 +75,7 @@ defmodule SymphonyElixir.GitBranchResolver do
       when is_binary(workspace) and is_binary(branch) and is_list(opts) do
     runner = command_runner(workspace, opts)
 
-    with :ok <- validate_branch(branch, :branch_ref_invalid),
+    with :ok <- validate_branch(branch, runner, :branch_ref_invalid),
          ref = "refs/heads/#{branch}",
          args = ["ls-remote", "--heads", "origin", ref],
          {:ok, output} <- run(runner, args),
@@ -72,17 +84,43 @@ defmodule SymphonyElixir.GitBranchResolver do
     end
   end
 
-  @spec valid_branch?(String.t()) :: boolean()
-  def valid_branch?(branch) when is_binary(branch) do
-    case System.cmd("git", ["check-ref-format", "--branch", branch], stderr_to_stdout: true) do
-      {output, 0} -> output_lines(output) == [branch]
-      {_output, _status} -> false
+  @spec validate_branch(term(), command_runner()) :: :ok | {:error, Failure.t()}
+  def validate_branch(branch, runner), do: validate_branch(branch, runner, :branch_ref_invalid)
+
+  @spec validate_branch(term(), command_runner(), atom()) :: :ok | {:error, Failure.t()}
+  def validate_branch(branch, runner, error_code)
+      when is_binary(branch) and is_function(runner, 1) and is_atom(error_code) do
+    args = ["check-ref-format", "--branch", branch]
+
+    case run(runner, args) do
+      {:ok, output} ->
+        if output_lines(output) == [branch] do
+          :ok
+        else
+          invalid_branch(branch, error_code, "unexpected validation output: #{sanitize(output)}")
+        end
+
+      {:error, %Failure{code: :command_failed, detail: detail}} ->
+        invalid_branch(branch, error_code, detail)
+
+      {:error, %Failure{} = failure} ->
+        {:error, failure}
     end
-  rescue
-    _error -> false
   end
 
-  def valid_branch?(_branch), do: false
+  def validate_branch(branch, _runner, error_code) when is_atom(error_code) do
+    invalid_branch(branch, error_code, "branch evidence is not a string")
+  end
+
+  @spec current_checkout(command_runner()) :: {:ok, Checkout.t()} | {:error, Failure.t()}
+  def current_checkout(runner) when is_function(runner, 1) do
+    with {:ok, branch_output} <- run(runner, ["branch", "--show-current"]),
+         {:ok, branch} <- parse_current_branch(branch_output, runner),
+         {:ok, head_output} <- run(runner, ["rev-parse", "--verify", "HEAD^{commit}"]),
+         {:ok, head_sha} <- parse_current_head(head_output) do
+      {:ok, %Checkout{branch: branch, head_sha: head_sha}}
+    end
+  end
 
   defp command_runner(workspace, opts) do
     case Keyword.get(opts, :command_runner) do
@@ -162,19 +200,60 @@ defmodule SymphonyElixir.GitBranchResolver do
     end
   end
 
-  defp parse_canonical_head(output) do
+  defp parse_canonical_head(output, runner) do
     lines = output_lines(output)
     symref_lines = Enum.filter(lines, &String.starts_with?(&1, "ref:"))
 
     with {:ok, ref} <- one_canonical_symref(symref_lines),
          "refs/heads/" <> branch <- ref,
-         :ok <- validate_branch(branch, :canonical_ref_invalid),
+         :ok <- validate_branch(branch, runner, :canonical_ref_invalid),
          {:ok, advertised_sha} <- one_canonical_sha(lines),
          :ok <- validate_canonical_evidence(lines) do
       {:ok, ref, branch, advertised_sha}
     else
       {:error, %Failure{} = failure} -> {:error, failure}
       _ -> invalid_canonical_ref(output)
+    end
+  end
+
+  defp parse_current_branch(output, runner) do
+    case output_lines(output) do
+      [] ->
+        failure(
+          :detached_head,
+          "git branch --show-current",
+          "workspace HEAD is detached",
+          "Attach HEAD to the exact issue branch or recreate a clean workspace, then retry."
+        )
+
+      [branch] ->
+        case validate_branch(branch, runner, :workspace_branch_invalid) do
+          :ok -> {:ok, branch}
+          {:error, %Failure{} = failure} -> {:error, failure}
+        end
+
+      branches ->
+        failure(
+          :workspace_branch_ambiguous,
+          "git branch --show-current",
+          "workspace reported multiple current branches: #{Enum.join(branches, ", ")}",
+          "Repair the workspace symbolic HEAD, then retry."
+        )
+    end
+  end
+
+  defp parse_current_head(output) do
+    case output_lines(output) do
+      [sha] ->
+        validate_sha(sha, :workspace_head_invalid)
+
+      values ->
+        failure(
+          :workspace_head_invalid,
+          "git rev-parse --verify HEAD^{commit}",
+          "workspace returned invalid HEAD evidence: #{inspect(values)}",
+          "Repair the workspace HEAD without discarding work, then retry."
+        )
     end
   end
 
@@ -321,17 +400,13 @@ defmodule SymphonyElixir.GitBranchResolver do
     )
   end
 
-  defp validate_branch(branch, error_code) do
-    if valid_branch?(branch) do
-      :ok
-    else
-      failure(
-        error_code,
-        nil,
-        "invalid branch name: #{sanitize(branch)}",
-        "Provide one valid refs/heads branch name, then retry."
-      )
-    end
+  defp invalid_branch(branch, error_code, detail) do
+    failure(
+      error_code,
+      "git check-ref-format --branch #{sanitize(branch)}",
+      "invalid branch name: #{sanitize(branch)}; #{sanitize(detail)}",
+      "Provide one valid refs/heads branch name, then retry."
+    )
   end
 
   defp validate_sha(sha, error_code) do
