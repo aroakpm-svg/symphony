@@ -48,6 +48,16 @@ defmodule SymphonyElixir.NodeEnrollmentMigrationTest do
 
     assert sql =~ "extensions.gen_random_bytes(32)"
     assert sql =~ "extensions.digest(generated_credential, 'sha256')"
+    assert sql =~ "pg_publication.puballtables"
+    assert sql =~ "pg_publication_namespace"
+    assert sql =~ "pg_publication_rel"
+    assert sql =~ "attribute.attcollation"
+    assert sql =~ "index_state.indcollation"
+    assert sql =~ "index_state.indclass"
+    assert sql =~ "extension.extname = 'pgcrypto'"
+    assert sql =~ "extension.extversion = '1.3'"
+    assert sql =~ "dependency.deptype = 'e'"
+    assert length(Regex.scan(~r/set password_encryption = 'scram-sha-256'/, sql)) == 3
     assert sql =~ "create role %I login password %L"
     refute sql =~ "github"
     refute sql =~ "linear"
@@ -69,6 +79,13 @@ defmodule SymphonyElixir.NodeEnrollmentMigrationTest do
     assert lifecycle_script =~ "concurrent-node"
     assert lifecycle_script =~ "routing conflict unexpectedly provisioned a partial node"
     assert lifecycle_script =~ "replayed_reenroll_credential"
+    assert lifecycle_script =~ "for publication_kind in all_tables staging_schema explicit_relation"
+    assert lifecycle_script =~ "column collation drift"
+    assert lifecycle_script =~ "index collation drift"
+    assert lifecycle_script =~ "missing pgcrypto"
+    assert lifecycle_script =~ "pgcrypto in the wrong schema"
+    assert lifecycle_script =~ "pgcrypto ACL drift"
+    assert lifecycle_script =~ "SCRAM-SHA-256"
     assert lifecycle_script =~ "node_principal_history"
   end
 

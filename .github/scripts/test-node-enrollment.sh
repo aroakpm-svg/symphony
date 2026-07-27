@@ -46,6 +46,137 @@ SQL
 
 psql_admin -f "$migrations_dir/20260724000000_aro_168_staging_reconciliation.sql"
 
+for publication_kind in all_tables staging_schema explicit_relation; do
+  case "$publication_kind" in
+    all_tables)
+      psql_admin -c "
+        create publication aro169_publication_drift for all tables;
+      " >/dev/null
+      ;;
+    staging_schema)
+      psql_admin -c "
+        create publication aro169_publication_drift
+          for tables in schema symphony_staging;
+      " >/dev/null
+      ;;
+    explicit_relation)
+      psql_admin -c "
+        create publication aro169_publication_drift
+          for table symphony_staging.nodes;
+      " >/dev/null
+      ;;
+  esac
+  if psql_admin -f "$migrations_dir/20260724010000_aro_169_node_enrollment.sql" \
+    >/dev/null 2>&1; then
+    echo "v3 apply unexpectedly accepted $publication_kind publication drift" >&2
+    exit 1
+  fi
+  test "$(psql_admin -A -t -c "select to_regclass('symphony_staging.node_login_principals') is null;")" = "t"
+  psql_admin -c "drop publication aro169_publication_drift;" >/dev/null
+done
+
+psql_admin -c "
+  alter table symphony_staging.nodes
+    alter column display_alias type text collate pg_catalog.\"C\";
+" >/dev/null
+if psql_admin -f "$migrations_dir/20260724010000_aro_169_node_enrollment.sql" \
+  >/dev/null 2>&1; then
+  echo "v3 apply unexpectedly accepted column collation drift" >&2
+  exit 1
+fi
+test "$(psql_admin -A -t -c "select to_regclass('symphony_staging.node_login_principals') is null;")" = "t"
+psql_admin -c "
+  alter table symphony_staging.nodes
+    alter column display_alias type text collate pg_catalog.\"default\";
+  alter table symphony_staging.routing_assignments
+    drop constraint routing_assignments_pkey;
+  create unique index routing_assignments_pkey
+    on symphony_staging.routing_assignments
+    (issue_id collate pg_catalog.\"C\");
+  alter table symphony_staging.routing_assignments
+    add constraint routing_assignments_pkey
+    primary key using index routing_assignments_pkey;
+" >/dev/null
+if psql_admin -f "$migrations_dir/20260724010000_aro_169_node_enrollment.sql" \
+  >/dev/null 2>&1; then
+  echo "v3 apply unexpectedly accepted index collation drift" >&2
+  exit 1
+fi
+test "$(psql_admin -A -t -c "select to_regclass('symphony_staging.node_login_principals') is null;")" = "t"
+psql_admin -c "
+  alter table symphony_staging.routing_assignments
+    drop constraint routing_assignments_pkey;
+  create unique index routing_assignments_pkey
+    on symphony_staging.routing_assignments (issue_id);
+  alter table symphony_staging.routing_assignments
+    add constraint routing_assignments_pkey
+    primary key using index routing_assignments_pkey;
+" >/dev/null
+
+psql_admin -c "drop extension pgcrypto;" >/dev/null
+if psql_admin -f "$migrations_dir/20260724010000_aro_169_node_enrollment.sql" \
+  >/dev/null 2>&1; then
+  echo "v3 apply unexpectedly accepted missing pgcrypto" >&2
+  exit 1
+fi
+test "$(psql_admin -A -t -c "select to_regclass('symphony_staging.node_login_principals') is null;")" = "t"
+psql_admin -c "create extension pgcrypto with schema extensions;" >/dev/null
+
+psql_admin -c "alter extension pgcrypto set schema public;" >/dev/null
+if psql_admin -f "$migrations_dir/20260724010000_aro_169_node_enrollment.sql" \
+  >/dev/null 2>&1; then
+  echo "v3 apply unexpectedly accepted pgcrypto in the wrong schema" >&2
+  exit 1
+fi
+test "$(psql_admin -A -t -c "select to_regclass('symphony_staging.node_login_principals') is null;")" = "t"
+psql_admin -c "alter extension pgcrypto set schema extensions;" >/dev/null
+
+psql_admin -c "
+  alter function extensions.digest(text, text) owner to service_role;
+" >/dev/null
+if psql_admin -f "$migrations_dir/20260724010000_aro_169_node_enrollment.sql" \
+  >/dev/null 2>&1; then
+  echo "v3 apply unexpectedly accepted pgcrypto owner drift" >&2
+  exit 1
+fi
+test "$(psql_admin -A -t -c "select to_regclass('symphony_staging.node_login_principals') is null;")" = "t"
+psql_admin -c "
+  alter function extensions.digest(text, text) owner to postgres;
+" >/dev/null
+
+psql_admin -c "
+  revoke execute on function extensions.digest(text, text) from public;
+" >/dev/null
+if psql_admin -f "$migrations_dir/20260724010000_aro_169_node_enrollment.sql" \
+  >/dev/null 2>&1; then
+  echo "v3 apply unexpectedly accepted pgcrypto ACL drift" >&2
+  exit 1
+fi
+test "$(psql_admin -A -t -c "select to_regclass('symphony_staging.node_login_principals') is null;")" = "t"
+psql_admin -c "
+  update pg_proc
+  set proacl = null
+  where oid = 'extensions.digest(text,text)'::regprocedure;
+" >/dev/null
+
+psql_admin -c "
+  create or replace function extensions.digest(text, text)
+  returns bytea
+  language sql
+  immutable strict parallel safe
+  as 'select decode(md5(\$1 || \$2), ''hex'')';
+" >/dev/null
+if psql_admin -f "$migrations_dir/20260724010000_aro_169_node_enrollment.sql" \
+  >/dev/null 2>&1; then
+  echo "v3 apply unexpectedly accepted pgcrypto function identity drift" >&2
+  exit 1
+fi
+test "$(psql_admin -A -t -c "select to_regclass('symphony_staging.node_login_principals') is null;")" = "t"
+psql_admin -c "
+  drop extension pgcrypto;
+  create extension pgcrypto with schema extensions;
+" >/dev/null
+
 psql_admin <<'SQL'
 create role aro169_v2_drift_writer nologin noinherit;
 grant update on symphony_staging.nodes to aro169_v2_drift_writer;
@@ -282,7 +413,8 @@ psql_admin -f "$migrations_dir/20260724010000_aro_169_node_enrollment.sql"
 
 provisioned="$(
   psql_admin -A -t -F '|' -c \
-    "select * from symphony_staging.provision_node(
+    "set password_encryption = 'md5';
+    select * from symphony_staging.provision_node(
       '16900000-0000-4000-8000-000000000001',
       'disposable-node',
       'ARO-169-disposable',
@@ -298,6 +430,7 @@ test "$credential_returned" = "t"
 test -n "$node_id"
 test -n "$login_role"
 test -n "$node_credential"
+test "$(psql_admin -A -t -c "select rolpassword like 'SCRAM-SHA-256\\$%' from pg_authid where rolname = '$login_role';")" = "t"
 test "$(psql_admin -A -t -c "select target_node_id = '$node_id' and routing_policy = 'exclusive' from symphony_staging.routing_assignments where issue_id = 'ARO-169-disposable';")" = "t"
 
 replayed="$(
@@ -575,7 +708,8 @@ sleep 2
 rotation_started_at="$(date +%s)"
 rotated="$(
   psql_admin -A -t -F '|' -c \
-    "select * from symphony_staging.rotate_node_credential(
+    "set password_encryption = 'md5';
+    select * from symphony_staging.rotate_node_credential(
       '16900000-0000-4000-8000-000000000201',
       '$node_id'
     );"
@@ -598,6 +732,7 @@ test "$credential_version" = "2"
 test "$rotated_contract_version" = "3"
 test "$rotated_secret" = "t"
 test "$_rotated_role" != "$login_role"
+test "$(psql_admin -A -t -c "select rolpassword like 'SCRAM-SHA-256\\$%' from pg_authid where rolname = '$_rotated_role';")" = "t"
 rotated_node_url="postgresql://${_rotated_role}@localhost:5432/postgres"
 
 PGPASSWORD="$rotated_credential" \
@@ -656,7 +791,8 @@ unset rotated_credential
 
 reenrolled="$(
   psql_admin -A -t -F '|' -c \
-    "select * from symphony_staging.reenroll_node(
+    "set password_encryption = 'md5';
+    select * from symphony_staging.reenroll_node(
       '16900000-0000-4000-8000-000000000401',
       '$node_id'
     );"
@@ -668,6 +804,7 @@ test "$_reenrolled_node_id" = "$node_id"
 test "$reenrolled_version" = "3"
 test "$reenrolled_contract" = "3"
 test "$reenrolled_secret" = "t"
+test "$(psql_admin -A -t -c "select rolpassword like 'SCRAM-SHA-256\\$%' from pg_authid where rolname = '$reenrolled_role';")" = "t"
 test "$(psql_admin -A -t -c "select count(*) from symphony_staging.node_principal_history where node_id = '$node_id';")" = "3"
 
 reenroll_replay="$(
@@ -785,6 +922,43 @@ if psql_admin -f "$migrations_dir/20260724010000_aro_169_node_enrollment.down.sq
   exit 1
 fi
 psql_admin -c "alter table symphony_staging.drifted_active_node_instances rename to active_node_instances;" >/dev/null
+
+psql_admin -c "
+  create publication aro169_rollback_publication
+    for table symphony_staging.active_node_instances;
+" >/dev/null
+if psql_admin -f "$migrations_dir/20260724010000_aro_169_node_enrollment.down.sql" \
+  >/dev/null 2>&1; then
+  echo "rollback unexpectedly accepted publication drift" >&2
+  exit 1
+fi
+psql_admin -c "drop publication aro169_rollback_publication;" >/dev/null
+
+psql_admin -c "
+  alter function extensions.digest(text, text) owner to service_role;
+" >/dev/null
+if psql_admin -f "$migrations_dir/20260724010000_aro_169_node_enrollment.down.sql" \
+  >/dev/null 2>&1; then
+  echo "rollback unexpectedly accepted pgcrypto dependency drift" >&2
+  exit 1
+fi
+psql_admin -c "
+  alter function extensions.digest(text, text) owner to postgres;
+" >/dev/null
+
+psql_admin -c "
+  alter table symphony_staging.node_login_principals
+    alter column login_role type name collate pg_catalog.\"C\";
+" >/dev/null
+if psql_admin -f "$migrations_dir/20260724010000_aro_169_node_enrollment.down.sql" \
+  >/dev/null 2>&1; then
+  echo "rollback unexpectedly accepted column collation drift" >&2
+  exit 1
+fi
+psql_admin -c "
+  alter table symphony_staging.node_login_principals
+    alter column login_role type name collate pg_catalog.\"default\";
+" >/dev/null
 
 psql_admin -c "
   create index aro169_drifted_active_instance_authenticated_at_idx

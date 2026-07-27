@@ -70,7 +70,14 @@ provisioner grants and policies exactly.
 Before v3 creates any object, it revalidates the ARO-168 v2 role attributes,
 membership graph and membership options, schema access, direct object ACLs,
 RLS policies, and production isolation. A matching mutable version row alone
-is not sufficient.
+is not sufficient. The canonical contract also rejects logical publications
+that cover either managed namespace or any managed relation, fingerprints
+resolved column/index collation and index operator classes, and requires the
+exact externally owned `pgcrypto` 1.3 dependency in the `extensions` schema.
+ARO-169 never installs, relocates, takes ownership of, or removes that
+extension. Provisioning, rotation, and re-enrollment pin
+`password_encryption` to `scram-sha-256`, independent of caller or server GUC
+state.
 
 The caller must save a returned credential directly into an approved
 machine-local secret store. It must never be passed on a command line, written
@@ -85,10 +92,12 @@ repository change does not provision any physical computer.
 Rollback locks and verifies the exact v3 marker plus the recorded table,
 column, constraint, index, policy, trigger and trigger-function, function,
 ownership, table ACL, column ACL, and sequence fingerprint
-The fingerprint includes the managed role membership graph and ADMIN,
+before its first destructive statement. The fingerprint includes publication
+membership, resolved collation and
+operator-class semantics, the managed role membership graph and ADMIN,
 INHERIT, and SET options, plus the complete stable `pg_sequence`
 configuration.
-before its first destructive statement. It fails closed on future-contract,
+It fails closed on future-contract,
 object, index, or ACL drift, requires exactly one downgrade row, and refuses
 while any provisioned principal history exists. ARO-169 up/down migrations also
 acquire the shared staging migration advisory lock before inspection or DDL.

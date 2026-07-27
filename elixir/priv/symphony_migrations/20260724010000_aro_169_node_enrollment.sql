@@ -42,6 +42,80 @@ begin
   end if;
 
   if exists (
+    select 1
+    from pg_publication publication
+    where publication.puballtables
+  ) or exists (
+    select 1
+    from pg_publication_namespace publication_namespace
+    join pg_namespace namespace
+      on namespace.oid = publication_namespace.pnnspid
+    where namespace.nspname in ('symphony_staging', 'symphony_production')
+  ) or exists (
+    select 1
+    from pg_publication_rel publication_relation
+    join pg_class relation on relation.oid = publication_relation.prrelid
+    join pg_namespace namespace on namespace.oid = relation.relnamespace
+    where namespace.nspname in ('symphony_staging', 'symphony_production')
+  ) then
+    raise exception using
+      errcode = '55000',
+      message = 'ARO-169 refuses logical publications affecting managed namespaces';
+  end if;
+
+  if not exists (
+    select 1
+    from pg_extension extension
+    join pg_namespace namespace on namespace.oid = extension.extnamespace
+    join pg_roles extension_owner on extension_owner.oid = extension.extowner
+    where extension.extname = 'pgcrypto'
+      and extension.extversion = '1.3'
+      and extension.extrelocatable
+      and namespace.nspname = 'extensions'
+      and extension_owner.rolname = 'postgres'
+  ) or (
+    select count(*)
+    from pg_proc procedure
+    join pg_namespace namespace on namespace.oid = procedure.pronamespace
+    join pg_language language on language.oid = procedure.prolang
+    join pg_roles procedure_owner on procedure_owner.oid = procedure.proowner
+    join pg_depend dependency
+      on dependency.classid = 'pg_proc'::regclass
+     and dependency.objid = procedure.oid
+     and dependency.refclassid = 'pg_extension'::regclass
+     and dependency.deptype = 'e'
+    join pg_extension extension on extension.oid = dependency.refobjid
+    where namespace.nspname = 'extensions'
+      and extension.extname = 'pgcrypto'
+      and procedure_owner.rolname = 'postgres'
+      and language.lanname = 'c'
+      and not procedure.prosecdef
+      and not procedure.proleakproof
+      and procedure.proisstrict
+      and procedure.proparallel = 's'
+      and procedure.proconfig is null
+      and procedure.proacl is null
+      and procedure.probin = '$libdir/pgcrypto'
+      and (
+        (
+          procedure.oid = 'extensions.gen_random_bytes(integer)'::regprocedure
+          and procedure.prorettype = 'bytea'::regtype
+          and procedure.provolatile = 'v'
+          and procedure.prosrc = 'pg_random_bytes'
+        ) or (
+          procedure.oid = 'extensions.digest(text,text)'::regprocedure
+          and procedure.prorettype = 'bytea'::regtype
+          and procedure.provolatile = 'i'
+          and procedure.prosrc = 'pg_digest'
+        )
+      )
+  ) <> 2 then
+    raise exception using
+      errcode = '55000',
+      message = 'ARO-169 requires the exact pgcrypto 1.3 runtime dependency';
+  end if;
+
+  if exists (
     with expected(
       object_name, object_kind, persistence, replica_identity,
       row_security, force_row_security
@@ -82,7 +156,7 @@ begin
   end if;
 
   if exists (
-    with expected(
+    with expected_base(
       table_name, column_name, ordinal, type_name, not_null,
       identity_kind, generated_kind, default_expression
     ) as (
@@ -129,6 +203,15 @@ begin
         ('foundation_audit_events', 'details', 10, 'jsonb', true, '', '', '''{}''::jsonb'),
         ('foundation_audit_events', 'occurred_at', 11, 'timestamp with time zone', true, '', '', 'clock_timestamp()')
     ),
+    expected as (
+      select
+        expected_base.*,
+        case
+          when type_name = 'text' then 'pg_catalog."default"'
+          else ''
+        end as collation_identity
+      from expected_base
+    ),
     actual as (
       select
         relation.relname::text,
@@ -138,13 +221,22 @@ begin
         attribute.attnotnull,
         attribute.attidentity::text,
         attribute.attgenerated::text,
-        coalesce(pg_get_expr(default_value.adbin, default_value.adrelid), '')
+        coalesce(pg_get_expr(default_value.adbin, default_value.adrelid), ''),
+        case
+          when attribute.attcollation = 0 then ''
+          else quote_ident(collation_namespace.nspname) || '.' ||
+               quote_ident(collation.collname)
+        end
       from pg_class relation
       join pg_namespace namespace on namespace.oid = relation.relnamespace
       join pg_attribute attribute on attribute.attrelid = relation.oid
       left join pg_attrdef default_value
         on default_value.adrelid = relation.oid
        and default_value.adnum = attribute.attnum
+      left join pg_collation collation
+        on collation.oid = attribute.attcollation
+      left join pg_namespace collation_namespace
+        on collation_namespace.oid = collation.collnamespace
       where namespace.nspname = 'symphony_staging'
         and relation.relkind = 'r'
         and attribute.attnum > 0
@@ -156,7 +248,7 @@ begin
   ) then
     raise exception using
       errcode = '55000',
-      message = 'ARO-169 unsafe ARO-168 column/default/identity state';
+      message = 'ARO-169 unsafe ARO-168 column/default/identity/collation state';
   end if;
 
   if exists (
@@ -1084,6 +1176,7 @@ returns table (
 language plpgsql
 security definer
 set search_path = pg_catalog, symphony_staging
+set password_encryption = 'scram-sha-256'
 as $$
 declare
   generated_node_id uuid := gen_random_uuid();
@@ -1305,6 +1398,7 @@ returns table (
 language plpgsql
 security definer
 set search_path = pg_catalog, symphony_staging
+set password_encryption = 'scram-sha-256'
 as $$
 declare
   principal_role name;
@@ -1774,6 +1868,7 @@ returns table (
 language plpgsql
 security definer
 set search_path = pg_catalog, symphony_staging
+set password_encryption = 'scram-sha-256'
 as $$
 declare
   prior_role name;
@@ -2124,6 +2219,69 @@ from (
     )
   union all
   select
+    'publication-all:' || publication.pubname || ':' ||
+    pg_get_userbyid(publication.pubowner) || ':' ||
+    publication.pubinsert::text || ':' || publication.pubupdate::text || ':' ||
+    publication.pubdelete::text || ':' || publication.pubtruncate::text || ':' ||
+    publication.pubviaroot::text
+  from pg_publication publication
+  where publication.puballtables
+  union all
+  select
+    'publication-schema:' || publication.pubname || ':' || namespace.nspname
+  from pg_publication_namespace publication_namespace
+  join pg_publication publication
+    on publication.oid = publication_namespace.pnpubid
+  join pg_namespace namespace on namespace.oid = publication_namespace.pnnspid
+  where namespace.nspname in ('symphony_staging', 'symphony_production')
+  union all
+  select
+    'publication-relation:' || publication.pubname || ':' ||
+    namespace.nspname || '.' || relation.relname || ':' ||
+    coalesce(pg_get_expr(publication_relation.prqual, relation.oid), '') || ':' ||
+    coalesce(publication_relation.prattrs::text, '')
+  from pg_publication_rel publication_relation
+  join pg_publication publication
+    on publication.oid = publication_relation.prpubid
+  join pg_class relation on relation.oid = publication_relation.prrelid
+  join pg_namespace namespace on namespace.oid = relation.relnamespace
+  where namespace.nspname in ('symphony_staging', 'symphony_production')
+  union all
+  select
+    'runtime-extension:' || extension.extname || ':' ||
+    extension.extversion || ':' || namespace.nspname || ':' ||
+    pg_get_userbyid(extension.extowner) || ':' ||
+    extension.extrelocatable::text || ':' ||
+    coalesce(extension.extconfig::text, '') || ':' ||
+    coalesce(extension.extcondition::text, '')
+  from pg_extension extension
+  join pg_namespace namespace on namespace.oid = extension.extnamespace
+  where extension.extname = 'pgcrypto'
+  union all
+  select
+    'runtime-function:' || procedure.oid::regprocedure::text || ':' ||
+    pg_get_userbyid(procedure.proowner) || ':' || language.lanname || ':' ||
+    procedure.prorettype::regtype::text || ':' ||
+    procedure.prosecdef::text || ':' || procedure.proleakproof::text || ':' ||
+    procedure.proisstrict::text || ':' || procedure.provolatile::text || ':' ||
+    procedure.proparallel::text || ':' || coalesce(procedure.proconfig::text, '') || ':' ||
+    coalesce(procedure.proacl::text, '') || ':' ||
+    coalesce(procedure.probin, '') || ':' || procedure.prosrc || ':' ||
+    extension.extname || ':' || dependency.deptype::text
+  from pg_proc procedure
+  join pg_namespace namespace on namespace.oid = procedure.pronamespace
+  join pg_language language on language.oid = procedure.prolang
+  join pg_depend dependency
+    on dependency.classid = 'pg_proc'::regclass
+   and dependency.objid = procedure.oid
+   and dependency.refclassid = 'pg_extension'::regclass
+  join pg_extension extension on extension.oid = dependency.refobjid
+  where procedure.oid in (
+    'extensions.gen_random_bytes(integer)'::regprocedure,
+    'extensions.digest(text,text)'::regprocedure
+  )
+  union all
+  select
     'inventory-relation:' || namespace.nspname || ':' ||
     relation.relname || ':' || relation.relkind::text || ':' ||
     relation.relpersistence::text || ':' || relation.relreplident::text || ':' ||
@@ -2322,6 +2480,33 @@ from (
     index_state.indisvalid::text || ':' ||
     index_state.indisready::text || ':' ||
     index_state.indislive::text || ':' ||
+    coalesce((
+      select string_agg(
+        case
+          when collation_oid = 0 then ''
+          else quote_ident(collation_namespace.nspname) || '.' ||
+               quote_ident(collation.collname)
+        end,
+        ',' order by ordinal
+      )
+      from unnest(index_state.indcollation::oid[]) with ordinality
+        as index_collation(collation_oid, ordinal)
+      left join pg_collation collation on collation.oid = collation_oid
+      left join pg_namespace collation_namespace
+        on collation_namespace.oid = collation.collnamespace
+    ), '') || ':' ||
+    coalesce((
+      select string_agg(
+        quote_ident(opclass_namespace.nspname) || '.' ||
+        quote_ident(opclass.opcname),
+        ',' order by ordinal
+      )
+      from unnest(index_state.indclass::oid[]) with ordinality
+        as index_opclass(opclass_oid, ordinal)
+      join pg_opclass opclass on opclass.oid = opclass_oid
+      join pg_namespace opclass_namespace
+        on opclass_namespace.oid = opclass.opcnamespace
+    ), '') || ':' ||
     pg_get_indexdef(index_relation.oid)
   from pg_index index_state
   join pg_class relation on relation.oid = index_state.indrelid
@@ -2349,6 +2534,11 @@ from (
     attribute.attidentity::text || ':' ||
     attribute.attgenerated::text || ':' ||
     coalesce(pg_get_expr(default_value.adbin, default_value.adrelid), '') || ':' ||
+    case
+      when attribute.attcollation = 0 then ''
+      else quote_ident(collation_namespace.nspname) || '.' ||
+           quote_ident(collation.collname)
+    end || ':' ||
     coalesce(attribute.attacl::text, '')
   from pg_class relation
   join pg_namespace namespace on namespace.oid = relation.relnamespace
@@ -2356,6 +2546,9 @@ from (
   left join pg_attrdef default_value
     on default_value.adrelid = relation.oid
    and default_value.adnum = attribute.attnum
+  left join pg_collation collation on collation.oid = attribute.attcollation
+  left join pg_namespace collation_namespace
+    on collation_namespace.oid = collation.collnamespace
   where namespace.nspname = 'symphony_staging'
     and relation.relname in (
       'node_login_principals',
