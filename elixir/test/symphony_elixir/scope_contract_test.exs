@@ -767,6 +767,50 @@ defmodule SymphonyElixir.ScopeContractTest do
             }} = ScopeContract.parse_pr_body(body)
   end
 
+  test "keeps fenced headings inside a real list section as fail-closed content" do
+    # Mutation caught: treating fenced ##### as a section or fenced #### as a scope terminator.
+    body = """
+    #### Scope Contract
+
+    ##### Work Item
+
+    Parse the real scope contract.
+
+    ##### Invariants
+
+    - Keep parsing the visible contract.
+    ```markdown
+    ##### Acceptance Criteria
+    #### Premature Terminator
+    ```
+    - Keep parsing after the fenced example.
+
+    ##### Acceptance Criteria
+
+    - AC-1: Parse all visible sections.
+
+    ##### Non-Goals
+
+    - Do not interpret fenced headings as structure.
+
+    ##### Dependencies
+
+    None
+
+    ##### Follow-Ups
+
+    None
+    """
+
+    assert {:error,
+            [
+              {:malformed_bullet, :invariants, "```markdown"},
+              {:malformed_bullet, :invariants, "##### Acceptance Criteria"},
+              {:malformed_bullet, :invariants, "#### Premature Terminator"},
+              {:malformed_bullet, :invariants, "```"}
+            ]} = ScopeContract.parse_pr_body(body)
+  end
+
   test "joins legally indented Markdown list continuations" do
     # Mutation caught: requiring every physical line of one list item to repeat the bullet marker.
     body = """
