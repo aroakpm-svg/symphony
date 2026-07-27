@@ -401,21 +401,24 @@ where node_id = (
 delete from symphony_staging.routing_assignments where issue_id = 'ARO-169-concurrent';
 delete from symphony_staging.node_principal_history
 where node_id = (
-  select node_id from symphony_staging.node_lifecycle_operations
-  where operation_id = '16900000-0000-4000-8000-000000000002'
+  select node_id from symphony_staging.nodes
+  where display_alias = 'concurrent-node'
 );
 delete from symphony_staging.node_login_principals
 where node_id = (
-  select node_id from symphony_staging.node_lifecycle_operations
-  where operation_id = '16900000-0000-4000-8000-000000000002'
+  select node_id from symphony_staging.nodes
+  where display_alias = 'concurrent-node'
+);
+delete from symphony_staging.node_lifecycle_operations
+where node_id = (
+  select node_id from symphony_staging.nodes
+  where display_alias = 'concurrent-node'
 );
 delete from symphony_staging.node_bindings
 where node_id = (
-  select node_id from symphony_staging.node_lifecycle_operations
-  where operation_id = '16900000-0000-4000-8000-000000000002'
+  select node_id from symphony_staging.nodes
+  where display_alias = 'concurrent-node'
 );
-delete from symphony_staging.node_lifecycle_operations
-where operation_id = '16900000-0000-4000-8000-000000000002';
 delete from symphony_staging.nodes where display_alias = 'concurrent-node';
 
 revoke execute on function symphony_staging.authenticate_node(uuid, uuid)

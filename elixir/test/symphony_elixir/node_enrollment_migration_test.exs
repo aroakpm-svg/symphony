@@ -72,6 +72,7 @@ defmodule SymphonyElixir.NodeEnrollmentMigrationTest do
 
     assert sql =~ "'MEMBER'"
     refute sql =~ "\n       'USAGE'\n"
+
     assert lifecycle_script =~
              "grant symphony_staging_provisioner to aro169_disposable_bootstrap"
 
