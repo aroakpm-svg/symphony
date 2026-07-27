@@ -1,0 +1,29 @@
+# SDD ledger — plan: docs/superpowers/plans/2026-07-27-symphony-scope-contract.md
+
+Preflight: base `7d802238c56e81d90b251a34e31223e33c058c59`; fork `digitaltriumphs-tw/symphony`; target `aroakpm-svg/symphony:main`.
+Preflight ruling: tasks are ordered and non-conflicting. Task 1 owns the pure contract, Task 2 owns template/lint integration, and Task 3 owns documentation plus whole-branch verification.
+
+Task 1: implementation receipt saved at `task-1-implementation-receipt.md` for commit `6b85dea`.
+Task 1: review round 1 — 4 code findings open: normalize `None` after bullet parsing; reject malformed bullet markers; reject duplicate outer contracts; reject duplicate AC identifiers. One controller finding open: persist receipt/ledger evidence. Minor append complexity noted for the final reviewer.
+Task 1: fix round 1/5 (implementer reports 4 addressed, 0 open; commit `60f318a`; scoped re-review pending).
+Task 1: scoped re-review round 1 resolved the 4 original code findings and receipt finding, but found 1 fix-introduced Important regression: bullet normalization errors short-circuit semantic error aggregation. Fix round 2/5 required.
+Task 1: fix round 2/5 (implementer reports aggregation regression addressed, 0 open; commit `5e65ea3`; scoped re-review pending).
+Task 1: complete (commits `7d80223..5e65ea3`, review clean after fix round 2/5; 0 parked findings).
+Task 2: implementation receipt saved at `task-2-implementation-receipt.md` for commit `397dcf6`; independent task review pending.
+Task 2: code quality approved; receipt review found one controller evidence error. Corrected the duplicate-subheading label and saved the contemporaneous RED excerpt; scoped receipt re-review pending.
+Task 2: complete (commit `397dcf6`, code quality approved, receipt finding resolved; 0 parked findings).
+Task 3: implementation receipt saved at `task-3-implementation-receipt.md` for commit `0a02f1b`; targeted tests, format, and specs passed. Full gate is blocked by three Task 1 parser Credo nesting findings; routed back to Task 1 owner as fix round 3/5. Independent docs review pending.
+Task 1: fix round 3/5 (Credo structural gate addressed in commit `80de258`; 36 behavior tests remain green; scoped re-review pending).
+Task 1: integration fix round 3/5 approved; Credo clean, 36 tests green, no behavior or error-order change.
+Task 3: docs review found 1 P2 normative contradiction: `SPEC.md` says the linted contract MAY exist while runtime lint requires it. Docs fix round 1 required.
+Task 3: docs fix round 1/5 (P2 normative contradiction addressed in commit `ddfd54d`; scoped re-review pending).
+Task 3: complete (commits `0a02f1b` and `ddfd54d`, docs review clean after fix round 1/5; full branch gate pending).
+Task 1: minor (deferred): several tiny-list accumulators use `++`; current PR bodies are bounded, behavior is correct, 36 tests and Credo pass, and changing accumulation strategy is not load-bearing for this scope. Final reviewer to adjudicate.
+Final whole-branch review: not approved. One final fix dispatch required for 2 P1s recorded in `final-review-findings.md`: Work Item bullet/None bypass and 97.65% coverage gate. `++` accumulator minor parked with reviewer approval; timing assertions in unchanged CoreTest are not branch findings.
+Final fix dispatch: commit `d252f5c` reports both P1s addressed; 46 targeted tests green; full coverage 377 tests/0 failures/10 skipped and total 100%; format/specs/Credo/diff checks green. Scoped final re-review pending.
+Scoped final re-review: both P1s resolved; branch approved. Controller `make all` attempts reached 100% coverage but failed only unchanged CoreTest timing lower bounds (attempt 1: 9ms and 3ms; attempt 2: 17ms). Exact-head implementer coverage passed 377/0 and final reviewer independently confirmed 100%. Controller fresh targeted 46/0 and Dialyzer 0 errors passed. GitHub CI remains the authoritative full-gate before merge.
+PR #8 exact-head Codex review fix (`d252f5c597aea49796b5c84b608251c89ec01a3e`): four unresolved P2 threads verified — fenced heading discovery, Markdown list continuations, Acceptance Criteria error aggregation after `None`, and quadratic accumulators.
+PR #8 review-fix RED: `mise exec -- mix test test/symphony_elixir/scope_contract_test.exs` produced 26 tests / 5 expected failures; fenced headings returned duplicate+missing errors, legal continuations returned malformed-bullet errors, AC returned only `none_not_allowed`, and the 40,000-line contract timed out after 2,500ms in `collect_section_content/2`. `mise exec -- mix test test/mix/tasks/pr_body_check_test.exs` produced 26 tests / 1 expected failure at the real Mix boundary (continuation misreported and AC errors short-circuited).
+PR #8 review-fix implementation: fence-aware Markdown line marking honors backtick/tilde fences, opening length, same-character closing markers, and closing length >= opening; list parsing joins indented continuations and rejects an orphan continuation; AC validation returns `None`, malformed, and duplicate errors in stable order; section/value/error reducers use prepend plus one reverse instead of iterative append.
+PR #8 review-fix GREEN: `mise exec -- mix test test/symphony_elixir/scope_contract_test.exs test/mix/tasks/pr_body_check_test.exs` produced 52 tests / 0 failures; `mise exec -- mix format --check-formatted`, `mise exec -- mix specs.check`, `mise exec -- sh -lc 'mix credo --strict'`, and `git diff --check` passed. The 40,000-line targeted test completed in 75.2ms versus the old >2,500ms timeout.
+PR #8 review-fix full coverage caveat: `mise exec -- mix test --cover` had already started before the controller changed the flow to a single final-head coverage run. It completed, but the tool capture retained only progress output and no final summary, so this receipt does not claim a coverage result and the controller owns authoritative final-head coverage. No `make all` was run in this package.

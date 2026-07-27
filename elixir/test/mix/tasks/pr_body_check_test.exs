@@ -722,6 +722,77 @@ defmodule Mix.Tasks.PrBody.CheckTest do
     end)
   end
 
+  test "uses shared continuation parsing and aggregates all acceptance criterion errors" do
+    # Mutation caught: bypassing shared list normalization or short-circuiting semantic errors in the Mix task.
+    in_temp_repo(fn ->
+      write_template!(@template)
+
+      body = """
+      #### Context
+
+      Context text.
+
+      #### TL;DR
+
+      Short summary.
+
+      #### Summary
+
+      - First change.
+
+      #### Alternatives
+
+      - Alternative considered.
+
+      #### Test Plan
+
+      - [x] Ran targeted checks.
+
+      #### Scope Contract
+
+      ##### Work Item
+
+      Enforce typed PR scope contracts.
+
+      ##### Invariants
+
+      - Existing generic PR body checks
+        still run.
+
+      ##### Acceptance Criteria
+
+      - None
+      - Missing a stable identifier.
+      - AC-1: Invalid contracts fail closed.
+      - AC-1: Duplicate identifiers fail closed.
+
+      ##### Non-Goals
+
+      - Do not change review routing.
+
+      ##### Dependencies
+
+      None
+
+      ##### Follow-Ups
+
+      None
+      """
+
+      File.write!("body.md", body)
+
+      error_output = capture_invalid_body_output()
+
+      refute error_output =~ "Scope Contract Invariants has malformed bullet"
+      assert error_output =~ "Scope Contract Acceptance Criteria cannot be None"
+
+      assert error_output =~
+               "Scope Contract Acceptance Criteria has malformed criterion: Missing a stable identifier."
+
+      assert error_output =~ "Scope Contract Acceptance Criteria duplicates identifier: AC-1"
+    end)
+  end
+
   defp capture_invalid_body_output do
     capture_io(:stderr, fn ->
       assert_raise Mix.Error, ~r/PR body format invalid/, fn ->

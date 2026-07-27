@@ -714,4 +714,215 @@ defmodule SymphonyElixir.ScopeContractTest do
               {:none_not_allowed, :invariants}
             ]} = ScopeContract.parse_pr_body(body)
   end
+
+  test "ignores Scope Contract headings inside backtick and tilde fences" do
+    # Mutation caught: counting fenced example headings or closing a fence with a shorter marker.
+    body = """
+    #### Context
+
+    ````markdown
+    #### Scope Contract
+    ```
+    #### Scope Contract
+    ````
+
+    ~~~~ text
+    #### Scope Contract
+    ~~~
+    #### Scope Contract
+    ~~~~~
+
+    #### Scope Contract
+
+    ##### Work Item
+
+    Parse the real scope contract.
+
+    ##### Invariants
+
+    - Fenced examples do not create contracts.
+
+    ##### Acceptance Criteria
+
+    - AC-1: Parse the visible contract heading.
+
+    ##### Non-Goals
+
+    - Do not interpret prose semantically.
+
+    ##### Dependencies
+
+    None
+
+    ##### Follow-Ups
+
+    None
+    """
+
+    assert {:ok,
+            %{
+              work_item: "Parse the real scope contract.",
+              invariants: ["Fenced examples do not create contracts."],
+              acceptance_criteria: ["AC-1: Parse the visible contract heading."]
+            }} = ScopeContract.parse_pr_body(body)
+  end
+
+  test "joins legally indented Markdown list continuations" do
+    # Mutation caught: requiring every physical line of one list item to repeat the bullet marker.
+    body = """
+    #### Scope Contract
+
+    ##### Work Item
+
+    Parse wrapped contract values.
+
+    ##### Invariants
+
+    - Invalid contracts remain
+      fail closed.
+
+    ##### Acceptance Criteria
+
+    - AC-1: Parse legal Markdown
+        continuation indentation.
+
+    ##### Non-Goals
+
+    - Do not change
+      review routing.
+
+    ##### Dependencies
+
+    - Existing PR lint
+      integration.
+
+    ##### Follow-Ups
+
+    None
+    """
+
+    assert {:ok,
+            %{
+              invariants: ["Invalid contracts remain fail closed."],
+              acceptance_criteria: ["AC-1: Parse legal Markdown continuation indentation."],
+              non_goals: ["Do not change review routing."],
+              dependencies: ["Existing PR lint integration."]
+            }} = ScopeContract.parse_pr_body(body)
+  end
+
+  test "rejects an indented continuation before the first list bullet" do
+    # Mutation caught: accepting an orphan continuation merely because it has legal continuation indentation.
+    body = """
+    #### Scope Contract
+
+    ##### Work Item
+
+    Parse wrapped contract values.
+
+    ##### Invariants
+
+      Orphaned continuation.
+    - Invalid contracts remain
+      fail closed.
+
+    ##### Acceptance Criteria
+
+    - AC-1: Parse a complete contract.
+
+    ##### Non-Goals
+
+    - Do not change review routing.
+
+    ##### Dependencies
+
+    None
+
+    ##### Follow-Ups
+
+    None
+    """
+
+    assert {:error, [{:malformed_bullet, :invariants, "Orphaned continuation."}]} =
+             ScopeContract.parse_pr_body(body)
+  end
+
+  test "aggregates None and all remaining acceptance criterion errors in stable order" do
+    # Mutation caught: returning the None policy error before validating other usable acceptance criteria.
+    body = """
+    #### Scope Contract
+
+    ##### Work Item
+
+    Aggregate all criterion errors.
+
+    ##### Invariants
+
+    - Invalid contracts fail closed.
+
+    ##### Acceptance Criteria
+
+    - None
+    - Missing a stable identifier.
+    - AC-1: First criterion.
+    - AC-1: Duplicate criterion.
+
+    ##### Non-Goals
+
+    - Do not change review routing.
+
+    ##### Dependencies
+
+    None
+
+    ##### Follow-Ups
+
+    None
+    """
+
+    assert {:error,
+            [
+              {:none_not_allowed, :acceptance_criteria},
+              {:malformed_acceptance_criterion, "Missing a stable identifier."},
+              {:duplicate_acceptance_criterion, "AC-1"}
+            ]} = ScopeContract.parse_pr_body(body)
+  end
+
+  @tag timeout: 2_500
+  test "parses a large contract in stable source order without quadratic accumulation" do
+    # Mutation caught: appending each parsed line to the accumulated list and repeatedly copying its prefix.
+    bullets = Enum.map_join(1..40_000, "\n", fn index -> "- invariant #{index}" end)
+
+    body = """
+    #### Scope Contract
+
+    ##### Work Item
+
+    Parse a large scope contract.
+
+    ##### Invariants
+
+    #{bullets}
+
+    ##### Acceptance Criteria
+
+    - AC-1: Preserve source order.
+
+    ##### Non-Goals
+
+    - Do not change review routing.
+
+    ##### Dependencies
+
+    None
+
+    ##### Follow-Ups
+
+    None
+    """
+
+    assert {:ok, %{invariants: invariants}} = ScopeContract.parse_pr_body(body)
+    assert length(invariants) == 40_000
+    assert hd(invariants) == "invariant 1"
+    assert List.last(invariants) == "invariant 40000"
+  end
 end

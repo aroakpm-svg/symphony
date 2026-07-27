@@ -14,6 +14,9 @@ defmodule SymphonyElixir.ScopeContract do
 
   @optional_none_fields [:dependencies, :follow_ups]
   @required_list_fields [:invariants, :acceptance_criteria, :non_goals]
+  @scope_contract_heading "#### Scope Contract"
+  @opening_fence ~r/^( {0,3})(`{3,}|~{3,})(.*)$/
+  @closing_fence ~r/^( {0,3})(`{3,}|~{3,})[ \t]*$/
 
   @enforce_keys [:work_item, :invariants, :acceptance_criteria, :non_goals, :dependencies, :follow_ups]
   defstruct [:work_item, :invariants, :acceptance_criteria, :non_goals, :dependencies, :follow_ups]
@@ -65,10 +68,15 @@ defmodule SymphonyElixir.ScopeContract do
   end
 
   defp scope_contract_lines(pr_body) do
-    lines = pr_body |> String.replace("\r\n", "\n") |> String.split("\n")
-    outer_headings = Enum.count(lines, &(String.trim_trailing(&1) == "#### Scope Contract"))
+    lines =
+      pr_body
+      |> String.replace("\r\n", "\n")
+      |> String.split("\n")
+      |> mark_fenced_lines()
 
-    case Enum.find_index(lines, &(String.trim_trailing(&1) == "#### Scope Contract")) do
+    outer_headings = Enum.count(lines, &scope_contract_heading?/1)
+
+    case Enum.find_index(lines, &scope_contract_heading?/1) do
       nil ->
         :missing
 
@@ -85,14 +93,15 @@ defmodule SymphonyElixir.ScopeContract do
   end
 
   defp collect_sections(lines) do
-    {sections, errors, _current} =
+    {reversed_sections, reversed_errors, _current} =
       Enum.reduce(lines, {%{}, [], nil}, &collect_section_line/2)
 
-    {sections, errors}
+    sections = Map.new(reversed_sections, fn {field, section_lines} -> {field, Enum.reverse(section_lines)} end)
+    {sections, Enum.reverse(reversed_errors)}
   end
 
-  defp collect_section_line(line, state) do
-    case section_heading(line) do
+  defp collect_section_line({line, fenced?}, state) do
+    case section_heading(line, fenced?) do
       {:known, field} -> collect_known_section(field, state)
       {:unknown, heading} -> collect_unknown_section(heading, state)
       :content -> collect_section_content(line, state)
@@ -101,25 +110,27 @@ defmodule SymphonyElixir.ScopeContract do
 
   defp collect_known_section(field, {sections, errors, _current}) do
     if Map.has_key?(sections, field) do
-      {sections, errors ++ [{:duplicate_section, field}], :ignore}
+      {sections, [{:duplicate_section, field} | errors], :ignore}
     else
       {Map.put(sections, field, []), errors, field}
     end
   end
 
   defp collect_unknown_section(heading, {sections, errors, _current}) do
-    {sections, errors ++ [{:unexpected_section, heading}], :ignore}
+    {sections, [{:unexpected_section, heading} | errors], :ignore}
   end
 
   defp collect_section_content(line, {sections, errors, current} = state) do
     if Map.has_key?(sections, current) do
-      {Map.update!(sections, current, &(&1 ++ [line])), errors, current}
+      {Map.update!(sections, current, &[line | &1]), errors, current}
     else
       state
     end
   end
 
-  defp section_heading(line) do
+  defp section_heading(_line, true), do: :content
+
+  defp section_heading(line, false) do
     trimmed = String.trim_trailing(line)
 
     case Enum.find(@fields, fn {_field, title} -> trimmed == "##### #{title}" end) do
@@ -147,11 +158,11 @@ defmodule SymphonyElixir.ScopeContract do
 
           {:ok, lines} ->
             {value, field_errors} = validate_field(field, lines)
-            {Map.put(values, field, value), errors ++ field_errors}
+            {Map.put(values, field, value), Enum.reverse(field_errors, errors)}
         end
       end)
 
-    {values, missing_errors ++ content_errors}
+    {values, missing_errors ++ Enum.reverse(content_errors)}
   end
 
   defp validate_field(:work_item, lines), do: validate_work_item(lines)
@@ -185,7 +196,7 @@ defmodule SymphonyElixir.ScopeContract do
   defp validate_work_item_value(value), do: {value, []}
 
   defp validate_list(field, lines) do
-    values = nonblank_lines(lines)
+    values = nonblank_list_lines(lines)
 
     cond do
       placeholder?(values) ->
@@ -202,66 +213,139 @@ defmodule SymphonyElixir.ScopeContract do
   end
 
   defp normalize_bullets(field, lines) do
-    {values, errors} = Enum.reduce(lines, {[], []}, &normalize_bullet(field, &1, &2))
+    {reversed_values, reversed_errors} = Enum.reduce(lines, {[], []}, &normalize_bullet(field, &1, &2))
 
-    {values, errors}
+    {Enum.reverse(reversed_values), Enum.reverse(reversed_errors)}
   end
 
-  defp normalize_bullet(_field, "None", {values, errors}), do: {values ++ ["None"], errors}
-
-  defp normalize_bullet(field, "-", {values, errors}) do
-    {values, errors ++ [{:blank_bullet, field}]}
+  defp normalize_bullet(field, line, state) do
+    normalize_bullet_value(field, line, String.trim(line), state)
   end
 
-  defp normalize_bullet(_field, <<"- ", value::binary>>, {values, errors}) do
-    {values ++ [String.trim(value)], errors}
+  defp normalize_bullet_value(_field, _line, "None", {values, errors}), do: {["None" | values], errors}
+
+  defp normalize_bullet_value(field, _line, "-", {values, errors}) do
+    {values, [{:blank_bullet, field} | errors]}
   end
 
-  defp normalize_bullet(field, line, {values, errors}) do
-    {values, errors ++ [{:malformed_bullet, field, line}]}
+  defp normalize_bullet_value(_field, _line, <<"- ", value::binary>>, {values, errors}) do
+    {[String.trim(value) | values], errors}
+  end
+
+  defp normalize_bullet_value(field, _line, <<"-", _rest::binary>> = value, {values, errors}) do
+    {values, [{:malformed_bullet, field, value} | errors]}
+  end
+
+  defp normalize_bullet_value(field, line, value, state) do
+    if continuation_line?(line) do
+      append_continuation(field, value, state)
+    else
+      malformed_bullet(field, value, state)
+    end
+  end
+
+  defp append_continuation(_field, value, {[previous | values], errors}) do
+    {[previous <> " " <> value | values], errors}
+  end
+
+  defp append_continuation(field, value, {[], errors}) do
+    {[], [{:malformed_bullet, field, value} | errors]}
+  end
+
+  defp malformed_bullet(field, value, {values, errors}) do
+    {values, [{:malformed_bullet, field, value} | errors]}
   end
 
   defp validate_normalized_list(field, ["None"]) when field in @optional_none_fields, do: {[], []}
 
+  defp validate_normalized_list(:acceptance_criteria, values) do
+    criterion_values = Enum.reject(values, &(&1 == "None"))
+    criterion_errors = acceptance_criterion_errors(criterion_values)
+
+    if "None" in values do
+      {[], [{:none_not_allowed, :acceptance_criteria} | criterion_errors]}
+    else
+      {values, criterion_errors}
+    end
+  end
+
   defp validate_normalized_list(field, values) do
-    cond do
-      "None" in values ->
-        {[], [{none_error(field), field}]}
-
-      field == :acceptance_criteria ->
-        {values, acceptance_criterion_errors(values)}
-
-      true ->
-        {values, []}
+    if "None" in values do
+      {[], [{none_error(field), field}]}
+    else
+      {values, []}
     end
   end
 
   defp acceptance_criterion_errors(values) do
-    {_identifiers, errors} =
+    {_identifiers, reversed_errors} =
       Enum.reduce(values, {MapSet.new(), []}, &collect_acceptance_criterion/2)
 
-    errors
+    Enum.reverse(reversed_errors)
   end
 
   defp collect_acceptance_criterion(value, {identifiers, errors}) do
     case acceptance_criterion_identifier(value) do
       {:ok, identifier} -> collect_acceptance_identifier(identifier, identifiers, errors)
-      :error -> {identifiers, errors ++ [{:malformed_acceptance_criterion, value}]}
+      :error -> {identifiers, [{:malformed_acceptance_criterion, value} | errors]}
     end
   end
 
   defp collect_acceptance_identifier(identifier, identifiers, errors) do
     if MapSet.member?(identifiers, identifier) do
-      {identifiers, errors ++ [{:duplicate_acceptance_criterion, identifier}]}
+      {identifiers, [{:duplicate_acceptance_criterion, identifier} | errors]}
     else
       {MapSet.put(identifiers, identifier), errors}
     end
   end
 
   defp nonblank_lines(lines), do: lines |> Enum.map(&String.trim/1) |> Enum.reject(&(&1 == ""))
+  defp nonblank_list_lines(lines), do: lines |> Enum.map(&String.trim_trailing/1) |> Enum.reject(&(String.trim(&1) == ""))
   defp placeholder?(lines), do: Enum.any?(lines, &String.contains?(&1, "<!--"))
   defp none_error(field) when field in @required_list_fields, do: :none_not_allowed
   defp none_error(_field), do: :none_must_be_explicit
+
+  defp mark_fenced_lines(lines) do
+    {marked_lines, _fence} = Enum.map_reduce(lines, nil, &mark_fenced_line/2)
+    marked_lines
+  end
+
+  defp mark_fenced_line(line, nil) do
+    case opening_fence(line) do
+      {:ok, fence} -> {{line, true}, fence}
+      :none -> {{line, false}, nil}
+    end
+  end
+
+  defp mark_fenced_line(line, fence) do
+    next_fence = if closing_fence?(line, fence), do: nil, else: fence
+    {{line, true}, next_fence}
+  end
+
+  defp opening_fence(line) do
+    case Regex.run(@opening_fence, line) do
+      [_, _indent, marker, info] -> validate_opening_fence(marker, info)
+      nil -> :none
+    end
+  end
+
+  defp validate_opening_fence(<<"`", _rest::binary>> = marker, info) do
+    if String.contains?(info, "`"), do: :none, else: {:ok, {"`", String.length(marker)}}
+  end
+
+  defp validate_opening_fence(marker, _info), do: {:ok, {"~", String.length(marker)}}
+
+  defp closing_fence?(line, {character, opening_length}) do
+    case Regex.run(@closing_fence, line) do
+      [_, _indent, marker] -> String.starts_with?(marker, character) and String.length(marker) >= opening_length
+      nil -> false
+    end
+  end
+
+  defp scope_contract_heading?({line, false}), do: String.trim_trailing(line) == @scope_contract_heading
+  defp scope_contract_heading?({_line, true}), do: false
+
+  defp continuation_line?(line), do: Regex.match?(~r/^(?: {2,}| *\t)/, line)
 
   defp acceptance_criterion_identifier(value) do
     case Regex.run(~r/^(AC-[1-9][0-9]*):\s+\S/, value) do
@@ -270,5 +354,6 @@ defmodule SymphonyElixir.ScopeContract do
     end
   end
 
-  defp level_four_heading?(line), do: String.starts_with?(String.trim_trailing(line), "#### ")
+  defp level_four_heading?({line, false}), do: String.starts_with?(String.trim_trailing(line), "#### ")
+  defp level_four_heading?({_line, true}), do: false
 end
