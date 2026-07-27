@@ -23,27 +23,52 @@ begin
       message = 'ARO-169 requires the reconciled ARO-168 contract v2';
   end if;
 
+  lock table
+    symphony_staging.contract_versions,
+    symphony_staging.nodes,
+    symphony_staging.node_bindings,
+    symphony_staging.routing_assignments,
+    symphony_staging.foundation_audit_events
+    in access exclusive mode;
+
+  if (select count(*) from symphony_staging.contract_versions) <> 1
+     or exists (select 1 from symphony_staging.nodes)
+     or exists (select 1 from symphony_staging.node_bindings)
+     or exists (select 1 from symphony_staging.routing_assignments)
+     or exists (select 1 from symphony_staging.foundation_audit_events) then
+    raise exception using
+      errcode = '55000',
+      message = 'ARO-169 requires an empty, exact ARO-168 v2 data state';
+  end if;
+
   if exists (
-    with expected(object_name, object_kind) as (
+    with expected(
+      object_name, object_kind, persistence, replica_identity,
+      row_security, force_row_security, has_rules, has_triggers
+    ) as (
       values
-        ('contract_versions', 'r'::"char"),
-        ('contract_versions_pkey', 'i'::"char"),
-        ('nodes', 'r'::"char"),
-        ('nodes_pkey', 'i'::"char"),
-        ('node_bindings', 'r'::"char"),
-        ('node_bindings_pkey', 'i'::"char"),
-        ('node_bindings_node_id_environment_credential_version_key', 'i'::"char"),
-        ('node_bindings_one_active_per_node', 'i'::"char"),
-        ('node_bindings_one_rotating_per_node', 'i'::"char"),
-        ('routing_assignments', 'r'::"char"),
-        ('routing_assignments_pkey', 'i'::"char"),
-        ('routing_assignments_target_node_id_idx', 'i'::"char"),
-        ('foundation_audit_events', 'r'::"char"),
-        ('foundation_audit_events_pkey', 'i'::"char"),
-        ('foundation_audit_events_audit_id_seq', 'S'::"char")
+        ('contract_versions', 'r'::"char", 'p'::"char", 'd'::"char", true, false, false, false),
+        ('contract_versions_pkey', 'i'::"char", 'p'::"char", 'n'::"char", false, false, false, false),
+        ('nodes', 'r'::"char", 'p'::"char", 'd'::"char", true, false, false, true),
+        ('nodes_pkey', 'i'::"char", 'p'::"char", 'n'::"char", false, false, false, false),
+        ('node_bindings', 'r'::"char", 'p'::"char", 'd'::"char", true, false, false, true),
+        ('node_bindings_pkey', 'i'::"char", 'p'::"char", 'n'::"char", false, false, false, false),
+        ('node_bindings_node_id_environment_credential_version_key', 'i'::"char", 'p'::"char", 'n'::"char", false, false, false, false),
+        ('node_bindings_one_active_per_node', 'i'::"char", 'p'::"char", 'n'::"char", false, false, false, false),
+        ('node_bindings_one_rotating_per_node', 'i'::"char", 'p'::"char", 'n'::"char", false, false, false, false),
+        ('routing_assignments', 'r'::"char", 'p'::"char", 'd'::"char", true, false, false, true),
+        ('routing_assignments_pkey', 'i'::"char", 'p'::"char", 'n'::"char", false, false, false, false),
+        ('routing_assignments_target_node_id_idx', 'i'::"char", 'p'::"char", 'n'::"char", false, false, false, false),
+        ('foundation_audit_events', 'r'::"char", 'p'::"char", 'd'::"char", true, false, false, false),
+        ('foundation_audit_events_pkey', 'i'::"char", 'p'::"char", 'n'::"char", false, false, false, false),
+        ('foundation_audit_events_audit_id_seq', 'S'::"char", 'p'::"char", 'n'::"char", false, false, false, false)
     ),
     actual as (
-      select relation.relname::text, relation.relkind
+      select
+        relation.relname::text, relation.relkind, relation.relpersistence,
+        relation.relreplident, relation.relrowsecurity,
+        relation.relforcerowsecurity, relation.relhasrules,
+        relation.relhastriggers
       from pg_class relation
       join pg_namespace namespace on namespace.oid = relation.relnamespace
       where namespace.nspname = 'symphony_staging'
@@ -354,30 +379,45 @@ begin
   end if;
 
   if exists (
-    with expected(index_name, index_definition) as (
+    select 1
+    from pg_trigger trigger_row
+    join pg_class relation on relation.oid = trigger_row.tgrelid
+    join pg_namespace namespace on namespace.oid = relation.relnamespace
+    where namespace.nspname = 'symphony_staging'
+      and trigger_row.tgisinternal
+      and trigger_row.tgenabled <> 'O'
+  ) then
+    raise exception using
+      errcode = '55000',
+      message = 'ARO-169 unsafe disabled internal constraint trigger state';
+  end if;
+
+  if exists (
+    with expected(index_name, replica_identity, index_definition) as (
       values
-        ('contract_versions_pkey',
+        ('contract_versions_pkey', false,
          'CREATE UNIQUE INDEX contract_versions_pkey ON symphony_staging.contract_versions USING btree (contract_name)'),
-        ('nodes_pkey',
+        ('nodes_pkey', false,
          'CREATE UNIQUE INDEX nodes_pkey ON symphony_staging.nodes USING btree (node_id)'),
-        ('node_bindings_pkey',
+        ('node_bindings_pkey', false,
          'CREATE UNIQUE INDEX node_bindings_pkey ON symphony_staging.node_bindings USING btree (binding_id)'),
-        ('node_bindings_node_id_environment_credential_version_key',
+        ('node_bindings_node_id_environment_credential_version_key', false,
          'CREATE UNIQUE INDEX node_bindings_node_id_environment_credential_version_key ON symphony_staging.node_bindings USING btree (node_id, environment, credential_version)'),
-        ('node_bindings_one_active_per_node',
+        ('node_bindings_one_active_per_node', false,
          'CREATE UNIQUE INDEX node_bindings_one_active_per_node ON symphony_staging.node_bindings USING btree (node_id, environment) WHERE (status = ''active''::text)'),
-        ('node_bindings_one_rotating_per_node',
+        ('node_bindings_one_rotating_per_node', false,
          'CREATE UNIQUE INDEX node_bindings_one_rotating_per_node ON symphony_staging.node_bindings USING btree (node_id, environment) WHERE (status = ''rotating''::text)'),
-        ('routing_assignments_pkey',
+        ('routing_assignments_pkey', false,
          'CREATE UNIQUE INDEX routing_assignments_pkey ON symphony_staging.routing_assignments USING btree (issue_id)'),
-        ('routing_assignments_target_node_id_idx',
+        ('routing_assignments_target_node_id_idx', false,
          'CREATE INDEX routing_assignments_target_node_id_idx ON symphony_staging.routing_assignments USING btree (target_node_id)'),
-        ('foundation_audit_events_pkey',
+        ('foundation_audit_events_pkey', false,
          'CREATE UNIQUE INDEX foundation_audit_events_pkey ON symphony_staging.foundation_audit_events USING btree (audit_id)')
     ),
     actual as (
       select
         index_relation.relname::text,
+        index_state.indisreplident,
         pg_get_indexdef(index_relation.oid)
       from pg_index index_state
       join pg_class index_relation on index_relation.oid = index_state.indexrelid
@@ -804,15 +844,64 @@ begin
   end if;
 
   if exists (
-    select 1
-    from pg_class relation
-    join pg_namespace namespace on namespace.oid = relation.relnamespace
+    select 1 from pg_class object
+    join pg_namespace namespace on namespace.oid = object.relnamespace
     where namespace.nspname = 'symphony_production'
   )
   or exists (
-    select 1
-    from pg_proc procedure
-    join pg_namespace namespace on namespace.oid = procedure.pronamespace
+    select 1 from pg_proc object
+    join pg_namespace namespace on namespace.oid = object.pronamespace
+    where namespace.nspname = 'symphony_production'
+  )
+  or exists (
+    select 1 from pg_type object
+    join pg_namespace namespace on namespace.oid = object.typnamespace
+    where namespace.nspname = 'symphony_production'
+      and object.typrelid = 0 and object.typelem = 0
+  )
+  or exists (
+    select 1 from pg_operator object
+    join pg_namespace namespace on namespace.oid = object.oprnamespace
+    where namespace.nspname = 'symphony_production'
+  )
+  or exists (
+    select 1 from pg_collation object
+    join pg_namespace namespace on namespace.oid = object.collnamespace
+    where namespace.nspname = 'symphony_production'
+  )
+  or exists (
+    select 1 from pg_conversion object
+    join pg_namespace namespace on namespace.oid = object.connamespace
+    where namespace.nspname = 'symphony_production'
+  )
+  or exists (
+    select 1 from pg_opclass object
+    join pg_namespace namespace on namespace.oid = object.opcnamespace
+    where namespace.nspname = 'symphony_production'
+  )
+  or exists (
+    select 1 from pg_opfamily object
+    join pg_namespace namespace on namespace.oid = object.opfnamespace
+    where namespace.nspname = 'symphony_production'
+  )
+  or exists (
+    select 1 from pg_ts_config object
+    join pg_namespace namespace on namespace.oid = object.cfgnamespace
+    where namespace.nspname = 'symphony_production'
+  )
+  or exists (
+    select 1 from pg_ts_dict object
+    join pg_namespace namespace on namespace.oid = object.dictnamespace
+    where namespace.nspname = 'symphony_production'
+  )
+  or exists (
+    select 1 from pg_ts_parser object
+    join pg_namespace namespace on namespace.oid = object.prsnamespace
+    where namespace.nspname = 'symphony_production'
+  )
+  or exists (
+    select 1 from pg_ts_template object
+    join pg_namespace namespace on namespace.oid = object.tmplnamespace
     where namespace.nspname = 'symphony_production'
   ) then
     raise exception using
@@ -2024,10 +2113,17 @@ from (
     )
   union all
   select
-    'inventory-relation:' || relation.relname || ':' || relation.relkind::text
+    'inventory-relation:' || namespace.nspname || ':' ||
+    relation.relname || ':' || relation.relkind::text || ':' ||
+    relation.relpersistence::text || ':' || relation.relreplident::text || ':' ||
+    relation.relrowsecurity::text || ':' ||
+    relation.relforcerowsecurity::text || ':' ||
+    relation.relhasrules::text || ':' || relation.relhastriggers::text || ':' ||
+    relation.relispopulated::text || ':' ||
+    coalesce(relation.reloptions::text, '')
   from pg_class relation
   join pg_namespace namespace on namespace.oid = relation.relnamespace
-  where namespace.nspname = 'symphony_staging'
+  where namespace.nspname in ('symphony_staging', 'symphony_production')
   union all
   select
     'inventory-function:' || procedure.oid::regprocedure::text
@@ -2170,8 +2266,14 @@ from (
   select
     'table:' || relation.relname || ':' ||
     pg_get_userbyid(relation.relowner) || ':' ||
+    relation.relpersistence::text || ':' ||
+    relation.relreplident::text || ':' ||
     relation.relrowsecurity::text || ':' ||
     relation.relforcerowsecurity::text || ':' ||
+    relation.relhasrules::text || ':' ||
+    relation.relhastriggers::text || ':' ||
+    relation.relispopulated::text || ':' ||
+    coalesce(relation.reloptions::text, '') || ':' ||
     coalesce(relation.relacl::text, '')
   from pg_class relation
   join pg_namespace namespace on namespace.oid = relation.relnamespace
@@ -2208,6 +2310,10 @@ from (
   union all
   select
     'index:' || relation.relname || ':' || index_relation.relname || ':' ||
+    index_state.indisreplident::text || ':' ||
+    index_state.indisvalid::text || ':' ||
+    index_state.indisready::text || ':' ||
+    index_state.indislive::text || ':' ||
     pg_get_indexdef(index_relation.oid)
   from pg_index index_state
   join pg_class relation on relation.oid = index_state.indrelid
@@ -2232,6 +2338,8 @@ from (
     'column:' || relation.relname || ':' || attribute.attname || ':' ||
     format_type(attribute.atttypid, attribute.atttypmod) || ':' ||
     attribute.attnotnull::text || ':' ||
+    attribute.attidentity::text || ':' ||
+    attribute.attgenerated::text || ':' ||
     coalesce(pg_get_expr(default_value.adbin, default_value.adrelid), '') || ':' ||
     coalesce(attribute.attacl::text, '')
   from pg_class relation
@@ -2300,6 +2408,7 @@ from (
   union all
   select
     'trigger:' || relation.relname || ':' || trigger_row.tgname || ':' ||
+    trigger_row.tgisinternal::text || ':' ||
     trigger_row.tgenabled::text || ':' ||
     pg_get_triggerdef(trigger_row.oid, true) || ':' ||
     trigger_function.oid::regprocedure::text || ':' ||
@@ -2311,7 +2420,6 @@ from (
   join pg_namespace namespace on namespace.oid = relation.relnamespace
   join pg_proc trigger_function on trigger_function.oid = trigger_row.tgfoid
   where namespace.nspname = 'symphony_staging'
-    and not trigger_row.tgisinternal
     and relation.relname in (
       'node_login_principals',
       'node_principal_history',
@@ -2325,6 +2433,73 @@ from (
       'routing_assignments',
       'foundation_audit_events'
     )
+  union all
+  select
+    'rewrite:' || namespace.nspname || ':' || relation.relname || ':' ||
+    rewrite.rulename || ':' || rewrite.ev_type::text || ':' ||
+    rewrite.ev_enabled::text || ':' || rewrite.is_instead::text || ':' ||
+    pg_get_ruledef(rewrite.oid, true)
+  from pg_rewrite rewrite
+  join pg_class relation on relation.oid = rewrite.ev_class
+  join pg_namespace namespace on namespace.oid = relation.relnamespace
+  where namespace.nspname in ('symphony_staging', 'symphony_production')
+  union all
+  select 'production-function:' || procedure.oid::regprocedure::text || ':' ||
+    pg_get_functiondef(procedure.oid)
+  from pg_proc procedure
+  join pg_namespace namespace on namespace.oid = procedure.pronamespace
+  where namespace.nspname = 'symphony_production'
+  union all
+  select 'production-type:' || type_object.typname || ':' ||
+    type_object.typtype::text || ':' || type_object.typcategory::text
+  from pg_type type_object
+  join pg_namespace namespace on namespace.oid = type_object.typnamespace
+  where namespace.nspname = 'symphony_production'
+  union all
+  select 'production-operator:' || operator_object.oid::regoperator::text
+  from pg_operator operator_object
+  join pg_namespace namespace on namespace.oid = operator_object.oprnamespace
+  where namespace.nspname = 'symphony_production'
+  union all
+  select 'production-collation:' || collation_object.collname
+  from pg_collation collation_object
+  join pg_namespace namespace on namespace.oid = collation_object.collnamespace
+  where namespace.nspname = 'symphony_production'
+  union all
+  select 'production-conversion:' || conversion_object.conname
+  from pg_conversion conversion_object
+  join pg_namespace namespace on namespace.oid = conversion_object.connamespace
+  where namespace.nspname = 'symphony_production'
+  union all
+  select 'production-opclass:' || opclass_object.opcname
+  from pg_opclass opclass_object
+  join pg_namespace namespace on namespace.oid = opclass_object.opcnamespace
+  where namespace.nspname = 'symphony_production'
+  union all
+  select 'production-opfamily:' || family.opfname
+  from pg_opfamily family
+  join pg_namespace namespace on namespace.oid = family.opfnamespace
+  where namespace.nspname = 'symphony_production'
+  union all
+  select 'production-ts-config:' || object.cfgname
+  from pg_ts_config object
+  join pg_namespace namespace on namespace.oid = object.cfgnamespace
+  where namespace.nspname = 'symphony_production'
+  union all
+  select 'production-ts-dict:' || object.dictname
+  from pg_ts_dict object
+  join pg_namespace namespace on namespace.oid = object.dictnamespace
+  where namespace.nspname = 'symphony_production'
+  union all
+  select 'production-ts-parser:' || object.prsname
+  from pg_ts_parser object
+  join pg_namespace namespace on namespace.oid = object.prsnamespace
+  where namespace.nspname = 'symphony_production'
+  union all
+  select 'production-ts-template:' || object.tmplname
+  from pg_ts_template object
+  join pg_namespace namespace on namespace.oid = object.tmplnamespace
+  where namespace.nspname = 'symphony_production'
 ) contract_state;
 
 insert into symphony_staging.contract_versions (

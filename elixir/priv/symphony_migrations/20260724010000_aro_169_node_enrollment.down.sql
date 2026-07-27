@@ -117,10 +117,19 @@ begin
       )
     union all
     select
-      'inventory-relation:' || relation.relname || ':' || relation.relkind::text
+      'inventory-relation:' || namespace.nspname || ':' ||
+      relation.relname || ':' || relation.relkind::text || ':' ||
+      relation.relpersistence::text || ':' ||
+      relation.relreplident::text || ':' ||
+      relation.relrowsecurity::text || ':' ||
+      relation.relforcerowsecurity::text || ':' ||
+      relation.relhasrules::text || ':' ||
+      relation.relhastriggers::text || ':' ||
+      relation.relispopulated::text || ':' ||
+      coalesce(relation.reloptions::text, '')
     from pg_class relation
     join pg_namespace namespace on namespace.oid = relation.relnamespace
-    where namespace.nspname = 'symphony_staging'
+    where namespace.nspname in ('symphony_staging', 'symphony_production')
     union all
     select
       'inventory-function:' || procedure.oid::regprocedure::text
@@ -263,8 +272,14 @@ begin
     select
       'table:' || relation.relname || ':' ||
       pg_get_userbyid(relation.relowner) || ':' ||
+      relation.relpersistence::text || ':' ||
+      relation.relreplident::text || ':' ||
       relation.relrowsecurity::text || ':' ||
       relation.relforcerowsecurity::text || ':' ||
+      relation.relhasrules::text || ':' ||
+      relation.relhastriggers::text || ':' ||
+      relation.relispopulated::text || ':' ||
+      coalesce(relation.reloptions::text, '') || ':' ||
       coalesce(relation.relacl::text, '')
     from pg_class relation
     join pg_namespace namespace on namespace.oid = relation.relnamespace
@@ -301,6 +316,10 @@ begin
     union all
     select
       'index:' || relation.relname || ':' || index_relation.relname || ':' ||
+      index_state.indisreplident::text || ':' ||
+      index_state.indisvalid::text || ':' ||
+      index_state.indisready::text || ':' ||
+      index_state.indislive::text || ':' ||
       pg_get_indexdef(index_relation.oid)
     from pg_index index_state
     join pg_class relation on relation.oid = index_state.indrelid
@@ -325,6 +344,8 @@ begin
       'column:' || relation.relname || ':' || attribute.attname || ':' ||
       format_type(attribute.atttypid, attribute.atttypmod) || ':' ||
       attribute.attnotnull::text || ':' ||
+      attribute.attidentity::text || ':' ||
+      attribute.attgenerated::text || ':' ||
       coalesce(pg_get_expr(default_value.adbin, default_value.adrelid), '') || ':' ||
       coalesce(attribute.attacl::text, '')
     from pg_class relation
@@ -394,6 +415,7 @@ begin
     union all
     select
       'trigger:' || relation.relname || ':' || trigger_row.tgname || ':' ||
+      trigger_row.tgisinternal::text || ':' ||
       trigger_row.tgenabled::text || ':' ||
       pg_get_triggerdef(trigger_row.oid, true) || ':' ||
       trigger_function.oid::regprocedure::text || ':' ||
@@ -405,7 +427,6 @@ begin
     join pg_namespace namespace on namespace.oid = relation.relnamespace
     join pg_proc trigger_function on trigger_function.oid = trigger_row.tgfoid
     where namespace.nspname = 'symphony_staging'
-      and not trigger_row.tgisinternal
       and relation.relname in (
         'node_login_principals',
         'node_principal_history',
@@ -419,6 +440,73 @@ begin
         'routing_assignments',
         'foundation_audit_events'
       )
+    union all
+    select
+      'rewrite:' || namespace.nspname || ':' || relation.relname || ':' ||
+      rewrite.rulename || ':' || rewrite.ev_type::text || ':' ||
+      rewrite.ev_enabled::text || ':' || rewrite.is_instead::text || ':' ||
+      pg_get_ruledef(rewrite.oid, true)
+    from pg_rewrite rewrite
+    join pg_class relation on relation.oid = rewrite.ev_class
+    join pg_namespace namespace on namespace.oid = relation.relnamespace
+    where namespace.nspname in ('symphony_staging', 'symphony_production')
+    union all
+    select 'production-function:' || procedure.oid::regprocedure::text || ':' ||
+      pg_get_functiondef(procedure.oid)
+    from pg_proc procedure
+    join pg_namespace namespace on namespace.oid = procedure.pronamespace
+    where namespace.nspname = 'symphony_production'
+    union all
+    select 'production-type:' || type_object.typname || ':' ||
+      type_object.typtype::text || ':' || type_object.typcategory::text
+    from pg_type type_object
+    join pg_namespace namespace on namespace.oid = type_object.typnamespace
+    where namespace.nspname = 'symphony_production'
+    union all
+    select 'production-operator:' || operator_object.oid::regoperator::text
+    from pg_operator operator_object
+    join pg_namespace namespace on namespace.oid = operator_object.oprnamespace
+    where namespace.nspname = 'symphony_production'
+    union all
+    select 'production-collation:' || collation_object.collname
+    from pg_collation collation_object
+    join pg_namespace namespace on namespace.oid = collation_object.collnamespace
+    where namespace.nspname = 'symphony_production'
+    union all
+    select 'production-conversion:' || conversion_object.conname
+    from pg_conversion conversion_object
+    join pg_namespace namespace on namespace.oid = conversion_object.connamespace
+    where namespace.nspname = 'symphony_production'
+    union all
+    select 'production-opclass:' || opclass_object.opcname
+    from pg_opclass opclass_object
+    join pg_namespace namespace on namespace.oid = opclass_object.opcnamespace
+    where namespace.nspname = 'symphony_production'
+    union all
+    select 'production-opfamily:' || family.opfname
+    from pg_opfamily family
+    join pg_namespace namespace on namespace.oid = family.opfnamespace
+    where namespace.nspname = 'symphony_production'
+    union all
+    select 'production-ts-config:' || object.cfgname
+    from pg_ts_config object
+    join pg_namespace namespace on namespace.oid = object.cfgnamespace
+    where namespace.nspname = 'symphony_production'
+    union all
+    select 'production-ts-dict:' || object.dictname
+    from pg_ts_dict object
+    join pg_namespace namespace on namespace.oid = object.dictnamespace
+    where namespace.nspname = 'symphony_production'
+    union all
+    select 'production-ts-parser:' || object.prsname
+    from pg_ts_parser object
+    join pg_namespace namespace on namespace.oid = object.prsnamespace
+    where namespace.nspname = 'symphony_production'
+    union all
+    select 'production-ts-template:' || object.tmplname
+    from pg_ts_template object
+    join pg_namespace namespace on namespace.oid = object.tmplnamespace
+    where namespace.nspname = 'symphony_production'
   ) contract_state;
 
   if recorded_fingerprint is null

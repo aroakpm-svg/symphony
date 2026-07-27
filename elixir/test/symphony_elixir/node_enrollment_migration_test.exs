@@ -202,6 +202,31 @@ defmodule SymphonyElixir.NodeEnrollmentMigrationTest do
     assert lifecycle_script =~
              "rollback unexpectedly accepted auxiliary catalog object drift"
 
+    assert lifecycle_script =~
+             "v3 apply unexpectedly accepted nonempty v2 foundation data"
+
+    assert lifecycle_script =~
+             "v3 apply unexpectedly accepted an extra v2 contract row"
+
+    assert lifecycle_script =~
+             "v3 apply unexpectedly accepted disabled internal FK triggers"
+
+    assert lifecycle_script =~
+             "v3 apply unexpectedly accepted unlogged foundation audit data"
+
+    assert lifecycle_script =~
+             "v3 apply unexpectedly accepted replica identity drift"
+
+    assert lifecycle_script =~
+             "v3 apply unexpectedly accepted rewrite-rule drift"
+
+    assert lifecycle_script =~
+             "v3 apply unexpectedly accepted production auxiliary objects"
+
+    assert lifecycle_script =~ "rollback unexpectedly accepted identity-mode drift"
+    assert lifecycle_script =~ "rollback unexpectedly accepted rewrite-rule drift"
+    assert lifecycle_script =~ "rollback unexpectedly accepted internal-trigger drift"
+
     assert File.read!(@migration) =~ "'index:'"
     assert File.read!(@rollback) =~ "'index:'"
     assert File.read!(@migration) =~ "'trigger:'"
@@ -220,6 +245,20 @@ defmodule SymphonyElixir.NodeEnrollmentMigrationTest do
     assert File.read!(@rollback) =~ "'default-acl:'"
     assert File.read!(@migration) =~ "relation.relforcerowsecurity::text"
     assert File.read!(@rollback) =~ "relation.relforcerowsecurity::text"
+    assert File.read!(@migration) =~ "relation.relpersistence::text"
+    assert File.read!(@rollback) =~ "relation.relpersistence::text"
+    assert File.read!(@migration) =~ "relation.relreplident::text"
+    assert File.read!(@rollback) =~ "relation.relreplident::text"
+    assert File.read!(@migration) =~ "index_state.indisreplident::text"
+    assert File.read!(@rollback) =~ "index_state.indisreplident::text"
+    assert File.read!(@migration) =~ "attribute.attidentity::text"
+    assert File.read!(@rollback) =~ "attribute.attidentity::text"
+    assert File.read!(@migration) =~ "attribute.attgenerated::text"
+    assert File.read!(@rollback) =~ "attribute.attgenerated::text"
+    assert File.read!(@migration) =~ "'rewrite:'"
+    assert File.read!(@rollback) =~ "'rewrite:'"
+    assert File.read!(@migration) =~ "trigger_row.tgisinternal::text"
+    assert File.read!(@rollback) =~ "trigger_row.tgisinternal::text"
     assert File.read!(@migration) =~ "'inventory-relation:'"
     assert File.read!(@rollback) =~ "'inventory-relation:'"
     assert File.read!(@migration) =~ "'inventory-function:'"
