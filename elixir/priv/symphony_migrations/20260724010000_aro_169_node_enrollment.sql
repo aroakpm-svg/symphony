@@ -147,7 +147,7 @@ begin
         ('nodes', 'nodes_check1', 'CHECK (status <> ''disabled''::text OR revoked_at IS NOT NULL AND retired_at IS NULL)'),
         ('nodes', 'nodes_check2', 'CHECK (status <> ''retired''::text OR retired_at IS NOT NULL)'),
         ('node_bindings', 'node_bindings_pkey', 'PRIMARY KEY (binding_id)'),
-        ('node_bindings', 'node_bindings_node_id_fkey', 'FOREIGN KEY (node_id) REFERENCES symphony_staging.nodes(node_id) ON DELETE RESTRICT'),
+        ('node_bindings', 'node_bindings_node_id_fkey', 'FOREIGN KEY (node_id) REFERENCES nodes(node_id) ON DELETE RESTRICT'),
         ('node_bindings', 'node_bindings_environment_check', 'CHECK (environment = ''staging''::text)'),
         ('node_bindings', 'node_bindings_status_check', 'CHECK (status = ANY (ARRAY[''pending''::text, ''active''::text, ''rotating''::text, ''revoked''::text, ''retired''::text]))'),
         ('node_bindings', 'node_bindings_credential_version_check', 'CHECK (credential_version > 0)'),
@@ -158,7 +158,7 @@ begin
         ('node_bindings', 'node_bindings_check3', 'CHECK (status <> ''retired''::text OR retired_at IS NOT NULL)'),
         ('node_bindings', 'node_bindings_node_id_environment_credential_version_key', 'UNIQUE (node_id, environment, credential_version)'),
         ('routing_assignments', 'routing_assignments_pkey', 'PRIMARY KEY (issue_id)'),
-        ('routing_assignments', 'routing_assignments_target_node_id_fkey', 'FOREIGN KEY (target_node_id) REFERENCES symphony_staging.nodes(node_id) ON DELETE RESTRICT'),
+        ('routing_assignments', 'routing_assignments_target_node_id_fkey', 'FOREIGN KEY (target_node_id) REFERENCES nodes(node_id) ON DELETE RESTRICT'),
         ('routing_assignments', 'routing_assignments_routing_policy_check', 'CHECK (routing_policy = ANY (ARRAY[''unassigned''::text, ''preferred-with-fallback''::text, ''exclusive''::text]))'),
         ('routing_assignments', 'routing_assignments_routing_revision_check', 'CHECK (routing_revision > 0)'),
         ('routing_assignments', 'routing_assignments_contract_version_check', 'CHECK (contract_version > 0)'),
@@ -171,7 +171,11 @@ begin
       select
         relation.relname::text,
         constraint_row.conname::text,
-        pg_get_constraintdef(constraint_row.oid, true)
+        replace(
+          pg_get_constraintdef(constraint_row.oid, true),
+          'symphony_staging.',
+          ''
+        )
       from pg_constraint constraint_row
       join pg_class relation on relation.oid = constraint_row.conrelid
       join pg_namespace namespace on namespace.oid = relation.relnamespace
