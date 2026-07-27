@@ -452,6 +452,24 @@ defmodule SymphonyElixir.ReadinessGateTest do
              ReadinessGate.check(fixture.workspace, issue, workspace_readiness_state: state)
 
     assert git!(fixture.workspace, ["branch", "--show-current"]) == issue.branch_name
+
+    git!(fixture.workspace, ["push", "origin", issue.branch_name])
+    git!(fixture.workspace, ["switch", "main"])
+
+    assert {:error,
+            %Failure{
+              code: :continuation_branch_not_checked_out,
+              operator_action: remote_checkout_action
+            }} =
+             ReadinessGate.check(fixture.workspace, issue, workspace_readiness_state: state)
+
+    assert String.downcase(remote_checkout_action) =~ "check out"
+    assert git!(fixture.workspace, ["branch", "--show-current"]) == "main"
+
+    git!(fixture.workspace, ["switch", issue.branch_name])
+
+    assert {:ok, %Receipt{classification: :continuation, head_sha: ^local_sha}} =
+             ReadinessGate.check(fixture.workspace, issue, workspace_readiness_state: state)
   end
 
   test "propagates an inspect command failure after live checkout verification" do

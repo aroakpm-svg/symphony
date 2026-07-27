@@ -273,10 +273,22 @@ defmodule SymphonyElixir.WorkspaceReadinessStateTest do
 
     git!(workspace, ["switch", "main"])
 
+    assert {:error,
+            %Failure{
+              code: :continuation_branch_not_checked_out,
+              operator_action: checkout_action
+            }} =
+             ReadinessGate.check(workspace, issue, workspace_readiness_state: legacy_state)
+
+    assert String.downcase(checkout_action) =~ "check out"
+    assert git!(workspace, ["branch", "--show-current"]) == "main"
+
+    git!(workspace, ["branch", "-D", issue.branch_name])
+
     assert {:error, %Failure{code: :legacy_workspace_provenance_unverified}} =
              ReadinessGate.check(workspace, issue, workspace_readiness_state: legacy_state)
 
-    git!(workspace, ["switch", issue.branch_name])
+    git!(workspace, ["switch", "-c", issue.branch_name, local_sha])
 
     issue_ref = "refs/heads/#{issue.branch_name}"
     other_sha = String.duplicate("b", 40)
