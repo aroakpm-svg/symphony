@@ -254,4 +254,183 @@ defmodule SymphonyElixir.ScopeContractTest do
     assert {:error, [{:malformed_acceptance_criterion, "Parse a complete scope contract."}]} =
              ScopeContract.parse_pr_body(body)
   end
+
+  test "normalizes bullet None before required and optional list policies" do
+    # Mutation caught: checking None before bullet normalization, which accepts required - None values.
+    body = """
+    #### Scope Contract
+
+    ##### Work Item
+
+    Add a typed PR scope contract parser.
+
+    ##### Invariants
+
+    - None
+
+    ##### Acceptance Criteria
+
+    - AC-1: Parse a complete scope contract.
+
+    ##### Non-Goals
+
+    - Do not change review routing.
+
+    ##### Dependencies
+
+    - None
+
+    ##### Follow-Ups
+
+    - None
+    """
+
+    assert {:error, [{:none_not_allowed, :invariants}]} = ScopeContract.parse_pr_body(body)
+  end
+
+  test "accepts bullet None as an explicit empty optional list" do
+    # Mutation caught: treating normalized - None as a dependency value rather than the optional empty marker.
+    body = """
+    #### Scope Contract
+
+    ##### Work Item
+
+    Add a typed PR scope contract parser.
+
+    ##### Invariants
+
+    - Invalid contracts fail closed.
+
+    ##### Acceptance Criteria
+
+    - AC-1: Parse a complete scope contract.
+
+    ##### Non-Goals
+
+    - Do not change review routing.
+
+    ##### Dependencies
+
+    - None
+
+    ##### Follow-Ups
+
+    - None
+    """
+
+    assert {:ok, %{dependencies: [], follow_ups: []}} = ScopeContract.parse_pr_body(body)
+  end
+
+  test "rejects mixed None and ordinary optional list values" do
+    # Mutation caught: allowing None to coexist with a real dependency after bullet normalization.
+    body = """
+    #### Scope Contract
+
+    ##### Work Item
+
+    Add a typed PR scope contract parser.
+
+    ##### Invariants
+
+    - Invalid contracts fail closed.
+
+    ##### Acceptance Criteria
+
+    - AC-1: Parse a complete scope contract.
+
+    ##### Non-Goals
+
+    - Do not change review routing.
+
+    ##### Dependencies
+
+    - None
+    - Existing PR lint.
+
+    ##### Follow-Ups
+
+    None
+    """
+
+    assert {:error, [{:none_must_be_explicit, :dependencies}]} = ScopeContract.parse_pr_body(body)
+  end
+
+  test "rejects hyphen-prefixed text that is not a Markdown bullet" do
+    # Mutation caught: stripping every leading hyphen and accepting -value or --value as list bullets.
+    body = """
+    #### Scope Contract
+
+    ##### Work Item
+
+    Add a typed PR scope contract parser.
+
+    ##### Invariants
+
+    -value
+    --value
+
+    ##### Acceptance Criteria
+
+    - AC-1: Parse a complete scope contract.
+
+    ##### Non-Goals
+
+    - Do not change review routing.
+
+    ##### Dependencies
+
+    None
+
+    ##### Follow-Ups
+
+    None
+    """
+
+    assert {:error,
+            [
+              {:malformed_bullet, :invariants, "-value"},
+              {:malformed_bullet, :invariants, "--value"}
+            ]} = ScopeContract.parse_pr_body(body)
+  end
+
+  test "rejects duplicate outer Scope Contract headings" do
+    # Mutation caught: parsing only the first outer Scope Contract and silently ignoring a second contract.
+    body = @complete_contract <> "\n#### Scope Contract\n\n##### Work Item\n\nConflicting contract.\n"
+
+    assert {:error, [{:duplicate_scope_contract}]} = ScopeContract.parse_pr_body(body)
+  end
+
+  test "rejects duplicate stable acceptance-criterion identifiers" do
+    # Mutation caught: validating AC syntax without detecting repeated stable identifiers.
+    body = """
+    #### Scope Contract
+
+    ##### Work Item
+
+    Add a typed PR scope contract parser.
+
+    ##### Invariants
+
+    - Invalid contracts fail closed.
+
+    ##### Acceptance Criteria
+
+    - AC-1: Parse a complete scope contract.
+    - AC-1: Aggregate validation errors.
+
+    ##### Non-Goals
+
+    - Do not change review routing.
+
+    ##### Dependencies
+
+    None
+
+    ##### Follow-Ups
+
+    None
+    """
+
+    assert {:error, [{:duplicate_acceptance_criterion, "AC-1"}]} = ScopeContract.parse_pr_body(body)
+  end
 end

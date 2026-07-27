@@ -22,6 +22,7 @@ defmodule SymphonyElixir.ScopeContract do
 
   @type error ::
           :missing_scope_contract
+          | {:duplicate_scope_contract}
           | {:missing_section, field()}
           | {:duplicate_section, field()}
           | {:unexpected_section, String.t()}
@@ -32,6 +33,7 @@ defmodule SymphonyElixir.ScopeContract do
           | {:empty_section, field()}
           | {:malformed_bullet, field(), String.t()}
           | {:malformed_acceptance_criterion, String.t()}
+          | {:duplicate_acceptance_criterion, String.t()}
           | {:invalid_work_item, :multiple_values}
 
   @type t :: %__MODULE__{
@@ -49,10 +51,10 @@ defmodule SymphonyElixir.ScopeContract do
       :missing ->
         {:error, [:missing_scope_contract]}
 
-      lines ->
+      {lines, outer_errors} ->
         {sections, structural_errors} = collect_sections(lines)
         {values, validation_errors} = validate_sections(sections)
-        errors = structural_errors ++ validation_errors
+        errors = outer_errors ++ structural_errors ++ validation_errors
 
         if errors == [] do
           {:ok, struct!(__MODULE__, values)}
@@ -63,13 +65,22 @@ defmodule SymphonyElixir.ScopeContract do
   end
 
   defp scope_contract_lines(pr_body) do
-    pr_body
-    |> String.replace("\r\n", "\n")
-    |> String.split("\n")
-    |> Enum.drop_while(&(String.trim_trailing(&1) != "#### Scope Contract"))
-    |> case do
-      [] -> :missing
-      [_heading | remaining_lines] -> Enum.take_while(remaining_lines, &(not level_four_heading?(&1)))
+    lines = pr_body |> String.replace("\r\n", "\n") |> String.split("\n")
+    outer_headings = Enum.count(lines, &(String.trim_trailing(&1) == "#### Scope Contract"))
+
+    case Enum.find_index(lines, &(String.trim_trailing(&1) == "#### Scope Contract")) do
+      nil ->
+        :missing
+
+      index ->
+        errors = if outer_headings > 1, do: [{:duplicate_scope_contract}], else: []
+
+        scope_lines =
+          lines
+          |> Enum.drop(index + 1)
+          |> Enum.take_while(&(not level_four_heading?(&1)))
+
+        {scope_lines, errors}
     end
   end
 
@@ -168,51 +179,86 @@ defmodule SymphonyElixir.ScopeContract do
       values == [] ->
         {[], [{:empty_section, field}]}
 
-      values == ["None"] and field in @optional_none_fields ->
-        {[], []}
-
-      "None" in values ->
-        {[], [{none_error(field), field}]}
-
       true ->
-        normalize_bullets(field, values)
+        case normalize_bullets(field, values) do
+          {_normalized_values, [_error | _rest] = errors} -> {[], errors}
+          {normalized_values, []} -> validate_normalized_list(field, normalized_values)
+        end
     end
   end
 
   defp normalize_bullets(field, lines) do
     {values, errors} =
       Enum.reduce(lines, {[], []}, fn line, {values, errors} ->
-        case String.starts_with?(line, "-") do
-          false ->
-            {values, errors ++ [{:malformed_bullet, field, line}]}
+        case line do
+          "None" ->
+            {values ++ ["None"], errors}
 
-          true ->
-            value = line |> String.trim_leading("-") |> String.trim()
+          "-" ->
+            {values, errors ++ [{:blank_bullet, field}]}
+
+          <<"- ", value::binary>> ->
+            value = String.trim(value)
 
             if value == "" do
               {values, errors ++ [{:blank_bullet, field}]}
             else
               {values ++ [value], errors}
             end
+
+          _ ->
+            {values, errors ++ [{:malformed_bullet, field, line}]}
         end
       end)
 
-    acceptance_errors =
-      if field == :acceptance_criteria do
-        Enum.flat_map(values, fn value ->
-          if stable_acceptance_criterion?(value), do: [], else: [{:malformed_acceptance_criterion, value}]
-        end)
-      else
-        []
-      end
+    {values, errors}
+  end
 
-    {values, errors ++ acceptance_errors}
+  defp validate_normalized_list(field, ["None"]) when field in @optional_none_fields, do: {[], []}
+
+  defp validate_normalized_list(field, values) do
+    cond do
+      "None" in values ->
+        {[], [{none_error(field), field}]}
+
+      field == :acceptance_criteria ->
+        {values, acceptance_criterion_errors(values)}
+
+      true ->
+        {values, []}
+    end
+  end
+
+  defp acceptance_criterion_errors(values) do
+    {_identifiers, errors} =
+      Enum.reduce(values, {MapSet.new(), []}, fn value, {identifiers, errors} ->
+        case acceptance_criterion_identifier(value) do
+          {:ok, identifier} ->
+            if MapSet.member?(identifiers, identifier) do
+              {identifiers, errors ++ [{:duplicate_acceptance_criterion, identifier}]}
+            else
+              {MapSet.put(identifiers, identifier), errors}
+            end
+
+          :error ->
+            {identifiers, errors ++ [{:malformed_acceptance_criterion, value}]}
+        end
+      end)
+
+    errors
   end
 
   defp nonblank_lines(lines), do: lines |> Enum.map(&String.trim/1) |> Enum.reject(&(&1 == ""))
   defp placeholder?(lines), do: Enum.any?(lines, &String.contains?(&1, "<!--"))
   defp none_error(field) when field in @required_list_fields, do: :none_not_allowed
   defp none_error(_field), do: :none_must_be_explicit
-  defp stable_acceptance_criterion?(value), do: Regex.match?(~r/^AC-[1-9][0-9]*:\s+\S/, value)
+
+  defp acceptance_criterion_identifier(value) do
+    case Regex.run(~r/^(AC-[1-9][0-9]*):\s+\S/, value) do
+      [_, identifier] -> {:ok, identifier}
+      nil -> :error
+    end
+  end
+
   defp level_four_heading?(line), do: String.starts_with?(String.trim_trailing(line), "#### ")
 end
