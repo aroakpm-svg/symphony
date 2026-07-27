@@ -46,6 +46,7 @@ defmodule SymphonyElixir.ReadinessGate do
     with {:ok, created_now?} <- workspace_created_now(opts),
          {:ok, issue_branch} <- issue_branch(issue),
          {:ok, canonical} <- resolve_canonical(workspace, opts),
+         :ok <- validate_issue_branch_not_canonical(issue_branch, canonical),
          {:ok, state} <- inspect_workspace(workspace, issue_branch, opts),
          {:ok, remote_issue_branch} <- lookup_branch(workspace, issue_branch, opts) do
       classify(
@@ -62,29 +63,41 @@ defmodule SymphonyElixir.ReadinessGate do
   end
 
   defp classify(
-         _workspace,
+         workspace,
          _issue,
          issue_branch,
          false,
          canonical,
-         %{current_branch: issue_branch, head_sha: head_sha},
-         _remote_issue_branch,
-         _opts
+         %{current_branch: issue_branch, head_sha: head_sha} = state,
+         remote_issue_branch,
+         opts
        ) do
-    ready(:continuation, issue_branch, head_sha, canonical)
+    runner = command_runner(workspace, opts)
+
+    with :ok <-
+           verify_continuation_remote(
+             runner,
+             remote_issue_branch,
+             issue_branch,
+             head_sha
+           ) do
+      finish_continuation(runner, issue_branch, state, canonical)
+    end
   end
 
   defp classify(
-         _workspace,
+         workspace,
          _issue,
          issue_branch,
          true,
          canonical,
-         %{current_branch: issue_branch, head_sha: head_sha},
+         %{current_branch: issue_branch, head_sha: head_sha} = state,
          %GitReceipt{fetched_sha: head_sha},
-         _opts
+         opts
        ) do
-    ready(:continuation, issue_branch, head_sha, canonical)
+    workspace
+    |> command_runner(opts)
+    |> finish_continuation(issue_branch, state, canonical)
   end
 
   defp classify(
@@ -276,6 +289,85 @@ defmodule SymphonyElixir.ReadinessGate do
     end
   end
 
+  defp validate_issue_branch_not_canonical(
+         issue_branch,
+         %GitReceipt{branch: issue_branch}
+       ) do
+    failure(
+      :issue_branch_is_canonical_default,
+      "tracker issue branch #{issue_branch} is the live canonical default branch",
+      "Set a distinct tracker issue branch before dispatch; preserve the canonical default branch."
+    )
+  end
+
+  defp validate_issue_branch_not_canonical(_issue_branch, %GitReceipt{}), do: :ok
+
+  defp verify_continuation_remote(_runner, :missing, _issue_branch, _local_sha), do: :ok
+
+  defp verify_continuation_remote(
+         _runner,
+         %GitReceipt{fetched_sha: sha},
+         _issue_branch,
+         sha
+       ),
+       do: :ok
+
+  defp verify_continuation_remote(
+         runner,
+         %GitReceipt{fetched_sha: remote_sha},
+         issue_branch,
+         local_sha
+       ) do
+    args = ["merge-base", "--is-ancestor", remote_sha, local_sha]
+    command = Enum.join(["git" | args], " ")
+
+    call_runner(runner, args, command, fn
+      {:ok, output} when is_binary(output) ->
+        :ok
+
+      {:error, {:git_command_failed, _failed_command, 1, _output}} ->
+        failure(
+          :continuation_remote_not_ancestor,
+          "origin/#{issue_branch} at #{remote_sha} is not an ancestor of local HEAD #{local_sha}",
+          "Preserve both branch heads and reconcile the behind, diverged, or unrelated continuation manually before retrying.",
+          command
+        )
+
+      result ->
+        normalize_run_result(result, command)
+    end)
+  end
+
+  defp finish_continuation(runner, issue_branch, initial_state, canonical) do
+    with {:ok, final_state} <- reread_branch_and_head(runner),
+         :ok <- verify_workspace_unchanged(initial_state, final_state) do
+      ready(:continuation, issue_branch, final_state.head_sha, canonical)
+    end
+  end
+
+  defp reread_branch_and_head(runner) do
+    with {:ok, branch_output} <- run(runner, ["branch", "--show-current"]),
+         {:ok, current_branch} <- parse_current_branch(branch_output),
+         {:ok, head_output} <- run(runner, ["rev-parse", "--verify", "HEAD^{commit}"]),
+         {:ok, head_sha} <- parse_sha(head_output, :workspace_head_invalid) do
+      {:ok, %{current_branch: current_branch, head_sha: head_sha}}
+    end
+  end
+
+  defp verify_workspace_unchanged(
+         %{current_branch: branch, head_sha: sha},
+         %{current_branch: branch, head_sha: sha}
+       ),
+       do: :ok
+
+  defp verify_workspace_unchanged(initial_state, final_state) do
+    failure(
+      :workspace_changed_during_readiness,
+      "workspace changed from #{initial_state.current_branch}@#{initial_state.head_sha} to #{final_state.current_branch}@#{final_state.head_sha} during readiness",
+      "Preserve the workspace and inspect the concurrent Git change before retrying."
+    )
+  end
+
   defp parse_current_branch(output) do
     case lines(output) do
       [] ->
@@ -387,11 +479,9 @@ defmodule SymphonyElixir.ReadinessGate do
     runner = command_runner(workspace, opts)
 
     with {:ok, _output} <- run(runner, ["switch", "-c", issue_branch, base_sha]),
-         {:ok, branch_output} <- run(runner, ["branch", "--show-current"]),
-         {:ok, actual_branch} <- parse_current_branch(branch_output) do
+         {:ok, final_state} <- inspect_materialized_workspace(runner) do
       verify_created_branch(
-        runner,
-        actual_branch,
+        final_state,
         issue_branch,
         base_sha,
         classification,
@@ -401,9 +491,21 @@ defmodule SymphonyElixir.ReadinessGate do
     end
   end
 
+  defp inspect_materialized_workspace(runner) do
+    with {:ok, state} <- reread_branch_and_head(runner),
+         {:ok, status} <- run(runner, ["status", "--porcelain=v1", "--untracked-files=all"]) do
+      normalized_status = String.trim(status)
+
+      {:ok,
+       Map.merge(state, %{
+         dirty: normalized_status != "",
+         status: sanitize(normalized_status)
+       })}
+    end
+  end
+
   defp verify_created_branch(
-         _runner,
-         actual_branch,
+         %{current_branch: actual_branch},
          issue_branch,
          _base_sha,
          _classification,
@@ -419,26 +521,45 @@ defmodule SymphonyElixir.ReadinessGate do
   end
 
   defp verify_created_branch(
-         runner,
-         _actual_branch,
-         issue_branch,
+         %{head_sha: actual_sha},
+         _issue_branch,
          base_sha,
+         _classification,
+         _canonical,
+         _upstream
+       )
+       when actual_sha != base_sha do
+    failure(
+      :created_branch_head_mismatch,
+      "created branch re-read at #{actual_sha}, expected #{base_sha}",
+      "Preserve the workspace and inspect the concurrent Git change before retrying."
+    )
+  end
+
+  defp verify_created_branch(
+         %{dirty: true, status: status},
+         _issue_branch,
+         _base_sha,
+         _classification,
+         _canonical,
+         _upstream
+       ) do
+    failure(
+      :workspace_changed_during_readiness,
+      "materialized issue branch became dirty during readiness: #{status}",
+      "Preserve the workspace changes and inspect the concurrent writer before retrying."
+    )
+  end
+
+  defp verify_created_branch(
+         %{head_sha: actual_sha},
+         issue_branch,
+         _base_sha,
          classification,
          canonical,
          upstream
        ) do
-    with {:ok, head_output} <- run(runner, ["rev-parse", "--verify", "HEAD^{commit}"]),
-         {:ok, actual_sha} <- parse_sha(head_output, :created_branch_head_invalid) do
-      if actual_sha == base_sha do
-        ready(classification, issue_branch, base_sha, canonical, upstream)
-      else
-        failure(
-          :created_branch_head_mismatch,
-          "created branch re-read at #{actual_sha}, expected #{base_sha}",
-          "Preserve the workspace and inspect the concurrent Git change before retrying."
-        )
-      end
-    end
+    ready(classification, issue_branch, actual_sha, canonical, upstream)
   end
 
   defp resolve_canonical(workspace, opts) do
@@ -514,59 +635,66 @@ defmodule SymphonyElixir.ReadinessGate do
   defp run(runner, args) do
     command = Enum.join(["git" | args], " ")
 
-    try do
-      case runner.(args) do
-        {:ok, output} when is_binary(output) ->
-          {:ok, output}
+    call_runner(runner, args, command, &normalize_run_result(&1, command))
+  end
 
-        {:error, {:workspace_hook_timeout, _timed_command, timeout_ms}} ->
-          failure(
-            :command_timeout,
-            "#{command} timed out after #{timeout_ms}ms",
-            "Verify the worker and Git command responsiveness, then retry.",
-            command
-          )
+  defp call_runner(runner, args, command, result_handler) do
+    runner.(args)
+    |> result_handler.()
+  rescue
+    error ->
+      failure(
+        :command_failed,
+        Exception.message(error),
+        "Verify the readiness Git command runner, then retry.",
+        command
+      )
+  catch
+    kind, reason ->
+      failure(
+        :command_failed,
+        inspect({kind, reason}),
+        "Verify the readiness Git command runner, then retry.",
+        command
+      )
+  end
 
-        {:error, {:git_command_failed, failed_command, status, output}} ->
-          failure(
-            :command_failed,
-            "status=#{status} output=#{sanitize(output)}",
-            "Inspect the Git error without changing existing branches, then retry.",
-            failed_command
-          )
+  defp normalize_run_result(result, command) do
+    case result do
+      {:ok, output} when is_binary(output) ->
+        {:ok, output}
 
-        {:error, {:git_command_failed, failed_command, detail}} ->
-          failure(
-            :command_failed,
-            sanitize(detail),
-            "Inspect the Git error without changing existing branches, then retry.",
-            failed_command
-          )
-
-        {:error, %Failure{} = failure} ->
-          {:error, failure}
-
-        other ->
-          failure(
-            :command_failed,
-            "unexpected command result: #{inspect(other)}",
-            "Verify the readiness Git command runner, then retry.",
-            command
-          )
-      end
-    rescue
-      error ->
+      {:error, {:workspace_hook_timeout, _timed_command, timeout_ms}} ->
         failure(
-          :command_failed,
-          Exception.message(error),
-          "Verify the readiness Git command runner, then retry.",
+          :command_timeout,
+          "#{command} timed out after #{timeout_ms}ms",
+          "Verify the worker and Git command responsiveness, then retry.",
           command
         )
-    catch
-      kind, reason ->
+
+      {:error, {:git_command_failed, failed_command, status, output}} ->
         failure(
           :command_failed,
-          inspect({kind, reason}),
+          "status=#{status} output=#{sanitize(output)}",
+          "Inspect the Git error without changing existing branches, then retry.",
+          failed_command
+        )
+
+      {:error, {:git_command_failed, failed_command, detail}} ->
+        failure(
+          :command_failed,
+          sanitize(detail),
+          "Inspect the Git error without changing existing branches, then retry.",
+          failed_command
+        )
+
+      {:error, %Failure{} = failure} ->
+        {:error, failure}
+
+      other ->
+        failure(
+          :command_failed,
+          "unexpected command result: #{inspect(other)}",
           "Verify the readiness Git command runner, then retry.",
           command
         )

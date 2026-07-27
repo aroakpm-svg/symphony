@@ -907,10 +907,14 @@ Git branch readiness profile (when implemented):
   hard-coded branch or stale local `origin/HEAD` as proof.
 - Fetch the advertised canonical ref and require its fetched commit SHA to equal the advertised
   SHA. A race, timeout, auth failure, malformed symref, or missing evidence fails closed.
+- The tracker issue branch MUST differ from the resolved canonical default branch.
 - A matching branch in a reused issue workspace is continuation work and is preserved even when the
-  canonical default has advanced.
+  canonical default has advanced. If a same-name remote exists, its verified head MUST equal local
+  `HEAD` or be an ancestor of local `HEAD`; behind, diverged, or unrelated state fails closed without
+  reset or rebase. A continuation with no same-name remote remains valid local work.
 - A fresh independent issue branch is created only in a clean workspace at the verified canonical
-  SHA, followed by a branch/HEAD re-read.
+  SHA. Every ready path re-reads branch/HEAD, and any materialized path also revalidates cleanliness
+  after switching; a concurrent change fails closed and is preserved.
 - A fresh remote issue/PR branch MAY be materialized only from its exact verified remote SHA.
 - Stacked work requires exactly one typed upstream branch and head SHA, both verified against the
   remote. Missing, multiple, stale, or mismatched typed evidence fails closed. Implementations MUST

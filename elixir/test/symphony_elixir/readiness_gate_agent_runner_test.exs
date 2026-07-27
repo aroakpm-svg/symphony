@@ -51,6 +51,58 @@ defmodule SymphonyElixir.ReadinessGateAgentRunnerTest do
     assert git!(blocker.workspace_path, ["rev-parse", "HEAD"]) == stale_sha
   end
 
+  test "canonical default as tracker issue branch hard-blocks before before_run and AppServer" do
+    fixture = git_fixture!()
+    on_exit(fn -> File.rm_rf(fixture.root) end)
+
+    previous_source_repo_url = System.get_env("SOURCE_REPO_URL")
+    on_exit(fn -> restore_env("SOURCE_REPO_URL", previous_source_repo_url) end)
+    System.put_env("SOURCE_REPO_URL", fixture.remote)
+
+    issue = issue("ARO-203", "main")
+    before_run_marker = Path.join(fixture.root, "before-default-run.marker")
+    app_server_marker = Path.join(fixture.root, "default-app-server.marker")
+    fake_codex = Path.join(fixture.root, "fake-default-codex")
+
+    File.write!(fake_codex, """
+    #!/bin/sh
+    printf launched > #{shell_escape(app_server_marker)}
+    count=0
+    while IFS= read -r line; do
+      count=$((count + 1))
+      case "$count" in
+        1) printf '%s\\n' '{"id":1,"result":{}}' ;;
+        2) ;;
+        3) printf '%s\\n' '{"id":2,"result":{"thread":{"id":"thread-default"}}}' ;;
+        4)
+          printf '%s\\n' '{"id":3,"result":{"turn":{"id":"turn-default"}}}'
+          printf '%s\\n' '{"method":"turn/completed"}'
+          ;;
+      esac
+    done
+    """)
+
+    File.chmod!(fake_codex, 0o755)
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      workspace_root: fixture.workspace_root,
+      hook_after_create: "git clone #{shell_escape(fixture.remote)} .",
+      hook_before_run: "printf before > #{shell_escape(before_run_marker)}",
+      codex_command: "#{fake_codex} app-server"
+    )
+
+    state_fetcher = fn [_issue_id] -> {:ok, [%{issue | state: "Done"}]} end
+
+    assert :ok = AgentRunner.run(issue, self(), issue_state_fetcher: state_fetcher)
+
+    assert_receive {:agent_hard_blocker, "issue-ARO-203", blocker}
+    assert blocker.error =~ "workspace readiness failed"
+    assert blocker.error =~ "issue_branch_is_canonical_default"
+    refute File.exists?(before_run_marker)
+    refute File.exists?(app_server_marker)
+    assert git!(blocker.workspace_path, ["branch", "--show-current"]) == "main"
+  end
+
   test "existing continuation branch remains usable after the canonical default advances" do
     fixture = git_fixture!()
     on_exit(fn -> File.rm_rf(fixture.root) end)

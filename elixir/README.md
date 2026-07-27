@@ -36,9 +36,11 @@ that the issue workspace exists, is a Git work tree, has an origin remote, match
 when that environment variable is set, and can run non-interactive `git status` / `git fetch`.
 It then runs a branch readiness gate. The gate resolves the live canonical default with
 `git ls-remote --symref origin HEAD`, fetches that exact ref, and requires the fetched SHA to match
-the advertised SHA. A matching branch in a reused issue workspace is preserved as continuation
-work. A fresh independent issue branch is created only in a clean workspace at the verified
-canonical SHA, and a fresh remote issue/PR branch is reused only from its verified remote SHA.
+the advertised SHA. The tracker issue branch must differ from that canonical branch. A matching
+branch in a reused issue workspace is preserved as continuation work when its same-name remote is
+missing, equal, or an ancestor of local `HEAD`; a behind, diverged, or unrelated local branch blocks
+without repair. A fresh independent issue branch is created only in a clean workspace at the
+verified canonical SHA, and a fresh remote issue/PR branch is reused only from its verified remote SHA.
 Explicit stacked work requires one typed upstream branch and head SHA in `Issue.readiness_base`;
 descriptions, blocker prose, and PR prose are never interpreted as stack evidence.
 
@@ -178,8 +180,10 @@ Notes:
   independent issue branch itself from the verified live default; `after_create` should not reset,
   rebase, or force-create that branch.
 - Existing matching issue branches are continuation state and are never reset merely because the
-  default branch advanced. A detached HEAD or a different checked-out local issue branch blocks for
-  manual inspection.
+  default branch advanced. If a same-name remote exists, it must equal local `HEAD` or be its
+  ancestor; behind, diverged, unrelated, detached, or differently checked-out state blocks for
+  manual inspection. Every ready path re-reads branch and `HEAD`, and materialized branches must
+  still be clean after switching.
 - Stacked readiness is an internal typed seam: `:canonical` is the default, while
   `{:stacked, [%Issue.StackedBase{branch: branch, head_sha: sha}]}` is accepted only when that one
   remote branch and full SHA verify exactly. No current adapter derives this value from free-form

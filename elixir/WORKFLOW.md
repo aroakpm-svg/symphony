@@ -289,13 +289,11 @@ Before editing files or moving the issue forward:
 
 Read the latest Linear issue comments.
 
-Read Symphony's branch-readiness receipt. It resolves the live remote default symref, fetches that exact ref, and verifies the advertised and fetched SHAs match before Codex starts.
+Before Codex starts, Symphony validates the live remote default symref, fetches that exact ref, and verifies the advertised and fetched SHAs match. The canonical receipt remains in Symphony's runtime/operator log; it is not injected into this prompt.
 
 Do not infer the default from local origin/HEAD, a hard-coded main branch, or issue prose.
 
-Record that SHA in your Linear comment, PR body, or final handoff.
-
-Confirm the checked-out branch is the tracker-provided issue branch selected by Symphony.
+Confirm the checked-out branch is the tracker-provided issue branch selected by Symphony, confirm its current HEAD, and record those values in your Linear comment, PR body, or final handoff. Reference the canonical receipt only when an operator provides it.
 
 For independent new work, Symphony creates that issue branch from the verified live canonical SHA in a clean workspace.
 

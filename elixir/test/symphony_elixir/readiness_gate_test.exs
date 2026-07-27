@@ -23,6 +23,37 @@ defmodule SymphonyElixir.ReadinessGateTest do
     assert git!(fixture.workspace, ["rev-parse", "HEAD"]) == head_sha
   end
 
+  test "blocks a fresh workspace when the tracker issue branch is the canonical default" do
+    fixture = git_fixture!("main")
+    on_exit(fn -> cleanup_fixture(fixture) end)
+    issue = issue("ARO-100-FRESH", "main")
+    original_sha = git!(fixture.workspace, ["rev-parse", "HEAD"])
+
+    assert {:error,
+            %Failure{
+              code: :issue_branch_is_canonical_default,
+              operator_action: action
+            }} =
+             ReadinessGate.check(fixture.workspace, issue, workspace_created_now: true)
+
+    assert action =~ "tracker issue branch"
+    assert git!(fixture.workspace, ["branch", "--show-current"]) == "main"
+    assert git!(fixture.workspace, ["rev-parse", "HEAD"]) == original_sha
+  end
+
+  test "blocks a reused workspace when the tracker issue branch is the canonical default" do
+    fixture = git_fixture!("main")
+    on_exit(fn -> cleanup_fixture(fixture) end)
+    issue = issue("ARO-100-REUSED", "main")
+    original_sha = git!(fixture.workspace, ["rev-parse", "HEAD"])
+
+    assert {:error, %Failure{code: :issue_branch_is_canonical_default}} =
+             ReadinessGate.check(fixture.workspace, issue, workspace_created_now: false)
+
+    assert git!(fixture.workspace, ["branch", "--show-current"]) == "main"
+    assert git!(fixture.workspace, ["rev-parse", "HEAD"]) == original_sha
+  end
+
   test "preserves a matching continuation branch and dirty local work after default advances" do
     fixture = git_fixture!("main")
     on_exit(fn -> cleanup_fixture(fixture) end)
@@ -46,6 +77,97 @@ defmodule SymphonyElixir.ReadinessGateTest do
 
     assert git!(fixture.workspace, ["branch", "--show-current"]) == issue.branch_name
     assert File.read!(Path.join(fixture.workspace, "local-progress.txt")) == "keep me\n"
+  end
+
+  test "allows a reused continuation branch when its remote head is an ancestor of local HEAD" do
+    fixture = git_fixture!("main")
+    on_exit(fn -> cleanup_fixture(fixture) end)
+    issue = issue("ARO-102-AHEAD", "codex/aro-102-ahead")
+    remote_sha = push_branch!(fixture, issue.branch_name, "remote continuation\n")
+
+    git!(fixture.workspace, ["fetch", "origin", "refs/heads/#{issue.branch_name}"])
+    git!(fixture.workspace, ["switch", "-c", issue.branch_name, remote_sha])
+
+    local_sha =
+      commit_file!(
+        fixture.workspace,
+        "local-ahead.txt",
+        "local continuation\n",
+        "advance local continuation"
+      )
+
+    assert {:ok,
+            %Receipt{
+              classification: :continuation,
+              issue_branch: "codex/aro-102-ahead",
+              head_sha: ^local_sha,
+              upstream: nil
+            }} =
+             ReadinessGate.check(fixture.workspace, issue, workspace_created_now: false)
+
+    assert git!(fixture.workspace, ["rev-parse", "HEAD"]) == local_sha
+  end
+
+  test "blocks a reused continuation branch that is behind its same-name remote" do
+    fixture = git_fixture!("main")
+    on_exit(fn -> cleanup_fixture(fixture) end)
+    issue = issue("ARO-102-BEHIND", "codex/aro-102-behind")
+    remote_sha = push_branch!(fixture, issue.branch_name, "initial remote continuation\n")
+
+    git!(fixture.workspace, ["fetch", "origin", "refs/heads/#{issue.branch_name}"])
+    git!(fixture.workspace, ["switch", "-c", issue.branch_name, remote_sha])
+    advanced_remote_sha = advance_branch!(fixture, issue.branch_name, "remote advanced\n")
+    refute advanced_remote_sha == remote_sha
+
+    assert {:error,
+            %Failure{
+              code: :continuation_remote_not_ancestor,
+              operator_action: action
+            }} =
+             ReadinessGate.check(fixture.workspace, issue, workspace_created_now: false)
+
+    assert String.downcase(action) =~ "preserve"
+    assert git!(fixture.workspace, ["branch", "--show-current"]) == issue.branch_name
+    assert git!(fixture.workspace, ["rev-parse", "HEAD"]) == remote_sha
+  end
+
+  test "blocks a reused continuation branch that diverged from its same-name remote" do
+    fixture = git_fixture!("main")
+    on_exit(fn -> cleanup_fixture(fixture) end)
+    issue = issue("ARO-102-DIVERGED", "codex/aro-102-diverged")
+    remote_base_sha = push_branch!(fixture, issue.branch_name, "shared continuation base\n")
+
+    git!(fixture.workspace, ["fetch", "origin", "refs/heads/#{issue.branch_name}"])
+    git!(fixture.workspace, ["switch", "-c", issue.branch_name, remote_base_sha])
+
+    local_sha =
+      commit_file!(fixture.workspace, "local-side.txt", "local side\n", "advance local side")
+
+    remote_sha = advance_branch!(fixture, issue.branch_name, "remote side\n")
+    refute local_sha == remote_sha
+
+    assert {:error, %Failure{code: :continuation_remote_not_ancestor}} =
+             ReadinessGate.check(fixture.workspace, issue, workspace_created_now: false)
+
+    assert git!(fixture.workspace, ["branch", "--show-current"]) == issue.branch_name
+    assert git!(fixture.workspace, ["rev-parse", "HEAD"]) == local_sha
+  end
+
+  test "blocks a reused continuation branch with no merge base to its same-name remote" do
+    fixture = git_fixture!("main")
+    on_exit(fn -> cleanup_fixture(fixture) end)
+    issue = issue("ARO-102-UNRELATED", "codex/aro-102-unrelated")
+
+    git!(fixture.workspace, ["switch", "-c", issue.branch_name])
+    local_sha = git!(fixture.workspace, ["rev-parse", "HEAD"])
+    remote_sha = push_orphan_branch!(fixture, issue.branch_name)
+    refute local_sha == remote_sha
+
+    assert {:error, %Failure{code: :continuation_remote_not_ancestor}} =
+             ReadinessGate.check(fixture.workspace, issue, workspace_created_now: false)
+
+    assert git!(fixture.workspace, ["branch", "--show-current"]) == issue.branch_name
+    assert git!(fixture.workspace, ["rev-parse", "HEAD"]) == local_sha
   end
 
   test "reuses an exact remote issue branch in a fresh clean workspace" do
@@ -221,6 +343,74 @@ defmodule SymphonyElixir.ReadinessGateTest do
            end)
   end
 
+  test "blocks and preserves a continuation branch whose HEAD changes during remote lookup" do
+    fixture = git_fixture!("main")
+    on_exit(fn -> cleanup_fixture(fixture) end)
+    issue = issue("ARO-112", "codex/aro-112")
+    git!(fixture.workspace, ["switch", "-c", issue.branch_name])
+    initial_sha = git!(fixture.workspace, ["rev-parse", "HEAD"])
+    lookup_args = ["ls-remote", "--heads", "origin", "refs/heads/#{issue.branch_name}"]
+
+    runner = fn args ->
+      result = Workspace.run_git_command(fixture.workspace, args)
+
+      if args == lookup_args do
+        commit_file!(
+          fixture.workspace,
+          "concurrent-head.txt",
+          "preserve concurrent commit\n",
+          "concurrent continuation change"
+        )
+      end
+
+      result
+    end
+
+    assert {:error, %Failure{code: :workspace_changed_during_readiness}} =
+             ReadinessGate.check(fixture.workspace, issue,
+               workspace_created_now: false,
+               command_runner: runner
+             )
+
+    final_sha = git!(fixture.workspace, ["rev-parse", "HEAD"])
+    refute final_sha == initial_sha
+    assert git!(fixture.workspace, ["branch", "--show-current"]) == issue.branch_name
+
+    assert File.read!(Path.join(fixture.workspace, "concurrent-head.txt")) ==
+             "preserve concurrent commit\n"
+  end
+
+  test "blocks and preserves changes that appear after materializing an independent branch" do
+    fixture = git_fixture!("main")
+    on_exit(fn -> cleanup_fixture(fixture) end)
+    issue = issue("ARO-113", "codex/aro-113")
+    concurrent_path = Path.join(fixture.workspace, "concurrent-untracked.txt")
+
+    runner = fn args ->
+      result = Workspace.run_git_command(fixture.workspace, args)
+
+      if Enum.take(args, 3) == ["switch", "-c", issue.branch_name] do
+        File.write!(concurrent_path, "preserve concurrent file\n")
+      end
+
+      result
+    end
+
+    assert {:error,
+            %Failure{
+              code: :workspace_changed_during_readiness,
+              detail: detail
+            }} =
+             ReadinessGate.check(fixture.workspace, issue,
+               workspace_created_now: true,
+               command_runner: runner
+             )
+
+    assert detail =~ "concurrent-untracked.txt"
+    assert git!(fixture.workspace, ["branch", "--show-current"]) == issue.branch_name
+    assert File.read!(concurrent_path) == "preserve concurrent file\n"
+  end
+
   defp issue(identifier, branch_name) do
     %Issue{
       id: "issue-#{identifier}",
@@ -281,6 +471,32 @@ defmodule SymphonyElixir.ReadinessGateTest do
     sha = git!(fixture.seed, ["rev-parse", "HEAD"])
     git!(fixture.seed, ["switch", fixture.default_branch])
     sha
+  end
+
+  defp advance_branch!(fixture, branch, contents) do
+    git!(fixture.seed, ["switch", branch])
+    path = Path.join(fixture.seed, String.replace(branch, "/", "-") <> "-advance.txt")
+    File.write!(path, contents)
+    git!(fixture.seed, ["add", Path.basename(path)])
+    git!(fixture.seed, ["commit", "-m", "advance #{branch}"])
+    git!(fixture.seed, ["push", "origin", branch])
+    sha = git!(fixture.seed, ["rev-parse", "HEAD"])
+    git!(fixture.seed, ["switch", fixture.default_branch])
+    sha
+  end
+
+  defp push_orphan_branch!(fixture, branch) do
+    tree_sha = git!(fixture.seed, ["write-tree"])
+    orphan_sha = git!(fixture.seed, ["commit-tree", tree_sha, "-m", "unrelated #{branch}"])
+    git!(fixture.seed, ["push", "origin", "#{orphan_sha}:refs/heads/#{branch}"])
+    orphan_sha
+  end
+
+  defp commit_file!(repo, filename, contents, message) do
+    File.write!(Path.join(repo, filename), contents)
+    git!(repo, ["add", filename])
+    git!(repo, ["commit", "-m", message])
+    git!(repo, ["rev-parse", "HEAD"])
   end
 
   defp remote_default_sha!(fixture) do
