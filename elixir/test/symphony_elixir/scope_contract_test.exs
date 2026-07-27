@@ -221,6 +221,211 @@ defmodule SymphonyElixir.ScopeContractTest do
             ]} = ScopeContract.parse_pr_body(body)
   end
 
+  test "rejects bulleted None as a Work Item" do
+    # Mutation caught: accepting a Markdown bullet as the single Work Item prose value.
+    body = """
+    #### Scope Contract
+
+    ##### Work Item
+
+    - None
+
+    ##### Invariants
+
+    - Invalid contracts fail closed.
+
+    ##### Acceptance Criteria
+
+    - AC-1: Parse a complete scope contract.
+
+    ##### Non-Goals
+
+    - Do not change review routing.
+
+    ##### Dependencies
+
+    None
+
+    ##### Follow-Ups
+
+    None
+    """
+
+    assert {:error, [{:none_not_allowed, :work_item}]} = ScopeContract.parse_pr_body(body)
+  end
+
+  test "rejects explicit None as a Work Item" do
+    # Mutation caught: treating Work Item like an optional list that permits the None marker.
+    body = """
+    #### Scope Contract
+
+    ##### Work Item
+
+    None
+
+    ##### Invariants
+
+    - Invalid contracts fail closed.
+
+    ##### Acceptance Criteria
+
+    - AC-1: Parse a complete scope contract.
+
+    ##### Non-Goals
+
+    - Do not change review routing.
+
+    ##### Dependencies
+
+    None
+
+    ##### Follow-Ups
+
+    None
+    """
+
+    assert {:error, [{:none_not_allowed, :work_item}]} = ScopeContract.parse_pr_body(body)
+  end
+
+  test "rejects a blank Markdown bullet as a Work Item" do
+    # Mutation caught: accepting a lone Markdown bullet as the single Work Item prose value.
+    body = """
+    #### Scope Contract
+
+    ##### Work Item
+
+    -
+
+    ##### Invariants
+
+    - Invalid contracts fail closed.
+
+    ##### Acceptance Criteria
+
+    - AC-1: Parse a complete scope contract.
+
+    ##### Non-Goals
+
+    - Do not change review routing.
+
+    ##### Dependencies
+
+    None
+
+    ##### Follow-Ups
+
+    None
+    """
+
+    assert {:error, [{:blank_bullet, :work_item}]} = ScopeContract.parse_pr_body(body)
+  end
+
+  test "rejects a populated Markdown bullet as a Work Item" do
+    # Mutation caught: stripping a Markdown bullet into apparently valid Work Item prose.
+    body = """
+    #### Scope Contract
+
+    ##### Work Item
+
+    - Add a typed PR scope contract parser.
+
+    ##### Invariants
+
+    - Invalid contracts fail closed.
+
+    ##### Acceptance Criteria
+
+    - AC-1: Parse a complete scope contract.
+
+    ##### Non-Goals
+
+    - Do not change review routing.
+
+    ##### Dependencies
+
+    None
+
+    ##### Follow-Ups
+
+    None
+    """
+
+    assert {:error, [{:malformed_bullet, :work_item, "- Add a typed PR scope contract parser."}]} =
+             ScopeContract.parse_pr_body(body)
+  end
+
+  test "rejects multiple prose values as a Work Item" do
+    # Mutation caught: silently selecting one of multiple nonblank Work Item lines.
+    body = """
+    #### Scope Contract
+
+    ##### Work Item
+
+    Add a typed PR scope contract parser.
+    Also change review routing.
+
+    ##### Invariants
+
+    - Invalid contracts fail closed.
+
+    ##### Acceptance Criteria
+
+    - AC-1: Parse a complete scope contract.
+
+    ##### Non-Goals
+
+    - Do not change review routing.
+
+    ##### Dependencies
+
+    None
+
+    ##### Follow-Ups
+
+    None
+    """
+
+    assert {:error, [{:invalid_work_item, :multiple_values}]} =
+             ScopeContract.parse_pr_body(body)
+  end
+
+  test "rejects an unexpected Scope Contract subheading" do
+    # Mutation caught: ignoring unknown structured fields that could hide an authoring mistake.
+    body = """
+    #### Scope Contract
+
+    ##### Work Item
+
+    Add a typed PR scope contract parser.
+
+    ##### Ownership
+
+    - Symphony governance.
+
+    ##### Invariants
+
+    - Invalid contracts fail closed.
+
+    ##### Acceptance Criteria
+
+    - AC-1: Parse a complete scope contract.
+
+    ##### Non-Goals
+
+    - Do not change review routing.
+
+    ##### Dependencies
+
+    None
+
+    ##### Follow-Ups
+
+    None
+    """
+
+    assert {:error, [{:unexpected_section, "Ownership"}]} = ScopeContract.parse_pr_body(body)
+  end
+
   test "rejects an acceptance criterion without a stable identifier" do
     # Mutation caught: accepting free-form acceptance-criteria bullets without an AC identifier.
     body = """

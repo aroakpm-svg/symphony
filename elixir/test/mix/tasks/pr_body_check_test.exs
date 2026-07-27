@@ -370,6 +370,190 @@ defmodule Mix.Tasks.PrBody.CheckTest do
     end)
   end
 
+  test "fails a complete body whose Work Item is bulleted None" do
+    # Mutation caught: letting the Mix task accept bulleted None as real Work Item prose.
+    in_temp_repo(fn ->
+      write_template!(@template)
+
+      body = """
+      #### Context
+
+      Context text.
+
+      #### TL;DR
+
+      Short summary.
+
+      #### Summary
+
+      - First change.
+
+      #### Alternatives
+
+      - Alternative considered.
+
+      #### Test Plan
+
+      - [x] Ran targeted checks.
+
+      #### Scope Contract
+
+      ##### Work Item
+
+      - None
+
+      ##### Invariants
+
+      - Existing generic PR body checks still run.
+
+      ##### Acceptance Criteria
+
+      - AC-1: Invalid scope contracts fail with all detected errors.
+
+      ##### Non-Goals
+
+      - Do not change review routing.
+
+      ##### Dependencies
+
+      None
+
+      ##### Follow-Ups
+
+      None
+      """
+
+      File.write!("body.md", body)
+
+      error_output = capture_invalid_body_output()
+
+      assert error_output =~ "Scope Contract Work Item cannot be None"
+    end)
+  end
+
+  test "fails a complete body whose Work Item is a blank bullet" do
+    # Mutation caught: letting the Mix task accept a lone Markdown bullet as Work Item prose.
+    in_temp_repo(fn ->
+      write_template!(@template)
+
+      body = """
+      #### Context
+
+      Context text.
+
+      #### TL;DR
+
+      Short summary.
+
+      #### Summary
+
+      - First change.
+
+      #### Alternatives
+
+      - Alternative considered.
+
+      #### Test Plan
+
+      - [x] Ran targeted checks.
+
+      #### Scope Contract
+
+      ##### Work Item
+
+      -
+
+      ##### Invariants
+
+      - Existing generic PR body checks still run.
+
+      ##### Acceptance Criteria
+
+      - AC-1: Invalid scope contracts fail with all detected errors.
+
+      ##### Non-Goals
+
+      - Do not change review routing.
+
+      ##### Dependencies
+
+      None
+
+      ##### Follow-Ups
+
+      None
+      """
+
+      File.write!("body.md", body)
+
+      error_output = capture_invalid_body_output()
+
+      assert error_output =~ "Scope Contract Work Item contains a blank bullet"
+    end)
+  end
+
+  test "fails a complete body whose Work Item is a populated bullet" do
+    # Mutation caught: letting the Mix task accept Markdown list structure as Work Item prose.
+    in_temp_repo(fn ->
+      write_template!(@template)
+
+      body = """
+      #### Context
+
+      Context text.
+
+      #### TL;DR
+
+      Short summary.
+
+      #### Summary
+
+      - First change.
+
+      #### Alternatives
+
+      - Alternative considered.
+
+      #### Test Plan
+
+      - [x] Ran targeted checks.
+
+      #### Scope Contract
+
+      ##### Work Item
+
+      - Enforce typed PR scope contracts.
+
+      ##### Invariants
+
+      - Existing generic PR body checks still run.
+
+      ##### Acceptance Criteria
+
+      - AC-1: Invalid scope contracts fail with all detected errors.
+
+      ##### Non-Goals
+
+      - Do not change review routing.
+
+      ##### Dependencies
+
+      None
+
+      ##### Follow-Ups
+
+      None
+      """
+
+      File.write!("body.md", body)
+
+      error_output = capture_invalid_body_output()
+
+      assert error_output =~
+               "Scope Contract Work Item has malformed bullet: - Enforce typed PR scope contracts."
+    end)
+  end
+
   test "fails when a complete generic body omits a required scope contract field" do
     # Mutation caught: removing the shared ScopeContract parser call from the Mix task.
     in_temp_repo(fn ->
@@ -407,6 +591,85 @@ defmodule Mix.Tasks.PrBody.CheckTest do
       error_output = capture_invalid_body_output()
 
       assert error_output =~ "Duplicate Scope Contract section: Invariants"
+    end)
+  end
+
+  test "formats every structural and semantic Scope Contract error in one real run" do
+    # Mutations caught: dropping a typed formatter or stopping before all shared parser errors are printed.
+    in_temp_repo(fn ->
+      write_template!(@template)
+
+      body = """
+      #### Context
+
+      Context text.
+
+      #### TL;DR
+
+      Short summary.
+
+      #### Summary
+
+      - First change.
+
+      #### Alternatives
+
+      - Alternative considered.
+
+      #### Test Plan
+
+      - [x] Ran targeted checks.
+
+      #### Scope Contract
+
+      ##### Work Item
+
+      Enforce typed PR scope contracts.
+      Also change review routing.
+
+      ##### Ownership
+
+      - Symphony governance.
+
+      ##### Invariants
+
+      - Existing generic PR body checks still run.
+
+      ##### Acceptance Criteria
+
+      - Missing a stable identifier.
+      - AC-1: Invalid scope contracts fail closed.
+      - AC-1: Duplicate identifiers fail closed.
+
+      ##### Non-Goals
+
+      - Do not change review routing.
+
+      ##### Dependencies
+
+
+      ##### Follow-Ups
+
+      - None
+      - Add runtime routing later.
+
+      #### Scope Contract
+      """
+
+      File.write!("body.md", body)
+
+      error_output = capture_invalid_body_output()
+
+      assert error_output =~ "Duplicate Scope Contract section."
+      assert error_output =~ "Unexpected Scope Contract section: Ownership"
+      assert error_output =~ "Scope Contract Dependencies cannot be empty"
+      assert error_output =~ "Scope Contract Follow-Ups must use None by itself"
+
+      assert error_output =~
+               "Scope Contract Acceptance Criteria has malformed criterion: Missing a stable identifier."
+
+      assert error_output =~ "Scope Contract Acceptance Criteria duplicates identifier: AC-1"
+      assert error_output =~ "Scope Contract Work Item must contain exactly one value"
     end)
   end
 

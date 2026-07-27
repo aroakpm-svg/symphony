@@ -167,16 +167,22 @@ defmodule SymphonyElixir.ScopeContract do
       values == [] ->
         {"", [{:empty_section, :work_item}]}
 
-      values == ["None"] ->
-        {"", [{:none_not_allowed, :work_item}]}
-
       length(values) == 1 ->
-        {hd(values), []}
+        validate_work_item_value(hd(values))
 
       true ->
         {"", [{:invalid_work_item, :multiple_values}]}
     end
   end
+
+  defp validate_work_item_value("None"), do: {"", [{:none_not_allowed, :work_item}]}
+  defp validate_work_item_value("- None"), do: {"", [{:none_not_allowed, :work_item}]}
+  defp validate_work_item_value("-"), do: {"", [{:blank_bullet, :work_item}]}
+
+  defp validate_work_item_value(<<"- ", _value::binary>> = value),
+    do: {"", [{:malformed_bullet, :work_item, value}]}
+
+  defp validate_work_item_value(value), do: {value, []}
 
   defp validate_list(field, lines) do
     values = nonblank_lines(lines)
@@ -207,19 +213,13 @@ defmodule SymphonyElixir.ScopeContract do
     {values, errors ++ [{:blank_bullet, field}]}
   end
 
-  defp normalize_bullet(field, <<"- ", value::binary>>, state) do
-    append_normalized_bullet(field, String.trim(value), state)
+  defp normalize_bullet(_field, <<"- ", value::binary>>, {values, errors}) do
+    {values ++ [String.trim(value)], errors}
   end
 
   defp normalize_bullet(field, line, {values, errors}) do
     {values, errors ++ [{:malformed_bullet, field, line}]}
   end
-
-  defp append_normalized_bullet(field, "", {values, errors}) do
-    {values, errors ++ [{:blank_bullet, field}]}
-  end
-
-  defp append_normalized_bullet(_field, value, {values, errors}), do: {values ++ [value], errors}
 
   defp validate_normalized_list(field, ["None"]) when field in @optional_none_fields, do: {[], []}
 
