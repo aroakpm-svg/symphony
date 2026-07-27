@@ -128,6 +128,9 @@ defmodule Mix.Tasks.PrBody.Check do
   defp format_scope_contract_error({:unexpected_section, heading}),
     do: "Unexpected Scope Contract section: #{heading}"
 
+  defp format_scope_contract_error({:malformed_section_heading, heading}),
+    do: "Malformed Scope Contract section heading: #{heading}"
+
   defp format_scope_contract_error({:sections_out_of_order, _observed_fields}),
     do: "Scope Contract sections are out of order."
 
@@ -173,11 +176,15 @@ defmodule Mix.Tasks.PrBody.Check do
   defp check_order(errors, body, headings) do
     positions =
       headings
+      |> Enum.filter(&legacy_order_heading?/1)
       |> Enum.map(&heading_position(body, &1))
       |> Enum.reject(&(&1 == :nomatch))
 
     if positions == Enum.sort(positions), do: errors, else: errors ++ ["Required headings are out of order."]
   end
+
+  defp legacy_order_heading?(<<"#### ", _rest::binary>>), do: true
+  defp legacy_order_heading?(_heading), do: false
 
   defp check_no_placeholders(errors, body) do
     if String.contains?(body, "<!--") do

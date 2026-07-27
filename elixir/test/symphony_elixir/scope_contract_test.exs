@@ -1138,4 +1138,211 @@ defmodule SymphonyElixir.ScopeContractTest do
                ScopeContract.parse_pr_body(body)
     end)
   end
+
+  test "normalizes standard ATX closing hashes on outer and inner headings" do
+    # Mutation caught: retaining the optional ATX closing sequence as part of the canonical heading title.
+    body = """
+    #### Scope Contract ####
+
+    ##### Work Item #####
+
+    Normalize visible headings.
+
+    ##### Invariants #####
+
+    - Invalid contracts fail closed.
+
+    ##### Acceptance Criteria #####
+
+    - AC-1: Normalize standard closing hashes.
+
+    ##### Non-Goals #####
+
+    - Do not change review routing.
+
+    ##### Dependencies #####
+
+    None
+
+    ##### Follow-Ups #####
+
+    None
+    """
+
+    assert {:ok,
+            %{
+              work_item: "Normalize visible headings.",
+              invariants: ["Invalid contracts fail closed."],
+              acceptance_criteria: ["AC-1: Normalize standard closing hashes."]
+            }} = ScopeContract.parse_pr_body(body)
+  end
+
+  test "counts closing-hash outer headings when detecting duplicate Scope Contracts" do
+    # Mutation caught: normalizing ATX titles only after duplicate outer-heading discovery.
+    body = @complete_contract <> "\n#### Scope Contract ####\n"
+
+    assert {:error, [{:duplicate_scope_contract}]} = ScopeContract.parse_pr_body(body)
+  end
+
+  for boundary <- ["# Outside Scope", "## Outside Scope", "### Outside Scope", "#### Outside Scope"] do
+    test "stops Scope Contract at visible boundary #{boundary}" do
+      # Mutation caught: terminating only at H4 and collecting outside H5 fields after an H1-H3 boundary.
+      boundary = unquote(boundary)
+
+      body = """
+      #### Scope Contract
+
+      ##### Work Item
+
+      Stop at the first visible outer heading.
+
+      ##### Invariants
+
+      - Outside fields never complete this contract.
+
+      #{boundary}
+
+      ##### Acceptance Criteria
+
+      - AC-1: This field is outside the contract.
+
+      ##### Non-Goals
+
+      - This field is outside the contract.
+
+      ##### Dependencies
+
+      None
+
+      ##### Follow-Ups
+
+      None
+      """
+
+      assert {:error,
+              [
+                {:missing_section, :acceptance_criteria},
+                {:missing_section, :non_goals},
+                {:missing_section, :dependencies},
+                {:missing_section, :follow_ups}
+              ]} = ScopeContract.parse_pr_body(body)
+    end
+  end
+
+  test "keeps every heading level and closing hashes non-structural inside a fence" do
+    # Mutation caught: normalizing fenced heading text into visible boundary or subsection tokens.
+    body = """
+    #### Scope Contract
+
+    ##### Work Item
+
+    Ignore fenced heading examples.
+
+    ##### Invariants
+
+    - Fenced headings remain content.
+    ```markdown
+    # H1 ####
+    ## H2 ####
+    ### H3 ####
+    #### H4 ####
+    ##### Acceptance Criteria #####
+    ```
+
+    ##### Acceptance Criteria
+
+    - AC-1: Parse the real visible subsection.
+
+    ##### Non-Goals
+
+    - Do not change review routing.
+
+    ##### Dependencies
+
+    None
+
+    ##### Follow-Ups
+
+    None
+    """
+
+    assert {:error,
+            [
+              {:malformed_bullet, :invariants, "```markdown"},
+              {:malformed_bullet, :invariants, "# H1 ####"},
+              {:malformed_bullet, :invariants, "## H2 ####"},
+              {:malformed_bullet, :invariants, "### H3 ####"},
+              {:malformed_bullet, :invariants, "#### H4 ####"},
+              {:malformed_bullet, :invariants, "##### Acceptance Criteria #####"},
+              {:malformed_bullet, :invariants, "```"}
+            ]} = ScopeContract.parse_pr_body(body)
+  end
+
+  test "rejects indented code as Work Item prose and invariant continuation" do
+    # Mutation caught: treating document code indentation as Work Item text or list continuation indentation.
+    work_item_body =
+      String.replace(
+        @complete_contract,
+        "Add a typed PR scope contract parser.",
+        "    IO.puts(\"not Work Item prose\")"
+      )
+
+    assert {:error, [{:malformed_bullet, :work_item, "IO.puts(\"not Work Item prose\")"}]} =
+             ScopeContract.parse_pr_body(work_item_body)
+
+    invariant_body =
+      String.replace(
+        @complete_contract,
+        "- The parser reads only explicit Scope Contract headings.",
+        "- The parser reads only explicit Scope Contract headings.\n      IO.puts(\"not continuation prose\")"
+      )
+
+    assert {:error, [{:malformed_bullet, :invariants, "IO.puts(\"not continuation prose\")"}]} =
+             ScopeContract.parse_pr_body(invariant_body)
+  end
+
+  @tag timeout: 2_500
+  test "tracks a large repeated-heading sequence without sorting it" do
+    # Mutation caught: materializing and sorting all observed heading ranks after section reduction.
+    duplicate_count = 40_000
+    repeated_headings = String.duplicate("##### Invariants\n\n", duplicate_count)
+
+    body = """
+    #### Scope Contract
+
+    ##### Work Item
+
+    Track order during reduction.
+
+    #{repeated_headings}
+    ##### Acceptance Criteria
+
+    - AC-1: Preserve linear heading validation.
+
+    ##### Non-Goals
+
+    - Do not change review routing.
+
+    ##### Dependencies
+
+    None
+
+    ##### Follow-Ups
+
+    None
+    """
+
+    assert {:error, errors} = ScopeContract.parse_pr_body(body)
+    assert length(errors) == duplicate_count
+    assert hd(errors) == {:duplicate_section, :invariants}
+    assert List.last(errors) == {:empty_section, :invariants}
+    refute Enum.any?(errors, &match?({:sections_out_of_order, _fields}, &1))
+  end
+
+  test "fails closed on an empty visible H5 section heading" do
+    # Mutation caught: treating an H5 token with no normalized title as ordinary section content.
+    body = String.replace(@complete_contract, "#### Scope Contract\n\n", "#### Scope Contract\n\n#####\n\n")
+
+    assert {:error, [{:malformed_section_heading, "#####"}]} = ScopeContract.parse_pr_body(body)
+  end
 end

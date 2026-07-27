@@ -930,6 +930,115 @@ defmodule Mix.Tasks.PrBody.CheckTest do
     end)
   end
 
+  test "ignores reverse-ordered inline H5 names in the legacy raw heading order check" do
+    # Mutation caught: letting unanchored H5 matches override the canonical Scope Contract heading sequence.
+    in_temp_repo(fn ->
+      write_template!(@template)
+
+      body =
+        String.replace(
+          @valid_body,
+          "Enforce typed PR scope contracts.",
+          "Enforce typed PR scope contracts while documenting `##### Follow-Ups`, `##### Dependencies`, `##### Non-Goals`, `##### Acceptance Criteria`, and `##### Invariants`."
+        )
+
+      File.write!("body.md", body)
+
+      output = capture_io(fn -> Check.run(["lint", "--file", "body.md"]) end)
+      assert output =~ "PR body format OK"
+    end)
+  end
+
+  test "accepts canonical Scope headings with standard ATX closing hashes" do
+    # Mutation caught: canonicalizing closing hashes only in parser tests but not at the real Mix entry.
+    in_temp_repo(fn ->
+      write_template!(@template)
+
+      body =
+        Enum.reduce(
+          [
+            {"#### Scope Contract", "#### Scope Contract ####"},
+            {"##### Work Item", "##### Work Item #####"},
+            {"##### Invariants", "##### Invariants #####"},
+            {"##### Acceptance Criteria", "##### Acceptance Criteria #####"},
+            {"##### Non-Goals", "##### Non-Goals #####"},
+            {"##### Dependencies", "##### Dependencies #####"},
+            {"##### Follow-Ups", "##### Follow-Ups #####"}
+          ],
+          @valid_body,
+          fn {heading, closing_heading}, body -> String.replace(body, heading, closing_heading) end
+        )
+
+      File.write!("body.md", body)
+
+      output = capture_io(fn -> Check.run(["lint", "--file", "body.md"]) end)
+      assert output =~ "PR body format OK"
+    end)
+  end
+
+  test "reports indented code at Work Item and list boundaries through the shared parser" do
+    # Mutation caught: losing indented-code token kinds before the real Mix formatter consumes parser errors.
+    in_temp_repo(fn ->
+      write_template!(@template)
+
+      cases = [
+        {
+          String.replace(
+            @valid_body,
+            "Enforce typed PR scope contracts.",
+            "    IO.puts(\"not Work Item prose\")"
+          ),
+          "Scope Contract Work Item has malformed bullet: IO.puts(\"not Work Item prose\")"
+        },
+        {
+          String.replace(
+            @valid_body,
+            "- Existing generic PR body checks still run.",
+            "- Existing generic PR body checks still run.\n      IO.puts(\"not continuation prose\")"
+          ),
+          "Scope Contract Invariants has malformed bullet: IO.puts(\"not continuation prose\")"
+        }
+      ]
+
+      Enum.each(cases, fn {body, expected_error} ->
+        File.write!("body.md", body)
+        assert capture_invalid_body_output() =~ expected_error
+      end)
+    end)
+  end
+
+  test "does not collect outside H5 fields after a visible H1-H4 Scope boundary" do
+    # Mutation caught: checking outer headings only at H4 and letting later H5 tokens complete the contract.
+    in_temp_repo(fn ->
+      write_template!(@template)
+
+      body =
+        String.replace(
+          @valid_body,
+          "##### Acceptance Criteria\n\n",
+          "### Outside Scope\n\n##### Acceptance Criteria\n\n"
+        )
+
+      File.write!("body.md", body)
+
+      error_output = capture_invalid_body_output()
+      assert error_output =~ "Missing Scope Contract section: Acceptance Criteria"
+      assert error_output =~ "Missing Scope Contract section: Follow-Ups"
+    end)
+  end
+
+  test "formats an empty visible H5 as a malformed Scope section heading" do
+    # Mutation caught: dropping malformed H5 tokens before the Mix task formats parser errors.
+    in_temp_repo(fn ->
+      write_template!(@template)
+
+      body = String.replace(@valid_body, "#### Scope Contract\n\n", "#### Scope Contract\n\n#####\n\n")
+      File.write!("body.md", body)
+
+      assert capture_invalid_body_output() =~ "Malformed Scope Contract section heading: #####"
+    end)
+  end
+
   defp capture_invalid_body_output do
     capture_io(:stderr, fn ->
       assert_raise Mix.Error, ~r/PR body format invalid/, fn ->

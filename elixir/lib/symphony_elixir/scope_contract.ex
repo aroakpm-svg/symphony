@@ -19,11 +19,10 @@ defmodule SymphonyElixir.ScopeContract do
   @required_list_fields [:invariants, :acceptance_criteria, :non_goals]
   @opening_fence ~r/^( {0,3})(`{3,}|~{3,})(.*)$/
   @closing_fence ~r/^( {0,3})(`{3,}|~{3,})[ \t]*$/
-  @continuation_indent ~r/^(?: {2,}| *\t)/
   @thematic_break ~r/^(?:(?:\*[ \t]*){3,}|(?:-[ \t]*){3,}|(?:_[ \t]*){3,})$/
-  @atx_heading ~r/^(?<marker>[#]{1,6})(?:[ \t]+(?<content>.*))?$/
-  @unordered_list ~r/^(?<marker>[*+-])(?:[ \t]+(?<content>.*))?$/
-  @ordered_list ~r/^(?<marker>\d{1,9}[.)])(?:[ \t]+(?<content>.*))?$/
+  @atx_heading ~r/^(?<marker>[#]{1,6})(?:[ \t]+(?<content>.*?))?(?:[ \t]+(?<closing>[#]+))?$/
+  @unordered_list ~r/^(?<marker>[*+-])(?:(?<spacing>[ \t]+)(?<content>.*))?$/
+  @ordered_list ~r/^(?<marker>\d{1,9}[.)])(?:(?<spacing>[ \t]+)(?<content>.*))?$/
   @blockquote ~r/^>.*/
   @fence_marker ~r/^(?:`{3,}|~{3,}).*$/
   @markdown_structures [
@@ -46,6 +45,7 @@ defmodule SymphonyElixir.ScopeContract do
           | {:missing_section, field()}
           | {:duplicate_section, field()}
           | {:unexpected_section, String.t()}
+          | {:malformed_section_heading, String.t()}
           | {:sections_out_of_order, [field()]}
           | {:placeholder_comment, field()}
           | {:blank_bullet, field()}
@@ -71,16 +71,18 @@ defmodule SymphonyElixir.ScopeContract do
            :blank
            | :text
            | :fenced
+           | :indented_code
            | :thematic_break
            | :blockquote
            | :fence_marker
            | {:heading, 1..6, String.t()}
-           | {:list_item, String.t(), String.t()}
+           | {:list_item, String.t(), String.t(), non_neg_integer()}
 
   @typep line_token :: %{
            kind: token_kind(),
            value: String.t(),
-           top_level?: boolean(),
+           indent: non_neg_integer(),
+           document_level?: boolean(),
            continuation?: boolean()
          }
 
@@ -117,7 +119,7 @@ defmodule SymphonyElixir.ScopeContract do
         scope_tokens =
           tokens
           |> Enum.drop(index + 1)
-          |> Enum.take_while(&(not level_four_heading_token?(&1)))
+          |> Enum.take_while(&(not scope_boundary_heading?(&1)))
 
         {scope_tokens, errors}
     end
@@ -125,12 +127,12 @@ defmodule SymphonyElixir.ScopeContract do
 
   @spec collect_sections([line_token()]) :: {%{field() => [line_token()]}, [error()]}
   defp collect_sections(tokens) do
-    {reversed_sections, reversed_errors, _current, reversed_fields} =
-      Enum.reduce(tokens, {%{}, [], nil, []}, &collect_section_token/2)
+    {reversed_sections, reversed_errors, _current, reversed_fields, _previous_rank, out_of_order?} =
+      Enum.reduce(tokens, {%{}, [], nil, [], nil, false}, &collect_section_token/2)
 
     sections = Map.new(reversed_sections, fn {field, section_lines} -> {field, Enum.reverse(section_lines)} end)
     observed_fields = Enum.reverse(reversed_fields)
-    errors = Enum.reverse(reversed_errors) ++ section_order_errors(observed_fields)
+    errors = Enum.reverse(reversed_errors) ++ section_order_errors(observed_fields, out_of_order?)
 
     {sections, errors}
   end
@@ -139,33 +141,43 @@ defmodule SymphonyElixir.ScopeContract do
     case section_heading(token) do
       {:known, field} -> collect_known_section(field, state)
       {:unknown, heading} -> collect_unknown_section(heading, state)
+      {:malformed, heading} -> collect_malformed_section(heading, state)
       :content -> collect_section_content(token, state)
     end
   end
 
-  defp collect_known_section(field, {sections, errors, _current, fields}) do
+  defp collect_known_section(field, {sections, errors, _current, fields, previous_rank, out_of_order?}) do
+    rank = Map.fetch!(@field_ranks, field)
     next_fields = [field | fields]
+    next_out_of_order? = out_of_order? or (not is_nil(previous_rank) and rank < previous_rank)
 
     if Map.has_key?(sections, field) do
-      {sections, [{:duplicate_section, field} | errors], :ignore, next_fields}
+      {sections, [{:duplicate_section, field} | errors], :ignore, next_fields, rank, next_out_of_order?}
     else
-      {Map.put(sections, field, []), errors, field, next_fields}
+      {Map.put(sections, field, []), errors, field, next_fields, rank, next_out_of_order?}
     end
   end
 
-  defp collect_unknown_section(heading, {sections, errors, _current, fields}) do
-    {sections, [{:unexpected_section, heading} | errors], :ignore, fields}
+  defp collect_unknown_section(heading, {sections, errors, _current, fields, previous_rank, out_of_order?}) do
+    {sections, [{:unexpected_section, heading} | errors], :ignore, fields, previous_rank, out_of_order?}
   end
 
-  defp collect_section_content(token, {sections, errors, current, fields} = state) do
+  defp collect_malformed_section(heading, {sections, errors, _current, fields, previous_rank, out_of_order?}) do
+    {sections, [{:malformed_section_heading, heading} | errors], :ignore, fields, previous_rank, out_of_order?}
+  end
+
+  defp collect_section_content(token, {sections, errors, current, fields, previous_rank, out_of_order?} = state) do
     if Map.has_key?(sections, current) do
-      {Map.update!(sections, current, &[token | &1]), errors, current, fields}
+      {Map.update!(sections, current, &[token | &1]), errors, current, fields, previous_rank, out_of_order?}
     else
       state
     end
   end
 
-  defp section_heading(%{kind: {:heading, 5, title}, top_level?: true}) when title != "" do
+  defp section_heading(%{kind: {:heading, 5, ""}, document_level?: true, value: value}),
+    do: {:malformed, value}
+
+  defp section_heading(%{kind: {:heading, 5, title}, document_level?: true}) do
     case Enum.find(@fields, fn {_field, field_title} -> title == field_title end) do
       {field, _title} ->
         {:known, field}
@@ -177,11 +189,8 @@ defmodule SymphonyElixir.ScopeContract do
 
   defp section_heading(_token), do: :content
 
-  defp section_order_errors(observed_fields) do
-    ranks = Enum.map(observed_fields, &Map.fetch!(@field_ranks, &1))
-
-    if ranks == Enum.sort(ranks), do: [], else: [{:sections_out_of_order, observed_fields}]
-  end
+  defp section_order_errors(_observed_fields, false), do: []
+  defp section_order_errors(observed_fields, true), do: [{:sections_out_of_order, observed_fields}]
 
   defp validate_sections(sections) do
     missing_errors =
@@ -226,10 +235,10 @@ defmodule SymphonyElixir.ScopeContract do
   defp validate_work_item_token(%{kind: :text, value: "None"}),
     do: {"", [{:none_not_allowed, :work_item}]}
 
-  defp validate_work_item_token(%{kind: {:list_item, "-", "None"}}),
+  defp validate_work_item_token(%{kind: {:list_item, "-", "None", _content_indent}}),
     do: {"", [{:none_not_allowed, :work_item}]}
 
-  defp validate_work_item_token(%{kind: {:list_item, "-", ""}}),
+  defp validate_work_item_token(%{kind: {:list_item, "-", "", _content_indent}}),
     do: {"", [{:blank_bullet, :work_item}]}
 
   defp validate_work_item_token(%{kind: :text, value: value}), do: {value, []}
@@ -270,11 +279,11 @@ defmodule SymphonyElixir.ScopeContract do
     {[{:none, :standalone} | items], errors}
   end
 
-  defp normalize_bullet(field, %{kind: {:list_item, "-", ""}}, {items, errors}) do
+  defp normalize_bullet(field, %{kind: {:list_item, "-", "", _content_indent}}, {items, errors}) do
     {items, [{:blank_bullet, field} | errors]}
   end
 
-  defp normalize_bullet(_field, %{kind: {:list_item, "-", value}}, {items, errors}) do
+  defp normalize_bullet(_field, %{kind: {:list_item, "-", value, _content_indent}}, {items, errors}) do
     {[normalized_item(value) | items], errors}
   end
 
@@ -361,42 +370,51 @@ defmodule SymphonyElixir.ScopeContract do
       |> String.replace("\r\n", "\n")
       |> String.split("\n")
 
-    {tokens, _fence} = Enum.map_reduce(lines, nil, &tokenize_line/2)
+    {tokens, _state} = Enum.map_reduce(lines, {nil, nil}, &tokenize_line/2)
     tokens
   end
 
-  defp tokenize_line(line, nil) do
+  defp tokenize_line(line, {nil, list_content_indent}) do
     case opening_fence(line) do
-      {:ok, fence} -> {line_token(line, :fenced), fence}
-      :none -> {unfenced_line_token(line), nil}
+      {:ok, fence} -> {line_token(line, :fenced, list_content_indent), {fence, list_content_indent}}
+      :none -> unfenced_line_token(line, list_content_indent)
     end
   end
 
-  defp tokenize_line(line, fence) do
+  defp tokenize_line(line, {fence, list_content_indent}) do
     next_fence = if closing_fence?(line, fence), do: nil, else: fence
-    {line_token(line, :fenced), next_fence}
+    {line_token(line, :fenced, list_content_indent), {next_fence, list_content_indent}}
   end
 
-  defp unfenced_line_token(line) do
-    token = line_token(line, :text)
-    %{token | kind: markdown_structure(token.value)}
+  defp unfenced_line_token(line, list_content_indent) do
+    token = line_token(line, :text, list_content_indent)
+
+    classified_token =
+      token
+      |> Map.put(:kind, markdown_structure(token.value, token.indent))
+      |> classify_indented_code(list_content_indent)
+
+    {classified_token, {nil, next_list_content_indent(classified_token, list_content_indent)}}
   end
 
-  defp line_token(line, kind) do
+  defp line_token(line, kind, list_content_indent) do
+    {content, indent} = split_indentation(line)
+
     %{
       kind: kind,
-      value: String.trim(line),
-      top_level?: String.trim_leading(line) == line,
-      continuation?: Regex.match?(@continuation_indent, line)
+      value: String.trim_trailing(content),
+      indent: indent,
+      document_level?: document_level?(indent, list_content_indent),
+      continuation?: list_continuation?(indent, list_content_indent)
     }
   end
 
-  defp markdown_structure(""), do: :blank
+  defp markdown_structure("", _indent), do: :blank
 
-  defp markdown_structure(value) do
+  defp markdown_structure(value, indent) do
     @markdown_structures
     |> Enum.find_value(&match_markdown_structure(&1, value))
-    |> build_token_kind()
+    |> build_token_kind(indent)
   end
 
   defp match_markdown_structure({kind, pattern}, value) do
@@ -406,18 +424,78 @@ defmodule SymphonyElixir.ScopeContract do
     end
   end
 
-  defp build_token_kind(nil), do: :text
-  defp build_token_kind({:thematic_break, _captures}), do: :thematic_break
-  defp build_token_kind({:blockquote, _captures}), do: :blockquote
-  defp build_token_kind({:fence_marker, _captures}), do: :fence_marker
+  defp build_token_kind(nil, _indent), do: :text
+  defp build_token_kind({:thematic_break, _captures}, _indent), do: :thematic_break
+  defp build_token_kind({:blockquote, _captures}, _indent), do: :blockquote
+  defp build_token_kind({:fence_marker, _captures}, _indent), do: :fence_marker
 
-  defp build_token_kind({:heading, %{"content" => content, "marker" => marker}}) do
-    {:heading, String.length(marker), String.trim_trailing(content)}
+  defp build_token_kind(
+         {:heading, %{"closing" => closing, "content" => content, "marker" => marker}},
+         _indent
+       ) do
+    {:heading, String.length(marker), normalize_atx_title(content, closing)}
   end
 
-  defp build_token_kind({:list_item, %{"content" => content, "marker" => marker}}) do
-    {:list_item, marker, String.trim(content)}
+  defp build_token_kind(
+         {:list_item, %{"content" => content, "marker" => marker, "spacing" => spacing}},
+         indent
+       ) do
+    content_indent = list_item_content_indent(indent, marker, spacing)
+    {:list_item, marker, String.trim(content), content_indent}
   end
+
+  defp normalize_atx_title(content, closing) when closing != "", do: String.trim_trailing(content)
+
+  defp normalize_atx_title(content, "") do
+    if content != "" and String.trim(content, "#") == "", do: "", else: String.trim_trailing(content)
+  end
+
+  defp list_item_content_indent(indent, marker, ""), do: indent + String.length(marker) + 1
+
+  defp list_item_content_indent(indent, marker, spacing) do
+    {_remaining, content_indent} = split_indentation(spacing, indent + String.length(marker))
+    content_indent
+  end
+
+  defp classify_indented_code(%{value: ""} = token, _list_content_indent), do: token
+
+  defp classify_indented_code(token, list_content_indent) do
+    if indented_code?(token.indent, list_content_indent), do: %{token | kind: :indented_code}, else: token
+  end
+
+  defp indented_code?(indent, nil), do: indent >= 4
+
+  defp indented_code?(indent, list_content_indent) when indent < list_content_indent,
+    do: indent >= 4
+
+  defp indented_code?(indent, list_content_indent), do: indent >= list_content_indent + 4
+
+  defp next_list_content_indent(
+         %{kind: {:list_item, _marker, _content, content_indent}, continuation?: false},
+         _current_indent
+       ),
+       do: content_indent
+
+  defp next_list_content_indent(%{kind: :blank}, current_indent), do: current_indent
+  defp next_list_content_indent(%{continuation?: true}, current_indent), do: current_indent
+  defp next_list_content_indent(_token, _current_indent), do: nil
+
+  defp document_level?(indent, nil), do: indent <= 3
+
+  defp document_level?(indent, list_content_indent),
+    do: indent <= 3 and indent < list_content_indent
+
+  defp list_continuation?(indent, nil), do: indent >= 2
+  defp list_continuation?(indent, list_content_indent), do: indent >= list_content_indent
+
+  defp split_indentation(value), do: split_indentation(value, 0)
+  defp split_indentation(<<" ", rest::binary>>, column), do: split_indentation(rest, column + 1)
+
+  defp split_indentation(<<"\t", rest::binary>>, column) do
+    split_indentation(rest, column + 4 - rem(column, 4))
+  end
+
+  defp split_indentation(rest, column), do: {rest, column}
 
   defp opening_fence(line) do
     case Regex.run(@opening_fence, line) do
@@ -439,7 +517,7 @@ defmodule SymphonyElixir.ScopeContract do
     end
   end
 
-  defp scope_contract_heading?(%{kind: {:heading, 4, "Scope Contract"}, top_level?: true}), do: true
+  defp scope_contract_heading?(%{kind: {:heading, 4, "Scope Contract"}, document_level?: true}), do: true
   defp scope_contract_heading?(_token), do: false
 
   defp acceptance_criterion_identifier(value) do
@@ -449,6 +527,8 @@ defmodule SymphonyElixir.ScopeContract do
     end
   end
 
-  defp level_four_heading_token?(%{kind: {:heading, 4, _title}, top_level?: true}), do: true
-  defp level_four_heading_token?(_token), do: false
+  defp scope_boundary_heading?(%{kind: {:heading, level, _title}, document_level?: true}) when level in 1..4,
+    do: true
+
+  defp scope_boundary_heading?(_token), do: false
 end
