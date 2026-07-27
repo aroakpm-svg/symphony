@@ -191,6 +191,58 @@ defmodule SymphonyElixir.GitBranchResolverTest do
     assert_receive {:git_command, ["ls-remote", "--symref", "origin", "HEAD"]}
     assert_receive {:git_command, ["fetch", "--no-tags", "origin", "refs/heads/release/2026-q3"]}
     assert_receive {:git_command, ["rev-parse", "--verify", "FETCH_HEAD^{commit}"]}
+    assert_receive {:git_command, ["ls-remote", "--symref", "origin", "HEAD"]}
+  end
+
+  test "fails closed when the canonical default branch changes after the exact fetch" do
+    pre_output = canonical_output("main", @sha)
+    post_output = canonical_output("release/stable", @moved_sha)
+    runner = canonical_transition_runner(pre_output, post_output, @sha)
+
+    assert {:error,
+            %Failure{
+              code: :canonical_evidence_changed,
+              detail: detail,
+              operator_action: action
+            }} = GitBranchResolver.resolve("/workspace", command_runner: runner)
+
+    assert detail =~ "refs/heads/main"
+    assert detail =~ "refs/heads/release/stable"
+    assert String.downcase(action) =~ "stable"
+  end
+
+  test "fails closed when the canonical default SHA changes after the exact fetch" do
+    runner =
+      canonical_transition_runner(
+        canonical_output("main", @sha),
+        canonical_output("main", @moved_sha),
+        @sha
+      )
+
+    assert {:error, %Failure{code: :canonical_evidence_changed, detail: detail}} =
+             GitBranchResolver.resolve("/workspace", command_runner: runner)
+
+    assert detail =~ @sha
+    assert detail =~ @moved_sha
+  end
+
+  test "fails closed with one transaction failure when post-fetch canonical evidence is malformed" do
+    runner =
+      canonical_transition_runner(
+        canonical_output("main", @sha),
+        "unexpected post-fetch output\n",
+        @sha
+      )
+
+    assert {:error,
+            %Failure{
+              code: :canonical_evidence_changed,
+              detail: detail,
+              operator_action: action
+            }} = GitBranchResolver.resolve("/workspace", command_runner: runner)
+
+    assert detail =~ "post-fetch"
+    assert String.downcase(action) =~ "stable"
   end
 
   test "fails closed for missing, duplicate, or malformed canonical symref evidence" do
@@ -487,6 +539,31 @@ defmodule SymphonyElixir.GitBranchResolverTest do
   end
 
   defp git!(repo, args), do: cmd!("git", ["-C", repo | args])
+
+  defp canonical_output(branch, sha) do
+    "ref: refs/heads/#{branch}\tHEAD\n#{sha}\tHEAD\n"
+  end
+
+  defp canonical_transition_runner(pre_output, post_output, fetched_sha) do
+    canonical_reads = :atomics.new(1, [])
+
+    fn
+      ["ls-remote", "--symref", "origin", "HEAD"] ->
+        case :atomics.add_get(canonical_reads, 1, 1) do
+          1 -> {:ok, pre_output}
+          2 -> {:ok, post_output}
+        end
+
+      ["check-ref-format", "--branch", branch] ->
+        {:ok, branch <> "\n"}
+
+      ["fetch", "--no-tags", "origin", _ref] ->
+        {:ok, ""}
+
+      ["rev-parse", "--verify", "FETCH_HEAD^{commit}"] ->
+        {:ok, fetched_sha <> "\n"}
+    end
+  end
 
   defp branch_validation_result(["check-ref-format", "--branch", branch]) do
     case System.cmd("git", ["check-ref-format", "--branch", to_string(branch)], stderr_to_stdout: true) do

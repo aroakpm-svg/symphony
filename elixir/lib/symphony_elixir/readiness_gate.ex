@@ -41,6 +41,20 @@ defmodule SymphonyElixir.ReadinessGate do
 
   @sha_pattern ~r/\A(?:[0-9a-fA-F]{40}|[0-9a-fA-F]{64})\z/
 
+  @typep provenance_mode :: :ready | :fresh_unverified | :legacy_unverified
+  @typep checkout_status :: :checked_out | :not_checked_out
+  @typep branch_presence :: :present | :missing
+  @typep provenance_decision ::
+           :verify_ready_continuation
+           | :verify_unverified_remote
+           | :finish_local_continuation
+           | :block_fresh_local
+           | :block_ready_missing
+           | :block_legacy_missing
+           | :checkout_local_continuation
+           | :materialize_remote
+           | :materialize_new
+
   @spec check(Path.t(), Issue.t(), keyword()) :: {:ok, Receipt.t()} | {:error, Failure.t()}
   def check(workspace, %Issue{} = issue, opts \\ [])
       when is_binary(workspace) and is_list(opts) do
@@ -65,260 +79,259 @@ defmodule SymphonyElixir.ReadinessGate do
 
   defp classify(
          workspace,
-         _issue,
+         issue,
          issue_branch,
-         :ready,
+         provenance,
          canonical,
-         %{current_branch: issue_branch, head_sha: head_sha} = state,
+         state,
          remote_issue_branch,
          opts
        ) do
-    runner = command_runner(workspace, opts)
+    decision =
+      decide_provenance_recovery(
+        provenance,
+        checkout_status(state, issue_branch),
+        local_branch_presence(state, issue_branch),
+        remote_branch_presence(remote_issue_branch)
+      )
+
+    execute_provenance_decision(decision, %{
+      workspace: workspace,
+      issue: issue,
+      issue_branch: issue_branch,
+      canonical: canonical,
+      state: state,
+      remote_issue_branch: remote_issue_branch,
+      opts: opts
+    })
+  end
+
+  defp checkout_status(%{current_branch: issue_branch}, issue_branch), do: :checked_out
+  defp checkout_status(_state, _issue_branch), do: :not_checked_out
+
+  defp local_branch_presence(%{current_branch: issue_branch}, issue_branch), do: :present
+  defp local_branch_presence(%{local_issue_branch?: true}, _issue_branch), do: :present
+  defp local_branch_presence(_state, _issue_branch), do: :missing
+
+  defp remote_branch_presence(:missing), do: :missing
+  defp remote_branch_presence(%GitReceipt{}), do: :present
+
+  @spec decide_provenance_recovery(
+          provenance_mode(),
+          checkout_status(),
+          branch_presence(),
+          branch_presence()
+        ) :: provenance_decision()
+  defp decide_provenance_recovery(:ready, :checked_out, _local, _remote),
+    do: :verify_ready_continuation
+
+  defp decide_provenance_recovery(:ready, :not_checked_out, _local, _remote),
+    do: :block_ready_missing
+
+  defp decide_provenance_recovery(
+         :fresh_unverified,
+         _checkout,
+         :present,
+         :missing
+       ),
+       do: :block_fresh_local
+
+  defp decide_provenance_recovery(
+         :legacy_unverified,
+         :checked_out,
+         :present,
+         :missing
+       ),
+       do: :finish_local_continuation
+
+  defp decide_provenance_recovery(
+         :legacy_unverified,
+         :not_checked_out,
+         :present,
+         :missing
+       ),
+       do: :checkout_local_continuation
+
+  defp decide_provenance_recovery(
+         :legacy_unverified,
+         _checkout,
+         :missing,
+         :missing
+       ),
+       do: :block_legacy_missing
+
+  defp decide_provenance_recovery(provenance, :checked_out, :present, :present)
+       when provenance in [:fresh_unverified, :legacy_unverified],
+       do: :verify_unverified_remote
+
+  defp decide_provenance_recovery(provenance, :not_checked_out, :present, :present)
+       when provenance in [:fresh_unverified, :legacy_unverified],
+       do: :checkout_local_continuation
+
+  defp decide_provenance_recovery(provenance, _checkout, :missing, :present)
+       when provenance in [:fresh_unverified, :legacy_unverified],
+       do: :materialize_remote
+
+  defp decide_provenance_recovery(
+         :fresh_unverified,
+         _checkout,
+         :missing,
+         :missing
+       ),
+       do: :materialize_new
+
+  defp execute_provenance_decision(:verify_ready_continuation, context) do
+    runner = command_runner(context.workspace, context.opts)
 
     with :ok <-
            verify_continuation_remote(
              runner,
-             remote_issue_branch,
-             issue_branch,
-             head_sha
+             context.remote_issue_branch,
+             context.issue_branch,
+             context.state.head_sha
            ) do
-      finish_continuation(runner, issue_branch, state, canonical)
-    end
-  end
-
-  defp classify(
-         workspace,
-         _issue,
-         issue_branch,
-         provenance,
-         canonical,
-         %{current_branch: issue_branch, head_sha: head_sha} = state,
-         %GitReceipt{fetched_sha: head_sha},
-         opts
-       )
-       when provenance in [:fresh_unverified, :legacy_unverified] do
-    workspace
-    |> command_runner(opts)
-    |> finish_continuation(issue_branch, state, canonical)
-  end
-
-  defp classify(
-         _workspace,
-         _issue,
-         issue_branch,
-         provenance,
-         _canonical,
-         %{current_branch: issue_branch, head_sha: local_sha},
-         :missing,
-         _opts
-       )
-       when provenance == :fresh_unverified do
-    failure(
-      :new_issue_branch_already_exists,
-      "new workspace already has local branch #{issue_branch} at #{local_sha}",
-      "Preserve the branch for inspection and recreate a clean issue workspace from the live default head."
-    )
-  end
-
-  defp classify(
-         _workspace,
-         _issue,
-         issue_branch,
-         provenance,
-         _canonical,
-         %{current_branch: issue_branch, head_sha: local_sha},
-         %GitReceipt{fetched_sha: remote_sha},
-         _opts
-       )
-       when provenance in [:fresh_unverified, :legacy_unverified] do
-    failure(
-      :new_issue_branch_remote_mismatch,
-      "fresh local branch #{issue_branch} is #{local_sha}, but origin advertises #{remote_sha}",
-      "Preserve the local branch and reconcile it manually with the exact remote branch before retrying."
-    )
-  end
-
-  defp classify(
-         workspace,
-         _issue,
-         issue_branch,
-         :legacy_unverified,
-         canonical,
-         %{current_branch: issue_branch} = state,
-         :missing,
-         opts
-       ) do
-    workspace
-    |> command_runner(opts)
-    |> finish_continuation(issue_branch, state, canonical)
-  end
-
-  defp classify(
-         _workspace,
-         _issue,
-         issue_branch,
-         :ready,
-         _canonical,
-         state,
-         _remote_issue_branch,
-         _opts
-       ) do
-    failure(
-      :verified_continuation_missing,
-      "durable readiness expects continuation #{issue_branch}, but the workspace is on #{state.current_branch}@#{state.head_sha}",
-      "Preserve the verified workspace and restore or check out the exact issue branch manually before retrying."
-    )
-  end
-
-  defp classify(
-         _workspace,
-         _issue,
-         issue_branch,
-         :legacy_unverified,
-         _canonical,
-         state,
-         :missing,
-         _opts
-       ) do
-    failure(
-      :legacy_workspace_provenance_unverified,
-      "legacy workspace on #{state.current_branch}@#{state.head_sha} has no checked-out local continuation for #{issue_branch}",
-      "Preserve the workspace and check out the exact local issue branch, or publish one exact same-name remote branch before retrying."
-    )
-  end
-
-  defp classify(
-         _workspace,
-         _issue,
-         issue_branch,
-         _created_now?,
-         _canonical,
-         %{local_issue_branch?: true, current_branch: current_branch},
-         _remote_issue_branch,
-         _opts
-       ) do
-    failure(
-      :continuation_branch_not_checked_out,
-      "issue branch #{issue_branch} exists locally, but the workspace is on #{current_branch}",
-      "Check out the matching issue branch manually without resetting or rebasing it, then retry."
-    )
-  end
-
-  defp classify(
-         workspace,
-         _issue,
-         issue_branch,
-         _created_now?,
-         canonical,
-         %{dirty: false},
-         %GitReceipt{} = remote_issue_branch,
-         opts
-       ) do
-    create_and_verify_branch(
-      workspace,
-      issue_branch,
-      remote_issue_branch.fetched_sha,
-      :continuation,
-      canonical,
-      remote_issue_branch,
-      opts
-    )
-  end
-
-  defp classify(
-         _workspace,
-         _issue,
-         issue_branch,
-         _created_now?,
-         _canonical,
-         %{dirty: true, status: status},
-         %GitReceipt{},
-         _opts
-       ) do
-    failure(
-      :continuation_workspace_dirty,
-      "cannot materialize remote issue branch #{issue_branch} while workspace has changes: #{status}",
-      "Preserve or remove the current workspace changes manually, then retry."
-    )
-  end
-
-  defp classify(
-         _workspace,
-         _issue,
-         issue_branch,
-         _created_now?,
-         _canonical,
-         %{dirty: true, status: status},
-         :missing,
-         _opts
-       ) do
-    failure(
-      :independent_workspace_dirty,
-      "cannot create #{issue_branch} while workspace has changes: #{status}",
-      "Preserve or remove the workspace changes manually, then retry."
-    )
-  end
-
-  defp classify(
-         workspace,
-         %Issue{readiness_base: :canonical},
-         issue_branch,
-         _created_now?,
-         canonical,
-         %{dirty: false},
-         :missing,
-         opts
-       ) do
-    create_and_verify_branch(
-      workspace,
-      issue_branch,
-      canonical.fetched_sha,
-      :independent_new,
-      canonical,
-      nil,
-      opts
-    )
-  end
-
-  defp classify(
-         workspace,
-         %Issue{readiness_base: {:stacked, candidates}},
-         issue_branch,
-         _created_now?,
-         canonical,
-         %{dirty: false},
-         :missing,
-         opts
-       ) do
-    with {:ok, evidence} <-
-           one_stacked_evidence(
-             candidates,
-             issue_branch,
-             command_runner(workspace, opts)
-           ),
-         {:ok, upstream} <- lookup_stacked_branch(workspace, evidence, opts) do
-      create_and_verify_branch(
-        workspace,
-        issue_branch,
-        upstream.fetched_sha,
-        :explicit_stack,
-        canonical,
-        upstream,
-        opts
+      finish_continuation(
+        runner,
+        context.issue_branch,
+        context.state,
+        context.canonical
       )
     end
   end
 
-  defp classify(
-         _workspace,
-         %Issue{readiness_base: readiness_base},
-         _issue_branch,
-         _created_now?,
-         _canonical,
-         _state,
-         :missing,
-         _opts
+  defp execute_provenance_decision(:verify_unverified_remote, context) do
+    local_sha = context.state.head_sha
+    remote_sha = context.remote_issue_branch.fetched_sha
+
+    if local_sha == remote_sha do
+      context.workspace
+      |> command_runner(context.opts)
+      |> finish_continuation(context.issue_branch, context.state, context.canonical)
+    else
+      failure(
+        :new_issue_branch_remote_mismatch,
+        "unverified local branch #{context.issue_branch} is #{local_sha}, but origin advertises #{remote_sha}",
+        "Preserve the local branch and reconcile it manually with the exact remote branch before retrying."
+      )
+    end
+  end
+
+  defp execute_provenance_decision(:finish_local_continuation, context) do
+    context.workspace
+    |> command_runner(context.opts)
+    |> finish_continuation(context.issue_branch, context.state, context.canonical)
+  end
+
+  defp execute_provenance_decision(:block_fresh_local, context) do
+    failure(
+      :new_issue_branch_already_exists,
+      "new workspace already contains local branch #{context.issue_branch}; current checkout is #{context.state.current_branch}@#{context.state.head_sha}",
+      "Preserve the local issue branch for inspection and recreate a clean issue workspace from the live default head."
+    )
+  end
+
+  defp execute_provenance_decision(:block_ready_missing, context) do
+    failure(
+      :verified_continuation_missing,
+      "durable readiness expects continuation #{context.issue_branch}, but the workspace is on #{context.state.current_branch}@#{context.state.head_sha}",
+      "Preserve the verified workspace and restore or check out the exact issue branch manually before retrying."
+    )
+  end
+
+  defp execute_provenance_decision(:block_legacy_missing, context) do
+    failure(
+      :legacy_workspace_provenance_unverified,
+      "legacy workspace on #{context.state.current_branch}@#{context.state.head_sha} has no local or remote continuation for #{context.issue_branch}",
+      "Restore or publish one exact issue continuation branch, or recreate the legacy workspace before retrying."
+    )
+  end
+
+  defp execute_provenance_decision(:checkout_local_continuation, context) do
+    failure(
+      :continuation_branch_not_checked_out,
+      "issue branch #{context.issue_branch} exists locally, but the workspace is on #{context.state.current_branch}",
+      "Check out the matching issue branch manually without resetting or rebasing it, then retry."
+    )
+  end
+
+  defp execute_provenance_decision(
+         :materialize_remote,
+         %{state: %{dirty: false}} = context
        ) do
+    create_and_verify_branch(
+      context.workspace,
+      context.issue_branch,
+      context.remote_issue_branch.fetched_sha,
+      :continuation,
+      context.canonical,
+      context.remote_issue_branch,
+      context.opts
+    )
+  end
+
+  defp execute_provenance_decision(
+         :materialize_remote,
+         %{state: %{dirty: true, status: status}} = context
+       ) do
+    failure(
+      :continuation_workspace_dirty,
+      "cannot materialize remote issue branch #{context.issue_branch} while workspace has changes: #{status}",
+      "Preserve or remove the current workspace changes manually, then retry."
+    )
+  end
+
+  defp execute_provenance_decision(
+         :materialize_new,
+         %{state: %{dirty: true, status: status}} = context
+       ) do
+    failure(
+      :independent_workspace_dirty,
+      "cannot create #{context.issue_branch} while workspace has changes: #{status}",
+      "Preserve or remove the workspace changes manually, then retry."
+    )
+  end
+
+  defp execute_provenance_decision(
+         :materialize_new,
+         %{state: %{dirty: false}} = context
+       ) do
+    materialize_new_branch(context)
+  end
+
+  defp materialize_new_branch(%{issue: %Issue{readiness_base: :canonical}} = context) do
+    create_and_verify_branch(
+      context.workspace,
+      context.issue_branch,
+      context.canonical.fetched_sha,
+      :independent_new,
+      context.canonical,
+      nil,
+      context.opts
+    )
+  end
+
+  defp materialize_new_branch(%{issue: %Issue{readiness_base: {:stacked, candidates}}} = context) do
+    with {:ok, evidence} <-
+           one_stacked_evidence(
+             candidates,
+             context.issue_branch,
+             command_runner(context.workspace, context.opts)
+           ),
+         {:ok, upstream} <-
+           lookup_stacked_branch(context.workspace, evidence, context.opts) do
+      create_and_verify_branch(
+        context.workspace,
+        context.issue_branch,
+        upstream.fetched_sha,
+        :explicit_stack,
+        context.canonical,
+        upstream,
+        context.opts
+      )
+    end
+  end
+
+  defp materialize_new_branch(%{issue: %Issue{readiness_base: readiness_base}}) do
     failure(
       :readiness_base_invalid,
       "unsupported typed readiness base: #{inspect(readiness_base)}",

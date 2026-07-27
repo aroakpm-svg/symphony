@@ -46,6 +46,19 @@ defmodule SymphonyElixir.GitBranchResolver do
           }
   end
 
+  defmodule CanonicalEvidence do
+    @moduledoc "Typed origin HEAD evidence used by the stable canonical transaction."
+
+    @enforce_keys [:ref, :branch, :sha]
+    defstruct [:ref, :branch, :sha]
+
+    @type t :: %__MODULE__{
+            ref: String.t(),
+            branch: String.t(),
+            sha: String.t()
+          }
+  end
+
   @type command_runner :: ([String.t()] -> {:ok, String.t()} | {:error, term()})
 
   @sha_pattern ~r/\A(?:[0-9a-fA-F]{40}|[0-9a-fA-F]{64})\z/
@@ -53,17 +66,17 @@ defmodule SymphonyElixir.GitBranchResolver do
   @spec resolve(Path.t(), keyword()) :: {:ok, Receipt.t()} | {:error, Failure.t()}
   def resolve(workspace, opts \\ []) when is_binary(workspace) and is_list(opts) do
     runner = command_runner(workspace, opts)
-    args = ["ls-remote", "--symref", "origin", "HEAD"]
 
-    with {:ok, output} <- run(runner, args),
-         {:ok, ref, branch, advertised_sha} <- parse_canonical_head(output, runner),
-         {:ok, fetched_sha} <- fetch_and_verify(runner, ref, advertised_sha, :canonical_head_moved) do
+    with {:ok, pre_fetch} <- read_canonical_evidence(runner),
+         {:ok, fetched_sha} <-
+           fetch_and_verify(runner, pre_fetch.ref, pre_fetch.sha, :canonical_head_moved),
+         :ok <- verify_stable_canonical_evidence(runner, pre_fetch) do
       {:ok,
        %Receipt{
          source: :canonical_default,
-         ref: ref,
-         branch: branch,
-         advertised_sha: advertised_sha,
+         ref: pre_fetch.ref,
+         branch: pre_fetch.branch,
+         advertised_sha: pre_fetch.sha,
          fetched_sha: fetched_sha
        }}
     end
@@ -200,20 +213,57 @@ defmodule SymphonyElixir.GitBranchResolver do
     end
   end
 
-  defp parse_canonical_head(output, runner) do
+  defp read_canonical_evidence(runner) do
+    args = ["ls-remote", "--symref", "origin", "HEAD"]
+
+    with {:ok, output} <- run(runner, args) do
+      parse_canonical_evidence(output, runner)
+    end
+  end
+
+  defp parse_canonical_evidence(output, runner) do
     lines = output_lines(output)
     symref_lines = Enum.filter(lines, &String.starts_with?(&1, "ref:"))
 
     with {:ok, ref} <- one_canonical_symref(symref_lines),
          "refs/heads/" <> branch <- ref,
          :ok <- validate_branch(branch, runner, :canonical_ref_invalid),
-         {:ok, advertised_sha} <- one_canonical_sha(lines),
+         {:ok, sha} <- one_canonical_sha(lines),
          :ok <- validate_canonical_evidence(lines) do
-      {:ok, ref, branch, advertised_sha}
+      {:ok, %CanonicalEvidence{ref: ref, branch: branch, sha: sha}}
     else
       {:error, %Failure{} = failure} -> {:error, failure}
       _ -> invalid_canonical_ref(output)
     end
+  end
+
+  defp verify_stable_canonical_evidence(runner, %CanonicalEvidence{} = pre_fetch) do
+    case read_canonical_evidence(runner) do
+      {:ok, ^pre_fetch} ->
+        :ok
+
+      {:ok, %CanonicalEvidence{} = post_fetch} ->
+        canonical_evidence_changed(pre_fetch, canonical_evidence_label(post_fetch))
+
+      {:error, %Failure{} = failure} ->
+        canonical_evidence_changed(
+          pre_fetch,
+          "invalid post-fetch evidence code=#{failure.code} detail=#{failure.detail}"
+        )
+    end
+  end
+
+  defp canonical_evidence_changed(pre_fetch, post_fetch_detail) do
+    failure(
+      :canonical_evidence_changed,
+      "git ls-remote --symref origin HEAD",
+      "canonical evidence changed after fetch: pre-fetch #{canonical_evidence_label(pre_fetch)}; post-fetch #{post_fetch_detail}",
+      "Retry only after origin HEAD and its target branch are stable across the fetch transaction."
+    )
+  end
+
+  defp canonical_evidence_label(%CanonicalEvidence{} = evidence) do
+    "ref=#{evidence.ref} branch=#{evidence.branch} sha=#{evidence.sha}"
   end
 
   defp parse_current_branch(output, runner) do

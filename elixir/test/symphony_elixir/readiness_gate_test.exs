@@ -401,12 +401,57 @@ defmodule SymphonyElixir.ReadinessGateTest do
 
     assert {:error,
             %Failure{
-              code: :continuation_branch_not_checked_out,
-              detail: detail
+              code: :new_issue_branch_already_exists,
+              detail: detail,
+              operator_action: action
             }} = ReadinessGate.check(fixture.workspace, issue, workspace_created_now: true)
 
     assert detail =~ issue.branch_name
+    assert String.downcase(action) =~ "preserve"
+    assert String.downcase(action) =~ "recreate"
+    refute String.downcase(action) =~ "check out"
     assert git!(fixture.workspace, ["branch", "--show-current"]) == "main"
+  end
+
+  test "legacy local-only recovery can check out the branch and pass on the next check" do
+    fixture = git_fixture!("main")
+    on_exit(fn -> cleanup_fixture(fixture) end)
+    issue = issue("ARO-106-LEGACY-LOCAL", "codex/aro-106-legacy-local")
+    git!(fixture.workspace, ["branch", issue.branch_name])
+
+    state = %ReadinessState{
+      version: 1,
+      provenance: :legacy,
+      phase: :unverified,
+      issue_id: issue.id,
+      issue_identifier: issue.identifier,
+      issue_branch: issue.branch_name,
+      workspace_path: fixture.workspace,
+      verified_head_sha: nil
+    }
+
+    assert {:error,
+            %Failure{
+              code: :continuation_branch_not_checked_out,
+              operator_action: action
+            }} =
+             ReadinessGate.check(fixture.workspace, issue, workspace_readiness_state: state)
+
+    assert String.downcase(action) =~ "check out"
+    assert git!(fixture.workspace, ["branch", "--show-current"]) == "main"
+
+    git!(fixture.workspace, ["switch", issue.branch_name])
+    local_sha = git!(fixture.workspace, ["rev-parse", "HEAD"])
+
+    assert {:ok,
+            %Receipt{
+              classification: :continuation,
+              issue_branch: "codex/aro-106-legacy-local",
+              head_sha: ^local_sha
+            }} =
+             ReadinessGate.check(fixture.workspace, issue, workspace_readiness_state: state)
+
+    assert git!(fixture.workspace, ["branch", "--show-current"]) == issue.branch_name
   end
 
   test "propagates an inspect command failure after live checkout verification" do
