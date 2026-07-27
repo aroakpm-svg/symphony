@@ -940,8 +940,8 @@ psql_admin -c "
 " >/dev/null
 
 psql_admin -c "
-  alter table symphony_staging.node_login_principals
-    alter column login_role type name collate pg_catalog.\"C\";
+  alter table symphony_staging.node_lifecycle_operations
+    alter column operation_type type text collate pg_catalog.\"C\";
 " >/dev/null
 if psql_admin -f "$migrations_dir/20260724010000_aro_169_node_enrollment.down.sql" \
   >/dev/null 2>&1; then
@@ -949,8 +949,8 @@ if psql_admin -f "$migrations_dir/20260724010000_aro_169_node_enrollment.down.sq
   exit 1
 fi
 psql_admin -c "
-  alter table symphony_staging.node_login_principals
-    alter column login_role type name collate pg_catalog.\"default\";
+  alter table symphony_staging.node_lifecycle_operations
+    alter column operation_type type text collate pg_catalog.\"default\";
 " >/dev/null
 
 psql_admin -c "
