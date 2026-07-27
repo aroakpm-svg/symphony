@@ -48,7 +48,7 @@ defmodule SymphonyElixir.NodeEnrollmentMigrationTest do
 
     assert sql =~ "extensions.gen_random_bytes(32)"
     assert sql =~ "extensions.digest(generated_credential, 'sha256')"
-    assert sql =~ "pg_publication.puballtables"
+    assert sql =~ "publication.puballtables"
     assert sql =~ "pg_publication_namespace"
     assert sql =~ "pg_publication_rel"
     assert sql =~ "attribute.attcollation"

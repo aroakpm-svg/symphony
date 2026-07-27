@@ -384,15 +384,16 @@ begin
           case
             when collation_oid = 0 then ''
             else quote_ident(collation_namespace.nspname) || '.' ||
-                 quote_ident(collation.collname)
+                 quote_ident(collation_object.collname)
           end,
           ',' order by ordinal
         )
         from unnest(index_state.indcollation::oid[]) with ordinality
           as index_collation(collation_oid, ordinal)
-        left join pg_collation collation on collation.oid = collation_oid
+        left join pg_collation collation_object
+          on collation_object.oid = collation_oid
         left join pg_namespace collation_namespace
-          on collation_namespace.oid = collation.collnamespace
+          on collation_namespace.oid = collation_object.collnamespace
       ), '') || ':' ||
       coalesce((
         select string_agg(
@@ -436,7 +437,7 @@ begin
       case
         when attribute.attcollation = 0 then ''
         else quote_ident(collation_namespace.nspname) || '.' ||
-             quote_ident(collation.collname)
+             quote_ident(collation_object.collname)
       end || ':' ||
       coalesce(attribute.attacl::text, '')
     from pg_class relation
@@ -445,9 +446,10 @@ begin
     left join pg_attrdef default_value
       on default_value.adrelid = relation.oid
      and default_value.adnum = attribute.attnum
-    left join pg_collation collation on collation.oid = attribute.attcollation
+    left join pg_collation collation_object
+      on collation_object.oid = attribute.attcollation
     left join pg_namespace collation_namespace
-      on collation_namespace.oid = collation.collnamespace
+      on collation_namespace.oid = collation_object.collnamespace
     where namespace.nspname = 'symphony_staging'
       and relation.relname in (
         'node_login_principals',
