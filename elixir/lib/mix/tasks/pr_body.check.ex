@@ -1,6 +1,8 @@
 defmodule Mix.Tasks.PrBody.Check do
   use Mix.Task
 
+  alias SymphonyElixir.ScopeContract
+
   @shortdoc "Validate PR body format against the repository PR template"
 
   @moduledoc """
@@ -104,7 +106,61 @@ defmodule Mix.Tasks.PrBody.Check do
     |> check_order(body, headings)
     |> check_no_placeholders(body)
     |> check_sections_from_template(template, body, headings)
+    |> check_scope_contract(body)
   end
+
+  defp check_scope_contract(errors, body) do
+    case ScopeContract.parse_pr_body(body) do
+      {:ok, _contract} -> errors
+      {:error, contract_errors} -> errors ++ Enum.map(contract_errors, &format_scope_contract_error/1)
+    end
+  end
+
+  defp format_scope_contract_error(:missing_scope_contract), do: "Missing Scope Contract section."
+  defp format_scope_contract_error({:duplicate_scope_contract}), do: "Duplicate Scope Contract section."
+
+  defp format_scope_contract_error({:missing_section, field}),
+    do: "Missing Scope Contract section: #{scope_contract_field_name(field)}"
+
+  defp format_scope_contract_error({:duplicate_section, field}),
+    do: "Duplicate Scope Contract section: #{scope_contract_field_name(field)}"
+
+  defp format_scope_contract_error({:unexpected_section, heading}),
+    do: "Unexpected Scope Contract section: #{heading}"
+
+  defp format_scope_contract_error({:placeholder_comment, field}),
+    do: "Scope Contract #{scope_contract_field_name(field)} contains a placeholder comment"
+
+  defp format_scope_contract_error({:blank_bullet, field}),
+    do: "Scope Contract #{scope_contract_field_name(field)} contains a blank bullet"
+
+  defp format_scope_contract_error({:none_not_allowed, field}),
+    do: "Scope Contract #{scope_contract_field_name(field)} cannot be None"
+
+  defp format_scope_contract_error({:none_must_be_explicit, field}),
+    do: "Scope Contract #{scope_contract_field_name(field)} must use None by itself"
+
+  defp format_scope_contract_error({:empty_section, field}),
+    do: "Scope Contract #{scope_contract_field_name(field)} cannot be empty"
+
+  defp format_scope_contract_error({:malformed_bullet, field, value}),
+    do: "Scope Contract #{scope_contract_field_name(field)} has malformed bullet: #{value}"
+
+  defp format_scope_contract_error({:malformed_acceptance_criterion, value}),
+    do: "Scope Contract Acceptance Criteria has malformed criterion: #{value}"
+
+  defp format_scope_contract_error({:duplicate_acceptance_criterion, identifier}),
+    do: "Scope Contract Acceptance Criteria duplicates identifier: #{identifier}"
+
+  defp format_scope_contract_error({:invalid_work_item, :multiple_values}),
+    do: "Scope Contract Work Item must contain exactly one value"
+
+  defp scope_contract_field_name(:work_item), do: "Work Item"
+  defp scope_contract_field_name(:invariants), do: "Invariants"
+  defp scope_contract_field_name(:acceptance_criteria), do: "Acceptance Criteria"
+  defp scope_contract_field_name(:non_goals), do: "Non-Goals"
+  defp scope_contract_field_name(:dependencies), do: "Dependencies"
+  defp scope_contract_field_name(:follow_ups), do: "Follow-Ups"
 
   defp check_required_headings(errors, body, headings) do
     missing = Enum.filter(headings, fn heading -> heading_position(body, heading) == :nomatch end)

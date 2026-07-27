@@ -25,6 +25,34 @@ defmodule Mix.Tasks.PrBody.CheckTest do
   #### Test Plan
 
   - [ ] <!-- Test checkbox -->
+
+  #### Scope Contract
+
+  <!-- Define the exact work boundary this PR must preserve. -->
+
+  ##### Work Item
+
+  <!-- One concrete change this PR delivers. -->
+
+  ##### Invariants
+
+  - <!-- Behavior, safety, or compatibility rule that must remain true. -->
+
+  ##### Acceptance Criteria
+
+  - <!-- AC-1: Observable completion condition. -->
+
+  ##### Non-Goals
+
+  - <!-- Explicitly excluded work. -->
+
+  ##### Dependencies
+
+  <!-- Upstream work or external prerequisite, or None. -->
+
+  ##### Follow-Ups
+
+  <!-- Deferred work after this PR, or None. -->
   """
 
   @valid_body """
@@ -47,6 +75,32 @@ defmodule Mix.Tasks.PrBody.CheckTest do
   #### Test Plan
 
   - [x] Ran targeted checks.
+
+  #### Scope Contract
+
+  ##### Work Item
+
+  Enforce typed PR scope contracts.
+
+  ##### Invariants
+
+  - Existing generic PR body checks still run.
+
+  ##### Acceptance Criteria
+
+  - AC-1: Invalid scope contracts fail with all detected errors.
+
+  ##### Non-Goals
+
+  - Do not change review routing.
+
+  ##### Dependencies
+
+  None
+
+  ##### Follow-Ups
+
+  None
   """
 
   setup do
@@ -315,6 +369,110 @@ defmodule Mix.Tasks.PrBody.CheckTest do
       assert output =~ "PR body format OK"
     end)
   end
+
+  test "fails when a complete generic body omits a required scope contract field" do
+    # Mutation caught: removing the shared ScopeContract parser call from the Mix task.
+    in_temp_repo(fn ->
+      write_template!(@template)
+
+      body =
+        String.replace(
+          @valid_body,
+          "##### Non-Goals\n\n- Do not change review routing.\n\n",
+          ""
+        )
+
+      File.write!("body.md", body)
+
+      error_output = capture_invalid_body_output()
+
+      assert error_output =~ "Missing Scope Contract section: Non-Goals"
+    end)
+  end
+
+  test "fails when Scope Contract contains a duplicate subheading" do
+    # Mutation caught: bypassing duplicate-section errors returned by the shared parser.
+    in_temp_repo(fn ->
+      write_template!(@template)
+
+      body =
+        String.replace(
+          @valid_body,
+          "##### Invariants\n\n- Existing generic PR body checks still run.\n\n",
+          "##### Invariants\n\n- Existing generic PR body checks still run.\n\n##### Invariants\n\n- Duplicate scope rule.\n\n"
+        )
+
+      File.write!("body.md", body)
+
+      error_output = capture_invalid_body_output()
+
+      assert error_output =~ "Duplicate Scope Contract section: Invariants"
+    end)
+  end
+
+  for {field, heading} <- [
+        {"Invariants", "Invariants"},
+        {"Acceptance Criteria", "Acceptance Criteria"},
+        {"Non-Goals", "Non-Goals"}
+      ] do
+    test "fails when None is used for required Scope Contract #{field}" do
+      # Mutation caught: accepting None for a required Scope Contract list field.
+      in_temp_repo(fn ->
+        write_template!(@template)
+
+        body =
+          String.replace(
+            @valid_body,
+            "##### #{unquote(heading)}\n\n" <> scope_contract_value(unquote(heading)) <> "\n\n",
+            "##### #{unquote(heading)}\n\nNone\n\n"
+          )
+
+        File.write!("body.md", body)
+
+        error_output = capture_invalid_body_output()
+
+        assert error_output =~ "Scope Contract #{unquote(heading)} cannot be None"
+      end)
+    end
+  end
+
+  test "prints every scope contract error with generic errors in one run" do
+    # Mutation caught: stopping after the first contract error or replacing generic lint errors.
+    in_temp_repo(fn ->
+      write_template!(@template)
+
+      body =
+        @valid_body
+        |> String.replace("- First change.", "Summary without a bullet.")
+        |> String.replace("- Existing generic PR body checks still run.", "None")
+        |> String.replace("- AC-1: Invalid scope contracts fail with all detected errors.", "None")
+        |> String.replace("- Do not change review routing.", "None")
+
+      File.write!("body.md", body)
+
+      error_output = capture_invalid_body_output()
+
+      assert error_output =~ "Section must include at least one bullet item: #### Summary"
+      assert error_output =~ "Scope Contract Invariants cannot be None"
+      assert error_output =~ "Scope Contract Acceptance Criteria cannot be None"
+      assert error_output =~ "Scope Contract Non-Goals cannot be None"
+    end)
+  end
+
+  defp capture_invalid_body_output do
+    capture_io(:stderr, fn ->
+      assert_raise Mix.Error, ~r/PR body format invalid/, fn ->
+        Check.run(["lint", "--file", "body.md"])
+      end
+    end)
+  end
+
+  defp scope_contract_value("Invariants"), do: "- Existing generic PR body checks still run."
+
+  defp scope_contract_value("Acceptance Criteria"),
+    do: "- AC-1: Invalid scope contracts fail with all detected errors."
+
+  defp scope_contract_value("Non-Goals"), do: "- Do not change review routing."
 
   defp in_temp_repo(fun) do
     unique = System.unique_integer([:positive, :monotonic])
