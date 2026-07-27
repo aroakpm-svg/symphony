@@ -202,16 +202,6 @@ drop table symphony_staging.aro169_unexpected_v2_object;
 drop role aro169_unlisted_role;
 SQL
 
-psql_admin -A -t -F '|' -c "
-  select relation.relname, constraint_row.conname,
-         pg_get_constraintdef(constraint_row.oid, true)
-  from pg_constraint constraint_row
-  join pg_class relation on relation.oid = constraint_row.conrelid
-  join pg_namespace namespace on namespace.oid = relation.relnamespace
-  where namespace.nspname = 'symphony_staging'
-  order by relation.relname, constraint_row.conname;
-"
-
 psql_admin -f "$migrations_dir/20260724010000_aro_169_node_enrollment.sql"
 
 provisioned="$(

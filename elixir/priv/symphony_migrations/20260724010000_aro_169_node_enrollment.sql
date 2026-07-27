@@ -162,10 +162,10 @@ begin
         ('routing_assignments', 'routing_assignments_routing_policy_check', 'CHECK (routing_policy = ANY (ARRAY[''unassigned''::text, ''preferred-with-fallback''::text, ''exclusive''::text]))'),
         ('routing_assignments', 'routing_assignments_routing_revision_check', 'CHECK (routing_revision > 0)'),
         ('routing_assignments', 'routing_assignments_contract_version_check', 'CHECK (contract_version > 0)'),
-        ('routing_assignments', 'routing_assignments_check', 'CHECK (routing_policy = ''unassigned''::text AND target_node_id IS NULL OR routing_policy = ANY (ARRAY[''preferred-with-fallback''::text, ''exclusive''::text]) AND target_node_id IS NOT NULL)'),
+        ('routing_assignments', 'routing_assignments_check', 'CHECK (routing_policy = ''unassigned''::text AND target_node_id IS NULL OR (routing_policy = ANY (ARRAY[''preferred-with-fallback''::text, ''exclusive''::text])) AND target_node_id IS NOT NULL)'),
         ('foundation_audit_events', 'foundation_audit_events_pkey', 'PRIMARY KEY (audit_id)'),
         ('foundation_audit_events', 'foundation_audit_events_result_check', 'CHECK (result = ANY (ARRAY[''accepted''::text, ''rejected''::text, ''unknown''::text]))'),
-        ('foundation_audit_events', 'foundation_audit_events_check', 'CHECK (jsonb_typeof(details) = ''object''::text)')
+        ('foundation_audit_events', 'foundation_audit_events_details_check', 'CHECK (jsonb_typeof(details) = ''object''::text)')
     ),
     actual as (
       select
