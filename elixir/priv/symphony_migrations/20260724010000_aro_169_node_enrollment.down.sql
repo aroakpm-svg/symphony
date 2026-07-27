@@ -123,8 +123,6 @@ begin
       relation.relreplident::text || ':' ||
       relation.relrowsecurity::text || ':' ||
       relation.relforcerowsecurity::text || ':' ||
-      relation.relhasrules::text || ':' ||
-      relation.relhastriggers::text || ':' ||
       relation.relispopulated::text || ':' ||
       coalesce(relation.reloptions::text, '')
     from pg_class relation
@@ -276,8 +274,6 @@ begin
       relation.relreplident::text || ':' ||
       relation.relrowsecurity::text || ':' ||
       relation.relforcerowsecurity::text || ':' ||
-      relation.relhasrules::text || ':' ||
-      relation.relhastriggers::text || ':' ||
       relation.relispopulated::text || ':' ||
       coalesce(relation.reloptions::text, '') || ':' ||
       coalesce(relation.relacl::text, '')

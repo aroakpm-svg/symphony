@@ -278,15 +278,6 @@ psql_admin -c "
   drop type symphony_production.aro169_unexpected_type;
 " >/dev/null
 
-psql_admin -A -t -F '|' -c "
-  select relname, relkind, relpersistence, relreplident,
-         relrowsecurity, relforcerowsecurity, relhasrules, relhastriggers
-  from pg_class relation
-  join pg_namespace namespace on namespace.oid = relation.relnamespace
-  where namespace.nspname = 'symphony_staging'
-  order by relname;
-"
-
 psql_admin -f "$migrations_dir/20260724010000_aro_169_node_enrollment.sql"
 
 provisioned="$(

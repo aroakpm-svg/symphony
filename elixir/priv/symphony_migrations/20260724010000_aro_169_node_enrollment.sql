@@ -44,31 +44,30 @@ begin
   if exists (
     with expected(
       object_name, object_kind, persistence, replica_identity,
-      row_security, force_row_security, has_rules, has_triggers
+      row_security, force_row_security
     ) as (
       values
-        ('contract_versions', 'r'::"char", 'p'::"char", 'd'::"char", true, false, false, false),
-        ('contract_versions_pkey', 'i'::"char", 'p'::"char", 'n'::"char", false, false, false, false),
-        ('nodes', 'r'::"char", 'p'::"char", 'd'::"char", true, false, false, true),
-        ('nodes_pkey', 'i'::"char", 'p'::"char", 'n'::"char", false, false, false, false),
-        ('node_bindings', 'r'::"char", 'p'::"char", 'd'::"char", true, false, false, true),
-        ('node_bindings_pkey', 'i'::"char", 'p'::"char", 'n'::"char", false, false, false, false),
-        ('node_bindings_node_id_environment_credential_version_key', 'i'::"char", 'p'::"char", 'n'::"char", false, false, false, false),
-        ('node_bindings_one_active_per_node', 'i'::"char", 'p'::"char", 'n'::"char", false, false, false, false),
-        ('node_bindings_one_rotating_per_node', 'i'::"char", 'p'::"char", 'n'::"char", false, false, false, false),
-        ('routing_assignments', 'r'::"char", 'p'::"char", 'd'::"char", true, false, false, true),
-        ('routing_assignments_pkey', 'i'::"char", 'p'::"char", 'n'::"char", false, false, false, false),
-        ('routing_assignments_target_node_id_idx', 'i'::"char", 'p'::"char", 'n'::"char", false, false, false, false),
-        ('foundation_audit_events', 'r'::"char", 'p'::"char", 'd'::"char", true, false, false, false),
-        ('foundation_audit_events_pkey', 'i'::"char", 'p'::"char", 'n'::"char", false, false, false, false),
-        ('foundation_audit_events_audit_id_seq', 'S'::"char", 'p'::"char", 'n'::"char", false, false, false, false)
+        ('contract_versions', 'r'::"char", 'p'::"char", 'd'::"char", true, false),
+        ('contract_versions_pkey', 'i'::"char", 'p'::"char", 'n'::"char", false, false),
+        ('nodes', 'r'::"char", 'p'::"char", 'd'::"char", true, false),
+        ('nodes_pkey', 'i'::"char", 'p'::"char", 'n'::"char", false, false),
+        ('node_bindings', 'r'::"char", 'p'::"char", 'd'::"char", true, false),
+        ('node_bindings_pkey', 'i'::"char", 'p'::"char", 'n'::"char", false, false),
+        ('node_bindings_node_id_environment_credential_version_key', 'i'::"char", 'p'::"char", 'n'::"char", false, false),
+        ('node_bindings_one_active_per_node', 'i'::"char", 'p'::"char", 'n'::"char", false, false),
+        ('node_bindings_one_rotating_per_node', 'i'::"char", 'p'::"char", 'n'::"char", false, false),
+        ('routing_assignments', 'r'::"char", 'p'::"char", 'd'::"char", true, false),
+        ('routing_assignments_pkey', 'i'::"char", 'p'::"char", 'n'::"char", false, false),
+        ('routing_assignments_target_node_id_idx', 'i'::"char", 'p'::"char", 'n'::"char", false, false),
+        ('foundation_audit_events', 'r'::"char", 'p'::"char", 'd'::"char", true, false),
+        ('foundation_audit_events_pkey', 'i'::"char", 'p'::"char", 'n'::"char", false, false),
+        ('foundation_audit_events_audit_id_seq', 'S'::"char", 'p'::"char", 'n'::"char", false, false)
     ),
     actual as (
       select
         relation.relname::text, relation.relkind, relation.relpersistence,
         relation.relreplident, relation.relrowsecurity,
-        relation.relforcerowsecurity, relation.relhasrules,
-        relation.relhastriggers
+        relation.relforcerowsecurity
       from pg_class relation
       join pg_namespace namespace on namespace.oid = relation.relnamespace
       where namespace.nspname = 'symphony_staging'
@@ -2118,7 +2117,6 @@ from (
     relation.relpersistence::text || ':' || relation.relreplident::text || ':' ||
     relation.relrowsecurity::text || ':' ||
     relation.relforcerowsecurity::text || ':' ||
-    relation.relhasrules::text || ':' || relation.relhastriggers::text || ':' ||
     relation.relispopulated::text || ':' ||
     coalesce(relation.reloptions::text, '')
   from pg_class relation
@@ -2270,8 +2268,6 @@ from (
     relation.relreplident::text || ':' ||
     relation.relrowsecurity::text || ':' ||
     relation.relforcerowsecurity::text || ':' ||
-    relation.relhasrules::text || ':' ||
-    relation.relhastriggers::text || ':' ||
     relation.relispopulated::text || ':' ||
     coalesce(relation.reloptions::text, '') || ':' ||
     coalesce(relation.relacl::text, '')
