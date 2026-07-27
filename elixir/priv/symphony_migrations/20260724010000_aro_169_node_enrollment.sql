@@ -161,7 +161,7 @@ begin
      and not pg_has_role(
        session_user,
        'symphony_staging_provisioner',
-       'MEMBER'
+       'SET'
      ) then
     raise exception using
       errcode = '42501',
@@ -187,8 +187,11 @@ begin
     requested_operation_id,
     'provision',
     encode(extensions.digest(
-      btrim(requested_display_alias) || E'\n' ||
-      btrim(requested_issue_id) || E'\n' || requested_routing_policy,
+      jsonb_build_array(
+        btrim(requested_display_alias),
+        btrim(requested_issue_id),
+        requested_routing_policy
+      )::text,
       'sha256'
     ), 'hex'),
     'completed'
@@ -208,8 +211,11 @@ begin
     where operations.operation_id = requested_operation_id
       and operations.operation_type = 'provision'
       and operations.request_fingerprint = encode(extensions.digest(
-        btrim(requested_display_alias) || E'\n' ||
-        btrim(requested_issue_id) || E'\n' || requested_routing_policy,
+        jsonb_build_array(
+          btrim(requested_display_alias),
+          btrim(requested_issue_id),
+          requested_routing_policy
+        )::text,
         'sha256'
       ), 'hex')
       and operations.result_code = 'completed';
@@ -377,7 +383,7 @@ begin
      and not pg_has_role(
        session_user,
        'symphony_staging_provisioner',
-       'MEMBER'
+       'SET'
      ) then
     raise exception using
       errcode = '42501',
@@ -584,7 +590,7 @@ begin
      and not pg_has_role(
        session_user,
        'symphony_staging_provisioner',
-       'MEMBER'
+       'SET'
      ) then
     raise exception using
       errcode = '42501',
@@ -692,7 +698,7 @@ begin
      and not pg_has_role(
        session_user,
        'symphony_staging_provisioner',
-       'MEMBER'
+       'SET'
      ) then
     raise exception using
       errcode = '42501',
@@ -846,7 +852,7 @@ begin
      and not pg_has_role(
        session_user,
        'symphony_staging_provisioner',
-       'MEMBER'
+       'SET'
      ) then
     raise exception using
       errcode = '42501',
@@ -1137,6 +1143,23 @@ from (
     relation.relrowsecurity::text || ':' ||
     coalesce(relation.relacl::text, '')
   from pg_class relation
+  join pg_namespace namespace on namespace.oid = relation.relnamespace
+  where namespace.nspname = 'symphony_staging'
+    and relation.relname in (
+      'node_login_principals',
+      'node_principal_history',
+      'node_lifecycle_operations',
+      'node_instance_history',
+      'active_node_instances',
+      'node_enrollment_contract_manifest'
+    )
+  union all
+  select
+    'index:' || relation.relname || ':' || index_relation.relname || ':' ||
+    pg_get_indexdef(index_relation.oid)
+  from pg_index index_state
+  join pg_class relation on relation.oid = index_state.indrelid
+  join pg_class index_relation on index_relation.oid = index_state.indexrelid
   join pg_namespace namespace on namespace.oid = relation.relnamespace
   where namespace.nspname = 'symphony_staging'
     and relation.relname in (

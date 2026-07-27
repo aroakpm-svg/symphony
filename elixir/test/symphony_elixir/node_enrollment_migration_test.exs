@@ -39,6 +39,7 @@ defmodule SymphonyElixir.NodeEnrollmentMigrationTest do
     assert sql =~ "create table symphony_staging.node_lifecycle_operations"
     assert sql =~ "operation_id uuid primary key"
     assert sql =~ "request_fingerprint text not null"
+    assert sql =~ "jsonb_build_array("
     assert sql =~ "credential_returned boolean"
     assert sql =~ "null::text"
     assert sql =~ "insert into symphony_staging.routing_assignments"
@@ -70,13 +71,16 @@ defmodule SymphonyElixir.NodeEnrollmentMigrationTest do
     sql = File.read!(@migration)
     lifecycle_script = File.read!(@lifecycle_script)
 
-    assert sql =~ "'MEMBER'"
+    assert sql =~ "'SET'"
+    refute sql =~ "'MEMBER'"
     refute sql =~ "\n       'USAGE'\n"
 
     assert lifecycle_script =~
              "grant symphony_staging_provisioner to aro169_disposable_bootstrap"
 
     assert lifecycle_script =~ "set role symphony_staging_provisioner"
+    assert lifecycle_script =~ "with inherit true, set false"
+    assert lifecycle_script =~ "inherit-only provisioner member bypassed SET capability"
   end
 
   test "removes public and API execution paths" do
@@ -134,12 +138,15 @@ defmodule SymphonyElixir.NodeEnrollmentMigrationTest do
     assert sql =~ "node_lifecycle_operations"
   end
 
-  test "behavior suite covers rollback marker, object, and ACL drift" do
+  test "behavior suite covers rollback marker, object, index, and ACL drift" do
     lifecycle_script = File.read!(@lifecycle_script)
 
     assert lifecycle_script =~ "rollback unexpectedly accepted a future contract"
     assert lifecycle_script =~ "rollback unexpectedly accepted object drift"
+    assert lifecycle_script =~ "rollback unexpectedly accepted index drift"
     assert lifecycle_script =~ "rollback unexpectedly accepted ACL drift"
+    assert File.read!(@migration) =~ "'index:'"
+    assert File.read!(@rollback) =~ "'index:'"
 
     assert lifecycle_script =~
              "rollback did not serialize with concurrent contract DDL"

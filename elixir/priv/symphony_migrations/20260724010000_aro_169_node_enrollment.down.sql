@@ -86,6 +86,23 @@ begin
       )
     union all
     select
+      'index:' || relation.relname || ':' || index_relation.relname || ':' ||
+      pg_get_indexdef(index_relation.oid)
+    from pg_index index_state
+    join pg_class relation on relation.oid = index_state.indrelid
+    join pg_class index_relation on index_relation.oid = index_state.indexrelid
+    join pg_namespace namespace on namespace.oid = relation.relnamespace
+    where namespace.nspname = 'symphony_staging'
+      and relation.relname in (
+        'node_login_principals',
+        'node_principal_history',
+        'node_lifecycle_operations',
+        'node_instance_history',
+        'active_node_instances',
+        'node_enrollment_contract_manifest'
+      )
+    union all
+    select
       'column:' || relation.relname || ':' || attribute.attname || ':' ||
       format_type(attribute.atttypid, attribute.atttypmod) || ':' ||
       attribute.attnotnull::text || ':' ||

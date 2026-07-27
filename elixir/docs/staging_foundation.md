@@ -165,6 +165,8 @@ ARO-169 separates three responsibilities:
   `NOLOGIN` provisioner role, supplies stable lifecycle operation IDs, and
   performs provisioning, rotation, revocation, re-enrollment, and confirmed
   instance retirement.
+- ARO-169 lifecycle entry points verify that SET capability directly;
+  inherited EXECUTE through an inherit-only membership is rejected.
 - A node runtime holds only its individual node login credential, calls the
   authentication entry point with a fresh instance ID, and receives no table,
   shared management-role, or production access.

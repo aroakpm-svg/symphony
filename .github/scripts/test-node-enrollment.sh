@@ -93,6 +93,57 @@ if psql_admin -c "select * from symphony_staging.provision_node(
   exit 1
 fi
 
+psql_admin -c "select * from symphony_staging.provision_node(
+  '16900000-0000-4000-8000-000000000004',
+  E'fingerprint-a\\nfingerprint-b',
+  'fingerprint-c',
+  'exclusive'
+);" >/dev/null
+if psql_admin -c "select * from symphony_staging.provision_node(
+  '16900000-0000-4000-8000-000000000004',
+  'fingerprint-a',
+  E'fingerprint-b\\nfingerprint-c',
+  'exclusive'
+);" >/dev/null 2>&1; then
+  echo "structured operation fingerprint accepted a newline-boundary collision" >&2
+  exit 1
+fi
+psql_admin <<'SQL'
+select node_id as node_id
+from symphony_staging.node_lifecycle_operations
+where operation_id = '16900000-0000-4000-8000-000000000004'
+\gset collision_
+select format(
+  'revoke execute on function symphony_staging.authenticate_node(uuid, uuid) from %I',
+  login_role
+)
+from symphony_staging.node_principal_history
+where node_id = :'collision_node_id'
+\gexec
+select format('revoke usage on schema symphony_staging from %I', login_role)
+from symphony_staging.node_principal_history
+where node_id = :'collision_node_id'
+\gexec
+select format('drop role %I', login_role)
+from symphony_staging.node_principal_history
+where node_id = :'collision_node_id'
+\gexec
+delete from symphony_staging.foundation_audit_events
+where node_id = :'collision_node_id';
+delete from symphony_staging.routing_assignments
+where issue_id = E'fingerprint-c';
+delete from symphony_staging.node_lifecycle_operations
+where operation_id = '16900000-0000-4000-8000-000000000004';
+delete from symphony_staging.node_bindings
+where node_id = :'collision_node_id';
+delete from symphony_staging.node_login_principals
+where node_id = :'collision_node_id';
+delete from symphony_staging.node_principal_history
+where node_id = :'collision_node_id';
+delete from symphony_staging.nodes
+where node_id = :'collision_node_id';
+SQL
+
 for _attempt in 1 2; do
   psql_admin -c "select * from symphony_staging.provision_node(
     '16900000-0000-4000-8000-000000000002',
@@ -190,6 +241,27 @@ if PGPASSWORD="$node_credential" \
   echo "disconnected backend implicitly retired its instance" >&2
   exit 1
 fi
+
+psql_admin <<'SQL'
+create role aro169_disposable_inherit_only nologin inherit;
+grant symphony_staging_provisioner to aro169_disposable_inherit_only
+  with inherit true, set false;
+SQL
+if psql_admin -c "
+  set session authorization aro169_disposable_inherit_only;
+  select * from symphony_staging.retire_node_instance(
+    '16900000-0000-4000-8000-000000000104',
+    '$node_id',
+    '$instance_one'
+  );
+" >/dev/null 2>&1; then
+  echo "inherit-only provisioner member bypassed SET capability" >&2
+  exit 1
+fi
+psql_admin <<'SQL'
+revoke symphony_staging_provisioner from aro169_disposable_inherit_only;
+drop role aro169_disposable_inherit_only;
+SQL
 
 psql_admin <<SQL
 create role aro169_disposable_bootstrap nologin noinherit;
@@ -462,6 +534,19 @@ if psql_admin -f "$migrations_dir/20260724010000_aro_169_node_enrollment.down.sq
   exit 1
 fi
 psql_admin -c "alter table symphony_staging.drifted_active_node_instances rename to active_node_instances;" >/dev/null
+
+psql_admin -c "
+  create index aro169_drifted_active_instance_authenticated_at_idx
+  on symphony_staging.active_node_instances (authenticated_at);
+" >/dev/null
+if psql_admin -f "$migrations_dir/20260724010000_aro_169_node_enrollment.down.sql" \
+  >/dev/null 2>&1; then
+  echo "rollback unexpectedly accepted index drift" >&2
+  exit 1
+fi
+psql_admin -c "
+  drop index symphony_staging.aro169_drifted_active_instance_authenticated_at_idx;
+" >/dev/null
 
 if psql_admin \
   -c "begin; grant select on symphony_staging.active_node_instances to service_role;" \
