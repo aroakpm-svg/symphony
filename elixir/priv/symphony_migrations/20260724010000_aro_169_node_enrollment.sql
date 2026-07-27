@@ -392,6 +392,18 @@ begin
   end if;
 
   if exists (
+    select 1
+    from pg_rewrite rewrite
+    join pg_class relation on relation.oid = rewrite.ev_class
+    join pg_namespace namespace on namespace.oid = relation.relnamespace
+    where namespace.nspname in ('symphony_staging', 'symphony_production')
+  ) then
+    raise exception using
+      errcode = '55000',
+      message = 'ARO-169 unsafe ARO-168 rewrite-rule state';
+  end if;
+
+  if exists (
     with expected(index_name, replica_identity, index_definition) as (
       values
         ('contract_versions_pkey', false,
