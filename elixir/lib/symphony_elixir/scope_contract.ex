@@ -12,18 +12,27 @@ defmodule SymphonyElixir.ScopeContract do
     {:follow_ups, "Follow-Ups"}
   ]
 
+  @field_order Enum.map(@fields, &elem(&1, 0))
+  @field_ranks @field_order |> Enum.with_index() |> Map.new()
+
   @optional_none_fields [:dependencies, :follow_ups]
   @required_list_fields [:invariants, :acceptance_criteria, :non_goals]
-  @scope_contract_heading "#### Scope Contract"
   @opening_fence ~r/^( {0,3})(`{3,}|~{3,})(.*)$/
   @closing_fence ~r/^( {0,3})(`{3,}|~{3,})[ \t]*$/
-  @markdown_block_starts [
-    ~r/^[*+-](?:[ \t]+|$)/,
-    ~r/^\d{1,9}[.)](?:[ \t]+|$)/,
-    ~r/^[#]{1,6}(?:[ \t]+|$)/,
-    ~r/^>/,
-    ~r/^(?:`{3,}|~{3,})/,
-    ~r/^(?:(?:\*[ \t]*){3,}|(?:-[ \t]*){3,}|(?:_[ \t]*){3,})$/
+  @continuation_indent ~r/^(?: {2,}| *\t)/
+  @thematic_break ~r/^(?:(?:\*[ \t]*){3,}|(?:-[ \t]*){3,}|(?:_[ \t]*){3,})$/
+  @atx_heading ~r/^(?<marker>[#]{1,6})(?:[ \t]+(?<content>.*))?$/
+  @unordered_list ~r/^(?<marker>[*+-])(?:[ \t]+(?<content>.*))?$/
+  @ordered_list ~r/^(?<marker>\d{1,9}[.)])(?:[ \t]+(?<content>.*))?$/
+  @blockquote ~r/^>.*/
+  @fence_marker ~r/^(?:`{3,}|~{3,}).*$/
+  @markdown_structures [
+    thematic_break: @thematic_break,
+    heading: @atx_heading,
+    list_item: @unordered_list,
+    list_item: @ordered_list,
+    blockquote: @blockquote,
+    fence_marker: @fence_marker
   ]
 
   @enforce_keys [:work_item, :invariants, :acceptance_criteria, :non_goals, :dependencies, :follow_ups]
@@ -37,6 +46,7 @@ defmodule SymphonyElixir.ScopeContract do
           | {:missing_section, field()}
           | {:duplicate_section, field()}
           | {:unexpected_section, String.t()}
+          | {:sections_out_of_order, [field()]}
           | {:placeholder_comment, field()}
           | {:blank_bullet, field()}
           | {:none_not_allowed, field()}
@@ -57,15 +67,31 @@ defmodule SymphonyElixir.ScopeContract do
         }
 
   @typep normalized_item :: {:value, String.t()} | {:none, :standalone | :continued}
+  @typep token_kind ::
+           :blank
+           | :text
+           | :fenced
+           | :thematic_break
+           | :blockquote
+           | :fence_marker
+           | {:heading, 1..6, String.t()}
+           | {:list_item, String.t(), String.t()}
+
+  @typep line_token :: %{
+           kind: token_kind(),
+           value: String.t(),
+           top_level?: boolean(),
+           continuation?: boolean()
+         }
 
   @spec parse_pr_body(String.t()) :: {:ok, t()} | {:error, [error()]}
   def parse_pr_body(pr_body) do
-    case scope_contract_lines(pr_body) do
+    case scope_contract_tokens(pr_body) do
       :missing ->
         {:error, [:missing_scope_contract]}
 
-      {lines, outer_errors} ->
-        {sections, structural_errors} = collect_sections(lines)
+      {tokens, outer_errors} ->
+        {sections, structural_errors} = collect_sections(tokens)
         {values, validation_errors} = validate_sections(sections)
         errors = outer_errors ++ structural_errors ++ validation_errors
 
@@ -77,83 +103,84 @@ defmodule SymphonyElixir.ScopeContract do
     end
   end
 
-  defp scope_contract_lines(pr_body) do
-    lines =
-      pr_body
-      |> String.replace("\r\n", "\n")
-      |> String.split("\n")
-      |> mark_fenced_lines()
+  defp scope_contract_tokens(pr_body) do
+    tokens = tokenize(pr_body)
+    outer_headings = Enum.count(tokens, &scope_contract_heading?/1)
 
-    outer_headings = Enum.count(lines, &scope_contract_heading?/1)
-
-    case Enum.find_index(lines, &scope_contract_heading?/1) do
+    case Enum.find_index(tokens, &scope_contract_heading?/1) do
       nil ->
         :missing
 
       index ->
         errors = if outer_headings > 1, do: [{:duplicate_scope_contract}], else: []
 
-        scope_lines =
-          lines
+        scope_tokens =
+          tokens
           |> Enum.drop(index + 1)
-          |> Enum.take_while(&(not level_four_heading?(&1)))
+          |> Enum.take_while(&(not level_four_heading_token?(&1)))
 
-        {scope_lines, errors}
+        {scope_tokens, errors}
     end
   end
 
-  defp collect_sections(lines) do
-    {reversed_sections, reversed_errors, _current} =
-      Enum.reduce(lines, {%{}, [], nil}, &collect_section_line/2)
+  @spec collect_sections([line_token()]) :: {%{field() => [line_token()]}, [error()]}
+  defp collect_sections(tokens) do
+    {reversed_sections, reversed_errors, _current, reversed_fields} =
+      Enum.reduce(tokens, {%{}, [], nil, []}, &collect_section_token/2)
 
     sections = Map.new(reversed_sections, fn {field, section_lines} -> {field, Enum.reverse(section_lines)} end)
-    {sections, Enum.reverse(reversed_errors)}
+    observed_fields = Enum.reverse(reversed_fields)
+    errors = Enum.reverse(reversed_errors) ++ section_order_errors(observed_fields)
+
+    {sections, errors}
   end
 
-  defp collect_section_line({line, fenced?}, state) do
-    case section_heading(line, fenced?) do
+  defp collect_section_token(token, state) do
+    case section_heading(token) do
       {:known, field} -> collect_known_section(field, state)
       {:unknown, heading} -> collect_unknown_section(heading, state)
-      :content -> collect_section_content(line, state)
+      :content -> collect_section_content(token, state)
     end
   end
 
-  defp collect_known_section(field, {sections, errors, _current}) do
+  defp collect_known_section(field, {sections, errors, _current, fields}) do
+    next_fields = [field | fields]
+
     if Map.has_key?(sections, field) do
-      {sections, [{:duplicate_section, field} | errors], :ignore}
+      {sections, [{:duplicate_section, field} | errors], :ignore, next_fields}
     else
-      {Map.put(sections, field, []), errors, field}
+      {Map.put(sections, field, []), errors, field, next_fields}
     end
   end
 
-  defp collect_unknown_section(heading, {sections, errors, _current}) do
-    {sections, [{:unexpected_section, heading} | errors], :ignore}
+  defp collect_unknown_section(heading, {sections, errors, _current, fields}) do
+    {sections, [{:unexpected_section, heading} | errors], :ignore, fields}
   end
 
-  defp collect_section_content(line, {sections, errors, current} = state) do
+  defp collect_section_content(token, {sections, errors, current, fields} = state) do
     if Map.has_key?(sections, current) do
-      {Map.update!(sections, current, &[line | &1]), errors, current}
+      {Map.update!(sections, current, &[token | &1]), errors, current, fields}
     else
       state
     end
   end
 
-  defp section_heading(_line, true), do: :content
-
-  defp section_heading(line, false) do
-    trimmed = String.trim_trailing(line)
-
-    case Enum.find(@fields, fn {_field, title} -> trimmed == "##### #{title}" end) do
+  defp section_heading(%{kind: {:heading, 5, title}, top_level?: true}) when title != "" do
+    case Enum.find(@fields, fn {_field, field_title} -> title == field_title end) do
       {field, _title} ->
         {:known, field}
 
       nil ->
-        if String.starts_with?(trimmed, "##### ") do
-          {:unknown, String.trim_leading(trimmed, "##### ")}
-        else
-          :content
-        end
+        {:unknown, title}
     end
+  end
+
+  defp section_heading(_token), do: :content
+
+  defp section_order_errors(observed_fields) do
+    ranks = Enum.map(observed_fields, &Map.fetch!(@field_ranks, &1))
+
+    if ranks == Enum.sort(ranks), do: [], else: [{:sections_out_of_order, observed_fields}]
   end
 
   defp validate_sections(sections) do
@@ -178,8 +205,8 @@ defmodule SymphonyElixir.ScopeContract do
   defp validate_field(:work_item, lines), do: validate_work_item(lines)
   defp validate_field(field, lines), do: validate_list(field, lines)
 
-  defp validate_work_item(lines) do
-    values = nonblank_lines(lines)
+  defp validate_work_item(tokens) do
+    values = nonblank_tokens(tokens)
 
     cond do
       placeholder?(values) ->
@@ -189,24 +216,29 @@ defmodule SymphonyElixir.ScopeContract do
         {"", [{:empty_section, :work_item}]}
 
       length(values) == 1 ->
-        validate_work_item_value(hd(values))
+        validate_work_item_token(hd(values))
 
       true ->
         {"", [{:invalid_work_item, :multiple_values}]}
     end
   end
 
-  defp validate_work_item_value("None"), do: {"", [{:none_not_allowed, :work_item}]}
-  defp validate_work_item_value("- None"), do: {"", [{:none_not_allowed, :work_item}]}
-  defp validate_work_item_value("-"), do: {"", [{:blank_bullet, :work_item}]}
+  defp validate_work_item_token(%{kind: :text, value: "None"}),
+    do: {"", [{:none_not_allowed, :work_item}]}
 
-  defp validate_work_item_value(<<"- ", _value::binary>> = value),
+  defp validate_work_item_token(%{kind: {:list_item, "-", "None"}}),
+    do: {"", [{:none_not_allowed, :work_item}]}
+
+  defp validate_work_item_token(%{kind: {:list_item, "-", ""}}),
+    do: {"", [{:blank_bullet, :work_item}]}
+
+  defp validate_work_item_token(%{kind: :text, value: value}), do: {value, []}
+
+  defp validate_work_item_token(%{value: value}),
     do: {"", [{:malformed_bullet, :work_item, value}]}
 
-  defp validate_work_item_value(value), do: {value, []}
-
-  defp validate_list(field, lines) do
-    values = nonblank_list_lines(lines)
+  defp validate_list(field, tokens) do
+    values = nonblank_tokens(tokens)
 
     cond do
       placeholder?(values) ->
@@ -222,46 +254,35 @@ defmodule SymphonyElixir.ScopeContract do
     end
   end
 
-  @spec normalize_bullets(field(), [String.t()]) :: {[normalized_item()], [error()]}
-  defp normalize_bullets(field, lines) do
-    {reversed_values, reversed_errors} = Enum.reduce(lines, {[], []}, &normalize_bullet(field, &1, &2))
+  @spec normalize_bullets(field(), [line_token()]) :: {[normalized_item()], [error()]}
+  defp normalize_bullets(field, tokens) do
+    {reversed_values, reversed_errors} = Enum.reduce(tokens, {[], []}, &normalize_bullet(field, &1, &2))
 
     {Enum.reverse(reversed_values), Enum.reverse(reversed_errors)}
   end
 
-  defp normalize_bullet(field, line, state) do
-    value = String.trim(line)
-
-    if continuation_line?(line) and markdown_block_start?(value) do
-      malformed_bullet(field, value, state)
-    else
-      normalize_bullet_value(field, line, value, state)
-    end
+  defp normalize_bullet(field, %{kind: kind, continuation?: true, value: value}, state)
+       when kind != :text do
+    malformed_bullet(field, value, state)
   end
 
-  defp normalize_bullet_value(_field, _line, "None", {items, errors}) do
+  defp normalize_bullet(_field, %{kind: :text, value: "None"}, {items, errors}) do
     {[{:none, :standalone} | items], errors}
   end
 
-  defp normalize_bullet_value(field, _line, "-", {items, errors}) do
+  defp normalize_bullet(field, %{kind: {:list_item, "-", ""}}, {items, errors}) do
     {items, [{:blank_bullet, field} | errors]}
   end
 
-  defp normalize_bullet_value(_field, _line, <<"- ", value::binary>>, {items, errors}) do
-    {[normalized_item(String.trim(value)) | items], errors}
+  defp normalize_bullet(_field, %{kind: {:list_item, "-", value}}, {items, errors}) do
+    {[normalized_item(value) | items], errors}
   end
 
-  defp normalize_bullet_value(field, _line, <<"-", _rest::binary>> = value, {items, errors}) do
-    {items, [{:malformed_bullet, field, value} | errors]}
+  defp normalize_bullet(field, %{kind: :text, continuation?: true, value: value}, state) do
+    append_continuation(field, value, state)
   end
 
-  defp normalize_bullet_value(field, line, value, state) do
-    if continuation_line?(line) do
-      append_continuation(field, value, state)
-    else
-      malformed_bullet(field, value, state)
-    end
-  end
+  defp normalize_bullet(field, %{value: value}, state), do: malformed_bullet(field, value, state)
 
   defp append_continuation(_field, value, {[{:value, previous} | items], errors}) do
     {[{:value, previous <> " " <> value} | items], errors}
@@ -328,27 +349,74 @@ defmodule SymphonyElixir.ScopeContract do
     end
   end
 
-  defp nonblank_lines(lines), do: lines |> Enum.map(&String.trim/1) |> Enum.reject(&(&1 == ""))
-  defp nonblank_list_lines(lines), do: lines |> Enum.map(&String.trim_trailing/1) |> Enum.reject(&(String.trim(&1) == ""))
-  defp placeholder?(lines), do: Enum.any?(lines, &String.contains?(&1, "<!--"))
+  defp nonblank_tokens(tokens), do: Enum.reject(tokens, &(&1.value == ""))
+  defp placeholder?(tokens), do: Enum.any?(tokens, &String.contains?(&1.value, "<!--"))
   defp none_error(field) when field in @required_list_fields, do: :none_not_allowed
   defp none_error(_field), do: :none_must_be_explicit
 
-  defp mark_fenced_lines(lines) do
-    {marked_lines, _fence} = Enum.map_reduce(lines, nil, &mark_fenced_line/2)
-    marked_lines
+  @spec tokenize(String.t()) :: [line_token()]
+  defp tokenize(pr_body) do
+    lines =
+      pr_body
+      |> String.replace("\r\n", "\n")
+      |> String.split("\n")
+
+    {tokens, _fence} = Enum.map_reduce(lines, nil, &tokenize_line/2)
+    tokens
   end
 
-  defp mark_fenced_line(line, nil) do
+  defp tokenize_line(line, nil) do
     case opening_fence(line) do
-      {:ok, fence} -> {{line, true}, fence}
-      :none -> {{line, false}, nil}
+      {:ok, fence} -> {line_token(line, :fenced), fence}
+      :none -> {unfenced_line_token(line), nil}
     end
   end
 
-  defp mark_fenced_line(line, fence) do
+  defp tokenize_line(line, fence) do
     next_fence = if closing_fence?(line, fence), do: nil, else: fence
-    {{line, true}, next_fence}
+    {line_token(line, :fenced), next_fence}
+  end
+
+  defp unfenced_line_token(line) do
+    token = line_token(line, :text)
+    %{token | kind: markdown_structure(token.value)}
+  end
+
+  defp line_token(line, kind) do
+    %{
+      kind: kind,
+      value: String.trim(line),
+      top_level?: String.trim_leading(line) == line,
+      continuation?: Regex.match?(@continuation_indent, line)
+    }
+  end
+
+  defp markdown_structure(""), do: :blank
+
+  defp markdown_structure(value) do
+    @markdown_structures
+    |> Enum.find_value(&match_markdown_structure(&1, value))
+    |> build_token_kind()
+  end
+
+  defp match_markdown_structure({kind, pattern}, value) do
+    case Regex.named_captures(pattern, value) do
+      nil -> nil
+      captures -> {kind, captures}
+    end
+  end
+
+  defp build_token_kind(nil), do: :text
+  defp build_token_kind({:thematic_break, _captures}), do: :thematic_break
+  defp build_token_kind({:blockquote, _captures}), do: :blockquote
+  defp build_token_kind({:fence_marker, _captures}), do: :fence_marker
+
+  defp build_token_kind({:heading, %{"content" => content, "marker" => marker}}) do
+    {:heading, String.length(marker), String.trim_trailing(content)}
+  end
+
+  defp build_token_kind({:list_item, %{"content" => content, "marker" => marker}}) do
+    {:list_item, marker, String.trim(content)}
   end
 
   defp opening_fence(line) do
@@ -371,11 +439,8 @@ defmodule SymphonyElixir.ScopeContract do
     end
   end
 
-  defp scope_contract_heading?({line, false}), do: String.trim_trailing(line) == @scope_contract_heading
-  defp scope_contract_heading?({_line, true}), do: false
-
-  defp continuation_line?(line), do: Regex.match?(~r/^(?: {2,}| *\t)/, line)
-  defp markdown_block_start?(value), do: Enum.any?(@markdown_block_starts, &Regex.match?(&1, value))
+  defp scope_contract_heading?(%{kind: {:heading, 4, "Scope Contract"}, top_level?: true}), do: true
+  defp scope_contract_heading?(_token), do: false
 
   defp acceptance_criterion_identifier(value) do
     case Regex.run(~r/^(AC-[1-9][0-9]*):\s+\S/, value) do
@@ -384,6 +449,6 @@ defmodule SymphonyElixir.ScopeContract do
     end
   end
 
-  defp level_four_heading?({line, false}), do: String.starts_with?(String.trim_trailing(line), "#### ")
-  defp level_four_heading?({_line, true}), do: false
+  defp level_four_heading_token?(%{kind: {:heading, 4, _title}, top_level?: true}), do: true
+  defp level_four_heading_token?(_token), do: false
 end

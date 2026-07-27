@@ -1057,4 +1057,85 @@ defmodule SymphonyElixir.ScopeContractTest do
               {:malformed_bullet, :invariants, "> Block quote."}
             ]} = ScopeContract.parse_pr_body(body)
   end
+
+  test "aggregates real subsection order with other structural errors" do
+    # Mutation caught: reducing known headings directly into a map and discarding their source order.
+    body = """
+    #### Scope Contract
+
+    ##### Work Item
+
+    Validate the parsed heading sequence.
+
+    ##### Acceptance Criteria
+
+    - AC-1: Reject reordered visible headings.
+
+    ##### Ownership
+
+    - Symphony governance.
+
+    ##### Invariants
+
+    - Invalid contracts fail closed.
+
+    ##### Invariants
+
+    - Duplicate sections remain invalid.
+
+    ##### Dependencies
+
+    None
+
+    ##### Follow-Ups
+
+    None
+    """
+
+    assert {:error,
+            [
+              {:unexpected_section, "Ownership"},
+              {:duplicate_section, :invariants},
+              {:sections_out_of_order,
+               [
+                 :work_item,
+                 :acceptance_criteria,
+                 :invariants,
+                 :invariants,
+                 :dependencies,
+                 :follow_ups
+               ]},
+              {:missing_section, :non_goals}
+            ]} = ScopeContract.parse_pr_body(body)
+  end
+
+  for marker <- [
+        "* Alternate bullet Work Item.",
+        "+ Alternate bullet Work Item.",
+        "1. Ordered Work Item.",
+        "1) Parenthesized ordered Work Item."
+      ] do
+    test "rejects Work Item Markdown list marker #{marker}" do
+      # Mutation caught: treating a non-dash Markdown list item as plain Work Item prose.
+      marker = unquote(marker)
+      body = String.replace(@complete_contract, "Add a typed PR scope contract parser.", marker)
+
+      assert {:error, [{:malformed_bullet, :work_item, ^marker}]} = ScopeContract.parse_pr_body(body)
+    end
+  end
+
+  test "rejects CommonMark thematic-break variants before bullet normalization" do
+    # Mutation caught: stripping the first dash from a thematic break and accepting the remainder as a list value.
+    Enum.each(["- - -", "-  -  -", "---", "***", "* * *", "___", "_ _ _"], fn thematic_break ->
+      body =
+        String.replace(
+          @complete_contract,
+          "- The parser reads only explicit Scope Contract headings.",
+          thematic_break
+        )
+
+      assert {:error, [{:malformed_bullet, :invariants, ^thematic_break}]} =
+               ScopeContract.parse_pr_body(body)
+    end)
+  end
 end

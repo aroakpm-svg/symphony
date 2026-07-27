@@ -128,6 +128,9 @@ defmodule Mix.Tasks.PrBody.Check do
   defp format_scope_contract_error({:unexpected_section, heading}),
     do: "Unexpected Scope Contract section: #{heading}"
 
+  defp format_scope_contract_error({:sections_out_of_order, _observed_fields}),
+    do: "Scope Contract sections are out of order."
+
   defp format_scope_contract_error({:placeholder_comment, field}),
     do: "Scope Contract #{scope_contract_field_name(field)} contains a placeholder comment"
 

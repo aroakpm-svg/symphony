@@ -861,6 +861,75 @@ defmodule Mix.Tasks.PrBody.CheckTest do
     end)
   end
 
+  test "rejects reordered real Scope Contract headings despite ordered inline heading text" do
+    # Mutation caught: trusting unanchored raw-body heading matches instead of the parser's visible heading tokens.
+    in_temp_repo(fn ->
+      write_template!(@template)
+
+      body =
+        @valid_body
+        |> String.replace(
+          "Enforce typed PR scope contracts.",
+          "Enforce typed PR scope contracts while documenting `##### Invariants`, `##### Acceptance Criteria`, `##### Non-Goals`, `##### Dependencies`, and `##### Follow-Ups`."
+        )
+        |> String.replace(
+          "##### Invariants\n\n- Existing generic PR body checks still run.\n\n##### Acceptance Criteria\n\n- AC-1: Invalid scope contracts fail with all detected errors.\n\n",
+          "##### Acceptance Criteria\n\n- AC-1: Invalid scope contracts fail with all detected errors.\n\n##### Invariants\n\n- Existing generic PR body checks still run.\n\n"
+        )
+
+      File.write!("body.md", body)
+
+      error_output = capture_invalid_body_output()
+
+      refute error_output =~ "Required headings are out of order."
+      assert error_output =~ "Scope Contract sections are out of order."
+    end)
+  end
+
+  test "rejects every non-dash Work Item list marker through the shared parser" do
+    # Mutation caught: formatting only dash-list errors while alternate and ordered markers parse as prose.
+    in_temp_repo(fn ->
+      write_template!(@template)
+
+      Enum.each(
+        [
+          "* Alternate bullet Work Item.",
+          "+ Alternate bullet Work Item.",
+          "1. Ordered Work Item.",
+          "1) Parenthesized ordered Work Item."
+        ],
+        fn marker ->
+          body = String.replace(@valid_body, "Enforce typed PR scope contracts.", marker)
+          File.write!("body.md", body)
+
+          error_output = capture_invalid_body_output()
+          assert error_output =~ "Scope Contract Work Item has malformed bullet: #{marker}"
+        end
+      )
+    end)
+  end
+
+  test "rejects thematic breaks in required lists through the shared parser" do
+    # Mutation caught: letting canonical dash normalization hide a CommonMark thematic break from Mix output.
+    in_temp_repo(fn ->
+      write_template!(@template)
+
+      Enum.each(["- - -", "-  -  -", "---", "***", "* * *", "___", "_ _ _"], fn thematic_break ->
+        body =
+          String.replace(
+            @valid_body,
+            "- Existing generic PR body checks still run.",
+            thematic_break
+          )
+
+        File.write!("body.md", body)
+
+        error_output = capture_invalid_body_output()
+        assert error_output =~ "Scope Contract Invariants has malformed bullet: #{thematic_break}"
+      end)
+    end)
+  end
+
   defp capture_invalid_body_output do
     capture_io(:stderr, fn ->
       assert_raise Mix.Error, ~r/PR body format invalid/, fn ->
