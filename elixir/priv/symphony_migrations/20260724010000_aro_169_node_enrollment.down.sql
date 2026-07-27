@@ -146,6 +146,13 @@ begin
     where namespace.nspname in ('symphony_staging', 'symphony_production')
     union all
     select
+      'event-trigger:' || event_trigger.evtname || ':' ||
+      event_trigger.evtevent || ':' || event_trigger.evtenabled::text || ':' ||
+      event_trigger.evtfoid::regprocedure::text || ':' ||
+      coalesce(event_trigger.evttags::text, '')
+    from pg_event_trigger event_trigger
+    union all
+    select
       'runtime-extension:' || extension.extname || ':' ||
       extension.extversion || ':' || namespace.nspname || ':' ||
       pg_get_userbyid(extension.extowner) || ':' ||

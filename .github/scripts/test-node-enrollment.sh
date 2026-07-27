@@ -46,6 +46,34 @@ SQL
 
 psql_admin -f "$migrations_dir/20260724000000_aro_168_staging_reconciliation.sql"
 
+psql_admin <<'SQL'
+create function public.aro169_grant_drift()
+returns event_trigger
+language plpgsql
+as $$
+begin
+  execute 'grant usage on schema symphony_staging to service_role';
+  if to_regclass('symphony_staging.node_login_principals') is not null then
+    execute 'grant select on symphony_staging.node_login_principals to service_role';
+  end if;
+end
+$$;
+create event trigger aro169_grant_drift
+  on ddl_command_end
+  execute function public.aro169_grant_drift();
+SQL
+if psql_admin -f "$migrations_dir/20260724010000_aro_169_node_enrollment.sql" \
+  >/dev/null 2>&1; then
+  echo "v3 apply unexpectedly accepted an enabled event trigger" >&2
+  exit 1
+fi
+test "$(psql_admin -A -t -c "select to_regclass('symphony_staging.node_login_principals') is null;")" = "t"
+psql_admin <<'SQL'
+drop event trigger aro169_grant_drift;
+drop function public.aro169_grant_drift();
+revoke usage on schema symphony_staging from service_role;
+SQL
+
 for publication_kind in all_tables staging_schema explicit_relation; do
   case "$publication_kind" in
     all_tables)
@@ -926,6 +954,26 @@ if psql_admin -f "$migrations_dir/20260724010000_aro_169_node_enrollment.down.sq
   exit 1
 fi
 psql_admin -c "drop publication aro169_rollback_publication;" >/dev/null
+
+psql_admin <<'SQL'
+create function public.aro169_rollback_event_drift()
+returns event_trigger
+language plpgsql
+as $$ begin null; end $$;
+create event trigger aro169_rollback_event_drift
+  on ddl_command_end
+  execute function public.aro169_rollback_event_drift();
+alter event trigger aro169_rollback_event_drift disable;
+SQL
+if psql_admin -f "$migrations_dir/20260724010000_aro_169_node_enrollment.down.sql" \
+  >/dev/null 2>&1; then
+  echo "rollback unexpectedly accepted event-trigger drift" >&2
+  exit 1
+fi
+psql_admin <<'SQL'
+drop event trigger aro169_rollback_event_drift;
+drop function public.aro169_rollback_event_drift();
+SQL
 
 psql_admin -c "
   alter function extensions.digest(text, text) owner to service_role;

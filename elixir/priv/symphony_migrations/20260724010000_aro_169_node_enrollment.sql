@@ -63,6 +63,16 @@ begin
       message = 'ARO-169 refuses logical publications affecting managed namespaces';
   end if;
 
+  if exists (
+    select 1
+    from pg_event_trigger event_trigger
+    where event_trigger.evtenabled <> 'D'
+  ) then
+    raise exception using
+      errcode = '55000',
+      message = 'ARO-169 refuses enabled database event triggers';
+  end if;
+
   if not exists (
     select 1
     from pg_extension extension
@@ -2148,6 +2158,20 @@ grant execute on function
   symphony_staging.retire_node_instance(uuid, uuid, uuid)
   to symphony_staging_provisioner;
 
+do $$
+begin
+  if exists (
+    select 1
+    from pg_event_trigger event_trigger
+    where event_trigger.evtenabled <> 'D'
+  ) then
+    raise exception using
+      errcode = '55000',
+      message = 'ARO-169 event-trigger state changed during apply';
+  end if;
+end
+$$;
+
 insert into symphony_staging.node_enrollment_contract_manifest (
   expected_fingerprint
 )
@@ -2246,6 +2270,13 @@ from (
   join pg_class relation on relation.oid = publication_relation.prrelid
   join pg_namespace namespace on namespace.oid = relation.relnamespace
   where namespace.nspname in ('symphony_staging', 'symphony_production')
+  union all
+  select
+    'event-trigger:' || event_trigger.evtname || ':' ||
+    event_trigger.evtevent || ':' || event_trigger.evtenabled::text || ':' ||
+    event_trigger.evtfoid::regprocedure::text || ':' ||
+    coalesce(event_trigger.evttags::text, '')
+  from pg_event_trigger event_trigger
   union all
   select
     'runtime-extension:' || extension.extname || ':' ||

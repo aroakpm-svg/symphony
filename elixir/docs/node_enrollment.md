@@ -74,6 +74,8 @@ is not sufficient. The canonical contract also rejects logical publications
 that cover either managed namespace or any managed relation, fingerprints
 resolved column/index collation and index operator classes, and requires the
 exact externally owned `pgcrypto` 1.3 dependency in the `extensions` schema.
+Enabled database event triggers are rejected before v3 DDL and rechecked
+before manifest capture; event-trigger state is fingerprinted for rollback.
 ARO-169 never installs, relocates, takes ownership of, or removes that
 extension. Provisioning, rotation, and re-enrollment pin
 `password_encryption` to `scram-sha-256`, independent of caller or server GUC
