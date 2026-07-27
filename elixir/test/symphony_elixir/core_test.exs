@@ -1173,6 +1173,7 @@ defmodule SymphonyElixir.CoreTest do
         title: "Smoke test",
         description: "Run and keep workspace",
         state: "In Progress",
+        branch_name: "codex/s-99",
         url: "https://example.org/issues/S-99",
         labels: ["backend"]
       }
@@ -1259,6 +1260,7 @@ defmodule SymphonyElixir.CoreTest do
         title: "Smoke test",
         description: "Capture codex updates",
         state: "In Progress",
+        branch_name: "codex/mt-99",
         url: "https://example.org/issues/MT-99",
         labels: ["backend"]
       }
@@ -1452,6 +1454,7 @@ defmodule SymphonyElixir.CoreTest do
         title: "Continue until done",
         description: "Still active after first turn",
         state: "In Progress",
+        branch_name: "codex/mt-247",
         url: "https://example.org/issues/MT-247",
         labels: []
       }
@@ -1569,6 +1572,7 @@ defmodule SymphonyElixir.CoreTest do
         title: "Stop at max turns",
         description: "Still active",
         state: "In Progress",
+        branch_name: "codex/mt-248",
         url: "https://example.org/issues/MT-248",
         labels: []
       }

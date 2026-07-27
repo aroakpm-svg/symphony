@@ -5,7 +5,7 @@ defmodule SymphonyElixir.AgentRunner do
 
   require Logger
   alias SymphonyElixir.Codex.AppServer
-  alias SymphonyElixir.{Config, Linear.Issue, PromptBuilder, Tracker, Workspace}
+  alias SymphonyElixir.{Config, Linear.Issue, PromptBuilder, ReadinessGate, Tracker, Workspace}
 
   @type worker_host :: String.t() | nil
 
@@ -17,7 +17,7 @@ defmodule SymphonyElixir.AgentRunner do
     continue_with_issue?(issue, issue_state_fetcher)
   end
 
-  @spec run(map(), pid() | nil, keyword()) :: :ok | no_return()
+  @spec run(Issue.t(), pid() | nil, keyword()) :: :ok | no_return()
   def run(issue, codex_update_recipient \\ nil, opts \\ []) do
     # The orchestrator owns host retries so one worker lifetime never hops machines.
     worker_host = selected_worker_host(Keyword.get(opts, :worker_host), Config.settings!().worker.ssh_hosts)
@@ -37,13 +37,14 @@ defmodule SymphonyElixir.AgentRunner do
   defp run_on_worker_host(issue, codex_update_recipient, opts, worker_host) do
     Logger.info("Starting worker attempt for #{issue_context(issue)} worker_host=#{worker_host_for_log(worker_host)}")
 
-    case Workspace.create_for_issue(issue, worker_host) do
-      {:ok, workspace} ->
+    case Workspace.prepare_for_issue(issue, worker_host) do
+      {:ok, %{path: workspace, created_now: created_now?}} ->
         send_worker_runtime_info(codex_update_recipient, issue, worker_host, workspace)
 
         run_result =
           try do
             with :ok <- Workspace.preflight(workspace, issue, worker_host),
+                 :ok <- verify_readiness(workspace, issue, worker_host, created_now?, opts),
                  :ok <- Workspace.run_before_run_hook(workspace, issue, worker_host) do
               run_codex_turns(workspace, issue, codex_update_recipient, opts, worker_host)
             else
@@ -51,6 +52,9 @@ defmodule SymphonyElixir.AgentRunner do
                 {:deferred_workspace_preflight_failure, reason}
 
               {:error, {:workspace_preflight_failed, _type, _command, _detail} = reason} ->
+                {:deferred_workspace_preflight_failure, reason}
+
+              {:error, {:readiness_gate_failed, %ReadinessGate.Failure{}} = reason} ->
                 {:deferred_workspace_preflight_failure, reason}
 
               other ->
@@ -136,6 +140,34 @@ defmodule SymphonyElixir.AgentRunner do
   defp hard_blocker_message({:workspace_preflight_failed, type, command, detail}) do
     "workspace preflight failed type=#{type} command=#{command} detail=#{inline_text(detail)}"
   end
+
+  defp hard_blocker_message({:readiness_gate_failed, %ReadinessGate.Failure{} = failure}) do
+    "workspace readiness failed code=#{failure.code} command=#{failure.command || "n/a"} detail=#{inline_text(failure.detail)} action=#{inline_text(failure.operator_action)}"
+  end
+
+  defp verify_readiness(workspace, issue, worker_host, created_now?, opts) do
+    readiness_opts =
+      [workspace_created_now: created_now?, worker_host: worker_host]
+      |> maybe_put_readiness_command_runner(Keyword.get(opts, :readiness_command_runner))
+
+    case ReadinessGate.check(workspace, issue, readiness_opts) do
+      {:ok, receipt} ->
+        Logger.info(
+          "Workspace readiness verified for #{issue_context(issue)} classification=#{receipt.classification} issue_branch=#{receipt.issue_branch} head_sha=#{receipt.head_sha} canonical_ref=#{receipt.canonical.ref} canonical_sha=#{receipt.canonical.fetched_sha}"
+        )
+
+        :ok
+
+      {:error, %ReadinessGate.Failure{} = failure} ->
+        {:error, {:readiness_gate_failed, failure}}
+    end
+  end
+
+  defp maybe_put_readiness_command_runner(opts, runner) when is_function(runner, 1) do
+    Keyword.put(opts, :command_runner, runner)
+  end
+
+  defp maybe_put_readiness_command_runner(opts, _runner), do: opts
 
   defp run_codex_turns(workspace, issue, codex_update_recipient, opts, worker_host) do
     max_turns = Keyword.get(opts, :max_turns, Config.settings!().agent.max_turns)

@@ -3,6 +3,17 @@ defmodule SymphonyElixir.Linear.Issue do
   Normalized Linear issue representation used by the orchestrator.
   """
 
+  defmodule StackedBase do
+    @moduledoc "Exact typed upstream evidence for an explicitly stacked new branch."
+
+    defstruct [:branch, :head_sha]
+
+    @type t :: %__MODULE__{
+            branch: String.t() | nil,
+            head_sha: String.t() | nil
+          }
+  end
+
   defstruct [
     :id,
     :identifier,
@@ -13,6 +24,7 @@ defmodule SymphonyElixir.Linear.Issue do
     :branch_name,
     :url,
     :assignee_id,
+    readiness_base: :canonical,
     blocked_by: [],
     labels: [],
     assigned_to_worker: true,
@@ -30,6 +42,7 @@ defmodule SymphonyElixir.Linear.Issue do
           branch_name: String.t() | nil,
           url: String.t() | nil,
           assignee_id: String.t() | nil,
+          readiness_base: :canonical | {:stacked, [StackedBase.t()]},
           labels: [String.t()],
           assigned_to_worker: boolean(),
           created_at: DateTime.t() | nil,

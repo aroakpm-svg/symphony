@@ -34,10 +34,18 @@ Linear issue can become a dispatch candidate again after restart.
 Before `before_run` and Codex dispatch, Symphony runs a workspace preflight. The preflight verifies
 that the issue workspace exists, is a Git work tree, has an origin remote, matches `SOURCE_REPO_URL`
 when that environment variable is set, and can run non-interactive `git status` / `git fetch`.
-Workspace preflight failures are treated as hard blockers rather than retryable agent failures:
-Symphony keeps the issue claimed and exposes the blocker in memory, the JSON API, and the dashboard.
-If `after_run` cleanup is configured, Symphony waits for that cleanup to finish before reporting the
-blocker so worker capacity is not released while cleanup is still running.
+It then runs a branch readiness gate. The gate resolves the live canonical default with
+`git ls-remote --symref origin HEAD`, fetches that exact ref, and requires the fetched SHA to match
+the advertised SHA. A matching branch in a reused issue workspace is preserved as continuation
+work. A fresh independent issue branch is created only in a clean workspace at the verified
+canonical SHA, and a fresh remote issue/PR branch is reused only from its verified remote SHA.
+Explicit stacked work requires one typed upstream branch and head SHA in `Issue.readiness_base`;
+descriptions, blocker prose, and PR prose are never interpreted as stack evidence.
+
+Workspace preflight or readiness failures are treated as hard blockers rather than retryable agent
+failures: Symphony keeps the issue claimed and exposes the blocker in memory, the JSON API, and the
+dashboard. If `after_run` cleanup is configured, Symphony waits for that cleanup to finish before
+reporting the blocker so worker capacity is not released while cleanup is still running.
 
 When `review_convergence.enabled` is true, each poll also monitors issues in the configured review
 state. The monitor resolves the PR from the issue branch, invalidates old-head reviews, requests one
@@ -166,6 +174,16 @@ Notes:
 - After workspace creation and before `hooks.before_run`, Symphony verifies the existing workspace
   with a non-interactive Git preflight. If `SOURCE_REPO_URL` is set, the remote comparison ignores
   credentials embedded in the URL so tokens are not exposed in logs or SSH command arguments.
+- The tracker-provided issue `branchName` must be one exact valid branch. Symphony creates a missing
+  independent issue branch itself from the verified live default; `after_create` should not reset,
+  rebase, or force-create that branch.
+- Existing matching issue branches are continuation state and are never reset merely because the
+  default branch advanced. A detached HEAD or a different checked-out local issue branch blocks for
+  manual inspection.
+- Stacked readiness is an internal typed seam: `:canonical` is the default, while
+  `{:stacked, [%Issue.StackedBase{branch: branch, head_sha: sha}]}` is accepted only when that one
+  remote branch and full SHA verify exactly. No current adapter derives this value from free-form
+  Linear or GitHub text.
 - If a hook needs `mise exec` inside a freshly cloned workspace, trust the repo config and fetch
   the project dependencies in `hooks.after_create` before invoking `mise` later from other hooks.
 - `tracker.api_key` reads from `LINEAR_API_KEY` when unset or when value is `$LINEAR_API_KEY`.

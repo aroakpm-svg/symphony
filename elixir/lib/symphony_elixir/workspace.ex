@@ -9,10 +9,20 @@ defmodule SymphonyElixir.Workspace do
   @remote_workspace_marker "__SYMPHONY_WORKSPACE__"
 
   @type worker_host :: String.t() | nil
+  @type preparation :: %{path: Path.t(), created_now: boolean()}
 
   @spec create_for_issue(map() | String.t() | nil, worker_host()) ::
           {:ok, Path.t()} | {:error, term()}
   def create_for_issue(issue_or_identifier, worker_host \\ nil) do
+    case prepare_for_issue(issue_or_identifier, worker_host) do
+      {:ok, %{path: workspace}} -> {:ok, workspace}
+      {:error, _reason} = error -> error
+    end
+  end
+
+  @spec prepare_for_issue(map() | String.t() | nil, worker_host()) ::
+          {:ok, preparation()} | {:error, term()}
+  def prepare_for_issue(issue_or_identifier, worker_host \\ nil) do
     issue_context = issue_context(issue_or_identifier)
 
     try do
@@ -22,7 +32,7 @@ defmodule SymphonyElixir.Workspace do
            :ok <- validate_workspace_path(workspace, worker_host),
            {:ok, workspace, created?} <- ensure_workspace(workspace, worker_host),
            :ok <- maybe_run_after_create_hook(workspace, issue_context, created?, worker_host) do
-        {:ok, workspace}
+        {:ok, %{path: workspace, created_now: created?}}
       end
     rescue
       error in [ArgumentError, ErlangError, File.Error] ->
@@ -188,6 +198,26 @@ defmodule SymphonyElixir.Workspace do
       nil -> local_preflight(workspace)
       host when is_binary(host) -> remote_preflight(workspace, host)
     end
+  end
+
+  @spec run_git_command(Path.t(), [String.t()], worker_host()) ::
+          {:ok, String.t()}
+          | {:error, {:git_command_failed, String.t(), integer(), String.t()}}
+          | {:error, {:git_command_failed, String.t(), String.t()}}
+          | {:error, {:workspace_hook_timeout, String.t(), pos_integer()}}
+  def run_git_command(workspace, args, worker_host \\ nil)
+      when is_binary(workspace) and is_list(args) do
+    command = git_command_for_log(args)
+
+    case worker_host do
+      nil -> run_local_git_command(workspace, args, command)
+      host when is_binary(host) -> run_remote_git_command(workspace, args, host, command)
+    end
+  end
+
+  @spec sanitize_command_output(iodata(), non_neg_integer()) :: String.t()
+  def sanitize_command_output(output, max_bytes \\ 2_048) do
+    sanitize_hook_output_for_log(output, max_bytes)
   end
 
   @spec run_after_run_hook(Path.t(), map() | String.t() | nil, worker_host()) :: :ok
@@ -454,6 +484,49 @@ defmodule SymphonyElixir.Workspace do
       {:error, reason} ->
         {:error, workspace_preflight_error(error_type, command, reason)}
     end
+  end
+
+  defp run_local_git_command(workspace, args, command) do
+    case run_local_preflight_command("git", ["-C", workspace | args], command) do
+      {output, 0} ->
+        {:ok, IO.iodata_to_binary(output)}
+
+      {output, status} when is_integer(status) ->
+        {:error, {:git_command_failed, command, status, sanitize_hook_output_for_log(output)}}
+
+      {:error, {:workspace_hook_timeout, _timed_command, timeout_ms}} ->
+        {:error, {:workspace_hook_timeout, command, timeout_ms}}
+
+      {:error, reason} ->
+        {:error, {:git_command_failed, command, sanitize_hook_output_for_log(inspect(reason))}}
+    end
+  end
+
+  defp run_remote_git_command(workspace, args, worker_host, command) do
+    script = "cd #{shell_escape(workspace)} && #{remote_git_command(args)}"
+
+    case run_remote_command(worker_host, script, Config.settings!().hooks.timeout_ms) do
+      {:ok, {output, 0}} ->
+        {:ok, IO.iodata_to_binary(output)}
+
+      {:ok, {output, status}} when is_integer(status) ->
+        {:error, {:git_command_failed, command, status, sanitize_hook_output_for_log(output)}}
+
+      {:error, {:workspace_hook_timeout, _timed_command, timeout_ms}} ->
+        {:error, {:workspace_hook_timeout, command, timeout_ms}}
+
+      {:error, reason} ->
+        {:error, {:git_command_failed, command, sanitize_hook_output_for_log(inspect(reason))}}
+    end
+  end
+
+  defp git_command_for_log(args) do
+    ["git" | Enum.map(args, &sanitize_hook_output_for_log/1)]
+    |> Enum.join(" ")
+  end
+
+  defp remote_git_command(args) do
+    "git " <> Enum.map_join(args, " ", &shell_escape/1)
   end
 
   defp workspace_preflight_error(error_type, command, status, output) do
