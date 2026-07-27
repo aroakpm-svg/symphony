@@ -81,6 +81,7 @@ defmodule SymphonyElixir.NodeEnrollmentMigrationTest do
     assert lifecycle_script =~ "set role symphony_staging_provisioner"
     assert lifecycle_script =~ "with inherit true, set false"
     assert lifecycle_script =~ "inherit-only provisioner member bypassed SET capability"
+
     assert lifecycle_script =~
              "inherit-only provisioner member bypassed lifecycle table boundary"
 
