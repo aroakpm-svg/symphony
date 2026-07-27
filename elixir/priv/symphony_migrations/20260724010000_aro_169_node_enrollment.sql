@@ -60,41 +60,14 @@ alter table symphony_staging.node_login_principals enable row level security;
 alter table symphony_staging.node_principal_history enable row level security;
 alter table symphony_staging.node_lifecycle_operations enable row level security;
 
-create policy provisioner_manage_node_login_principals
-  on symphony_staging.node_login_principals
-  for all
-  to symphony_staging_provisioner
-  using (true)
-  with check (true);
-
-create policy provisioner_manage_node_principal_history
-  on symphony_staging.node_principal_history
-  for all
-  to symphony_staging_provisioner
-  using (true)
-  with check (true);
-
-create policy provisioner_manage_node_lifecycle_operations
-  on symphony_staging.node_lifecycle_operations
-  for all
-  to symphony_staging_provisioner
-  using (true)
-  with check (true);
-
 revoke all on table symphony_staging.node_login_principals
   from public, anon, authenticated, service_role,
        symphony_staging_runtime, symphony_staging_provisioner;
-grant select, insert, update on symphony_staging.node_login_principals
-  to symphony_staging_provisioner;
 revoke all on table
   symphony_staging.node_principal_history,
   symphony_staging.node_lifecycle_operations
   from public, anon, authenticated, service_role,
        symphony_staging_runtime, symphony_staging_provisioner;
-grant select, insert, update on
-  symphony_staging.node_principal_history,
-  symphony_staging.node_lifecycle_operations
-  to symphony_staging_provisioner;
 
 create table symphony_staging.node_instance_history (
   node_id uuid not null
@@ -1175,7 +1148,8 @@ from (
     'column:' || relation.relname || ':' || attribute.attname || ':' ||
     format_type(attribute.atttypid, attribute.atttypmod) || ':' ||
     attribute.attnotnull::text || ':' ||
-    coalesce(pg_get_expr(default_value.adbin, default_value.adrelid), '')
+    coalesce(pg_get_expr(default_value.adbin, default_value.adrelid), '') || ':' ||
+    coalesce(attribute.attacl::text, '')
   from pg_class relation
   join pg_namespace namespace on namespace.oid = relation.relnamespace
   join pg_attribute attribute on attribute.attrelid = relation.oid

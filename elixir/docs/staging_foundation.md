@@ -166,7 +166,9 @@ ARO-169 separates three responsibilities:
   performs provisioning, rotation, revocation, re-enrollment, and confirmed
   instance retirement.
 - ARO-169 lifecycle entry points verify that SET capability directly;
-  inherited EXECUTE through an inherit-only membership is rejected.
+  inherited EXECUTE through an inherit-only membership is rejected. The
+  provisioner role has no direct lifecycle-table privileges, so inherited
+  membership cannot bypass the function boundary.
 - A node runtime holds only its individual node login credential, calls the
   authentication entry point with a fresh instance ID, and receives no table,
   shared management-role, or production access.

@@ -258,6 +258,15 @@ if psql_admin -c "
   echo "inherit-only provisioner member bypassed SET capability" >&2
   exit 1
 fi
+if psql_admin -c "
+  set session authorization aro169_disposable_inherit_only;
+  update symphony_staging.node_login_principals
+  set revoked_at = clock_timestamp()
+  where node_id = '$node_id';
+" >/dev/null 2>&1; then
+  echo "inherit-only provisioner member bypassed lifecycle table boundary" >&2
+  exit 1
+fi
 psql_admin <<'SQL'
 revoke symphony_staging_provisioner from aro169_disposable_inherit_only;
 drop role aro169_disposable_inherit_only;
@@ -553,6 +562,13 @@ if psql_admin \
   -f "$migrations_dir/20260724010000_aro_169_node_enrollment.down.sql" \
   >/dev/null 2>&1; then
   echo "rollback unexpectedly accepted ACL drift" >&2
+  exit 1
+fi
+if psql_admin \
+  -c "begin; grant select (node_id) on symphony_staging.node_login_principals to service_role;" \
+  -f "$migrations_dir/20260724010000_aro_169_node_enrollment.down.sql" \
+  >/dev/null 2>&1; then
+  echo "rollback unexpectedly accepted column ACL drift" >&2
   exit 1
 fi
 

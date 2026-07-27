@@ -81,6 +81,11 @@ defmodule SymphonyElixir.NodeEnrollmentMigrationTest do
     assert lifecycle_script =~ "set role symphony_staging_provisioner"
     assert lifecycle_script =~ "with inherit true, set false"
     assert lifecycle_script =~ "inherit-only provisioner member bypassed SET capability"
+    assert lifecycle_script =~
+             "inherit-only provisioner member bypassed lifecycle table boundary"
+
+    refute sql =~ "grant select, insert, update on symphony_staging.node_login_principals"
+    refute sql =~ "create policy provisioner_manage_node_login_principals"
   end
 
   test "removes public and API execution paths" do
@@ -145,8 +150,11 @@ defmodule SymphonyElixir.NodeEnrollmentMigrationTest do
     assert lifecycle_script =~ "rollback unexpectedly accepted object drift"
     assert lifecycle_script =~ "rollback unexpectedly accepted index drift"
     assert lifecycle_script =~ "rollback unexpectedly accepted ACL drift"
+    assert lifecycle_script =~ "rollback unexpectedly accepted column ACL drift"
     assert File.read!(@migration) =~ "'index:'"
     assert File.read!(@rollback) =~ "'index:'"
+    assert File.read!(@migration) =~ "attribute.attacl::text"
+    assert File.read!(@rollback) =~ "attribute.attacl::text"
 
     assert lifecycle_script =~
              "rollback did not serialize with concurrent contract DDL"

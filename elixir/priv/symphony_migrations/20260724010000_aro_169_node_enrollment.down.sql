@@ -106,7 +106,8 @@ begin
       'column:' || relation.relname || ':' || attribute.attname || ':' ||
       format_type(attribute.atttypid, attribute.atttypmod) || ':' ||
       attribute.attnotnull::text || ':' ||
-      coalesce(pg_get_expr(default_value.adbin, default_value.adrelid), '')
+      coalesce(pg_get_expr(default_value.adbin, default_value.adrelid), '') || ':' ||
+      coalesce(attribute.attacl::text, '')
     from pg_class relation
     join pg_namespace namespace on namespace.oid = relation.relnamespace
     join pg_attribute attribute on attribute.attrelid = relation.oid
