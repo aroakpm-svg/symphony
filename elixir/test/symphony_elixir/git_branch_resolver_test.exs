@@ -84,6 +84,26 @@ defmodule SymphonyElixir.GitBranchResolverTest do
     refute File.exists?(side_effect)
   end
 
+  test "public branch validation fails closed when the Git executable is unavailable" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-branch-validation-no-git-#{System.unique_integer([:positive])}"
+      )
+
+    previous_path = System.get_env("PATH")
+    File.mkdir_p!(test_root)
+
+    on_exit(fn ->
+      restore_env("PATH", previous_path)
+      File.rm_rf(test_root)
+    end)
+
+    System.put_env("PATH", test_root)
+
+    refute GitBranchResolver.valid_branch?("main")
+  end
+
   test "resolves a slash-containing non-main default ref and verifies the fetched SHA" do
     test_pid = self()
 

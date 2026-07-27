@@ -4,6 +4,7 @@ defmodule SymphonyElixir.ReadinessGateTest do
   alias SymphonyElixir.Linear.Issue.StackedBase
   alias SymphonyElixir.ReadinessGate
   alias SymphonyElixir.ReadinessGate.{Failure, Receipt}
+  alias SymphonyElixir.Workspace.ReadinessState
 
   test "public check requires typed workspace creation provenance before Git access" do
     issue = issue("ARO-099-PROVENANCE", "codex/aro-099-provenance")
@@ -16,6 +17,47 @@ defmodule SymphonyElixir.ReadinessGateTest do
             }} = ReadinessGate.check("/unused", issue)
 
     assert action =~ "AgentRunner"
+  end
+
+  test "public check fails closed for every malformed durable provenance shape before Git access" do
+    issue = issue("ARO-099-DURABLE-PROVENANCE", "codex/aro-099-durable-provenance")
+
+    valid_state = %ReadinessState{
+      version: 1,
+      provenance: :created,
+      phase: :unverified,
+      issue_id: issue.id,
+      issue_identifier: issue.identifier,
+      issue_branch: issue.branch_name,
+      workspace_path: "/unused",
+      verified_head_sha: nil
+    }
+
+    cases = [
+      {"non-typed state", %{phase: :unverified}, "not typed"},
+      {"unsupported version", %{valid_state | version: 2}, "schema version"},
+      {"identity mismatch", %{valid_state | issue_id: "different-issue"}, "identity"},
+      {"invalid ready SHA", %{valid_state | phase: :ready, verified_head_sha: "short"}, "verified head"},
+      {"invalid provenance tuple", %{valid_state | provenance: :unknown}, "phase or provenance"}
+    ]
+
+    runner = fn _args -> flunk("invalid provenance must fail before invoking Git") end
+
+    Enum.each(cases, fn {name, state, detail_fragment} ->
+      assert {:error,
+              %Failure{
+                code: :workspace_provenance_invalid,
+                command: nil,
+                detail: detail
+              }} =
+               ReadinessGate.check("/unused", issue,
+                 workspace_readiness_state: state,
+                 command_runner: runner
+               ),
+             name
+
+      assert detail =~ detail_fragment, name
+    end)
   end
 
   test "rejects missing, non-string, padded, and malformed tracker branch evidence before Git access" do

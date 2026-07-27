@@ -80,8 +80,6 @@ defmodule SymphonyElixir.GitBranchResolver do
     end
   rescue
     _error -> false
-  catch
-    _kind, _reason -> false
   end
 
   def valid_branch?(_branch), do: false
