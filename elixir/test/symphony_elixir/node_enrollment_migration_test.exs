@@ -24,6 +24,7 @@ defmodule SymphonyElixir.NodeEnrollmentMigrationTest do
     assert sql =~ "unsafe ARO-168 direct object ACL state"
     assert sql =~ "unsafe ARO-168 RLS policy state"
     assert sql =~ "'node-identity-routing-foundation',\n  3"
+
     assert lifecycle_script =~
              "v3 apply unexpectedly accepted drifted v2 authorization state"
   end
