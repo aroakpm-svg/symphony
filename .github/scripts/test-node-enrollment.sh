@@ -88,14 +88,10 @@ test "$(psql_admin -A -t -c "select to_regclass('symphony_staging.node_login_pri
 psql_admin -c "
   alter table symphony_staging.nodes
     alter column display_alias type text collate pg_catalog.\"default\";
-  alter table symphony_staging.routing_assignments
-    drop constraint routing_assignments_pkey;
-  create unique index routing_assignments_pkey
-    on symphony_staging.routing_assignments
-    (issue_id collate pg_catalog.\"C\");
-  alter table symphony_staging.routing_assignments
-    add constraint routing_assignments_pkey
-    primary key using index routing_assignments_pkey;
+  update pg_index
+  set indcollation = array['pg_catalog.\"C\"'::regcollation]::oidvector
+  where indexrelid =
+    'symphony_staging.routing_assignments_pkey'::regclass;
 " >/dev/null
 if psql_admin -f "$migrations_dir/20260724010000_aro_169_node_enrollment.sql" \
   >/dev/null 2>&1; then
@@ -104,13 +100,10 @@ if psql_admin -f "$migrations_dir/20260724010000_aro_169_node_enrollment.sql" \
 fi
 test "$(psql_admin -A -t -c "select to_regclass('symphony_staging.node_login_principals') is null;")" = "t"
 psql_admin -c "
-  alter table symphony_staging.routing_assignments
-    drop constraint routing_assignments_pkey;
-  create unique index routing_assignments_pkey
-    on symphony_staging.routing_assignments (issue_id);
-  alter table symphony_staging.routing_assignments
-    add constraint routing_assignments_pkey
-    primary key using index routing_assignments_pkey;
+  update pg_index
+  set indcollation = array['pg_catalog.\"default\"'::regcollation]::oidvector
+  where indexrelid =
+    'symphony_staging.routing_assignments_pkey'::regclass;
 " >/dev/null
 
 psql_admin -c "drop extension pgcrypto;" >/dev/null
