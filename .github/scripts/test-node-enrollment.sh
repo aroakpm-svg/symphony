@@ -194,12 +194,20 @@ SQL
 
 psql_root <<'SQL'
 revoke symphony_staging_runtime, symphony_staging_provisioner from postgres;
+set role supabase_admin;
 grant symphony_staging_runtime, symphony_staging_provisioner to postgres
-  with admin false, inherit true, set true
-  granted by postgres;
+  with admin option, inherit false, set false;
+reset role;
 SQL
+psql_admin -c "
+  grant symphony_staging_runtime, symphony_staging_provisioner to postgres
+    with admin false, inherit true, set true
+    granted by postgres;
+"
+psql_root -c "alter role postgres nosuperuser;"
 
 psql_admin -f "$migrations_dir/20260724000000_aro_168_staging_reconciliation.sql"
+psql_root -c "alter role postgres superuser;"
 
 psql_root <<'SQL'
 create function public.aro169_grant_drift()
