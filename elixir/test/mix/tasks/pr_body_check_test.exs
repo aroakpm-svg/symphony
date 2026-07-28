@@ -905,6 +905,42 @@ defmodule Mix.Tasks.PrBody.CheckTest do
     end)
   end
 
+  test "accepts a valid PR body saved with Windows line endings" do
+    # Mutation caught: matching headings and blank-line delimiters before normalizing CRLF to LF.
+    in_temp_repo(fn ->
+      write_template!(@template)
+      File.write!("body.md", String.replace(@valid_body, "\n", "\r\n"))
+
+      output = capture_io(fn -> Check.run(["lint", "--file", "body.md"]) end)
+      assert output =~ "PR body format OK"
+    end)
+  end
+
+  test "ignores a fenced H4 example before the real template heading" do
+    # Mutation caught: selecting an exact heading line inside a fenced code block as visible document structure.
+    in_temp_repo(fn ->
+      write_template!(@template)
+
+      body =
+        String.replace(
+          @valid_body,
+          "Context text.",
+          """
+          Context text includes an example:
+
+          ```markdown
+          #### Scope Contract
+          ```
+          """
+        )
+
+      File.write!("body.md", body)
+
+      output = capture_io(fn -> Check.run(["lint", "--file", "body.md"]) end)
+      assert output =~ "PR body format OK"
+    end)
+  end
+
   test "rejects every non-dash Work Item list marker through the shared parser" do
     # Mutation caught: formatting only dash-list errors while alternate and ordered markers parse as prose.
     in_temp_repo(fn ->

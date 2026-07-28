@@ -19,6 +19,9 @@ defmodule Mix.Tasks.PrBody.Check do
     "../.github/pull_request_template.md"
   ]
 
+  @opening_fence ~r/^( {0,3})(`{3,}|~{3,})(.*)$/
+  @closing_fence ~r/^( {0,3})(`{3,}|~{3,})[ \t]*$/
+
   @impl Mix.Task
   def run(args) do
     {opts, _argv, invalid} = OptionParser.parse(args, strict: [file: :string, help: :boolean], aliases: [h: :help])
@@ -78,7 +81,10 @@ defmodule Mix.Tasks.PrBody.Check do
 
   defp extract_template_headings(template, template_path) do
     headings =
-      Regex.scan(~r/^\#{4,6}\s+.+$/m, template)
+      template
+      |> normalize_newlines()
+      |> visible_heading_source()
+      |> then(&Regex.scan(~r/^\#{4,6}\s+.+$/m, &1))
       |> Enum.map(&hd/1)
 
     if headings == [] do
@@ -101,11 +107,16 @@ defmodule Mix.Tasks.PrBody.Check do
   end
 
   defp lint(template, body, headings) do
+    template = normalize_newlines(template)
+    body = normalize_newlines(body)
+    template_heading_source = visible_heading_source(template)
+    body_heading_source = visible_heading_source(body)
+
     []
-    |> check_required_headings(body, headings)
-    |> check_order(body, headings)
+    |> check_required_headings(body_heading_source, headings)
+    |> check_order(body_heading_source, headings)
     |> check_no_placeholders(body)
-    |> check_sections_from_template(template, body, headings)
+    |> check_sections_from_template(template, template_heading_source, body, body_heading_source, headings)
     |> check_scope_contract(body)
   end
 
@@ -194,10 +205,10 @@ defmodule Mix.Tasks.PrBody.Check do
     end
   end
 
-  defp check_sections_from_template(errors, template, body, headings) do
+  defp check_sections_from_template(errors, template, template_heading_source, body, body_heading_source, headings) do
     Enum.reduce(headings, errors, fn heading, acc ->
-      template_section = capture_heading_section(template, heading, headings)
-      body_section = capture_heading_section(body, heading, headings)
+      template_section = capture_heading_section(template, template_heading_source, heading, headings)
+      body_section = capture_heading_section(body, body_heading_source, heading, headings)
 
       cond do
         is_nil(body_section) ->
@@ -241,12 +252,12 @@ defmodule Mix.Tasks.PrBody.Check do
     end
   end
 
-  defp capture_heading_section(doc, heading, headings) do
-    with {heading_idx, heading_length} <- exact_heading_match(doc, heading),
+  defp capture_heading_section(doc, heading_source, heading, headings) do
+    with {heading_idx, heading_length} <- exact_heading_match(heading_source, heading),
          section_start <- heading_idx + heading_length,
          true <- section_start + 2 <= byte_size(doc),
          "\n\n" <- binary_part(doc, section_start, 2) do
-      extract_section_content(doc, section_start + 2, heading, headings)
+      extract_section_content(doc, heading_source, section_start + 2, heading, headings)
     else
       nil -> nil
       false -> ""
@@ -254,10 +265,11 @@ defmodule Mix.Tasks.PrBody.Check do
     end
   end
 
-  defp extract_section_content(doc, content_start, heading, headings) do
+  defp extract_section_content(doc, heading_source, content_start, heading, headings) do
     content = binary_part(doc, content_start, byte_size(doc) - content_start)
+    heading_content = binary_part(heading_source, content_start, byte_size(heading_source) - content_start)
 
-    case next_heading_offset(content, heading, headings) do
+    case next_heading_offset(heading_content, heading, headings) do
       nil -> content
       offset -> binary_part(content, 0, offset)
     end
@@ -296,4 +308,56 @@ defmodule Mix.Tasks.PrBody.Check do
       nil -> nil
     end
   end
+
+  defp normalize_newlines(doc) do
+    doc
+    |> String.replace("\r\n", "\n")
+    |> String.replace("\r", "\n")
+  end
+
+  defp visible_heading_source(doc) do
+    {lines, _fence} =
+      doc
+      |> String.split("\n", trim: false)
+      |> Enum.map_reduce(nil, &mask_fenced_line/2)
+
+    Enum.join(lines, "\n")
+  end
+
+  defp mask_fenced_line(line, nil) do
+    case opening_fence(line) do
+      {:ok, fence} -> {masked_line(line), fence}
+      :error -> {line, nil}
+    end
+  end
+
+  defp mask_fenced_line(line, fence) do
+    next_fence = if closing_fence?(line, fence), do: nil, else: fence
+    {masked_line(line), next_fence}
+  end
+
+  defp opening_fence(line) do
+    case Regex.run(@opening_fence, line) do
+      [_, _indent, marker, info] -> validate_opening_fence(marker, info)
+      _ -> :error
+    end
+  end
+
+  defp validate_opening_fence(<<"`", _rest::binary>> = marker, info) do
+    if String.contains?(info, "`"), do: :error, else: {:ok, {"`", String.length(marker)}}
+  end
+
+  defp validate_opening_fence(marker, _info), do: {:ok, {"~", String.length(marker)}}
+
+  defp closing_fence?(line, {character, opening_length}) do
+    case Regex.run(@closing_fence, line) do
+      [_, _indent, marker] ->
+        String.starts_with?(marker, character) and String.length(marker) >= opening_length
+
+      _ ->
+        false
+    end
+  end
+
+  defp masked_line(line), do: String.duplicate(" ", byte_size(line))
 end
