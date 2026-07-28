@@ -64,12 +64,21 @@ decision or survives into the apply/rollback fingerprint.
   privilege, so privilege drift is represented by a missing or extra EXECUTE
   row rather than a second valid privilege kind. Apply also snapshots the
   complete extension/function runtime signature immediately after preflight
-  and recomputes it immediately before manifest insertion, so a privileged
-  concurrent ACL or definition mutation cannot become the accepted baseline.
-  Transaction-scoped `SHARE` locks on `pg_proc`, `pg_extension`,
-  `pg_namespace`, `pg_authid`, `pg_language`, `pg_type`, and `pg_depend`
-  cover every catalog write that can change those signatures and remain held
-  through manifest insertion and commit.
+  and recomputes it in the same statement that inserts the manifest. A change
+  committed before that statement's snapshot makes the guarded insert produce
+  zero rows and the transaction fails closed. This uses only catalog reads and
+  is executable by the hosted Supabase migration role; it does not require
+  `LOCK TABLE` permission on system catalogs.
+
+  PostgreSQL advisory locks coordinate only writers that follow the same
+  application protocol. The migration already takes the shared AROAK
+  transaction advisory lock, so repo-managed migrations serialize with one
+  another. A privileged out-of-band `GRANT`, `REVOKE`, or DDL operation does
+  not honor that protocol and cannot be prevented by the hosted migration
+  role. Operationally, such writes are prohibited for the migration window;
+  a fresh read-only preflight and postflight detect drift. A commit after the
+  guarded statement's snapshot is therefore detected rather than silently
+  normalized or treated as an authority the migration can control.
 - Managed-schema inventory identities that enter the stored fingerprint must
   be visibility independent:
   - functions and trigger functions;
