@@ -27,10 +27,9 @@ grant execute on function extensions.gen_random_bytes(integer),
 SQL
 }
 
-psql_root <<'SQL'
-create role postgres login superuser createrole createdb replication bypassrls
+psql_admin <<'SQL'
+create role aro169_ci_root login superuser createrole createdb replication bypassrls
   password 'disposable';
-alter database postgres owner to postgres;
 SQL
 
 psql_admin <<'SQL'
@@ -192,25 +191,7 @@ alter role symphony_staging_provisioner
   set search_path = pg_catalog, symphony_staging;
 SQL
 
-psql_root <<'SQL'
-revoke symphony_staging_runtime, symphony_staging_provisioner from postgres;
-alter role supabase_admin superuser;
-set session authorization supabase_admin;
-grant symphony_staging_runtime, symphony_staging_provisioner to postgres
-  with admin option, inherit false, set false
-  granted by supabase_admin;
-reset session authorization;
-alter role supabase_admin nosuperuser;
-SQL
-psql_admin -c "
-  grant symphony_staging_runtime, symphony_staging_provisioner to postgres
-    with admin false, inherit true, set true
-    granted by postgres;
-"
-psql_root -c "alter role postgres nosuperuser;"
-
 psql_admin -f "$migrations_dir/20260724000000_aro_168_staging_reconciliation.sql"
-psql_root -c "alter role postgres superuser;"
 
 psql_root <<'SQL'
 create function public.aro169_grant_drift()

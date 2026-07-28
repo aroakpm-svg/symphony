@@ -16,12 +16,12 @@ jobs:
       postgres:
         image: postgres:17
         env:
-          POSTGRES_USER: aro169_ci_root
+          POSTGRES_USER: postgres
           POSTGRES_PASSWORD: disposable
         ports:
           - 5432:5432
         options: >-
-          --health-cmd "pg_isready -U aro169_ci_root"
+          --health-cmd "pg_isready -U postgres"
           --health-interval 5s
           --health-timeout 5s
           --health-retries 12
