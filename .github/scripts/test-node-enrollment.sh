@@ -196,7 +196,8 @@ psql_root <<'SQL'
 revoke symphony_staging_runtime, symphony_staging_provisioner from postgres;
 set role supabase_admin;
 grant symphony_staging_runtime, symphony_staging_provisioner to postgres
-  with admin option, inherit false, set false;
+  with admin option, inherit false, set false
+  granted by supabase_admin;
 reset role;
 SQL
 psql_admin -c "
