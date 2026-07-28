@@ -53,6 +53,15 @@ defmodule SymphonyElixir.NodeEnrollmentMigrationTest do
 
     assert lifecycle_script =~
              "v3 apply unexpectedly accepted drifted v2 authorization state"
+
+    assert lifecycle_script =~ "pgcrypto ACL fixture differs from live catalog facts"
+    assert lifecycle_script =~ "default pgcrypto ACL state"
+    assert lifecycle_script =~ "explicit-empty pgcrypto ACL state"
+    assert lifecycle_script =~ "extra pgcrypto ACL grant"
+    assert lifecycle_script =~ "pgcrypto grantee drift"
+    assert lifecycle_script =~ "pgcrypto grant-option drift"
+    assert lifecycle_script =~ "pgcrypto grantor/special-role drift"
+    assert lifecycle_script =~ "rollback unexpectedly accepted pgcrypto ACL grantee drift"
   end
 
   test "uses independent login credentials and stores only a verifier" do
@@ -60,12 +69,30 @@ defmodule SymphonyElixir.NodeEnrollmentMigrationTest do
 
     assert sql =~ "extensions.gen_random_bytes(32)"
     assert sql =~ "extensions.digest(generated_credential, 'sha256')"
+
+    assert sql =~
+             "<explicit>:706f737467726573>70736575646f>45584543555445>false,"
+
+    assert sql =~
+             "706f737467726573>726f6c653a64617368626f6172645f75736572>45584543555445>false,"
+
+    assert sql =~
+             "706f737467726573>726f6c653a706f737467726573>45584543555445>true"
+
+    refute sql =~ "and procedure.proacl is null"
     assert sql =~ "publication.puballtables"
     assert sql =~ "pg_publication_namespace"
     assert sql =~ "pg_publication_rel"
     assert sql =~ "pg_event_trigger"
     assert sql =~ "ARO-169 requires the exact Supabase managed event-trigger inventory"
     assert sql =~ "ARO-169 event-trigger state changed during apply"
+    assert sql =~ "'aroak.pgcrypto_runtime_fingerprint'"
+    assert sql =~ "ARO-169 pgcrypto runtime state changed during apply"
+    assert length(Regex.scan(~r/to_jsonb\(runtime_state\)::text/, sql)) == 2
+
+    assert sql =~
+             ~r/lock table\s+pg_catalog\.pg_proc,\s+pg_catalog\.pg_extension,\s+pg_catalog\.pg_namespace,\s+pg_catalog\.pg_authid,\s+pg_catalog\.pg_language,\s+pg_catalog\.pg_type,\s+pg_catalog\.pg_depend\s+in share mode;/s
+
     assert sql =~ "issue_graphql_placeholder"
     assert sql =~ "issue_pg_cron_access"
     assert sql =~ "issue_pg_graphql_access"

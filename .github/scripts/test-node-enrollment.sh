@@ -9,6 +9,15 @@ psql_admin() {
   psql -X -q -v ON_ERROR_STOP=1 -d "$admin_url" "$@"
 }
 
+set_pgcrypto_live_acl() {
+  psql_admin <<'SQL'
+grant execute on function extensions.gen_random_bytes(integer),
+  extensions.digest(text, text) to dashboard_user;
+grant execute on function extensions.gen_random_bytes(integer),
+  extensions.digest(text, text) to postgres with grant option;
+SQL
+}
+
 psql_admin <<'SQL'
 create schema extensions;
 create extension pgcrypto with schema extensions;
@@ -19,6 +28,46 @@ create schema symphony_production;
 SQL
 
 psql_admin -f "$root_dir/.github/fixtures/aro-169-supabase-managed-event-triggers.sql"
+set_pgcrypto_live_acl
+
+psql_admin <<'SQL'
+do $$
+begin
+  if exists (
+    with expected(function_name, grantor, grantee, privilege_type, is_grantable) as (
+      values
+        ('digest(text, text)', 'postgres', 'pseudo', 'EXECUTE', false),
+        ('digest(text, text)', 'postgres', 'role:dashboard_user', 'EXECUTE', false),
+        ('digest(text, text)', 'postgres', 'role:postgres', 'EXECUTE', true),
+        ('gen_random_bytes(integer)', 'postgres', 'pseudo', 'EXECUTE', false),
+        ('gen_random_bytes(integer)', 'postgres', 'role:dashboard_user', 'EXECUTE', false),
+        ('gen_random_bytes(integer)', 'postgres', 'role:postgres', 'EXECUTE', true)
+    ),
+    actual as (
+      select procedure.proname || '(' ||
+               pg_catalog.pg_get_function_identity_arguments(procedure.oid) || ')',
+             grantor.rolname,
+             case when acl.grantee = 0 then 'pseudo'
+                  else 'role:' || grantee.rolname end,
+             acl.privilege_type, acl.is_grantable
+      from pg_proc procedure
+      cross join lateral aclexplode(procedure.proacl) acl
+      join pg_roles grantor on grantor.oid = acl.grantor
+      left join pg_roles grantee on grantee.oid = acl.grantee
+      where procedure.oid in (
+        'extensions.gen_random_bytes(integer)'::regprocedure,
+        'extensions.digest(text,text)'::regprocedure
+      )
+    )
+    (select * from expected except select * from actual)
+    union all
+    (select * from actual except select * from expected)
+  ) then
+    raise exception 'pgcrypto ACL fixture differs from live catalog facts';
+  end if;
+end
+$$;
+SQL
 
 psql_admin <<'SQL'
 do $$
@@ -390,6 +439,7 @@ if psql_admin -f "$migrations_dir/20260724010000_aro_169_node_enrollment.sql" \
 fi
 test "$(psql_admin -A -t -c "select to_regclass('symphony_staging.node_login_principals') is null;")" = "t"
 psql_admin -c "create extension pgcrypto with schema extensions;" >/dev/null
+set_pgcrypto_live_acl
 
 psql_admin -c "alter extension pgcrypto set schema public;" >/dev/null
 if psql_admin -f "$migrations_dir/20260724010000_aro_169_node_enrollment.sql" \
@@ -412,6 +462,7 @@ test "$(psql_admin -A -t -c "select to_regclass('symphony_staging.node_login_pri
 psql_admin -c "
   alter function extensions.digest(text, text) owner to postgres;
 " >/dev/null
+set_pgcrypto_live_acl
 
 psql_admin -c "
   revoke execute on function extensions.digest(text, text) from public;
@@ -427,6 +478,103 @@ psql_admin -c "
   set proacl = null
   where oid = 'extensions.digest(text,text)'::regprocedure;
 " >/dev/null
+set_pgcrypto_live_acl
+
+psql_admin -c "
+  update pg_proc
+  set proacl = null
+  where oid = 'extensions.digest(text,text)'::regprocedure;
+" >/dev/null
+if psql_admin -f "$migrations_dir/20260724010000_aro_169_node_enrollment.sql" \
+  >/dev/null 2>&1; then
+  echo "v3 apply unexpectedly accepted default pgcrypto ACL state" >&2
+  exit 1
+fi
+test "$(psql_admin -A -t -c "select to_regclass('symphony_staging.node_login_principals') is null;")" = "t"
+
+psql_admin -c "
+  update pg_proc
+  set proacl = '{}'::aclitem[]
+  where oid = 'extensions.digest(text,text)'::regprocedure;
+" >/dev/null
+if psql_admin -f "$migrations_dir/20260724010000_aro_169_node_enrollment.sql" \
+  >/dev/null 2>&1; then
+  echo "v3 apply unexpectedly accepted explicit-empty pgcrypto ACL state" >&2
+  exit 1
+fi
+test "$(psql_admin -A -t -c "select to_regclass('symphony_staging.node_login_principals') is null;")" = "t"
+psql_admin -c "
+  update pg_proc
+  set proacl = null
+  where oid = 'extensions.digest(text,text)'::regprocedure;
+" >/dev/null
+set_pgcrypto_live_acl
+
+psql_admin -c "
+  grant execute on function extensions.digest(text, text) to service_role;
+" >/dev/null
+if psql_admin -f "$migrations_dir/20260724010000_aro_169_node_enrollment.sql" \
+  >/dev/null 2>&1; then
+  echo "v3 apply unexpectedly accepted an extra pgcrypto ACL grant" >&2
+  exit 1
+fi
+test "$(psql_admin -A -t -c "select to_regclass('symphony_staging.node_login_principals') is null;")" = "t"
+psql_admin -c "
+  revoke execute on function extensions.digest(text, text) from service_role;
+" >/dev/null
+
+psql_admin -c "
+  revoke execute on function extensions.digest(text, text) from dashboard_user;
+  grant execute on function extensions.digest(text, text) to authenticated;
+" >/dev/null
+if psql_admin -f "$migrations_dir/20260724010000_aro_169_node_enrollment.sql" \
+  >/dev/null 2>&1; then
+  echo "v3 apply unexpectedly accepted pgcrypto grantee drift" >&2
+  exit 1
+fi
+test "$(psql_admin -A -t -c "select to_regclass('symphony_staging.node_login_principals') is null;")" = "t"
+psql_admin -c "
+  revoke execute on function extensions.digest(text, text) from authenticated;
+" >/dev/null
+set_pgcrypto_live_acl
+
+psql_admin -c "
+  revoke grant option for execute on function extensions.digest(text, text)
+    from postgres;
+" >/dev/null
+if psql_admin -f "$migrations_dir/20260724010000_aro_169_node_enrollment.sql" \
+  >/dev/null 2>&1; then
+  echo "v3 apply unexpectedly accepted pgcrypto grant-option drift" >&2
+  exit 1
+fi
+test "$(psql_admin -A -t -c "select to_regclass('symphony_staging.node_login_principals') is null;")" = "t"
+set_pgcrypto_live_acl
+
+psql_admin <<'SQL'
+create role "aro169>pgcrypto,角色\grantor" nologin;
+grant usage on schema extensions to "aro169>pgcrypto,角色\grantor";
+grant execute on function extensions.digest(text, text)
+  to "aro169>pgcrypto,角色\grantor" with grant option;
+set role "aro169>pgcrypto,角色\grantor";
+grant execute on function extensions.digest(text, text) to authenticated;
+reset role;
+SQL
+if psql_admin -f "$migrations_dir/20260724010000_aro_169_node_enrollment.sql" \
+  >/dev/null 2>&1; then
+  echo "v3 apply unexpectedly accepted pgcrypto grantor/special-role drift" >&2
+  exit 1
+fi
+test "$(psql_admin -A -t -c "select to_regclass('symphony_staging.node_login_principals') is null;")" = "t"
+psql_admin <<'SQL'
+set role "aro169>pgcrypto,角色\grantor";
+revoke execute on function extensions.digest(text, text) from authenticated;
+reset role;
+revoke execute on function extensions.digest(text, text)
+  from "aro169>pgcrypto,角色\grantor";
+revoke usage on schema extensions from "aro169>pgcrypto,角色\grantor";
+drop role "aro169>pgcrypto,角色\grantor";
+SQL
+set_pgcrypto_live_acl
 
 psql_admin -c "
   create or replace function extensions.digest(text, text)
@@ -445,6 +593,7 @@ psql_admin -c "
   drop extension pgcrypto;
   create extension pgcrypto with schema extensions;
 " >/dev/null
+set_pgcrypto_live_acl
 
 psql_admin <<'SQL'
 create role aro169_v2_drift_writer nologin noinherit;
@@ -685,6 +834,8 @@ set proacl = (
   from unnest(procedure.proacl) with ordinality reordered_acl(acl_item, ordinal)
 )
 where procedure.oid in (
+  'extensions.gen_random_bytes(integer)'::regprocedure,
+  'extensions.digest(text,text)'::regprocedure,
   'extensions.set_graphql_placeholder()'::regprocedure,
   'extensions.grant_pg_cron_access()'::regprocedure,
   'extensions.grant_pg_graphql_access()'::regprocedure,
@@ -1289,6 +1440,20 @@ psql_admin -c "
 " >/dev/null
 
 psql_admin -c "
+  revoke execute on function extensions.digest(text, text) from dashboard_user;
+  grant execute on function extensions.digest(text, text) to authenticated;
+" >/dev/null
+if psql_admin -f "$migrations_dir/20260724010000_aro_169_node_enrollment.down.sql" \
+  >/dev/null 2>&1; then
+  echo "rollback unexpectedly accepted pgcrypto ACL grantee drift" >&2
+  exit 1
+fi
+psql_admin -c "
+  revoke execute on function extensions.digest(text, text) from authenticated;
+" >/dev/null
+set_pgcrypto_live_acl
+
+psql_admin -c "
   update pg_proc
   set proacl = '{}'::aclitem[]
   where oid = 'extensions.digest(text,text)'::regprocedure;
@@ -1303,6 +1468,7 @@ psql_admin -c "
   set proacl = null
   where oid = 'extensions.digest(text,text)'::regprocedure;
 " >/dev/null
+set_pgcrypto_live_acl
 
 psql_admin -c "
   update pg_proc

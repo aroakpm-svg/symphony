@@ -55,6 +55,21 @@ decision or survives into the apply/rollback fingerprint.
 - Runtime pgcrypto and external procedure identities that enter the stored
   fingerprint must use catalog-derived schema-qualified function/type
   identities, not `regprocedure::text` or `regtype::text`.
+- The two pgcrypto 1.3 runtime functions must carry the exact Supabase-managed
+  explicit ACL recorded by read-only staging inspection: pseudo-PUBLIC
+  EXECUTE, `dashboard_user` EXECUTE, and grantable `postgres` EXECUTE, all
+  granted by `postgres`. Apply preflight, post-DDL stability, the stored
+  manifest, rollback recomputation, and reapply use the same injective,
+  C-collated ACL representation. Function ACLs only admit the `EXECUTE`
+  privilege, so privilege drift is represented by a missing or extra EXECUTE
+  row rather than a second valid privilege kind. Apply also snapshots the
+  complete extension/function runtime signature immediately after preflight
+  and recomputes it immediately before manifest insertion, so a privileged
+  concurrent ACL or definition mutation cannot become the accepted baseline.
+  Transaction-scoped `SHARE` locks on `pg_proc`, `pg_extension`,
+  `pg_namespace`, `pg_authid`, `pg_language`, `pg_type`, and `pg_depend`
+  cover every catalog write that can change those signatures and remain held
+  through manifest insertion and commit.
 - Managed-schema inventory identities that enter the stored fingerprint must
   be visibility independent:
   - functions and trigger functions;
