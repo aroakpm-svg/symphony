@@ -1159,7 +1159,7 @@ create role aro169_disposable_inherit_only nologin inherit;
 grant symphony_staging_provisioner to aro169_disposable_inherit_only
   with inherit true, set false;
 SQL
-if psql_admin -c "
+if psql_root -c "
   set session authorization aro169_disposable_inherit_only;
   select * from symphony_staging.retire_node_instance(
     '16900000-0000-4000-8000-000000000104',
@@ -1170,7 +1170,7 @@ if psql_admin -c "
   echo "inherit-only provisioner member bypassed SET capability" >&2
   exit 1
 fi
-if psql_admin -c "
+if psql_root -c "
   set session authorization aro169_disposable_inherit_only;
   update symphony_staging.node_login_principals
   set revoked_at = clock_timestamp()
@@ -1179,7 +1179,7 @@ if psql_admin -c "
   echo "inherit-only provisioner member bypassed lifecycle table boundary" >&2
   exit 1
 fi
-if psql_admin -c "
+if psql_root -c "
   set session authorization aro169_disposable_inherit_only;
   update symphony_staging.nodes
   set credential_version = credential_version + 1
@@ -1193,7 +1193,7 @@ revoke symphony_staging_provisioner from aro169_disposable_inherit_only;
 drop role aro169_disposable_inherit_only;
 SQL
 
-psql_admin <<SQL
+psql_root <<SQL
 create role aro169_disposable_bootstrap nologin noinherit;
 grant symphony_staging_provisioner to aro169_disposable_bootstrap
   with inherit false, set true;
