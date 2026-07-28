@@ -1,4 +1,4 @@
-create role supabase_admin nologin;
+create role supabase_admin superuser nologin;
 
 create function extensions.grant_pg_cron_access() returns event_trigger
 language plpgsql
