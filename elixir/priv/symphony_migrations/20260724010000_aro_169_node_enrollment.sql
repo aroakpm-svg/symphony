@@ -3359,7 +3359,7 @@ from (
         on collation_object.oid = collation_oid
       left join pg_namespace collation_namespace
         on collation_namespace.oid = collation_object.collnamespace
-    ), '<empty>') end || ':' ||
+    ), '') || ':' ||
     coalesce((
       select string_agg(
         quote_ident(opclass_namespace.nspname) || '.' ||
