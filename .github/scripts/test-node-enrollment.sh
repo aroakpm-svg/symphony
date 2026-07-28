@@ -207,6 +207,18 @@ psql_admin -c "
     granted by postgres;
 "
 psql_root -c "alter role postgres nosuperuser;"
+psql_admin -c "
+  select current_setting('is_superuser'), granted_role.rolname,
+         member_role.rolname, grantor_role.rolname,
+         membership.admin_option, membership.inherit_option, membership.set_option
+  from pg_auth_members membership
+  join pg_roles granted_role on granted_role.oid = membership.roleid
+  join pg_roles member_role on member_role.oid = membership.member
+  join pg_roles grantor_role on grantor_role.oid = membership.grantor
+  where granted_role.rolname in (
+    'symphony_staging_runtime', 'symphony_staging_provisioner'
+  );
+"
 
 psql_admin -f "$migrations_dir/20260724000000_aro_168_staging_reconciliation.sql"
 psql_root -c "alter role postgres superuser;"
