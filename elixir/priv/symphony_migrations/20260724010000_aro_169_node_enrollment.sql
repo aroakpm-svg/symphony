@@ -429,6 +429,66 @@ begin
       message = 'ARO-169 requires the exact pgcrypto 1.3 runtime dependency';
   end if;
 
+  perform set_config(
+    'aroak.pgcrypto_runtime_fingerprint',
+    (
+      select md5(string_agg(to_jsonb(runtime_state)::text, E'\n'
+                            order by runtime_state.function_identity))
+      from (
+        select
+          pg_catalog.format(
+            '%I.%I(%s)', namespace.nspname, procedure.proname,
+            pg_catalog.pg_get_function_identity_arguments(procedure.oid)
+          ) as function_identity,
+          extension.extname, extension.extversion,
+          extension_namespace.nspname as extension_schema,
+          extension_owner.rolname as extension_owner,
+          extension.extrelocatable, procedure_owner.rolname as function_owner,
+          language.lanname, return_type_namespace.nspname as return_type_schema,
+          return_type.typname as return_type_name,
+          procedure.prosecdef, procedure.proleakproof, procedure.proisstrict,
+          procedure.provolatile::text, procedure.proparallel::text,
+          procedure.proconfig,
+          case when procedure.proacl is null then '<default>' else '<explicit>:' || coalesce((
+            select string_agg(
+              encode(convert_to(grantor.rolname::text, 'UTF8'), 'hex') || '>' ||
+              encode(convert_to(case when acl.grantee = 0 then 'pseudo' else 'role:' || grantee.rolname::text end, 'UTF8'), 'hex') ||
+              '>' || encode(convert_to(acl.privilege_type, 'UTF8'), 'hex') || '>' || acl.is_grantable::text,
+              ',' order by encode(convert_to(grantor.rolname::text, 'UTF8'), 'hex') collate "C",
+                           encode(convert_to(case when acl.grantee = 0 then 'pseudo' else 'role:' || grantee.rolname::text end, 'UTF8'), 'hex') collate "C",
+                           encode(convert_to(acl.privilege_type, 'UTF8'), 'hex') collate "C",
+                           acl.is_grantable
+            )
+            from pg_catalog.aclexplode(procedure.proacl) acl
+            join pg_roles grantor on grantor.oid = acl.grantor
+            left join pg_roles grantee on grantee.oid = acl.grantee
+          ), '<empty>') end as function_acl,
+          procedure.probin, procedure.prosrc, dependency.deptype::text
+        from pg_proc procedure
+        join pg_namespace namespace on namespace.oid = procedure.pronamespace
+        join pg_roles procedure_owner on procedure_owner.oid = procedure.proowner
+        join pg_language language on language.oid = procedure.prolang
+        join pg_type return_type on return_type.oid = procedure.prorettype
+        join pg_namespace return_type_namespace
+          on return_type_namespace.oid = return_type.typnamespace
+        join pg_depend dependency
+          on dependency.classid = 'pg_catalog.pg_proc'::regclass
+         and dependency.objid = procedure.oid
+         and dependency.refclassid = 'pg_catalog.pg_extension'::regclass
+         and dependency.deptype = 'e'
+        join pg_extension extension on extension.oid = dependency.refobjid
+        join pg_namespace extension_namespace
+          on extension_namespace.oid = extension.extnamespace
+        join pg_roles extension_owner on extension_owner.oid = extension.extowner
+        where procedure.oid in (
+          'extensions.gen_random_bytes(integer)'::regprocedure,
+          'extensions.digest(text,text)'::regprocedure
+        )
+      ) runtime_state
+    ),
+    true
+  );
+
   if exists (
     with expected(
       object_name, object_kind, persistence, replica_identity,
@@ -2740,6 +2800,67 @@ begin
     raise exception using
       errcode = '55000',
       message = 'ARO-169 event-trigger state changed during apply';
+  end if;
+
+  if current_setting('aroak.pgcrypto_runtime_fingerprint', true)
+     is distinct from (
+       select md5(string_agg(to_jsonb(runtime_state)::text, E'\n'
+                             order by runtime_state.function_identity))
+       from (
+         select
+           pg_catalog.format(
+             '%I.%I(%s)', namespace.nspname, procedure.proname,
+             pg_catalog.pg_get_function_identity_arguments(procedure.oid)
+           ) as function_identity,
+           extension.extname, extension.extversion,
+           extension_namespace.nspname as extension_schema,
+           extension_owner.rolname as extension_owner,
+           extension.extrelocatable, procedure_owner.rolname as function_owner,
+           language.lanname, return_type_namespace.nspname as return_type_schema,
+           return_type.typname as return_type_name,
+           procedure.prosecdef, procedure.proleakproof, procedure.proisstrict,
+           procedure.provolatile::text, procedure.proparallel::text,
+           procedure.proconfig,
+           case when procedure.proacl is null then '<default>' else '<explicit>:' || coalesce((
+             select string_agg(
+               encode(convert_to(grantor.rolname::text, 'UTF8'), 'hex') || '>' ||
+               encode(convert_to(case when acl.grantee = 0 then 'pseudo' else 'role:' || grantee.rolname::text end, 'UTF8'), 'hex') ||
+               '>' || encode(convert_to(acl.privilege_type, 'UTF8'), 'hex') || '>' || acl.is_grantable::text,
+               ',' order by encode(convert_to(grantor.rolname::text, 'UTF8'), 'hex') collate "C",
+                            encode(convert_to(case when acl.grantee = 0 then 'pseudo' else 'role:' || grantee.rolname::text end, 'UTF8'), 'hex') collate "C",
+                            encode(convert_to(acl.privilege_type, 'UTF8'), 'hex') collate "C",
+                            acl.is_grantable
+             )
+             from pg_catalog.aclexplode(procedure.proacl) acl
+             join pg_roles grantor on grantor.oid = acl.grantor
+             left join pg_roles grantee on grantee.oid = acl.grantee
+           ), '<empty>') end as function_acl,
+           procedure.probin, procedure.prosrc, dependency.deptype::text
+         from pg_proc procedure
+         join pg_namespace namespace on namespace.oid = procedure.pronamespace
+         join pg_roles procedure_owner on procedure_owner.oid = procedure.proowner
+         join pg_language language on language.oid = procedure.prolang
+         join pg_type return_type on return_type.oid = procedure.prorettype
+         join pg_namespace return_type_namespace
+           on return_type_namespace.oid = return_type.typnamespace
+         join pg_depend dependency
+           on dependency.classid = 'pg_catalog.pg_proc'::regclass
+          and dependency.objid = procedure.oid
+          and dependency.refclassid = 'pg_catalog.pg_extension'::regclass
+          and dependency.deptype = 'e'
+         join pg_extension extension on extension.oid = dependency.refobjid
+         join pg_namespace extension_namespace
+           on extension_namespace.oid = extension.extnamespace
+         join pg_roles extension_owner on extension_owner.oid = extension.extowner
+         where procedure.oid in (
+           'extensions.gen_random_bytes(integer)'::regprocedure,
+           'extensions.digest(text,text)'::regprocedure
+         )
+       ) runtime_state
+     ) then
+    raise exception using
+      errcode = '55000',
+      message = 'ARO-169 pgcrypto runtime state changed during apply';
   end if;
 end
 $$;

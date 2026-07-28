@@ -62,7 +62,10 @@ decision or survives into the apply/rollback fingerprint.
   manifest, rollback recomputation, and reapply use the same injective,
   C-collated ACL representation. Function ACLs only admit the `EXECUTE`
   privilege, so privilege drift is represented by a missing or extra EXECUTE
-  row rather than a second valid privilege kind.
+  row rather than a second valid privilege kind. Apply also snapshots the
+  complete extension/function runtime signature immediately after preflight
+  and recomputes it immediately before manifest insertion, so a privileged
+  concurrent ACL or definition mutation cannot become the accepted baseline.
 - Managed-schema inventory identities that enter the stored fingerprint must
   be visibility independent:
   - functions and trigger functions;

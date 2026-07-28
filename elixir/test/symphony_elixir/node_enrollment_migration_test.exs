@@ -86,6 +86,9 @@ defmodule SymphonyElixir.NodeEnrollmentMigrationTest do
     assert sql =~ "pg_event_trigger"
     assert sql =~ "ARO-169 requires the exact Supabase managed event-trigger inventory"
     assert sql =~ "ARO-169 event-trigger state changed during apply"
+    assert sql =~ "'aroak.pgcrypto_runtime_fingerprint'"
+    assert sql =~ "ARO-169 pgcrypto runtime state changed during apply"
+    assert length(Regex.scan(~r/to_jsonb\(runtime_state\)::text/, sql)) == 2
     assert sql =~ "issue_graphql_placeholder"
     assert sql =~ "issue_pg_cron_access"
     assert sql =~ "issue_pg_graphql_access"
