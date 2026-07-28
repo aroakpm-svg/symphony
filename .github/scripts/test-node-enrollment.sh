@@ -1388,9 +1388,39 @@ psql_admin -c "
 migration_lock_pid=$!
 sleep 1
 rollback_started_at="$(date +%s)"
-psql_admin \
-  -c "set search_path = extensions, public;" \
-  -f "$migrations_dir/20260724010000_aro_169_node_enrollment.down.sql"
+managed_identity_default="$(
+  psql_admin -A -t -c "
+    select format(
+      '%I.%I(%s)',
+      namespace.nspname,
+      procedure.proname,
+      pg_get_function_identity_arguments(procedure.oid)
+    )
+    from pg_proc procedure
+    join pg_namespace namespace on namespace.oid = procedure.pronamespace
+    where procedure.oid = 'extensions.pgrst_drop_watch()'::regprocedure;
+  "
+)"
+managed_identity_extensions_path="$(
+  psql_admin -A -t \
+    -c "set search_path = extensions, public;" \
+    -c "
+      select format(
+        '%I.%I(%s)',
+        namespace.nspname,
+        procedure.proname,
+        pg_get_function_identity_arguments(procedure.oid)
+      )
+      from pg_proc procedure
+      join pg_namespace namespace on namespace.oid = procedure.pronamespace
+      where namespace.nspname = 'extensions'
+        and procedure.proname = 'pgrst_drop_watch'
+        and procedure.pronargs = 0;
+    "
+)"
+test "$managed_identity_default" = "$managed_identity_extensions_path"
+test "$managed_identity_default" = "extensions.pgrst_drop_watch()"
+psql_admin -f "$migrations_dir/20260724010000_aro_169_node_enrollment.down.sql"
 rollback_elapsed="$(( $(date +%s) - rollback_started_at ))"
 wait "$migration_lock_pid"
 if [ "$rollback_elapsed" -lt 2 ]; then

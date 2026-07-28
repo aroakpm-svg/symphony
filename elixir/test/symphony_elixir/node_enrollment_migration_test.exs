@@ -114,7 +114,7 @@ defmodule SymphonyElixir.NodeEnrollmentMigrationTest do
     assert lifecycle_script =~ "managed trigger function ACL drift"
     assert lifecycle_script =~ "managed trigger function config drift"
     assert lifecycle_script =~ "managed trigger function cost drift"
-    assert lifecycle_script =~ "set search_path = extensions, public"
+    assert lifecycle_script =~ "managed_identity_extensions_path"
     assert lifecycle_script =~ "column collation drift"
     assert lifecycle_script =~ "index collation drift"
     assert lifecycle_script =~ "missing pgcrypto"
