@@ -106,6 +106,62 @@ revoke select on public.aro169_external_nodes from service_role;
 drop view public.aro169_external_nodes;
 SQL
 
+psql_admin <<'SQL'
+create table public.aro169_external_binding_refs (
+  node_id uuid not null,
+  environment text not null,
+  credential_version integer not null,
+  constraint aro169_external_binding_fk
+    foreign key (node_id, environment, credential_version)
+    references symphony_staging.node_bindings(
+      node_id, environment, credential_version
+    )
+    match full
+    on update restrict
+    on delete cascade
+    deferrable initially deferred
+    not valid
+);
+SQL
+if psql_admin -f "$migrations_dir/20260724010000_aro_169_node_enrollment.sql" \
+  >/dev/null 2>&1; then
+  echo "v3 apply unexpectedly accepted a cross-schema composite foreign key" >&2
+  exit 1
+fi
+test "$(psql_admin -A -t -c "select to_regclass('symphony_staging.node_login_principals') is null;")" = "t"
+psql_admin -c "drop table public.aro169_external_binding_refs;" >/dev/null
+
+psql_admin <<'SQL'
+create table public.aro169_partitioned_binding_refs (
+  node_id uuid not null,
+  environment text not null,
+  credential_version integer not null
+) partition by hash (node_id);
+create table public.aro169_partitioned_binding_refs_p0
+  partition of public.aro169_partitioned_binding_refs
+  for values with (modulus 2, remainder 0);
+create table public.aro169_partitioned_binding_refs_p1
+  partition of public.aro169_partitioned_binding_refs
+  for values with (modulus 2, remainder 1);
+alter table public.aro169_partitioned_binding_refs
+  add constraint aro169_partitioned_binding_fk
+  foreign key (node_id, environment, credential_version)
+  references symphony_staging.node_bindings(
+    node_id, environment, credential_version
+  )
+  match simple
+  on update cascade
+  on delete restrict
+  deferrable initially immediate;
+SQL
+if psql_admin -f "$migrations_dir/20260724010000_aro_169_node_enrollment.sql" \
+  >/dev/null 2>&1; then
+  echo "v3 apply unexpectedly accepted a partitioned external foreign key" >&2
+  exit 1
+fi
+test "$(psql_admin -A -t -c "select to_regclass('symphony_staging.node_login_principals') is null;")" = "t"
+psql_admin -c "drop table public.aro169_partitioned_binding_refs;" >/dev/null
+
 for publication_kind in all_tables staging_schema explicit_relation; do
   case "$publication_kind" in
     all_tables)
@@ -1142,6 +1198,51 @@ psql_admin <<'SQL'
 revoke select on public.aro169_external_nodes from service_role;
 drop view public.aro169_external_nodes;
 SQL
+
+psql_admin <<'SQL'
+create table public.aro169_external_principal_refs (
+  node_id uuid,
+  constraint aro169_external_principal_fk
+    foreign key (node_id)
+    references symphony_staging.node_login_principals(node_id)
+    on update cascade
+    on delete restrict
+    deferrable initially immediate
+    not valid
+);
+SQL
+if psql_admin -f "$migrations_dir/20260724010000_aro_169_node_enrollment.down.sql" \
+  >/dev/null 2>&1; then
+  echo "rollback unexpectedly accepted a cross-schema foreign key" >&2
+  exit 1
+fi
+psql_admin -c "drop table public.aro169_external_principal_refs;" >/dev/null
+
+psql_admin <<'SQL'
+create table public.aro169_partitioned_principal_refs (
+  node_id uuid not null
+) partition by hash (node_id);
+create table public.aro169_partitioned_principal_refs_p0
+  partition of public.aro169_partitioned_principal_refs
+  for values with (modulus 2, remainder 0);
+create table public.aro169_partitioned_principal_refs_p1
+  partition of public.aro169_partitioned_principal_refs
+  for values with (modulus 2, remainder 1);
+alter table public.aro169_partitioned_principal_refs
+  add constraint aro169_partitioned_principal_fk
+  foreign key (node_id)
+  references symphony_staging.node_login_principals(node_id)
+  match simple
+  on update restrict
+  on delete cascade
+  deferrable initially deferred;
+SQL
+if psql_admin -f "$migrations_dir/20260724010000_aro_169_node_enrollment.down.sql" \
+  >/dev/null 2>&1; then
+  echo "rollback unexpectedly accepted a partitioned external foreign key" >&2
+  exit 1
+fi
+psql_admin -c "drop table public.aro169_partitioned_principal_refs;" >/dev/null
 
 psql_admin -c "
   grant create on schema symphony_staging to service_role;

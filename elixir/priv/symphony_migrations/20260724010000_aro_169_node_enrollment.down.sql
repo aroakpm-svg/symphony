@@ -202,6 +202,52 @@ begin
     )
     union all
     select
+      'cross-schema-constraint:' || constraint_state.oid::text || ':' ||
+      constraint_state.conname || ':' || constraint_state.contype::text || ':' ||
+      source_namespace.nspname || '.' || source_relation.relname || ':' ||
+      target_namespace.nspname || '.' || target_relation.relname || ':' ||
+      coalesce(constraint_state.conkey::text, '') || ':' ||
+      coalesce(constraint_state.confkey::text, '') || ':' ||
+      constraint_state.confmatchtype::text || ':' ||
+      constraint_state.confupdtype::text || ':' ||
+      constraint_state.confdeltype::text || ':' ||
+      constraint_state.condeferrable::text || ':' ||
+      constraint_state.condeferred::text || ':' ||
+      constraint_state.convalidated::text || ':' ||
+      constraint_state.conparentid::text || ':' ||
+      constraint_state.coninhcount::text || ':' ||
+      constraint_state.connoinherit::text || ':' ||
+      pg_get_constraintdef(constraint_state.oid, true) || ':' ||
+      coalesce((
+        select string_agg(
+          dependency.refclassid::regclass::text || ':' ||
+          dependency.refobjid::text || ':' ||
+          dependency.refobjsubid::text || ':' ||
+          dependency.deptype::text,
+          ',' order by
+            dependency.refclassid,
+            dependency.refobjid,
+            dependency.refobjsubid,
+            dependency.deptype
+        )
+        from pg_depend dependency
+        where dependency.classid = 'pg_constraint'::regclass
+          and dependency.objid = constraint_state.oid
+          and dependency.objsubid = 0
+      ), '')
+    from pg_constraint constraint_state
+    join pg_class source_relation on source_relation.oid = constraint_state.conrelid
+    join pg_namespace source_namespace on source_namespace.oid = source_relation.relnamespace
+    join pg_class target_relation on target_relation.oid = constraint_state.confrelid
+    join pg_namespace target_namespace on target_namespace.oid = target_relation.relnamespace
+    where constraint_state.contype = 'f'
+      and (
+        source_namespace.nspname in ('symphony_staging', 'symphony_production')
+      ) <> (
+        target_namespace.nspname in ('symphony_staging', 'symphony_production')
+      )
+    union all
+    select
       'external-procedure-dependency:' || external_procedure.oid::regprocedure::text ||
       ':' || managed_namespace.nspname || '.' || managed_relation.relname
     from pg_depend dependency

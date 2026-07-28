@@ -8,6 +8,7 @@ do $$
 declare
   managed_role name;
   managed_state record;
+  external_dependency_edge text;
   expected_membership_count integer :=
     case when current_setting('is_superuser') = 'on' then 1 else 2 end;
 begin
@@ -505,8 +506,13 @@ begin
       message = 'ARO-169 unsafe ARO-168 rewrite-rule state';
   end if;
 
-  if exists (
-    select 1
+  select md5(edge_identity)
+  into external_dependency_edge
+  from (
+    select
+      'external-rewrite:' || external_namespace.nspname || '.' ||
+      external_relation.relname || ':' || rewrite.rulename || ':' ||
+      managed_namespace.nspname || '.' || managed_relation.relname
     from pg_depend dependency
     join pg_class managed_relation
       on dependency.refclassid = 'pg_class'::regclass
@@ -522,7 +528,10 @@ begin
     where managed_namespace.nspname in ('symphony_staging', 'symphony_production')
       and external_namespace.nspname not in ('symphony_staging', 'symphony_production')
     union all
-    select 1
+    select
+      'cross-schema-inheritance:' || child_namespace.nspname || '.' ||
+      child_relation.relname || ':' || parent_namespace.nspname || '.' ||
+      parent_relation.relname || ':' || inheritance.inhseqno::text
     from pg_inherits inheritance
     join pg_class child_relation on child_relation.oid = inheritance.inhrelid
     join pg_namespace child_namespace on child_namespace.oid = child_relation.relnamespace
@@ -536,7 +545,10 @@ begin
       and child_namespace.nspname not in ('symphony_staging', 'symphony_production')
     )
     union all
-    select 1
+    select
+      'external-procedure-dependency:' ||
+      external_procedure.oid::regprocedure::text || ':' ||
+      managed_namespace.nspname || '.' || managed_relation.relname
     from pg_depend dependency
     join pg_class managed_relation
       on dependency.refclassid = 'pg_class'::regclass
@@ -550,10 +562,61 @@ begin
       on external_namespace.oid = external_procedure.pronamespace
     where managed_namespace.nspname in ('symphony_staging', 'symphony_production')
       and external_namespace.nspname not in ('symphony_staging', 'symphony_production')
-  ) then
+    union all
+    select
+      'cross-schema-constraint:' || constraint_state.oid::text || ':' ||
+      constraint_state.conname || ':' || constraint_state.contype::text || ':' ||
+      source_namespace.nspname || '.' || source_relation.relname || ':' ||
+      target_namespace.nspname || '.' || target_relation.relname || ':' ||
+      coalesce(constraint_state.conkey::text, '') || ':' ||
+      coalesce(constraint_state.confkey::text, '') || ':' ||
+      constraint_state.confmatchtype::text || ':' ||
+      constraint_state.confupdtype::text || ':' ||
+      constraint_state.confdeltype::text || ':' ||
+      constraint_state.condeferrable::text || ':' ||
+      constraint_state.condeferred::text || ':' ||
+      constraint_state.convalidated::text || ':' ||
+      constraint_state.conparentid::text || ':' ||
+      constraint_state.coninhcount::text || ':' ||
+      constraint_state.connoinherit::text || ':' ||
+      pg_get_constraintdef(constraint_state.oid, true) || ':' ||
+      coalesce((
+        select string_agg(
+          dependency.refclassid::regclass::text || ':' ||
+          dependency.refobjid::text || ':' ||
+          dependency.refobjsubid::text || ':' ||
+          dependency.deptype::text,
+          ',' order by
+            dependency.refclassid,
+            dependency.refobjid,
+            dependency.refobjsubid,
+            dependency.deptype
+        )
+        from pg_depend dependency
+        where dependency.classid = 'pg_constraint'::regclass
+          and dependency.objid = constraint_state.oid
+          and dependency.objsubid = 0
+      ), '')
+    from pg_constraint constraint_state
+    join pg_class source_relation on source_relation.oid = constraint_state.conrelid
+    join pg_namespace source_namespace on source_namespace.oid = source_relation.relnamespace
+    join pg_class target_relation on target_relation.oid = constraint_state.confrelid
+    join pg_namespace target_namespace on target_namespace.oid = target_relation.relnamespace
+    where constraint_state.contype = 'f'
+      and (
+        source_namespace.nspname in ('symphony_staging', 'symphony_production')
+      ) <> (
+        target_namespace.nspname in ('symphony_staging', 'symphony_production')
+      )
+  ) cross_boundary_edges(edge_identity)
+  order by edge_identity
+  limit 1;
+
+  if external_dependency_edge is not null then
     raise exception using
       errcode = '55000',
-      message = 'ARO-169 unsafe external dependency on managed relations';
+      message = 'ARO-169 unsafe external dependency on managed relations',
+      detail = 'cross-boundary-edge-id=' || external_dependency_edge;
   end if;
 
   if exists (
@@ -2382,6 +2445,52 @@ from (
     parent_namespace.nspname in ('symphony_staging', 'symphony_production')
     and child_namespace.nspname not in ('symphony_staging', 'symphony_production')
   )
+  union all
+  select
+    'cross-schema-constraint:' || constraint_state.oid::text || ':' ||
+    constraint_state.conname || ':' || constraint_state.contype::text || ':' ||
+    source_namespace.nspname || '.' || source_relation.relname || ':' ||
+    target_namespace.nspname || '.' || target_relation.relname || ':' ||
+    coalesce(constraint_state.conkey::text, '') || ':' ||
+    coalesce(constraint_state.confkey::text, '') || ':' ||
+    constraint_state.confmatchtype::text || ':' ||
+    constraint_state.confupdtype::text || ':' ||
+    constraint_state.confdeltype::text || ':' ||
+    constraint_state.condeferrable::text || ':' ||
+    constraint_state.condeferred::text || ':' ||
+    constraint_state.convalidated::text || ':' ||
+    constraint_state.conparentid::text || ':' ||
+    constraint_state.coninhcount::text || ':' ||
+    constraint_state.connoinherit::text || ':' ||
+    pg_get_constraintdef(constraint_state.oid, true) || ':' ||
+    coalesce((
+      select string_agg(
+        dependency.refclassid::regclass::text || ':' ||
+        dependency.refobjid::text || ':' ||
+        dependency.refobjsubid::text || ':' ||
+        dependency.deptype::text,
+        ',' order by
+          dependency.refclassid,
+          dependency.refobjid,
+          dependency.refobjsubid,
+          dependency.deptype
+      )
+      from pg_depend dependency
+      where dependency.classid = 'pg_constraint'::regclass
+        and dependency.objid = constraint_state.oid
+        and dependency.objsubid = 0
+    ), '')
+  from pg_constraint constraint_state
+  join pg_class source_relation on source_relation.oid = constraint_state.conrelid
+  join pg_namespace source_namespace on source_namespace.oid = source_relation.relnamespace
+  join pg_class target_relation on target_relation.oid = constraint_state.confrelid
+  join pg_namespace target_namespace on target_namespace.oid = target_relation.relnamespace
+  where constraint_state.contype = 'f'
+    and (
+      source_namespace.nspname in ('symphony_staging', 'symphony_production')
+    ) <> (
+      target_namespace.nspname in ('symphony_staging', 'symphony_production')
+    )
   union all
   select
     'external-procedure-dependency:' || external_procedure.oid::regprocedure::text ||

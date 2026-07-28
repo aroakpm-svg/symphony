@@ -264,6 +264,23 @@ defmodule SymphonyElixir.NodeEnrollmentMigrationTest do
     assert File.read!(@rollback) =~ "'db-role-setting:'"
     assert File.read!(@migration) =~ "'external-rewrite:'"
     assert File.read!(@rollback) =~ "'external-rewrite:'"
+    assert File.read!(@migration) =~ "'cross-schema-constraint:'"
+    assert File.read!(@rollback) =~ "'cross-schema-constraint:'"
+    assert File.read!(@migration) =~ "constraint_state.confrelid"
+    assert File.read!(@rollback) =~ "constraint_state.confrelid"
+
+    assert File.read!(@migration) =~
+             "dependency.classid = 'pg_constraint'::regclass"
+
+    assert File.read!(@rollback) =~
+             "dependency.classid = 'pg_constraint'::regclass"
+
+    assert File.read!(@migration) =~ "dependency.refobjsubid::text"
+    assert File.read!(@rollback) =~ "dependency.refobjsubid::text"
+
+    assert File.read!(@migration) =~
+             "detail = 'cross-boundary-edge-id=' || external_dependency_edge"
+
     assert File.read!(@migration) =~ "'schema:'"
     assert File.read!(@rollback) =~ "'schema:'"
     assert File.read!(@migration) =~ "'default-acl:'"
