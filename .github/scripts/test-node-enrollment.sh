@@ -1387,7 +1387,6 @@ psql_admin -c "
 " >/dev/null &
 migration_lock_pid=$!
 sleep 1
-rollback_started_at="$(date +%s)"
 managed_identity_default="$(
   psql_admin -A -t -c "
     select format(
@@ -1420,6 +1419,7 @@ managed_identity_extensions_path="$(
 )"
 test "$managed_identity_default" = "$managed_identity_extensions_path"
 test "$managed_identity_default" = "extensions.pgrst_drop_watch()"
+rollback_started_at="$(date +%s)"
 psql_admin -f "$migrations_dir/20260724010000_aro_169_node_enrollment.down.sql"
 rollback_elapsed="$(( $(date +%s) - rollback_started_at ))"
 wait "$migration_lock_pid"

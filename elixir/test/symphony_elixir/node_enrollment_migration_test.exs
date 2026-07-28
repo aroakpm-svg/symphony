@@ -17,6 +17,10 @@ defmodule SymphonyElixir.NodeEnrollmentMigrationTest do
                                    "../../../.github/fixtures/aro-169-supabase-managed-event-triggers.sql",
                                    __DIR__
                                  )
+  @postgres_workflow Path.expand(
+                       "../../../.github/workflows/node-enrollment-postgres.yml",
+                       __DIR__
+                     )
 
   test "requires contract v2 and publishes contract v3" do
     sql = File.read!(@migration)
@@ -79,6 +83,9 @@ defmodule SymphonyElixir.NodeEnrollmentMigrationTest do
     fixture = File.read!(@managed_event_trigger_fixture)
     assert fixture =~ "alter event trigger pgrst_drop_watch owner to supabase_admin"
     assert fixture =~ "alter function extensions.pgrst_drop_watch() owner to supabase_admin"
+
+    assert File.read!(@postgres_workflow) =~
+             ~s(".github/fixtures/aro-169-supabase-managed-event-triggers.sql")
     assert sql =~ "attribute.attcollation"
     assert sql =~ "index_state.indcollation"
     assert sql =~ "index_state.indclass"
@@ -115,6 +122,9 @@ defmodule SymphonyElixir.NodeEnrollmentMigrationTest do
     assert lifecycle_script =~ "managed trigger function config drift"
     assert lifecycle_script =~ "managed trigger function cost drift"
     assert lifecycle_script =~ "managed_identity_extensions_path"
+
+    assert lifecycle_script =~
+             ~r/managed_identity_extensions_path.*rollback_started_at=.*node_enrollment\.down\.sql/s
     assert lifecycle_script =~ "column collation drift"
     assert lifecycle_script =~ "index collation drift"
     assert lifecycle_script =~ "missing pgcrypto"
