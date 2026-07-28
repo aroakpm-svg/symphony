@@ -69,7 +69,7 @@ defmodule SymphonyElixir.NodeEnrollmentMigrationTest do
     assert sql =~ "trigger_dependencies"
     assert sql =~ "pg_catalog.sha256"
     refute sql =~ "extensions.digest(procedure.prosrc"
-    assert sql =~ "procedure.procost = 100"
+    assert sql =~ "actual.procost = 100"
     assert sql =~ "procedure.proconfig is null"
     assert sql =~ "procedure.proacl is null"
     assert File.read!(@rollback) =~ "managed-event-trigger-inventory:"
