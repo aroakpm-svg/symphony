@@ -860,7 +860,7 @@ create table public.pg_namespace (shadow text);
 create table public.pg_language (shadow text);
 SQL
 
-psql_admin -c "
+psql_root -c "
   alter role postgres
     nosuperuser createrole createdb replication bypassrls;
 " >/dev/null
