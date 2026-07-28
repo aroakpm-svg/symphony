@@ -74,8 +74,15 @@ is not sufficient. The canonical contract also rejects logical publications
 that cover either managed namespace or any managed relation, fingerprints
 resolved column/index collation and index operator classes, and requires the
 exact externally owned `pgcrypto` 1.3 dependency in the `extensions` schema.
-Enabled database event triggers are rejected before v3 DDL and rechecked
-before manifest capture; event-trigger state is fingerprinted for rollback.
+The only enabled database event triggers accepted before v3 DDL are the exact
+six Supabase-managed triggers `issue_graphql_placeholder`,
+`issue_pg_cron_access`, `issue_pg_graphql_access`, `issue_pg_net_access`,
+`pgrst_ddl_watch`, and `pgrst_drop_watch`. Their names, events, enabled state,
+tags, function identities and owners, complete function definitions, config,
+ACLs, and dependency identities must match the pinned canonical inventory.
+Unknown triggers and any same-name or function drift fail closed. The same
+inventory is rechecked before manifest capture and fingerprinted for rollback
+and reapply.
 ARO-169 never installs, relocates, takes ownership of, or removes that
 extension. Provisioning, rotation, and re-enrollment pin
 `password_encryption` to `scram-sha-256`, independent of caller or server GUC

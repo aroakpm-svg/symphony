@@ -117,6 +117,14 @@ if psql_admin \
   exit 1
 fi
 
+if psql_admin \
+  -c "begin; alter function extensions.pgrst_drop_watch() cost 101;" \
+  -f "$migrations_dir/20260724010000_aro_169_node_enrollment.sql" \
+  >/dev/null 2>&1; then
+  echo "v3 apply unexpectedly accepted managed trigger function cost drift" >&2
+  exit 1
+fi
+
 psql_admin -c "
   alter role symphony_staging_provisioner in database postgres
     set statement_timeout = '1ms';

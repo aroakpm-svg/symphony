@@ -96,7 +96,12 @@ begin
         event_trigger.evtenabled as enabled_state,
         event_trigger.evttags as tags,
         procedure.proname as function_name,
-        encode(extensions.digest(procedure.prosrc, 'sha256'), 'hex')
+        encode(
+          pg_catalog.sha256(
+            pg_catalog.convert_to(procedure.prosrc, 'UTF8')
+          ),
+          'hex'
+        )
           as source_sha256,
         trigger_owner.rolname as trigger_owner,
         namespace.nspname as function_schema,
@@ -105,8 +110,12 @@ begin
         procedure.prorettype::regtype::text as return_type,
         procedure.prokind, procedure.prosecdef, procedure.proleakproof,
         procedure.proisstrict, procedure.proretset, procedure.provolatile,
-        procedure.proparallel, procedure.pronargs, procedure.proargmodes,
-        procedure.proconfig, procedure.proacl,
+        procedure.proparallel, procedure.procost, procedure.prorows,
+        procedure.provariadic, procedure.protransform, procedure.prosupport,
+        procedure.pronargs, procedure.pronargdefaults, procedure.proargtypes,
+        procedure.proallargtypes, procedure.proargmodes, procedure.proargnames,
+        procedure.proargdefaults, procedure.protrftypes, procedure.proconfig,
+        procedure.proacl, procedure.probin, procedure.prosqlbody,
         (
           select string_agg(
             dependency.refclassid::regclass::text || ':' ||
@@ -167,10 +176,23 @@ begin
         and not actual.proretset
         and actual.provolatile = 'v'
         and actual.proparallel = 'u'
+        and actual.procost = 100
+        and actual.prorows = 0
+        and actual.provariadic = 0
+        and actual.protransform = 0
+        and actual.prosupport = 0
         and actual.pronargs = 0
+        and actual.pronargdefaults = 0
+        and actual.proargtypes = ''::oidvector
+        and actual.proallargtypes is null
         and actual.proargmodes is null
+        and actual.proargnames is null
+        and actual.proargdefaults is null
+        and actual.protrftypes is null
         and actual.proconfig is null
         and actual.proacl is null
+        and actual.probin is null
+        and actual.prosqlbody is null
         and actual.function_dependencies =
           'pg_language:language plpgsql:n,' ||
           'pg_namespace:schema extensions:n'
@@ -210,9 +232,19 @@ begin
           procedure.prokind::text, procedure.prosecdef,
           procedure.proleakproof, procedure.proisstrict,
           procedure.proretset, procedure.provolatile::text,
-          procedure.proparallel::text, procedure.pronargs,
-          procedure.proargmodes, procedure.proconfig, procedure.proacl,
-          encode(extensions.digest(procedure.prosrc, 'sha256'), 'hex')
+          procedure.proparallel::text, procedure.procost, procedure.prorows,
+          procedure.provariadic, procedure.protransform, procedure.prosupport,
+          procedure.pronargs, procedure.pronargdefaults, procedure.proargtypes,
+          procedure.proallargtypes, procedure.proargmodes,
+          procedure.proargnames, procedure.proargdefaults,
+          procedure.protrftypes, procedure.proconfig, procedure.proacl,
+          procedure.probin, procedure.prosqlbody,
+          encode(
+            pg_catalog.sha256(
+              pg_catalog.convert_to(procedure.prosrc, 'UTF8')
+            ),
+            'hex'
+          )
             as source_sha256,
           (
             select string_agg(
@@ -2484,9 +2516,20 @@ begin
            procedure.prokind::text, procedure.prosecdef,
            procedure.proleakproof, procedure.proisstrict,
            procedure.proretset, procedure.provolatile::text,
-           procedure.proparallel::text, procedure.pronargs,
-           procedure.proargmodes, procedure.proconfig, procedure.proacl,
-           encode(extensions.digest(procedure.prosrc, 'sha256'), 'hex')
+           procedure.proparallel::text, procedure.procost, procedure.prorows,
+           procedure.provariadic, procedure.protransform, procedure.prosupport,
+           procedure.pronargs, procedure.pronargdefaults,
+           procedure.proargtypes, procedure.proallargtypes,
+           procedure.proargmodes, procedure.proargnames,
+           procedure.proargdefaults, procedure.protrftypes,
+           procedure.proconfig, procedure.proacl, procedure.probin,
+           procedure.prosqlbody,
+           encode(
+             pg_catalog.sha256(
+               pg_catalog.convert_to(procedure.prosrc, 'UTF8')
+             ),
+             'hex'
+           )
              as source_sha256,
            (
              select string_agg(

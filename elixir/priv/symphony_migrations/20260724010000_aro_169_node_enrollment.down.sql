@@ -177,9 +177,19 @@ begin
         procedure.prokind::text, procedure.prosecdef,
         procedure.proleakproof, procedure.proisstrict,
         procedure.proretset, procedure.provolatile::text,
-        procedure.proparallel::text, procedure.pronargs,
-        procedure.proargmodes, procedure.proconfig, procedure.proacl,
-        encode(extensions.digest(procedure.prosrc, 'sha256'), 'hex')
+        procedure.proparallel::text, procedure.procost, procedure.prorows,
+        procedure.provariadic, procedure.protransform, procedure.prosupport,
+        procedure.pronargs, procedure.pronargdefaults, procedure.proargtypes,
+        procedure.proallargtypes, procedure.proargmodes,
+        procedure.proargnames, procedure.proargdefaults,
+        procedure.protrftypes, procedure.proconfig, procedure.proacl,
+        procedure.probin, procedure.prosqlbody,
+        encode(
+          pg_catalog.sha256(
+            pg_catalog.convert_to(procedure.prosrc, 'UTF8')
+          ),
+          'hex'
+        )
           as source_sha256,
         (
           select string_agg(
