@@ -87,8 +87,8 @@ defmodule SymphonyElixir.NodeEnrollmentMigrationTest do
     assert sql =~
              "case when procedure.proacl is null then '<default>' else '<explicit>:'"
 
-    assert sql =~
-             "(case when trigger_function.proacl is null then '<default>'"
+    assert sql =~ "case when trigger_function.proacl is null"
+    assert sql =~ "then '<default>' else '<explicit>:<empty>' end"
 
     assert sql =~
              "case when opclass_object.opckeytype = 0 then '<none>'"
@@ -103,8 +103,7 @@ defmodule SymphonyElixir.NodeEnrollmentMigrationTest do
     assert File.read!(@rollback) =~
              "case when procedure.proacl is null then '<default>' else '<explicit>:'"
 
-    assert File.read!(@rollback) =~
-             "(case when trigger_function.proacl is null then '<default>'"
+    assert File.read!(@rollback) =~ "case when trigger_function.proacl is null"
 
     assert File.read!(@rollback) =~
              "case when opclass_object.opckeytype = 0 then '<none>'"
