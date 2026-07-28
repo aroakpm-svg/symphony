@@ -15,6 +15,10 @@ psql_root() {
 }
 
 set_pgcrypto_live_acl() {
+  psql_root <<'SQL'
+alter function extensions.gen_random_bytes(integer) owner to postgres;
+alter function extensions.digest(text, text) owner to postgres;
+SQL
   psql_admin <<'SQL'
 grant execute on function extensions.gen_random_bytes(integer),
   extensions.digest(text, text) to dashboard_user;
