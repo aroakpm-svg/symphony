@@ -9,6 +9,15 @@ psql_admin() {
   psql -X -q -v ON_ERROR_STOP=1 -d "$admin_url" "$@"
 }
 
+set_pgcrypto_live_acl() {
+  psql_admin <<'SQL'
+grant execute on function extensions.gen_random_bytes(integer),
+  extensions.digest(text, text) to dashboard_user;
+grant execute on function extensions.gen_random_bytes(integer),
+  extensions.digest(text, text) to postgres with grant option;
+SQL
+}
+
 psql_admin <<'SQL'
 create schema extensions;
 create extension pgcrypto with schema extensions;
@@ -19,6 +28,46 @@ create schema symphony_production;
 SQL
 
 psql_admin -f "$root_dir/.github/fixtures/aro-169-supabase-managed-event-triggers.sql"
+set_pgcrypto_live_acl
+
+psql_admin <<'SQL'
+do $$
+begin
+  if exists (
+    with expected(function_name, grantor, grantee, privilege_type, is_grantable) as (
+      values
+        ('digest(text,text)', 'postgres', 'pseudo', 'EXECUTE', false),
+        ('digest(text,text)', 'postgres', 'role:dashboard_user', 'EXECUTE', false),
+        ('digest(text,text)', 'postgres', 'role:postgres', 'EXECUTE', true),
+        ('gen_random_bytes(integer)', 'postgres', 'pseudo', 'EXECUTE', false),
+        ('gen_random_bytes(integer)', 'postgres', 'role:dashboard_user', 'EXECUTE', false),
+        ('gen_random_bytes(integer)', 'postgres', 'role:postgres', 'EXECUTE', true)
+    ),
+    actual as (
+      select procedure.proname || '(' ||
+               pg_catalog.pg_get_function_identity_arguments(procedure.oid) || ')',
+             grantor.rolname,
+             case when acl.grantee = 0 then 'pseudo'
+                  else 'role:' || grantee.rolname end,
+             acl.privilege_type, acl.is_grantable
+      from pg_proc procedure
+      cross join lateral aclexplode(procedure.proacl) acl
+      join pg_roles grantor on grantor.oid = acl.grantor
+      left join pg_roles grantee on grantee.oid = acl.grantee
+      where procedure.oid in (
+        'extensions.gen_random_bytes(integer)'::regprocedure,
+        'extensions.digest(text,text)'::regprocedure
+      )
+    )
+    (select * from expected except select * from actual)
+    union all
+    (select * from actual except select * from expected)
+  ) then
+    raise exception 'pgcrypto ACL fixture differs from live catalog facts';
+  end if;
+end
+$$;
+SQL
 
 psql_admin <<'SQL'
 do $$

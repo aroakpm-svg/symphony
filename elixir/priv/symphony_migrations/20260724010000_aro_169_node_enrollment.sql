@@ -392,7 +392,23 @@ begin
       and procedure.proisstrict
       and procedure.proparallel = 's'
       and procedure.proconfig is null
-      and procedure.proacl is null
+      and case when procedure.proacl is null then '<default>' else '<explicit>:' || coalesce((
+        select string_agg(
+          encode(convert_to(grantor.rolname::text, 'UTF8'), 'hex') || '>' ||
+          encode(convert_to(case when acl.grantee = 0 then 'pseudo' else 'role:' || grantee.rolname::text end, 'UTF8'), 'hex') ||
+          '>' || encode(convert_to(acl.privilege_type, 'UTF8'), 'hex') || '>' || acl.is_grantable::text,
+          ',' order by encode(convert_to(grantor.rolname::text, 'UTF8'), 'hex') collate "C",
+                       encode(convert_to(case when acl.grantee = 0 then 'pseudo' else 'role:' || grantee.rolname::text end, 'UTF8'), 'hex') collate "C",
+                       encode(convert_to(acl.privilege_type, 'UTF8'), 'hex') collate "C",
+                       acl.is_grantable
+        )
+        from pg_catalog.aclexplode(procedure.proacl) acl
+        join pg_roles grantor on grantor.oid = acl.grantor
+        left join pg_roles grantee on grantee.oid = acl.grantee
+      ), '<empty>') end =
+        '<explicit>:706f737467726573>70736575646f>45584543555445>false,' ||
+        '706f737467726573>726f6c653a64617368626f6172645f75736572>45584543555445>false,' ||
+        '706f737467726573>726f6c653a706f737467726573>45584543555445>true'
       and procedure.probin = '$libdir/pgcrypto'
       and (
         (
