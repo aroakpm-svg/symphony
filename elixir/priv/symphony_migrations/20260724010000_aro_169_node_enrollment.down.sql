@@ -782,7 +782,7 @@ begin
           on collation_object.oid = collation_oid
         left join pg_namespace collation_namespace
           on collation_namespace.oid = collation_object.collnamespace
-      ), '') || ':' ||
+      ), '<empty>') end || ':' ||
       coalesce((
         select string_agg(
           quote_ident(opclass_namespace.nspname) || '.' ||
@@ -921,7 +921,8 @@ begin
         pg_catalog.pg_get_function_identity_arguments(trigger_function.oid)
       ) || ':' ||
       pg_get_userbyid(trigger_function.proowner) || ':' ||
-      coalesce((
+      case when trigger_function.proacl is null then '<default>'
+      else '<explicit>:' || coalesce((
         select string_agg(
           grantor.rolname || '>' ||
           case when acl.grantee = 0 then 'PUBLIC' else grantee.rolname end ||
@@ -934,7 +935,7 @@ begin
         from pg_catalog.aclexplode(trigger_function.proacl) acl
         join pg_roles grantor on grantor.oid = acl.grantor
         left join pg_roles grantee on grantee.oid = acl.grantee
-      ), '') || ':' ||
+      ), '<empty>') end || ':' ||
       pg_get_functiondef(trigger_function.oid)
     from pg_trigger trigger_row
     join pg_class relation on relation.oid = trigger_row.tgrelid

@@ -37,8 +37,9 @@ decision or survives into the apply/rollback fingerprint.
   stored manifest, and rollback recomputation:
   - `proacl` must be represented as sorted
     grantor/grantee/privilege/grant-option rows from `aclexplode`.
-  - ACL fingerprints must preserve the distinction between catalog-default
-    `NULL`, an explicit empty ACL, and an explicit non-empty ACL.
+  - Every ACL-bearing fingerprint, including enforcement trigger functions,
+    must preserve the distinction between catalog-default `NULL`, an explicit
+    empty ACL, and an explicit non-empty ACL.
   - `pg_describe_object` dependency text must be replaced by catalog-derived,
     schema-qualified symbolic identities.
   - function return types must use catalog namespace/name, not

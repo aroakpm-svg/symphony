@@ -1262,6 +1262,38 @@ psql_admin -c "
 " >/dev/null
 
 psql_admin -c "
+  update pg_proc
+  set proacl = null
+  where oid = 'symphony_staging.enforce_node_transition()'::regprocedure;
+" >/dev/null
+if psql_admin -f "$migrations_dir/20260724010000_aro_169_node_enrollment.down.sql" \
+  >/dev/null 2>&1; then
+  echo "rollback unexpectedly accepted default trigger-function ACL drift" >&2
+  exit 1
+fi
+psql_admin -c "
+  update pg_proc
+  set proacl = '{}'::aclitem[]
+  where oid = 'symphony_staging.enforce_node_transition()'::regprocedure;
+" >/dev/null
+if psql_admin -f "$migrations_dir/20260724010000_aro_169_node_enrollment.down.sql" \
+  >/dev/null 2>&1; then
+  echo "rollback unexpectedly accepted explicit-empty trigger-function ACL drift" >&2
+  exit 1
+fi
+psql_admin -c "
+  update pg_proc procedure
+  set proacl = array[
+    pg_catalog.format(
+      '%s=X/%s',
+      pg_get_userbyid(procedure.proowner),
+      pg_get_userbyid(procedure.proowner)
+    )::aclitem
+  ]
+  where oid = 'symphony_staging.enforce_node_transition()'::regprocedure;
+" >/dev/null
+
+psql_admin -c "
   alter table symphony_staging.node_lifecycle_operations
     alter column operation_type type text collate pg_catalog.\"C\";
 " >/dev/null
