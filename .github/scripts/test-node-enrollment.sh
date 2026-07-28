@@ -473,6 +473,11 @@ if psql_admin -f "$migrations_dir/20260724010000_aro_169_node_enrollment.sql" \
   exit 1
 fi
 test "$(psql_admin -A -t -c "select to_regclass('symphony_staging.node_login_principals') is null;")" = "t"
+psql_admin -c "
+  update pg_proc
+  set proacl = null
+  where oid = 'extensions.digest(text,text)'::regprocedure;
+" >/dev/null
 set_pgcrypto_live_acl
 
 psql_admin -c "
@@ -498,6 +503,11 @@ if psql_admin -f "$migrations_dir/20260724010000_aro_169_node_enrollment.sql" \
   exit 1
 fi
 test "$(psql_admin -A -t -c "select to_regclass('symphony_staging.node_login_principals') is null;")" = "t"
+psql_admin -c "
+  update pg_proc
+  set proacl = null
+  where oid = 'extensions.digest(text,text)'::regprocedure;
+" >/dev/null
 set_pgcrypto_live_acl
 
 psql_admin -c "

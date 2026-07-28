@@ -69,6 +69,7 @@ defmodule SymphonyElixir.NodeEnrollmentMigrationTest do
 
     assert sql =~ "extensions.gen_random_bytes(32)"
     assert sql =~ "extensions.digest(generated_credential, 'sha256')"
+
     assert sql =~
              "<explicit>:706f737467726573>70736575646f>45584543555445>false,"
 
