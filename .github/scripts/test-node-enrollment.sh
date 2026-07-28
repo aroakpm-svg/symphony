@@ -1388,7 +1388,9 @@ psql_admin -c "
 migration_lock_pid=$!
 sleep 1
 rollback_started_at="$(date +%s)"
-psql_admin -f "$migrations_dir/20260724010000_aro_169_node_enrollment.down.sql"
+psql_admin \
+  -c "set search_path = extensions, public;" \
+  -f "$migrations_dir/20260724010000_aro_169_node_enrollment.down.sql"
 rollback_elapsed="$(( $(date +%s) - rollback_started_at ))"
 wait "$migration_lock_pid"
 if [ "$rollback_elapsed" -lt 2 ]; then

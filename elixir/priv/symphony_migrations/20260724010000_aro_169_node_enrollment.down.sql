@@ -170,7 +170,12 @@ begin
         event_trigger.evttags as tags,
         trigger_owner.rolname as trigger_owner,
         namespace.nspname as function_schema,
-        procedure.oid::regprocedure::text as function_identity,
+        pg_catalog.format(
+          '%I.%I(%s)',
+          namespace.nspname,
+          procedure.proname,
+          pg_catalog.pg_get_function_identity_arguments(procedure.oid)
+        ) as function_identity,
         function_owner.rolname as function_owner,
         language.lanname as function_language,
         procedure.prorettype::regtype::text as return_type,
