@@ -9,6 +9,12 @@ psql_admin() {
   psql -X -q -v ON_ERROR_STOP=1 -d "$admin_url" "$@"
 }
 
+psql_root() {
+  PGPASSWORD=disposable \
+    psql -X -q -v ON_ERROR_STOP=1 \
+      -d "postgresql://aro169_ci_root@localhost:5432/postgres" "$@"
+}
+
 set_pgcrypto_live_acl() {
   psql_admin <<'SQL'
 grant execute on function extensions.gen_random_bytes(integer),
@@ -24,6 +30,7 @@ create extension pgcrypto with schema extensions;
 create role anon nologin;
 create role authenticated nologin;
 create role service_role nologin;
+create role aro169_ci_root login superuser password 'disposable';
 create schema symphony_production;
 SQL
 
@@ -853,6 +860,19 @@ create table public.pg_namespace (shadow text);
 create table public.pg_language (shadow text);
 SQL
 
+psql_admin -c "
+  alter role postgres
+    nosuperuser createrole createdb replication bypassrls;
+" >/dev/null
+test "$(psql_admin -A -t -c "select current_setting('is_superuser');")" = "off"
+if psql_admin -c "
+  begin;
+  lock table pg_catalog.pg_proc in share mode;
+" >/dev/null 2>&1; then
+  echo "hosted-like migration role unexpectedly locked pg_catalog.pg_proc" >&2
+  exit 1
+fi
+
 PGOPTIONS="-c search_path=public,extensions,pg_catalog" \
   psql_admin -f "$migrations_dir/20260724010000_aro_169_node_enrollment.sql"
 
@@ -903,7 +923,7 @@ test "$credential_returned" = "t"
 test -n "$node_id"
 test -n "$login_role"
 test -n "$node_credential"
-test "$(psql_admin -A -t -c "select rolpassword like 'SCRAM-SHA-256\\$%' from pg_authid where rolname = '$login_role';")" = "t"
+test "$(psql_root -A -t -c "select rolpassword like 'SCRAM-SHA-256\\$%' from pg_authid where rolname = '$login_role';")" = "t"
 test "$(psql_admin -A -t -c "select target_node_id = '$node_id' and routing_policy = 'exclusive' from symphony_staging.routing_assignments where issue_id = 'ARO-169-disposable';")" = "t"
 
 replayed="$(
@@ -1205,7 +1225,7 @@ test "$credential_version" = "2"
 test "$rotated_contract_version" = "3"
 test "$rotated_secret" = "t"
 test "$_rotated_role" != "$login_role"
-test "$(psql_admin -A -t -c "select rolpassword like 'SCRAM-SHA-256\\$%' from pg_authid where rolname = '$_rotated_role';")" = "t"
+test "$(psql_root -A -t -c "select rolpassword like 'SCRAM-SHA-256\\$%' from pg_authid where rolname = '$_rotated_role';")" = "t"
 rotated_node_url="postgresql://${_rotated_role}@localhost:5432/postgres"
 
 PGPASSWORD="$rotated_credential" \
@@ -1277,7 +1297,7 @@ test "$_reenrolled_node_id" = "$node_id"
 test "$reenrolled_version" = "3"
 test "$reenrolled_contract" = "3"
 test "$reenrolled_secret" = "t"
-test "$(psql_admin -A -t -c "select rolpassword like 'SCRAM-SHA-256\\$%' from pg_authid where rolname = '$reenrolled_role';")" = "t"
+test "$(psql_root -A -t -c "select rolpassword like 'SCRAM-SHA-256\\$%' from pg_authid where rolname = '$reenrolled_role';")" = "t"
 test "$(psql_admin -A -t -c "select count(*) from symphony_staging.node_principal_history where node_id = '$node_id';")" = "3"
 
 reenroll_replay="$(
@@ -1407,7 +1427,7 @@ if psql_admin -f "$migrations_dir/20260724010000_aro_169_node_enrollment.down.sq
 fi
 psql_admin -c "drop publication aro169_rollback_publication;" >/dev/null
 
-psql_admin <<'SQL'
+psql_root <<'SQL'
 create function public.aro169_rollback_event_drift()
 returns event_trigger
 language plpgsql
@@ -1422,12 +1442,12 @@ if psql_admin -f "$migrations_dir/20260724010000_aro_169_node_enrollment.down.sq
   echo "rollback unexpectedly accepted event-trigger drift" >&2
   exit 1
 fi
-psql_admin <<'SQL'
+psql_root <<'SQL'
 drop event trigger aro169_rollback_event_drift;
 drop function public.aro169_rollback_event_drift();
 SQL
 
-psql_admin -c "
+psql_root -c "
   alter function extensions.digest(text, text) owner to service_role;
 " >/dev/null
 if psql_admin -f "$migrations_dir/20260724010000_aro_169_node_enrollment.down.sql" \
@@ -1435,7 +1455,7 @@ if psql_admin -f "$migrations_dir/20260724010000_aro_169_node_enrollment.down.sq
   echo "rollback unexpectedly accepted pgcrypto dependency drift" >&2
   exit 1
 fi
-psql_admin -c "
+psql_root -c "
   alter function extensions.digest(text, text) owner to postgres;
 " >/dev/null
 
@@ -1453,7 +1473,7 @@ psql_admin -c "
 " >/dev/null
 set_pgcrypto_live_acl
 
-psql_admin -c "
+psql_root -c "
   update pg_proc
   set proacl = '{}'::aclitem[]
   where oid = 'extensions.digest(text,text)'::regprocedure;
@@ -1463,14 +1483,14 @@ if psql_admin -f "$migrations_dir/20260724010000_aro_169_node_enrollment.down.sq
   echo "rollback unexpectedly treated an explicit empty ACL as the default ACL" >&2
   exit 1
 fi
-psql_admin -c "
+psql_root -c "
   update pg_proc
   set proacl = null
   where oid = 'extensions.digest(text,text)'::regprocedure;
 " >/dev/null
 set_pgcrypto_live_acl
 
-psql_admin -c "
+psql_root -c "
   update pg_proc
   set proacl = null
   where oid = 'symphony_staging.enforce_node_transition()'::regprocedure;
@@ -1480,7 +1500,7 @@ if psql_admin -f "$migrations_dir/20260724010000_aro_169_node_enrollment.down.sq
   echo "rollback unexpectedly accepted default trigger-function ACL drift" >&2
   exit 1
 fi
-psql_admin -c "
+psql_root -c "
   update pg_proc
   set proacl = '{}'::aclitem[]
   where oid = 'symphony_staging.enforce_node_transition()'::regprocedure;
@@ -1490,7 +1510,7 @@ if psql_admin -f "$migrations_dir/20260724010000_aro_169_node_enrollment.down.sq
   echo "rollback unexpectedly accepted explicit-empty trigger-function ACL drift" >&2
   exit 1
 fi
-psql_admin -c "
+psql_root -c "
   update pg_proc procedure
   set proacl = array[
     pg_catalog.format(
