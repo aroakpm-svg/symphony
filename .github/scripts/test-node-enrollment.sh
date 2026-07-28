@@ -20,6 +20,56 @@ SQL
 
 psql_admin -f "$root_dir/.github/fixtures/aro-169-supabase-managed-event-triggers.sql"
 
+psql_admin <<'SQL'
+do $$
+begin
+  if exists (
+    with expected(trigger_name, grantor, grantee, privilege_type, is_grantable) as (
+      values
+        ('issue_graphql_placeholder', 'supabase_admin', 'PUBLIC', 'EXECUTE', false),
+        ('issue_graphql_placeholder', 'supabase_admin', 'postgres', 'EXECUTE', true),
+        ('issue_graphql_placeholder', 'supabase_admin', 'supabase_admin', 'EXECUTE', false),
+        ('issue_pg_cron_access', 'supabase_admin', 'PUBLIC', 'EXECUTE', false),
+        ('issue_pg_cron_access', 'supabase_admin', 'dashboard_user', 'EXECUTE', false),
+        ('issue_pg_cron_access', 'supabase_admin', 'supabase_admin', 'EXECUTE', true),
+        ('issue_pg_graphql_access', 'supabase_admin', 'PUBLIC', 'EXECUTE', false),
+        ('issue_pg_graphql_access', 'supabase_admin', 'postgres', 'EXECUTE', true),
+        ('issue_pg_graphql_access', 'supabase_admin', 'supabase_admin', 'EXECUTE', false),
+        ('issue_pg_net_access', 'supabase_admin', 'PUBLIC', 'EXECUTE', false),
+        ('issue_pg_net_access', 'supabase_admin', 'dashboard_user', 'EXECUTE', false),
+        ('issue_pg_net_access', 'supabase_admin', 'supabase_admin', 'EXECUTE', true),
+        ('pgrst_ddl_watch', 'supabase_admin', 'PUBLIC', 'EXECUTE', false),
+        ('pgrst_ddl_watch', 'supabase_admin', 'postgres', 'EXECUTE', true),
+        ('pgrst_ddl_watch', 'supabase_admin', 'supabase_admin', 'EXECUTE', false),
+        ('pgrst_drop_watch', 'supabase_admin', 'PUBLIC', 'EXECUTE', false),
+        ('pgrst_drop_watch', 'supabase_admin', 'postgres', 'EXECUTE', true),
+        ('pgrst_drop_watch', 'supabase_admin', 'supabase_admin', 'EXECUTE', false)
+    ),
+    actual as (
+      select event_trigger.evtname, grantor.rolname,
+             case when acl.grantee = 0 then 'PUBLIC' else grantee.rolname end,
+             acl.privilege_type, acl.is_grantable
+      from pg_event_trigger event_trigger
+      join pg_proc procedure on procedure.oid = event_trigger.evtfoid
+      cross join lateral aclexplode(procedure.proacl) acl
+      join pg_roles grantor on grantor.oid = acl.grantor
+      left join pg_roles grantee on grantee.oid = acl.grantee
+      where event_trigger.evtname in (
+        'issue_graphql_placeholder', 'issue_pg_cron_access',
+        'issue_pg_graphql_access', 'issue_pg_net_access',
+        'pgrst_ddl_watch', 'pgrst_drop_watch'
+      )
+    )
+    (select * from expected except select * from actual)
+    union all
+    (select * from actual except select * from expected)
+  ) then
+    raise exception 'managed event-trigger ACL fixture differs from live facts';
+  end if;
+end
+$$;
+SQL
+
 psql_admin -f "$migrations_dir/20260723000000_aro_163_staging_foundation.sql"
 
 psql_admin <<'SQL'
@@ -106,6 +156,22 @@ if psql_admin \
   -f "$migrations_dir/20260724010000_aro_169_node_enrollment.sql" \
   >/dev/null 2>&1; then
   echo "v3 apply unexpectedly accepted managed trigger function ACL drift" >&2
+  exit 1
+fi
+
+if psql_admin \
+  -c "begin; revoke grant option for execute on function extensions.pgrst_drop_watch() from postgres;" \
+  -f "$migrations_dir/20260724010000_aro_169_node_enrollment.sql" \
+  >/dev/null 2>&1; then
+  echo "v3 apply unexpectedly accepted managed trigger function grant-option drift" >&2
+  exit 1
+fi
+
+if psql_admin \
+  -c "begin; set role postgres; grant execute on function extensions.pgrst_drop_watch() to authenticated; reset role;" \
+  -f "$migrations_dir/20260724010000_aro_169_node_enrollment.sql" \
+  >/dev/null 2>&1; then
+  echo "v3 apply unexpectedly accepted managed trigger function grantor drift" >&2
   exit 1
 fi
 
@@ -569,7 +635,32 @@ psql_admin -c "
   drop type symphony_production.aro169_unexpected_type;
 " >/dev/null
 
-psql_admin -f "$migrations_dir/20260724010000_aro_169_node_enrollment.sql"
+psql_admin <<'SQL'
+update pg_proc procedure
+set proacl = reordered.proacl
+from lateral (
+  select array_agg(acl_item order by ordinal desc) as proacl
+  from unnest(procedure.proacl) with ordinality reordered_acl(acl_item, ordinal)
+) reordered
+where procedure.oid in (
+  'extensions.set_graphql_placeholder()'::regprocedure,
+  'extensions.grant_pg_cron_access()'::regprocedure,
+  'extensions.grant_pg_graphql_access()'::regprocedure,
+  'extensions.grant_pg_net_access()'::regprocedure,
+  'extensions.pgrst_ddl_watch()'::regprocedure,
+  'extensions.pgrst_drop_watch()'::regprocedure
+);
+
+create function public.pgrst_drop_watch()
+returns event_trigger
+language plpgsql
+as 'begin null; end';
+SQL
+
+PGOPTIONS="-c search_path=public,extensions,pg_catalog" \
+  psql_admin -f "$migrations_dir/20260724010000_aro_169_node_enrollment.sql"
+
+psql_admin -c "drop function public.pgrst_drop_watch();" >/dev/null
 
 provisioned="$(
   psql_admin -A -t -F '|' -c \

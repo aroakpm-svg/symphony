@@ -21,6 +21,10 @@ defmodule SymphonyElixir.NodeEnrollmentMigrationTest do
                        "../../../.github/workflows/node-enrollment-postgres.yml",
                        __DIR__
                      )
+  @catalog_identity_audit Path.expand(
+                            "../../docs/node_enrollment_catalog_identity_audit.md",
+                            __DIR__
+                          )
 
   test "requires contract v2 and publishes contract v3" do
     sql = File.read!(@migration)
@@ -41,7 +45,7 @@ defmodule SymphonyElixir.NodeEnrollmentMigrationTest do
     assert sql =~ "unsafe ARO-168 column/default/identity state"
     assert sql =~ "unsafe ARO-168 constraint state"
     assert sql =~ "pg_get_triggerdef(trigger_row.oid, true)"
-    assert sql =~ "procedure.oid::regprocedure::text"
+    refute sql =~ "procedure.oid::regprocedure::text"
     assert sql =~ "pg_get_indexdef(index_relation.oid)"
     assert sql =~ "unsafe ARO-168 sequence configuration"
     assert sql =~ "unsafe ARO-168 RLS policy state"
@@ -77,12 +81,23 @@ defmodule SymphonyElixir.NodeEnrollmentMigrationTest do
     refute sql =~ "extensions.digest(procedure.prosrc"
     assert sql =~ "actual.procost = 100"
     assert sql =~ "procedure.proconfig is null"
-    assert sql =~ "procedure.proacl is null"
+    assert sql =~ "pg_catalog.aclexplode(procedure.proacl)"
+    assert sql =~ "actual.function_acl = expected.function_acl"
+    assert sql =~ "pg_catalog.pg_proc:function:"
+    refute sql =~ "pg_describe_object("
     assert File.read!(@rollback) =~ "managed-event-trigger-inventory:"
+    refute File.read!(@rollback) =~ "pg_describe_object("
 
     fixture = File.read!(@managed_event_trigger_fixture)
     assert fixture =~ "alter event trigger pgrst_drop_watch owner to supabase_admin"
     assert fixture =~ "alter function extensions.pgrst_drop_watch() owner to supabase_admin"
+    assert fixture =~ "create role dashboard_user nologin"
+    assert fixture =~ "to postgres with grant option"
+    assert fixture =~ "to dashboard_user"
+
+    audit = File.read!(@catalog_identity_audit)
+    assert audit =~ "Must be canonicalized symmetrically"
+    assert audit =~ "Safety decisions whose identity text is diagnostic only"
 
     assert File.read!(@postgres_workflow) =~
              ~s(".github/fixtures/aro-169-supabase-managed-event-triggers.sql")
@@ -120,6 +135,11 @@ defmodule SymphonyElixir.NodeEnrollmentMigrationTest do
     assert lifecycle_script =~ "managed trigger owner drift"
     assert lifecycle_script =~ "managed trigger definition drift"
     assert lifecycle_script =~ "managed trigger function ACL drift"
+    assert lifecycle_script =~ "managed trigger function grant-option drift"
+    assert lifecycle_script =~ "managed trigger function grantor drift"
+    assert lifecycle_script =~ "managed event-trigger ACL fixture differs from live facts"
+    assert lifecycle_script =~ "array_agg(acl_item order by ordinal desc)"
+    assert lifecycle_script =~ "search_path=public,extensions,pg_catalog"
     assert lifecycle_script =~ "managed trigger function config drift"
     assert lifecycle_script =~ "managed trigger function cost drift"
     assert lifecycle_script =~ "managed_identity_extensions_path"

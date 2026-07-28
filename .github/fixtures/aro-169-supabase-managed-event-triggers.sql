@@ -1,4 +1,5 @@
 create role supabase_admin superuser nologin;
+create role dashboard_user nologin;
 
 create function extensions.grant_pg_cron_access() returns event_trigger
 language plpgsql
@@ -232,6 +233,44 @@ alter function extensions.grant_pg_net_access() owner to supabase_admin;
 alter function extensions.pgrst_ddl_watch() owner to supabase_admin;
 alter function extensions.pgrst_drop_watch() owner to supabase_admin;
 alter function extensions.set_graphql_placeholder() owner to supabase_admin;
+
+revoke all on function extensions.set_graphql_placeholder()
+  from supabase_admin;
+grant execute on function extensions.set_graphql_placeholder()
+  to supabase_admin;
+grant execute on function extensions.set_graphql_placeholder()
+  to postgres with grant option;
+
+revoke all on function extensions.grant_pg_graphql_access()
+  from supabase_admin;
+grant execute on function extensions.grant_pg_graphql_access()
+  to supabase_admin;
+grant execute on function extensions.grant_pg_graphql_access()
+  to postgres with grant option;
+
+revoke all on function extensions.pgrst_ddl_watch()
+  from supabase_admin;
+grant execute on function extensions.pgrst_ddl_watch()
+  to supabase_admin;
+grant execute on function extensions.pgrst_ddl_watch()
+  to postgres with grant option;
+
+revoke all on function extensions.pgrst_drop_watch()
+  from supabase_admin;
+grant execute on function extensions.pgrst_drop_watch()
+  to supabase_admin;
+grant execute on function extensions.pgrst_drop_watch()
+  to postgres with grant option;
+
+grant execute on function extensions.grant_pg_cron_access()
+  to dashboard_user;
+grant execute on function extensions.grant_pg_cron_access()
+  to supabase_admin with grant option;
+
+grant execute on function extensions.grant_pg_net_access()
+  to dashboard_user;
+grant execute on function extensions.grant_pg_net_access()
+  to supabase_admin with grant option;
 
 create event trigger issue_graphql_placeholder on sql_drop
   when tag in ('DROP EXTENSION')
