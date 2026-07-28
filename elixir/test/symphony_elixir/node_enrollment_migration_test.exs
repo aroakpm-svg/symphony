@@ -53,6 +53,15 @@ defmodule SymphonyElixir.NodeEnrollmentMigrationTest do
 
     assert lifecycle_script =~
              "v3 apply unexpectedly accepted drifted v2 authorization state"
+
+    assert lifecycle_script =~ "pgcrypto ACL fixture differs from live catalog facts"
+    assert lifecycle_script =~ "default pgcrypto ACL state"
+    assert lifecycle_script =~ "explicit-empty pgcrypto ACL state"
+    assert lifecycle_script =~ "extra pgcrypto ACL grant"
+    assert lifecycle_script =~ "pgcrypto grantee drift"
+    assert lifecycle_script =~ "pgcrypto grant-option drift"
+    assert lifecycle_script =~ "pgcrypto grantor/special-role drift"
+    assert lifecycle_script =~ "rollback unexpectedly accepted pgcrypto ACL grantee drift"
   end
 
   test "uses independent login credentials and stores only a verifier" do
@@ -60,6 +69,16 @@ defmodule SymphonyElixir.NodeEnrollmentMigrationTest do
 
     assert sql =~ "extensions.gen_random_bytes(32)"
     assert sql =~ "extensions.digest(generated_credential, 'sha256')"
+    assert sql =~
+             "<explicit>:706f737467726573>70736575646f>45584543555445>false,"
+
+    assert sql =~
+             "706f737467726573>726f6c653a64617368626f6172645f75736572>45584543555445>false,"
+
+    assert sql =~
+             "706f737467726573>726f6c653a706f737467726573>45584543555445>true"
+
+    refute sql =~ "and procedure.proacl is null"
     assert sql =~ "publication.puballtables"
     assert sql =~ "pg_publication_namespace"
     assert sql =~ "pg_publication_rel"
