@@ -18,6 +18,8 @@ create role service_role nologin;
 create schema symphony_production;
 SQL
 
+psql_admin -f "$root_dir/.github/fixtures/aro-169-supabase-managed-event-triggers.sql"
+
 psql_admin -f "$migrations_dir/20260723000000_aro_163_staging_foundation.sql"
 
 psql_admin <<'SQL'
@@ -73,6 +75,55 @@ drop event trigger aro169_grant_drift;
 drop function public.aro169_grant_drift();
 revoke usage on schema symphony_staging from service_role;
 SQL
+
+if psql_admin \
+  -c "begin; drop event trigger issue_pg_net_access; create event trigger issue_pg_net_access on ddl_command_end execute function extensions.pgrst_ddl_watch();" \
+  -f "$migrations_dir/20260724010000_aro_169_node_enrollment.sql" \
+  >/dev/null 2>&1; then
+  echo "v3 apply unexpectedly accepted a same-name managed trigger replacement" >&2
+  exit 1
+fi
+test "$(psql_admin -A -t -c "select to_regclass('symphony_staging.node_login_principals') is null;")" = "t"
+
+if psql_admin \
+  -c "begin; alter event trigger pgrst_ddl_watch owner to postgres;" \
+  -f "$migrations_dir/20260724010000_aro_169_node_enrollment.sql" \
+  >/dev/null 2>&1; then
+  echo "v3 apply unexpectedly accepted managed trigger owner drift" >&2
+  exit 1
+fi
+
+if psql_admin \
+  -c "begin; create or replace function extensions.pgrst_drop_watch() returns event_trigger language plpgsql as 'begin null; end';" \
+  -f "$migrations_dir/20260724010000_aro_169_node_enrollment.sql" \
+  >/dev/null 2>&1; then
+  echo "v3 apply unexpectedly accepted managed trigger definition drift" >&2
+  exit 1
+fi
+
+if psql_admin \
+  -c "begin; grant execute on function extensions.pgrst_drop_watch() to service_role;" \
+  -f "$migrations_dir/20260724010000_aro_169_node_enrollment.sql" \
+  >/dev/null 2>&1; then
+  echo "v3 apply unexpectedly accepted managed trigger function ACL drift" >&2
+  exit 1
+fi
+
+if psql_admin \
+  -c "begin; alter function extensions.pgrst_drop_watch() set search_path = pg_catalog;" \
+  -f "$migrations_dir/20260724010000_aro_169_node_enrollment.sql" \
+  >/dev/null 2>&1; then
+  echo "v3 apply unexpectedly accepted managed trigger function config drift" >&2
+  exit 1
+fi
+
+if psql_admin \
+  -c "begin; alter function extensions.pgrst_drop_watch() cost 101;" \
+  -f "$migrations_dir/20260724010000_aro_169_node_enrollment.sql" \
+  >/dev/null 2>&1; then
+  echo "v3 apply unexpectedly accepted managed trigger function cost drift" >&2
+  exit 1
+fi
 
 psql_admin -c "
   alter role symphony_staging_provisioner in database postgres
@@ -1336,6 +1387,38 @@ psql_admin -c "
 " >/dev/null &
 migration_lock_pid=$!
 sleep 1
+managed_identity_default="$(
+  psql_admin -A -t -c "
+    select format(
+      '%I.%I(%s)',
+      namespace.nspname,
+      procedure.proname,
+      pg_get_function_identity_arguments(procedure.oid)
+    )
+    from pg_proc procedure
+    join pg_namespace namespace on namespace.oid = procedure.pronamespace
+    where procedure.oid = 'extensions.pgrst_drop_watch()'::regprocedure;
+  "
+)"
+managed_identity_extensions_path="$(
+  psql_admin -A -t \
+    -c "set search_path = extensions, public;" \
+    -c "
+      select format(
+        '%I.%I(%s)',
+        namespace.nspname,
+        procedure.proname,
+        pg_get_function_identity_arguments(procedure.oid)
+      )
+      from pg_proc procedure
+      join pg_namespace namespace on namespace.oid = procedure.pronamespace
+      where namespace.nspname = 'extensions'
+        and procedure.proname = 'pgrst_drop_watch'
+        and procedure.pronargs = 0;
+    "
+)"
+test "$managed_identity_default" = "$managed_identity_extensions_path"
+test "$managed_identity_default" = "extensions.pgrst_drop_watch()"
 rollback_started_at="$(date +%s)"
 psql_admin -f "$migrations_dir/20260724010000_aro_169_node_enrollment.down.sql"
 rollback_elapsed="$(( $(date +%s) - rollback_started_at ))"

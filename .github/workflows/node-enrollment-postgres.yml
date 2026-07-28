@@ -4,6 +4,7 @@ on:
   workflow_dispatch:
   pull_request:
     paths:
+      - ".github/fixtures/aro-169-supabase-managed-event-triggers.sql"
       - ".github/scripts/test-node-enrollment.sh"
       - ".github/workflows/node-enrollment-postgres.yml"
       - "elixir/priv/symphony_migrations/**"
