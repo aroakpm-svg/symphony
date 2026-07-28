@@ -83,6 +83,10 @@ defmodule SymphonyElixir.NodeEnrollmentMigrationTest do
     assert sql =~ "procedure.proconfig is null"
     assert sql =~ "pg_catalog.aclexplode(procedure.proacl)"
     assert sql =~ "actual.function_acl = expected.function_acl"
+    assert sql =~ "encode(convert_to(grantor.rolname::text, 'UTF8'), 'hex')"
+    assert sql =~ ~s(collate "C")
+    refute sql =~ "grantor.rolname || '>'"
+    refute File.read!(@rollback) =~ "grantor.rolname || '>'"
 
     assert sql =~
              "case when procedure.proacl is null then '<default>' else '<explicit>:'"

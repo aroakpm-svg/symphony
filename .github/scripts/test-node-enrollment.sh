@@ -70,6 +70,38 @@ end
 $$;
 SQL
 
+psql_admin <<'SQL'
+create role "PUBLIC>EXECUTE>false,supabase_admin>postgres" nologin;
+create role "quote""slash\角色,>" nologin;
+
+do $$
+declare
+  old_a text := 'supabase_admin>PUBLIC>EXECUTE>false,supabase_admin>postgres>EXECUTE>true';
+  old_b text := 'supabase_admin>PUBLIC>EXECUTE>false,supabase_admin>postgres>EXECUTE>true';
+  encoded_a text;
+  encoded_b text;
+begin
+  encoded_a := encode(convert_to('PUBLIC', 'UTF8'), 'hex') || '>' ||
+    encode(convert_to('EXECUTE', 'UTF8'), 'hex') || '>false,' ||
+    encode(convert_to('postgres', 'UTF8'), 'hex') || '>' ||
+    encode(convert_to('EXECUTE', 'UTF8'), 'hex') || '>true';
+  encoded_b := encode(convert_to(
+      'PUBLIC>EXECUTE>false,supabase_admin>postgres', 'UTF8'
+    ), 'hex') || '>' || encode(convert_to('EXECUTE', 'UTF8'), 'hex') || '>true';
+
+  if old_a <> old_b or encoded_a = encoded_b then
+    raise exception 'ACL encoding collision regression failed';
+  end if;
+  if encode(convert_to('quote"slash\角色,>', 'UTF8'), 'hex') !~ '^[0-9a-f]+$' then
+    raise exception 'ACL UTF-8 encoding is not bytewise canonical';
+  end if;
+end
+$$;
+
+drop role "quote""slash\角色,>";
+drop role "PUBLIC>EXECUTE>false,supabase_admin>postgres";
+SQL
+
 psql_admin -f "$migrations_dir/20260723000000_aro_163_staging_foundation.sql"
 
 psql_admin <<'SQL'

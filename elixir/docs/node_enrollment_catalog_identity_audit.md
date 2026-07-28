@@ -40,6 +40,11 @@ decision or survives into the apply/rollback fingerprint.
   - Every ACL-bearing fingerprint, including enforcement trigger functions,
     must preserve the distinction between catalog-default `NULL`, an explicit
     empty ACL, and an explicit non-empty ACL.
+  - Role and privilege fields use lowercase UTF-8 hex before joining, making
+    delimiters unambiguous for quoted, Unicode, comma, quote, and backslash
+    role names.
+  - ACL rows sort the same encoded fields with explicit `C` collation, so
+    canonical order is independent of the database locale.
   - `pg_describe_object` dependency text must be replaced by catalog-derived,
     schema-qualified symbolic identities.
   - function return types must use catalog namespace/name, not
