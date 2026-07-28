@@ -1,5 +1,7 @@
 begin;
 
+set local search_path = pg_catalog;
+
 select pg_catalog.pg_advisory_xact_lock(
   pg_catalog.hashtextextended('aroak:symphony_staging:migrations', 0)
 );
@@ -111,7 +113,20 @@ begin
     select
       'schema:' || namespace.nspname || ':' ||
       pg_get_userbyid(namespace.nspowner) || ':' ||
-      coalesce(namespace.nspacl::text, '')
+      case when namespace.nspacl is null then '<default>' else '<explicit>:' ||
+        coalesce((
+          select string_agg(
+            encode(convert_to(grantor.rolname::text, 'UTF8'), 'hex') || '>' ||
+            encode(convert_to(case when acl.grantee = 0 then 'pseudo' else 'role:' || grantee.rolname::text end, 'UTF8'), 'hex') ||
+            '>' || encode(convert_to(acl.privilege_type, 'UTF8'), 'hex') || '>' || acl.is_grantable::text,
+            ',' order by encode(convert_to(grantor.rolname::text, 'UTF8'), 'hex') collate "C",
+                         encode(convert_to(case when acl.grantee = 0 then 'pseudo' else 'role:' || grantee.rolname::text end, 'UTF8'), 'hex') collate "C",
+                         encode(convert_to(acl.privilege_type, 'UTF8'), 'hex') collate "C", acl.is_grantable
+          )
+          from pg_catalog.aclexplode(namespace.nspacl) acl
+          join pg_roles grantor on grantor.oid = acl.grantor
+          left join pg_roles grantee on grantee.oid = acl.grantee
+        ), '<empty>') end
     from pg_namespace namespace
     where namespace.nspname in ('symphony_staging', 'symphony_production')
     union all
@@ -119,7 +134,19 @@ begin
       'default-acl:' || pg_get_userbyid(default_acl.defaclrole) || ':' ||
       coalesce(namespace.nspname, '') || ':' ||
       default_acl.defaclobjtype::text || ':' ||
-      default_acl.defaclacl::text
+      coalesce((
+        select string_agg(
+          encode(convert_to(grantor.rolname::text, 'UTF8'), 'hex') || '>' ||
+          encode(convert_to(case when acl.grantee = 0 then 'pseudo' else 'role:' || grantee.rolname::text end, 'UTF8'), 'hex') ||
+          '>' || encode(convert_to(acl.privilege_type, 'UTF8'), 'hex') || '>' || acl.is_grantable::text,
+          ',' order by encode(convert_to(grantor.rolname::text, 'UTF8'), 'hex') collate "C",
+                       encode(convert_to(case when acl.grantee = 0 then 'pseudo' else 'role:' || grantee.rolname::text end, 'UTF8'), 'hex') collate "C",
+                       encode(convert_to(acl.privilege_type, 'UTF8'), 'hex') collate "C", acl.is_grantable
+        )
+        from pg_catalog.aclexplode(default_acl.defaclacl) acl
+        join pg_roles grantor on grantor.oid = acl.grantor
+        left join pg_roles grantee on grantee.oid = acl.grantee
+      ), '<empty>')
     from pg_default_acl default_acl
     left join pg_namespace namespace
       on namespace.oid = default_acl.defaclnamespace
@@ -178,7 +205,9 @@ begin
         ) as function_identity,
         function_owner.rolname as function_owner,
         language.lanname as function_language,
-        procedure.prorettype::regtype::text as return_type,
+        pg_catalog.format(
+          '%I.%I', return_type_namespace.nspname, return_type.typname
+        ) as return_type,
         procedure.prokind::text, procedure.prosecdef,
         procedure.proleakproof, procedure.proisstrict,
         procedure.proretset, procedure.provolatile::text,
@@ -187,7 +216,20 @@ begin
         procedure.pronargs, procedure.pronargdefaults, procedure.proargtypes,
         procedure.proallargtypes, procedure.proargmodes,
         procedure.proargnames, procedure.proargdefaults,
-        procedure.protrftypes, procedure.proconfig, procedure.proacl,
+        procedure.protrftypes, procedure.proconfig,
+        case when procedure.proacl is null then '<default>' else '<explicit>:' || coalesce((
+          select string_agg(
+            encode(convert_to(grantor.rolname::text, 'UTF8'), 'hex') || '>' ||
+            encode(convert_to(case when acl.grantee = 0 then 'pseudo' else 'role:' || grantee.rolname::text end, 'UTF8'), 'hex') ||
+            '>' || encode(convert_to(acl.privilege_type, 'UTF8'), 'hex') || '>' || acl.is_grantable::text,
+            ',' order by encode(convert_to(grantor.rolname::text, 'UTF8'), 'hex') collate "C",
+                         encode(convert_to(case when acl.grantee = 0 then 'pseudo' else 'role:' || grantee.rolname::text end, 'UTF8'), 'hex') collate "C",
+                         encode(convert_to(acl.privilege_type, 'UTF8'), 'hex') collate "C", acl.is_grantable
+          )
+          from pg_catalog.aclexplode(procedure.proacl) acl
+          join pg_roles grantor on grantor.oid = acl.grantor
+          left join pg_roles grantee on grantee.oid = acl.grantee
+        ), '<empty>') end as function_acl,
         procedure.probin, procedure.prosqlbody,
         encode(
           pg_catalog.sha256(
@@ -198,35 +240,45 @@ begin
           as source_sha256,
         (
           select string_agg(
-            dependency.refclassid::regclass::text || ':' ||
-            pg_describe_object(
-              dependency.refclassid,
-              dependency.refobjid,
-              dependency.refobjsubid
-            ) || ':' || dependency.deptype::text,
-            ',' order by dependency.refclassid::regclass::text,
-                         dependency.refobjid, dependency.refobjsubid,
-                         dependency.deptype
+            case
+              when dependency.refclassid = 'pg_catalog.pg_language'::regclass then
+                'pg_catalog.pg_language:language:' ||
+                (select item.lanname from pg_language item
+                  where item.oid = dependency.refobjid)
+              when dependency.refclassid = 'pg_catalog.pg_namespace'::regclass then
+                'pg_catalog.pg_namespace:schema:' ||
+                (select item.nspname from pg_namespace item
+                  where item.oid = dependency.refobjid)
+              else 'unsupported'
+            end || ':' || dependency.deptype::text,
+            ',' order by dependency.refclassid, dependency.refobjid,
+                         dependency.refobjsubid, dependency.deptype
           )
           from pg_depend dependency
-          where dependency.classid = 'pg_proc'::regclass
+          where dependency.classid = 'pg_catalog.pg_proc'::regclass
             and dependency.objid = procedure.oid
             and dependency.objsubid = 0
         ) as function_dependencies,
         (
           select string_agg(
-            dependency.refclassid::regclass::text || ':' ||
-            pg_describe_object(
-              dependency.refclassid,
-              dependency.refobjid,
-              dependency.refobjsubid
-            ) || ':' || dependency.deptype::text,
-            ',' order by dependency.refclassid::regclass::text,
-                         dependency.refobjid, dependency.refobjsubid,
-                         dependency.deptype
+            case
+              when dependency.refclassid = 'pg_catalog.pg_proc'::regclass then
+                'pg_catalog.pg_proc:function:' ||
+                (select pg_catalog.format(
+                   '%I.%I(%s)', item_namespace.nspname, item.proname,
+                   pg_catalog.pg_get_function_identity_arguments(item.oid)
+                 )
+                   from pg_proc item
+                   join pg_namespace item_namespace
+                     on item_namespace.oid = item.pronamespace
+                  where item.oid = dependency.refobjid)
+              else 'unsupported'
+            end || ':' || dependency.deptype::text,
+            ',' order by dependency.refclassid, dependency.refobjid,
+                         dependency.refobjsubid, dependency.deptype
           )
           from pg_depend dependency
-          where dependency.classid = 'pg_event_trigger'::regclass
+          where dependency.classid = 'pg_catalog.pg_event_trigger'::regclass
             and dependency.objid = event_trigger.oid
             and dependency.objsubid = 0
         ) as trigger_dependencies
@@ -236,6 +288,9 @@ begin
       join pg_namespace namespace on namespace.oid = procedure.pronamespace
       join pg_roles function_owner on function_owner.oid = procedure.proowner
       join pg_language language on language.oid = procedure.prolang
+      join pg_type return_type on return_type.oid = procedure.prorettype
+      join pg_namespace return_type_namespace
+        on return_type_namespace.oid = return_type.typnamespace
     ) inventory
     union all
     select
@@ -244,12 +299,12 @@ begin
       managed_namespace.nspname || '.' || managed_relation.relname
     from pg_depend dependency
     join pg_class managed_relation
-      on dependency.refclassid = 'pg_class'::regclass
+      on dependency.refclassid = 'pg_catalog.pg_class'::regclass
      and dependency.refobjid = managed_relation.oid
     join pg_namespace managed_namespace
       on managed_namespace.oid = managed_relation.relnamespace
     join pg_rewrite rewrite
-      on dependency.classid = 'pg_rewrite'::regclass
+      on dependency.classid = 'pg_catalog.pg_rewrite'::regclass
      and dependency.objid = rewrite.oid
     join pg_class external_relation on external_relation.oid = rewrite.ev_class
     join pg_namespace external_namespace
@@ -293,9 +348,37 @@ begin
       pg_get_constraintdef(constraint_state.oid, true) || ':' ||
       coalesce((
         select string_agg(
-          dependency.refclassid::regclass::text || ':' ||
-          dependency.refobjid::text || ':' ||
-          dependency.refobjsubid::text || ':' ||
+          (
+            select pg_catalog.format(
+              '%I.%I', class_namespace.nspname, class_relation.relname
+            )
+            from pg_class class_relation
+            join pg_namespace class_namespace
+              on class_namespace.oid = class_relation.relnamespace
+            where class_relation.oid = dependency.refclassid
+          ) || ':' ||
+          case
+            when dependency.refclassid = 'pg_catalog.pg_class'::regclass then
+              (
+                select pg_catalog.format(
+                  '%I.%I%s',
+                  object_namespace.nspname,
+                  object_relation.relname,
+                  case
+                    when dependency.refobjsubid = 0 then ''
+                    else '.' || pg_catalog.quote_ident(object_attribute.attname)
+                  end
+                )
+                from pg_class object_relation
+                join pg_namespace object_namespace
+                  on object_namespace.oid = object_relation.relnamespace
+                left join pg_attribute object_attribute
+                  on object_attribute.attrelid = object_relation.oid
+                 and object_attribute.attnum = dependency.refobjsubid
+                where object_relation.oid = dependency.refobjid
+              )
+            else 'unsupported'
+          end || ':' ||
           dependency.deptype::text,
           ',' order by
             dependency.refclassid,
@@ -304,7 +387,7 @@ begin
             dependency.deptype
         )
         from pg_depend dependency
-        where dependency.classid = 'pg_constraint'::regclass
+        where dependency.classid = 'pg_catalog.pg_constraint'::regclass
           and dependency.objid = constraint_state.oid
           and dependency.objsubid = 0
       ), '')
@@ -321,16 +404,19 @@ begin
       )
     union all
     select
-      'external-procedure-dependency:' || external_procedure.oid::regprocedure::text ||
+      'external-procedure-dependency:' || pg_catalog.format(
+        '%I.%I(%s)', external_namespace.nspname, external_procedure.proname,
+        pg_catalog.pg_get_function_identity_arguments(external_procedure.oid)
+      ) ||
       ':' || managed_namespace.nspname || '.' || managed_relation.relname
     from pg_depend dependency
     join pg_class managed_relation
-      on dependency.refclassid = 'pg_class'::regclass
+      on dependency.refclassid = 'pg_catalog.pg_class'::regclass
      and dependency.refobjid = managed_relation.oid
     join pg_namespace managed_namespace
       on managed_namespace.oid = managed_relation.relnamespace
     join pg_proc external_procedure
-      on dependency.classid = 'pg_proc'::regclass
+      on dependency.classid = 'pg_catalog.pg_proc'::regclass
      and dependency.objid = external_procedure.oid
     join pg_namespace external_namespace
       on external_namespace.oid = external_procedure.pronamespace
@@ -349,22 +435,42 @@ begin
     where extension.extname = 'pgcrypto'
     union all
     select
-      'runtime-function:' || procedure.oid::regprocedure::text || ':' ||
+      'runtime-function:' || pg_catalog.format(
+        '%I.%I(%s)', namespace.nspname, procedure.proname,
+        pg_catalog.pg_get_function_identity_arguments(procedure.oid)
+      ) || ':' ||
       pg_get_userbyid(procedure.proowner) || ':' || language.lanname || ':' ||
-      procedure.prorettype::regtype::text || ':' ||
+      pg_catalog.format(
+        '%I.%I', return_type_namespace.nspname, return_type.typname
+      ) || ':' ||
       procedure.prosecdef::text || ':' || procedure.proleakproof::text || ':' ||
       procedure.proisstrict::text || ':' || procedure.provolatile::text || ':' ||
       procedure.proparallel::text || ':' || coalesce(procedure.proconfig::text, '') || ':' ||
-      coalesce(procedure.proacl::text, '') || ':' ||
+      case when procedure.proacl is null then '<default>' else '<explicit>:' || coalesce((
+        select string_agg(
+          encode(convert_to(grantor.rolname::text, 'UTF8'), 'hex') || '>' ||
+          encode(convert_to(case when acl.grantee = 0 then 'pseudo' else 'role:' || grantee.rolname::text end, 'UTF8'), 'hex') ||
+          '>' || encode(convert_to(acl.privilege_type, 'UTF8'), 'hex') || '>' || acl.is_grantable::text,
+          ',' order by encode(convert_to(grantor.rolname::text, 'UTF8'), 'hex') collate "C",
+                       encode(convert_to(case when acl.grantee = 0 then 'pseudo' else 'role:' || grantee.rolname::text end, 'UTF8'), 'hex') collate "C",
+                       encode(convert_to(acl.privilege_type, 'UTF8'), 'hex') collate "C", acl.is_grantable
+        )
+        from pg_catalog.aclexplode(procedure.proacl) acl
+        join pg_roles grantor on grantor.oid = acl.grantor
+        left join pg_roles grantee on grantee.oid = acl.grantee
+      ), '<empty>') end || ':' ||
       coalesce(procedure.probin, '') || ':' || procedure.prosrc || ':' ||
       extension.extname || ':' || dependency.deptype::text
     from pg_proc procedure
     join pg_namespace namespace on namespace.oid = procedure.pronamespace
+    join pg_type return_type on return_type.oid = procedure.prorettype
+    join pg_namespace return_type_namespace
+      on return_type_namespace.oid = return_type.typnamespace
     join pg_language language on language.oid = procedure.prolang
     join pg_depend dependency
-      on dependency.classid = 'pg_proc'::regclass
+      on dependency.classid = 'pg_catalog.pg_proc'::regclass
      and dependency.objid = procedure.oid
-     and dependency.refclassid = 'pg_extension'::regclass
+     and dependency.refclassid = 'pg_catalog.pg_extension'::regclass
     join pg_extension extension on extension.oid = dependency.refobjid
     where procedure.oid in (
       'extensions.gen_random_bytes(integer)'::regprocedure,
@@ -385,7 +491,10 @@ begin
     where namespace.nspname in ('symphony_staging', 'symphony_production')
     union all
     select
-      'inventory-function:' || procedure.oid::regprocedure::text
+      'inventory-function:' || pg_catalog.format(
+        '%I.%I(%s)', namespace.nspname, procedure.proname,
+        pg_catalog.pg_get_function_identity_arguments(procedure.oid)
+      )
     from pg_proc procedure
     join pg_namespace namespace on namespace.oid = procedure.pronamespace
     where namespace.nspname = 'symphony_staging'
@@ -412,7 +521,16 @@ begin
       pg_get_userbyid(conversion_object.conowner) || ':' ||
       conversion_object.conforencoding::text || ':' ||
       conversion_object.contoencoding::text || ':' ||
-      conversion_object.conproc::regprocedure::text || ':' ||
+      (
+        select pg_catalog.format(
+          '%I.%I(%s)', function_namespace.nspname, function_row.proname,
+          pg_catalog.pg_get_function_identity_arguments(function_row.oid)
+        )
+        from pg_proc function_row
+        join pg_namespace function_namespace
+          on function_namespace.oid = function_row.pronamespace
+        where function_row.oid = conversion_object.conproc
+      ) || ':' ||
       conversion_object.condefault::text
     from pg_conversion conversion_object
     join pg_namespace namespace on namespace.oid = conversion_object.connamespace
@@ -422,8 +540,20 @@ begin
       'inventory-opclass:' || opclass_object.opcname || ':' ||
       pg_get_userbyid(opclass_object.opcowner) || ':' ||
       access_method.amname || ':' ||
-      opclass_object.opcintype::regtype::text || ':' ||
-      opclass_object.opckeytype::regtype::text || ':' ||
+      (
+        select pg_catalog.format('%I.%I', type_namespace.nspname, type_row.typname)
+        from pg_type type_row
+        join pg_namespace type_namespace
+          on type_namespace.oid = type_row.typnamespace
+        where type_row.oid = opclass_object.opcintype
+      ) || ':' ||
+      case when opclass_object.opckeytype = 0 then '<none>' else (
+        select pg_catalog.format('%I.%I', type_namespace.nspname, type_row.typname)
+        from pg_type type_row
+        join pg_namespace type_namespace
+          on type_namespace.oid = type_row.typnamespace
+        where type_row.oid = opclass_object.opckeytype
+      ) end || ':' ||
       family_namespace.nspname || '.' || family.opfname || ':' ||
       opclass_object.opcdefault::text
     from pg_opclass opclass_object
@@ -477,27 +607,70 @@ begin
     union all
     select
       'inventory-ts-parser:' || parser.prsname || ':' ||
-      parser.prsstart::regprocedure::text || ':' ||
-      parser.prstoken::regprocedure::text || ':' ||
-      parser.prsend::regprocedure::text || ':' ||
-      parser.prsheadline::regprocedure::text || ':' ||
-      parser.prslextype::regprocedure::text
+      (select pg_catalog.format(
+         '%I.%I(%s)', n.nspname, p.proname,
+         pg_catalog.pg_get_function_identity_arguments(p.oid)
+       ) from pg_proc p join pg_namespace n on n.oid = p.pronamespace
+         where p.oid = parser.prsstart) || ':' ||
+      (select pg_catalog.format(
+         '%I.%I(%s)', n.nspname, p.proname,
+         pg_catalog.pg_get_function_identity_arguments(p.oid)
+       ) from pg_proc p join pg_namespace n on n.oid = p.pronamespace
+         where p.oid = parser.prstoken) || ':' ||
+      (select pg_catalog.format(
+         '%I.%I(%s)', n.nspname, p.proname,
+         pg_catalog.pg_get_function_identity_arguments(p.oid)
+       ) from pg_proc p join pg_namespace n on n.oid = p.pronamespace
+         where p.oid = parser.prsend) || ':' ||
+      case when parser.prsheadline = 0 then '<none>' else (select pg_catalog.format(
+         '%I.%I(%s)', n.nspname, p.proname,
+         pg_catalog.pg_get_function_identity_arguments(p.oid)
+       ) from pg_proc p join pg_namespace n on n.oid = p.pronamespace
+         where p.oid = parser.prsheadline) end || ':' ||
+      (select pg_catalog.format(
+         '%I.%I(%s)', n.nspname, p.proname,
+         pg_catalog.pg_get_function_identity_arguments(p.oid)
+       ) from pg_proc p join pg_namespace n on n.oid = p.pronamespace
+         where p.oid = parser.prslextype)
     from pg_ts_parser parser
     join pg_namespace namespace on namespace.oid = parser.prsnamespace
     where namespace.nspname = 'symphony_staging'
     union all
     select
       'inventory-ts-template:' || template.tmplname || ':' ||
-      coalesce(template.tmplinit::regprocedure::text, '') || ':' ||
-      template.tmpllexize::regprocedure::text
+      case when template.tmplinit = 0 then '<none>' else (select pg_catalog.format(
+         '%I.%I(%s)', n.nspname, p.proname,
+         pg_catalog.pg_get_function_identity_arguments(p.oid)
+       ) from pg_proc p join pg_namespace n on n.oid = p.pronamespace
+         where p.oid = template.tmplinit) end || ':' ||
+      (select pg_catalog.format(
+         '%I.%I(%s)', n.nspname, p.proname,
+         pg_catalog.pg_get_function_identity_arguments(p.oid)
+       ) from pg_proc p join pg_namespace n on n.oid = p.pronamespace
+         where p.oid = template.tmpllexize)
     from pg_ts_template template
     join pg_namespace namespace on namespace.oid = template.tmplnamespace
     where namespace.nspname = 'symphony_staging'
     union all
     select
-      'function:' || procedure.oid::regprocedure::text || ':' ||
+      'function:' || pg_catalog.format(
+        '%I.%I(%s)', namespace.nspname, procedure.proname,
+        pg_catalog.pg_get_function_identity_arguments(procedure.oid)
+      ) || ':' ||
       pg_get_userbyid(procedure.proowner) || ':' ||
-      coalesce(procedure.proacl::text, '') || ':' ||
+      case when procedure.proacl is null then '<default>' else '<explicit>:' || coalesce((
+        select string_agg(
+          encode(convert_to(grantor.rolname::text, 'UTF8'), 'hex') || '>' ||
+          encode(convert_to(case when acl.grantee = 0 then 'pseudo' else 'role:' || grantee.rolname::text end, 'UTF8'), 'hex') ||
+          '>' || encode(convert_to(acl.privilege_type, 'UTF8'), 'hex') || '>' || acl.is_grantable::text,
+          ',' order by encode(convert_to(grantor.rolname::text, 'UTF8'), 'hex') collate "C",
+                       encode(convert_to(case when acl.grantee = 0 then 'pseudo' else 'role:' || grantee.rolname::text end, 'UTF8'), 'hex') collate "C",
+                       encode(convert_to(acl.privilege_type, 'UTF8'), 'hex') collate "C", acl.is_grantable
+        )
+        from pg_catalog.aclexplode(procedure.proacl) acl
+        join pg_roles grantor on grantor.oid = acl.grantor
+        left join pg_roles grantee on grantee.oid = acl.grantee
+      ), '<empty>') end || ':' ||
       pg_get_functiondef(procedure.oid) as signature
     from pg_proc procedure
     join pg_namespace namespace on namespace.oid = procedure.pronamespace
@@ -531,7 +704,19 @@ begin
       relation.relforcerowsecurity::text || ':' ||
       relation.relispopulated::text || ':' ||
       coalesce(relation.reloptions::text, '') || ':' ||
-      coalesce(relation.relacl::text, '')
+      case when relation.relacl is null then '<default>' else '<explicit>:' || coalesce((
+        select string_agg(
+          encode(convert_to(grantor.rolname::text, 'UTF8'), 'hex') || '>' ||
+          encode(convert_to(case when acl.grantee = 0 then 'pseudo' else 'role:' || grantee.rolname::text end, 'UTF8'), 'hex') ||
+          '>' || encode(convert_to(acl.privilege_type, 'UTF8'), 'hex') || '>' || acl.is_grantable::text,
+          ',' order by encode(convert_to(grantor.rolname::text, 'UTF8'), 'hex') collate "C",
+                       encode(convert_to(case when acl.grantee = 0 then 'pseudo' else 'role:' || grantee.rolname::text end, 'UTF8'), 'hex') collate "C",
+                       encode(convert_to(acl.privilege_type, 'UTF8'), 'hex') collate "C", acl.is_grantable
+        )
+        from pg_catalog.aclexplode(relation.relacl) acl
+        join pg_roles grantor on grantor.oid = acl.grantor
+        left join pg_roles grantee on grantee.oid = acl.grantee
+      ), '<empty>') end
     from pg_class relation
     join pg_namespace namespace on namespace.oid = relation.relnamespace
     where namespace.nspname = 'symphony_staging'
@@ -552,7 +737,9 @@ begin
     union all
     select
       'sequence:' || relation.relname || ':' ||
-      sequence_state.seqtypid::regtype::text || ':' ||
+      pg_catalog.format(
+        '%I.%I', sequence_type_namespace.nspname, sequence_type.typname
+      ) || ':' ||
       sequence_state.seqstart::text || ':' ||
       sequence_state.seqincrement::text || ':' ||
       sequence_state.seqmin::text || ':' ||
@@ -562,6 +749,9 @@ begin
     from pg_sequence sequence_state
     join pg_class relation on relation.oid = sequence_state.seqrelid
     join pg_namespace namespace on namespace.oid = relation.relnamespace
+    join pg_type sequence_type on sequence_type.oid = sequence_state.seqtypid
+    join pg_namespace sequence_type_namespace
+      on sequence_type_namespace.oid = sequence_type.typnamespace
     where namespace.nspname = 'symphony_staging'
       and relation.relname = 'foundation_audit_events_audit_id_seq'
     union all
@@ -631,7 +821,19 @@ begin
         else quote_ident(collation_namespace.nspname) || '.' ||
              quote_ident(collation_object.collname)
       end || ':' ||
-      coalesce(attribute.attacl::text, '')
+      case when attribute.attacl is null then '<default>' else '<explicit>:' || coalesce((
+        select string_agg(
+          encode(convert_to(grantor.rolname::text, 'UTF8'), 'hex') || '>' ||
+          encode(convert_to(case when acl.grantee = 0 then 'pseudo' else 'role:' || grantee.rolname::text end, 'UTF8'), 'hex') ||
+          '>' || encode(convert_to(acl.privilege_type, 'UTF8'), 'hex') || '>' || acl.is_grantable::text,
+          ',' order by encode(convert_to(grantor.rolname::text, 'UTF8'), 'hex') collate "C",
+                       encode(convert_to(case when acl.grantee = 0 then 'pseudo' else 'role:' || grantee.rolname::text end, 'UTF8'), 'hex') collate "C",
+                       encode(convert_to(acl.privilege_type, 'UTF8'), 'hex') collate "C", acl.is_grantable
+        )
+        from pg_catalog.aclexplode(attribute.attacl) acl
+        join pg_roles grantor on grantor.oid = acl.grantor
+        left join pg_roles grantee on grantee.oid = acl.grantee
+      ), '<empty>') end
     from pg_class relation
     join pg_namespace namespace on namespace.oid = relation.relnamespace
     join pg_attribute attribute on attribute.attrelid = relation.oid
@@ -706,14 +908,36 @@ begin
       trigger_row.tgisinternal::text || ':' ||
       trigger_row.tgenabled::text || ':' ||
       pg_get_triggerdef(trigger_row.oid, true) || ':' ||
-      trigger_function.oid::regprocedure::text || ':' ||
+      pg_catalog.format(
+        '%I.%I(%s)', trigger_function_namespace.nspname,
+        trigger_function.proname,
+        pg_catalog.pg_get_function_identity_arguments(trigger_function.oid)
+      ) || ':' ||
       pg_get_userbyid(trigger_function.proowner) || ':' ||
-      coalesce(trigger_function.proacl::text, '') || ':' ||
+      coalesce(
+        '<explicit>:' || (
+        select string_agg(
+          encode(convert_to(grantor.rolname::text, 'UTF8'), 'hex') || '>' ||
+          encode(convert_to(case when acl.grantee = 0 then 'pseudo' else 'role:' || grantee.rolname::text end, 'UTF8'), 'hex') ||
+          '>' || encode(convert_to(acl.privilege_type, 'UTF8'), 'hex') || '>' || acl.is_grantable::text,
+          ',' order by encode(convert_to(grantor.rolname::text, 'UTF8'), 'hex') collate "C",
+                       encode(convert_to(case when acl.grantee = 0 then 'pseudo' else 'role:' || grantee.rolname::text end, 'UTF8'), 'hex') collate "C",
+                       encode(convert_to(acl.privilege_type, 'UTF8'), 'hex') collate "C", acl.is_grantable
+        )
+        from pg_catalog.aclexplode(trigger_function.proacl) acl
+        join pg_roles grantor on grantor.oid = acl.grantor
+        left join pg_roles grantee on grantee.oid = acl.grantee
+        ),
+        case when trigger_function.proacl is null
+             then '<default>' else '<explicit>:<empty>' end
+      ) || ':' ||
       pg_get_functiondef(trigger_function.oid)
     from pg_trigger trigger_row
     join pg_class relation on relation.oid = trigger_row.tgrelid
     join pg_namespace namespace on namespace.oid = relation.relnamespace
     join pg_proc trigger_function on trigger_function.oid = trigger_row.tgfoid
+    join pg_namespace trigger_function_namespace
+      on trigger_function_namespace.oid = trigger_function.pronamespace
     where namespace.nspname = 'symphony_staging'
       and relation.relname in (
         'node_login_principals',
@@ -739,7 +963,10 @@ begin
     join pg_namespace namespace on namespace.oid = relation.relnamespace
     where namespace.nspname in ('symphony_staging', 'symphony_production')
     union all
-    select 'production-function:' || procedure.oid::regprocedure::text || ':' ||
+    select 'production-function:' || pg_catalog.format(
+      '%I.%I(%s)', namespace.nspname, procedure.proname,
+      pg_catalog.pg_get_function_identity_arguments(procedure.oid)
+    ) || ':' ||
       pg_get_functiondef(procedure.oid)
     from pg_proc procedure
     join pg_namespace namespace on namespace.oid = procedure.pronamespace

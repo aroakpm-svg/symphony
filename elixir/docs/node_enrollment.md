@@ -80,6 +80,12 @@ six Supabase-managed triggers `issue_graphql_placeholder`,
 `pgrst_ddl_watch`, and `pgrst_drop_watch`. Their names, events, enabled state,
 tags, function identities and owners, complete function definitions, config,
 ACLs, and dependency identities must match the pinned canonical inventory.
+Function ACLs are compared as a sorted closed-world set of catalog-resolved
+grantor, grantee (including `PUBLIC`), privilege, and grant-option rows from
+`aclexplode`; raw `aclitem[]` order is not significant. Function, return-type,
+and dependency identities are built from catalog namespaces and names, so
+`search_path`, visibility, same-name shadow objects, and database-local OIDs
+cannot change the apply, manifest, or rollback fingerprint.
 Unknown triggers and any same-name or function drift fail closed. The same
 inventory is rechecked before manifest capture and fingerprinted for rollback
 and reapply.

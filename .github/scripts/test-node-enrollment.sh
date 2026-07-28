@@ -20,6 +20,88 @@ SQL
 
 psql_admin -f "$root_dir/.github/fixtures/aro-169-supabase-managed-event-triggers.sql"
 
+psql_admin <<'SQL'
+do $$
+begin
+  if exists (
+    with expected(trigger_name, grantor, grantee, privilege_type, is_grantable) as (
+      values
+        ('issue_graphql_placeholder', 'supabase_admin', 'pseudo', 'EXECUTE', false),
+        ('issue_graphql_placeholder', 'supabase_admin', 'role:postgres', 'EXECUTE', true),
+        ('issue_graphql_placeholder', 'supabase_admin', 'role:supabase_admin', 'EXECUTE', false),
+        ('issue_pg_cron_access', 'supabase_admin', 'pseudo', 'EXECUTE', false),
+        ('issue_pg_cron_access', 'supabase_admin', 'role:dashboard_user', 'EXECUTE', false),
+        ('issue_pg_cron_access', 'supabase_admin', 'role:supabase_admin', 'EXECUTE', true),
+        ('issue_pg_graphql_access', 'supabase_admin', 'pseudo', 'EXECUTE', false),
+        ('issue_pg_graphql_access', 'supabase_admin', 'role:postgres', 'EXECUTE', true),
+        ('issue_pg_graphql_access', 'supabase_admin', 'role:supabase_admin', 'EXECUTE', false),
+        ('issue_pg_net_access', 'supabase_admin', 'pseudo', 'EXECUTE', false),
+        ('issue_pg_net_access', 'supabase_admin', 'role:dashboard_user', 'EXECUTE', false),
+        ('issue_pg_net_access', 'supabase_admin', 'role:supabase_admin', 'EXECUTE', true),
+        ('pgrst_ddl_watch', 'supabase_admin', 'pseudo', 'EXECUTE', false),
+        ('pgrst_ddl_watch', 'supabase_admin', 'role:postgres', 'EXECUTE', true),
+        ('pgrst_ddl_watch', 'supabase_admin', 'role:supabase_admin', 'EXECUTE', false),
+        ('pgrst_drop_watch', 'supabase_admin', 'pseudo', 'EXECUTE', false),
+        ('pgrst_drop_watch', 'supabase_admin', 'role:postgres', 'EXECUTE', true),
+        ('pgrst_drop_watch', 'supabase_admin', 'role:supabase_admin', 'EXECUTE', false)
+    ),
+    actual as (
+      select event_trigger.evtname, grantor.rolname,
+             case when acl.grantee = 0 then 'pseudo' else 'role:' || grantee.rolname end,
+             acl.privilege_type, acl.is_grantable
+      from pg_event_trigger event_trigger
+      join pg_proc procedure on procedure.oid = event_trigger.evtfoid
+      cross join lateral aclexplode(procedure.proacl) acl
+      join pg_roles grantor on grantor.oid = acl.grantor
+      left join pg_roles grantee on grantee.oid = acl.grantee
+      where event_trigger.evtname in (
+        'issue_graphql_placeholder', 'issue_pg_cron_access',
+        'issue_pg_graphql_access', 'issue_pg_net_access',
+        'pgrst_ddl_watch', 'pgrst_drop_watch'
+      )
+    )
+    (select * from expected except select * from actual)
+    union all
+    (select * from actual except select * from expected)
+  ) then
+    raise exception 'managed event-trigger ACL fixture differs from live facts';
+  end if;
+end
+$$;
+SQL
+
+psql_admin <<'SQL'
+create role "PUBLIC>EXECUTE>false,supabase_admin>postgres" nologin;
+create role "quote""slash\角色,>" nologin;
+
+do $$
+declare
+  old_a text := 'supabase_admin>PUBLIC>EXECUTE>false,supabase_admin>postgres>EXECUTE>true';
+  old_b text := 'supabase_admin>PUBLIC>EXECUTE>false,supabase_admin>postgres>EXECUTE>true';
+  encoded_a text;
+  encoded_b text;
+begin
+  encoded_a := encode(convert_to('PUBLIC', 'UTF8'), 'hex') || '>' ||
+    encode(convert_to('EXECUTE', 'UTF8'), 'hex') || '>false,' ||
+    encode(convert_to('postgres', 'UTF8'), 'hex') || '>' ||
+    encode(convert_to('EXECUTE', 'UTF8'), 'hex') || '>true';
+  encoded_b := encode(convert_to(
+      'PUBLIC>EXECUTE>false,supabase_admin>postgres', 'UTF8'
+    ), 'hex') || '>' || encode(convert_to('EXECUTE', 'UTF8'), 'hex') || '>true';
+
+  if old_a <> old_b or encoded_a = encoded_b then
+    raise exception 'ACL encoding collision regression failed';
+  end if;
+  if encode(convert_to('quote"slash\角色,>', 'UTF8'), 'hex') !~ '^[0-9a-f]+$' then
+    raise exception 'ACL UTF-8 encoding is not bytewise canonical';
+  end if;
+end
+$$;
+
+drop role "quote""slash\角色,>";
+drop role "PUBLIC>EXECUTE>false,supabase_admin>postgres";
+SQL
+
 psql_admin -f "$migrations_dir/20260723000000_aro_163_staging_foundation.sql"
 
 psql_admin <<'SQL'
@@ -106,6 +188,33 @@ if psql_admin \
   -f "$migrations_dir/20260724010000_aro_169_node_enrollment.sql" \
   >/dev/null 2>&1; then
   echo "v3 apply unexpectedly accepted managed trigger function ACL drift" >&2
+  exit 1
+fi
+
+psql_admin -c 'create role "PUBLIC" nologin;' >/dev/null
+if psql_admin \
+  -c 'begin; set local role supabase_admin; revoke execute on function extensions.pgrst_drop_watch() from public; grant execute on function extensions.pgrst_drop_watch() to "PUBLIC";' \
+  -f "$migrations_dir/20260724010000_aro_169_node_enrollment.sql" \
+  >/dev/null 2>&1; then
+  echo 'v3 apply unexpectedly conflated pseudo-PUBLIC with role "PUBLIC"' >&2
+  exit 1
+fi
+test "$(psql_admin -A -t -c "select to_regclass('symphony_staging.node_login_principals') is null;")" = "t"
+psql_admin -c 'drop role "PUBLIC";' >/dev/null
+
+if psql_admin \
+  -c "begin; revoke grant option for execute on function extensions.pgrst_drop_watch() from postgres;" \
+  -f "$migrations_dir/20260724010000_aro_169_node_enrollment.sql" \
+  >/dev/null 2>&1; then
+  echo "v3 apply unexpectedly accepted managed trigger function grant-option drift" >&2
+  exit 1
+fi
+
+if psql_admin \
+  -c "begin; set role postgres; grant execute on function extensions.pgrst_drop_watch() to authenticated; reset role;" \
+  -f "$migrations_dir/20260724010000_aro_169_node_enrollment.sql" \
+  >/dev/null 2>&1; then
+  echo "v3 apply unexpectedly accepted managed trigger function grantor drift" >&2
   exit 1
 fi
 
@@ -569,7 +678,60 @@ psql_admin -c "
   drop type symphony_production.aro169_unexpected_type;
 " >/dev/null
 
-psql_admin -f "$migrations_dir/20260724010000_aro_169_node_enrollment.sql"
+psql_admin <<'SQL'
+update pg_proc procedure
+set proacl = (
+  select array_agg(acl_item order by ordinal desc) as proacl
+  from unnest(procedure.proacl) with ordinality reordered_acl(acl_item, ordinal)
+)
+where procedure.oid in (
+  'extensions.set_graphql_placeholder()'::regprocedure,
+  'extensions.grant_pg_cron_access()'::regprocedure,
+  'extensions.grant_pg_graphql_access()'::regprocedure,
+  'extensions.grant_pg_net_access()'::regprocedure,
+  'extensions.pgrst_ddl_watch()'::regprocedure,
+  'extensions.pgrst_drop_watch()'::regprocedure
+);
+
+create function public.pgrst_drop_watch()
+returns event_trigger
+language plpgsql
+as 'begin null; end';
+create table public.pg_proc (shadow text);
+create table public.pg_namespace (shadow text);
+create table public.pg_language (shadow text);
+SQL
+
+PGOPTIONS="-c search_path=public,extensions,pg_catalog" \
+  psql_admin -f "$migrations_dir/20260724010000_aro_169_node_enrollment.sql"
+
+psql_admin -c "drop function public.pgrst_drop_watch();" >/dev/null
+
+psql_admin <<'SQL'
+update pg_namespace namespace
+set nspacl = (
+  select array_agg(acl_item order by ordinal desc)
+  from unnest(namespace.nspacl) with ordinality reordered_acl(acl_item, ordinal)
+)
+where namespace.nspname in ('symphony_staging', 'symphony_production')
+  and pg_catalog.cardinality(namespace.nspacl) > 1;
+
+update pg_default_acl default_acl
+set defaclacl = (
+  select array_agg(acl_item order by ordinal desc)
+  from unnest(default_acl.defaclacl) with ordinality
+    reordered_acl(acl_item, ordinal)
+)
+where pg_catalog.cardinality(default_acl.defaclacl) > 1
+  and pg_get_userbyid(default_acl.defaclrole) = 'postgres'
+  and (
+    default_acl.defaclnamespace = 0
+    or default_acl.defaclnamespace in (
+      'symphony_staging'::regnamespace,
+      'symphony_production'::regnamespace
+    )
+  );
+SQL
 
 provisioned="$(
   psql_admin -A -t -F '|' -c \
@@ -1127,6 +1289,54 @@ psql_admin -c "
 " >/dev/null
 
 psql_admin -c "
+  update pg_proc
+  set proacl = '{}'::aclitem[]
+  where oid = 'extensions.digest(text,text)'::regprocedure;
+" >/dev/null
+if psql_admin -f "$migrations_dir/20260724010000_aro_169_node_enrollment.down.sql" \
+  >/dev/null 2>&1; then
+  echo "rollback unexpectedly treated an explicit empty ACL as the default ACL" >&2
+  exit 1
+fi
+psql_admin -c "
+  update pg_proc
+  set proacl = null
+  where oid = 'extensions.digest(text,text)'::regprocedure;
+" >/dev/null
+
+psql_admin -c "
+  update pg_proc
+  set proacl = null
+  where oid = 'symphony_staging.enforce_node_transition()'::regprocedure;
+" >/dev/null
+if psql_admin -f "$migrations_dir/20260724010000_aro_169_node_enrollment.down.sql" \
+  >/dev/null 2>&1; then
+  echo "rollback unexpectedly accepted default trigger-function ACL drift" >&2
+  exit 1
+fi
+psql_admin -c "
+  update pg_proc
+  set proacl = '{}'::aclitem[]
+  where oid = 'symphony_staging.enforce_node_transition()'::regprocedure;
+" >/dev/null
+if psql_admin -f "$migrations_dir/20260724010000_aro_169_node_enrollment.down.sql" \
+  >/dev/null 2>&1; then
+  echo "rollback unexpectedly accepted explicit-empty trigger-function ACL drift" >&2
+  exit 1
+fi
+psql_admin -c "
+  update pg_proc procedure
+  set proacl = array[
+    pg_catalog.format(
+      '%s=X/%s',
+      pg_get_userbyid(procedure.proowner),
+      pg_get_userbyid(procedure.proowner)
+    )::aclitem
+  ]
+  where oid = 'symphony_staging.enforce_node_transition()'::regprocedure;
+" >/dev/null
+
+psql_admin -c "
   alter table symphony_staging.node_lifecycle_operations
     alter column operation_type type text collate pg_catalog.\"C\";
 " >/dev/null
@@ -1420,7 +1630,8 @@ managed_identity_extensions_path="$(
 test "$managed_identity_default" = "$managed_identity_extensions_path"
 test "$managed_identity_default" = "extensions.pgrst_drop_watch()"
 rollback_started_at="$(date +%s)"
-psql_admin -f "$migrations_dir/20260724010000_aro_169_node_enrollment.down.sql"
+PGOPTIONS="-c search_path=public,extensions,pg_catalog" \
+  psql_admin -f "$migrations_dir/20260724010000_aro_169_node_enrollment.down.sql"
 rollback_elapsed="$(( $(date +%s) - rollback_started_at ))"
 wait "$migration_lock_pid"
 if [ "$rollback_elapsed" -lt 2 ]; then
@@ -1431,6 +1642,7 @@ fi
 test "$(psql_admin -A -t -c "select contract_version from symphony_staging.contract_versions where contract_name = 'node-identity-routing-foundation';")" = "2"
 test "$(psql_admin -A -t -c "select has_table_privilege('symphony_staging_provisioner', 'symphony_staging.nodes', 'SELECT,INSERT,UPDATE');")" = "t"
 test "$(psql_admin -A -t -c "select count(*) from pg_policies where schemaname = 'symphony_staging' and policyname in ('provisioner_manage_nodes', 'provisioner_manage_node_bindings', 'provisioner_manage_routing_assignments') and roles = array['symphony_staging_provisioner']::name[];")" = "3"
-psql_admin -f "$migrations_dir/20260724010000_aro_169_node_enrollment.sql"
+PGOPTIONS="-c search_path=public,extensions,pg_catalog" \
+  psql_admin -f "$migrations_dir/20260724010000_aro_169_node_enrollment.sql"
 
 echo "ARO-169 disposable PostgreSQL lifecycle passed without printing credentials"
