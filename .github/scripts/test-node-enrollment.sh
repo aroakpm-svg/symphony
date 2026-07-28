@@ -28,7 +28,7 @@ SQL
 }
 
 psql_root <<'SQL'
-create role postgres login nosuperuser createrole createdb replication bypassrls
+create role postgres login superuser createrole createdb replication bypassrls
   password 'disposable';
 alter database postgres owner to postgres;
 SQL
@@ -167,13 +167,6 @@ drop role "PUBLIC>EXECUTE>false,supabase_admin>postgres";
 SQL
 
 psql_admin -f "$migrations_dir/20260723000000_aro_163_staging_foundation.sql"
-
-psql_root <<'SQL'
-set role supabase_admin;
-grant symphony_staging_runtime, symphony_staging_provisioner to postgres
-  with admin option, inherit false, set false;
-reset role;
-SQL
 
 psql_admin <<'SQL'
 delete from symphony_staging.contract_versions
@@ -873,6 +866,15 @@ as 'begin null; end';
 create table public.pg_proc (shadow text);
 create table public.pg_namespace (shadow text);
 create table public.pg_language (shadow text);
+SQL
+
+psql_root <<'SQL'
+set role supabase_admin;
+grant symphony_staging_runtime, symphony_staging_provisioner to postgres
+  with admin option, inherit false, set false;
+reset role;
+alter role postgres
+  nosuperuser createrole createdb replication bypassrls;
 SQL
 
 test "$(psql_admin -A -t -c "select current_setting('is_superuser');")" = "off"
