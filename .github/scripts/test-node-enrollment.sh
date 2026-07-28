@@ -192,22 +192,12 @@ alter role symphony_staging_provisioner
   set search_path = pg_catalog, symphony_staging;
 SQL
 
-psql_admin -c "
-  select granted_role.rolname as granted_role,
-         member_role.rolname as member_role,
-         grantor_role.rolname as grantor_role,
-         membership.admin_option,
-         membership.inherit_option,
-         membership.set_option
-  from pg_auth_members membership
-  join pg_roles granted_role on granted_role.oid = membership.roleid
-  join pg_roles member_role on member_role.oid = membership.member
-  join pg_roles grantor_role on grantor_role.oid = membership.grantor
-  where granted_role.rolname in (
-    'symphony_staging_runtime',
-    'symphony_staging_provisioner'
-  );
-"
+psql_root <<'SQL'
+revoke symphony_staging_runtime, symphony_staging_provisioner from postgres;
+grant symphony_staging_runtime, symphony_staging_provisioner to postgres
+  with admin false, inherit true, set true
+  granted by postgres;
+SQL
 
 psql_admin -f "$migrations_dir/20260724000000_aro_168_staging_reconciliation.sql"
 
