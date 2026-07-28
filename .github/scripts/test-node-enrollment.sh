@@ -4,12 +4,21 @@ set -euo pipefail
 root_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 migrations_dir="$root_dir/elixir/priv/symphony_migrations"
 admin_url="${TEST_DATABASE_URL:?TEST_DATABASE_URL is required}"
+root_url="${TEST_ROOT_DATABASE_URL:?TEST_ROOT_DATABASE_URL is required}"
 
 psql_admin() {
   psql -X -q -v ON_ERROR_STOP=1 -d "$admin_url" "$@"
 }
 
+psql_root() {
+  psql -X -q -v ON_ERROR_STOP=1 -d "$root_url" "$@"
+}
+
 set_pgcrypto_live_acl() {
+  psql_root <<'SQL'
+alter function extensions.gen_random_bytes(integer) owner to postgres;
+alter function extensions.digest(text, text) owner to postgres;
+SQL
   psql_admin <<'SQL'
 grant execute on function extensions.gen_random_bytes(integer),
   extensions.digest(text, text) to dashboard_user;
@@ -17,6 +26,12 @@ grant execute on function extensions.gen_random_bytes(integer),
   extensions.digest(text, text) to postgres with grant option;
 SQL
 }
+
+psql_root <<'SQL'
+create role postgres login superuser createrole createdb replication bypassrls
+  password 'disposable';
+alter database postgres owner to postgres;
+SQL
 
 psql_admin <<'SQL'
 create schema extensions;
@@ -27,7 +42,7 @@ create role service_role nologin;
 create schema symphony_production;
 SQL
 
-psql_admin -f "$root_dir/.github/fixtures/aro-169-supabase-managed-event-triggers.sql"
+psql_root -f "$root_dir/.github/fixtures/aro-169-supabase-managed-event-triggers.sql"
 set_pgcrypto_live_acl
 
 psql_admin <<'SQL'
@@ -177,9 +192,28 @@ alter role symphony_staging_provisioner
   set search_path = pg_catalog, symphony_staging;
 SQL
 
+psql_root <<'SQL'
+-- Model the hosted control plane's canonical foundation grantor identity. This
+-- disposable bootstrap step is never executed by the product migration.
+update pg_catalog.pg_auth_members
+set grantor = (select oid from pg_catalog.pg_roles where rolname = 'postgres')
+where roleid in (
+    select oid
+    from pg_catalog.pg_roles
+    where rolname in (
+      'symphony_staging_runtime',
+      'symphony_staging_provisioner'
+    )
+  )
+  and member = (select oid from pg_catalog.pg_roles where rolname = 'postgres')
+  and grantor = (
+    select oid from pg_catalog.pg_roles where rolname = 'aro169_ci_root'
+  );
+SQL
+
 psql_admin -f "$migrations_dir/20260724000000_aro_168_staging_reconciliation.sql"
 
-psql_admin <<'SQL'
+psql_root <<'SQL'
 create function public.aro169_grant_drift()
 returns event_trigger
 language plpgsql
@@ -201,13 +235,13 @@ if psql_admin -f "$migrations_dir/20260724010000_aro_169_node_enrollment.sql" \
   exit 1
 fi
 test "$(psql_admin -A -t -c "select to_regclass('symphony_staging.node_login_principals') is null;")" = "t"
-psql_admin <<'SQL'
+psql_root <<'SQL'
 drop event trigger aro169_grant_drift;
 drop function public.aro169_grant_drift();
 revoke usage on schema symphony_staging from service_role;
 SQL
 
-if psql_admin \
+if psql_root \
   -c "begin; drop event trigger issue_pg_net_access; create event trigger issue_pg_net_access on ddl_command_end execute function extensions.pgrst_ddl_watch();" \
   -f "$migrations_dir/20260724010000_aro_169_node_enrollment.sql" \
   >/dev/null 2>&1; then
@@ -216,7 +250,7 @@ if psql_admin \
 fi
 test "$(psql_admin -A -t -c "select to_regclass('symphony_staging.node_login_principals') is null;")" = "t"
 
-if psql_admin \
+if psql_root \
   -c "begin; alter event trigger pgrst_ddl_watch owner to postgres;" \
   -f "$migrations_dir/20260724010000_aro_169_node_enrollment.sql" \
   >/dev/null 2>&1; then
@@ -224,7 +258,7 @@ if psql_admin \
   exit 1
 fi
 
-if psql_admin \
+if psql_root \
   -c "begin; create or replace function extensions.pgrst_drop_watch() returns event_trigger language plpgsql as 'begin null; end';" \
   -f "$migrations_dir/20260724010000_aro_169_node_enrollment.sql" \
   >/dev/null 2>&1; then
@@ -232,7 +266,7 @@ if psql_admin \
   exit 1
 fi
 
-if psql_admin \
+if psql_root \
   -c "begin; grant execute on function extensions.pgrst_drop_watch() to service_role;" \
   -f "$migrations_dir/20260724010000_aro_169_node_enrollment.sql" \
   >/dev/null 2>&1; then
@@ -773,7 +807,7 @@ if psql_admin -f "$migrations_dir/20260724010000_aro_169_node_enrollment.sql" \
   echo "v3 apply unexpectedly accepted an extra v2 contract row" >&2
   exit 1
 fi
-psql_admin -c "
+psql_root -c "
   delete from symphony_staging.contract_versions
   where contract_name = 'aro169-unexpected-contract';
   alter table symphony_staging.node_bindings disable trigger all;
@@ -785,7 +819,7 @@ if psql_admin -f "$migrations_dir/20260724010000_aro_169_node_enrollment.sql" \
   echo "v3 apply unexpectedly accepted disabled internal FK triggers" >&2
   exit 1
 fi
-psql_admin -c "
+psql_root -c "
   alter table symphony_staging.node_bindings enable trigger all;
   alter table symphony_staging.foundation_audit_events set unlogged;
 " >/dev/null
@@ -814,7 +848,7 @@ if psql_admin -f "$migrations_dir/20260724010000_aro_169_node_enrollment.sql" \
   echo "v3 apply unexpectedly accepted rewrite-rule drift" >&2
   exit 1
 fi
-psql_admin -c "
+psql_root -c "
   drop rule aro169_nodes_noop on symphony_staging.nodes;
   create type symphony_production.aro169_unexpected_type as enum ('drift');
 " >/dev/null
@@ -827,7 +861,7 @@ psql_admin -c "
   drop type symphony_production.aro169_unexpected_type;
 " >/dev/null
 
-psql_admin <<'SQL'
+psql_root <<'SQL'
 update pg_proc procedure
 set proacl = (
   select array_agg(acl_item order by ordinal desc) as proacl
@@ -853,12 +887,51 @@ create table public.pg_namespace (shadow text);
 create table public.pg_language (shadow text);
 SQL
 
+psql_root <<'SQL'
+set role supabase_admin;
+grant symphony_staging_runtime, symphony_staging_provisioner to postgres
+  with admin option, inherit false, set false;
+reset role;
+-- Supabase owns this managed grant edge; pin that recorded catalog identity in
+-- the disposable fixture before dropping the migration role's superuser bit.
+update pg_catalog.pg_auth_members
+set grantor = (
+  select oid from pg_catalog.pg_roles where rolname = 'supabase_admin'
+)
+where roleid in (
+    select oid
+    from pg_catalog.pg_roles
+    where rolname in (
+      'symphony_staging_runtime',
+      'symphony_staging_provisioner'
+    )
+  )
+  and member = (select oid from pg_catalog.pg_roles where rolname = 'postgres')
+  and grantor = (
+    select oid from pg_catalog.pg_roles where rolname = 'aro169_ci_root'
+  )
+  and admin_option
+  and not inherit_option
+  and not set_option;
+alter role postgres
+  nosuperuser createrole createdb replication bypassrls;
+SQL
+
+test "$(psql_admin -A -t -c "select current_setting('is_superuser');")" = "off"
+if psql_admin -c "
+  begin;
+  lock table pg_catalog.pg_proc in share mode;
+" >/dev/null 2>&1; then
+  echo "hosted-like migration role unexpectedly locked pg_catalog.pg_proc" >&2
+  exit 1
+fi
+
 PGOPTIONS="-c search_path=public,extensions,pg_catalog" \
   psql_admin -f "$migrations_dir/20260724010000_aro_169_node_enrollment.sql"
 
 psql_admin -c "drop function public.pgrst_drop_watch();" >/dev/null
 
-psql_admin <<'SQL'
+psql_root <<'SQL'
 update pg_namespace namespace
 set nspacl = (
   select array_agg(acl_item order by ordinal desc)
@@ -903,7 +976,7 @@ test "$credential_returned" = "t"
 test -n "$node_id"
 test -n "$login_role"
 test -n "$node_credential"
-test "$(psql_admin -A -t -c "select rolpassword like 'SCRAM-SHA-256\\$%' from pg_authid where rolname = '$login_role';")" = "t"
+test "$(psql_root -A -t -c "select rolpassword like 'SCRAM-SHA-256\\$%' from pg_authid where rolname = '$login_role';")" = "t"
 test "$(psql_admin -A -t -c "select target_node_id = '$node_id' and routing_policy = 'exclusive' from symphony_staging.routing_assignments where issue_id = 'ARO-169-disposable';")" = "t"
 
 replayed="$(
@@ -1086,7 +1159,7 @@ create role aro169_disposable_inherit_only nologin inherit;
 grant symphony_staging_provisioner to aro169_disposable_inherit_only
   with inherit true, set false;
 SQL
-if psql_admin -c "
+if psql_root -c "
   set session authorization aro169_disposable_inherit_only;
   select * from symphony_staging.retire_node_instance(
     '16900000-0000-4000-8000-000000000104',
@@ -1097,7 +1170,7 @@ if psql_admin -c "
   echo "inherit-only provisioner member bypassed SET capability" >&2
   exit 1
 fi
-if psql_admin -c "
+if psql_root -c "
   set session authorization aro169_disposable_inherit_only;
   update symphony_staging.node_login_principals
   set revoked_at = clock_timestamp()
@@ -1106,7 +1179,7 @@ if psql_admin -c "
   echo "inherit-only provisioner member bypassed lifecycle table boundary" >&2
   exit 1
 fi
-if psql_admin -c "
+if psql_root -c "
   set session authorization aro169_disposable_inherit_only;
   update symphony_staging.nodes
   set credential_version = credential_version + 1
@@ -1120,7 +1193,7 @@ revoke symphony_staging_provisioner from aro169_disposable_inherit_only;
 drop role aro169_disposable_inherit_only;
 SQL
 
-psql_admin <<SQL
+psql_root <<SQL
 create role aro169_disposable_bootstrap nologin noinherit;
 grant symphony_staging_provisioner to aro169_disposable_bootstrap
   with inherit false, set true;
@@ -1205,7 +1278,7 @@ test "$credential_version" = "2"
 test "$rotated_contract_version" = "3"
 test "$rotated_secret" = "t"
 test "$_rotated_role" != "$login_role"
-test "$(psql_admin -A -t -c "select rolpassword like 'SCRAM-SHA-256\\$%' from pg_authid where rolname = '$_rotated_role';")" = "t"
+test "$(psql_root -A -t -c "select rolpassword like 'SCRAM-SHA-256\\$%' from pg_authid where rolname = '$_rotated_role';")" = "t"
 rotated_node_url="postgresql://${_rotated_role}@localhost:5432/postgres"
 
 PGPASSWORD="$rotated_credential" \
@@ -1277,7 +1350,7 @@ test "$_reenrolled_node_id" = "$node_id"
 test "$reenrolled_version" = "3"
 test "$reenrolled_contract" = "3"
 test "$reenrolled_secret" = "t"
-test "$(psql_admin -A -t -c "select rolpassword like 'SCRAM-SHA-256\\$%' from pg_authid where rolname = '$reenrolled_role';")" = "t"
+test "$(psql_root -A -t -c "select rolpassword like 'SCRAM-SHA-256\\$%' from pg_authid where rolname = '$reenrolled_role';")" = "t"
 test "$(psql_admin -A -t -c "select count(*) from symphony_staging.node_principal_history where node_id = '$node_id';")" = "3"
 
 reenroll_replay="$(
@@ -1407,7 +1480,7 @@ if psql_admin -f "$migrations_dir/20260724010000_aro_169_node_enrollment.down.sq
 fi
 psql_admin -c "drop publication aro169_rollback_publication;" >/dev/null
 
-psql_admin <<'SQL'
+psql_root <<'SQL'
 create function public.aro169_rollback_event_drift()
 returns event_trigger
 language plpgsql
@@ -1422,12 +1495,12 @@ if psql_admin -f "$migrations_dir/20260724010000_aro_169_node_enrollment.down.sq
   echo "rollback unexpectedly accepted event-trigger drift" >&2
   exit 1
 fi
-psql_admin <<'SQL'
+psql_root <<'SQL'
 drop event trigger aro169_rollback_event_drift;
 drop function public.aro169_rollback_event_drift();
 SQL
 
-psql_admin -c "
+psql_root -c "
   alter function extensions.digest(text, text) owner to service_role;
 " >/dev/null
 if psql_admin -f "$migrations_dir/20260724010000_aro_169_node_enrollment.down.sql" \
@@ -1435,7 +1508,7 @@ if psql_admin -f "$migrations_dir/20260724010000_aro_169_node_enrollment.down.sq
   echo "rollback unexpectedly accepted pgcrypto dependency drift" >&2
   exit 1
 fi
-psql_admin -c "
+psql_root -c "
   alter function extensions.digest(text, text) owner to postgres;
 " >/dev/null
 
@@ -1453,7 +1526,7 @@ psql_admin -c "
 " >/dev/null
 set_pgcrypto_live_acl
 
-psql_admin -c "
+psql_root -c "
   update pg_proc
   set proacl = '{}'::aclitem[]
   where oid = 'extensions.digest(text,text)'::regprocedure;
@@ -1463,14 +1536,14 @@ if psql_admin -f "$migrations_dir/20260724010000_aro_169_node_enrollment.down.sq
   echo "rollback unexpectedly treated an explicit empty ACL as the default ACL" >&2
   exit 1
 fi
-psql_admin -c "
+psql_root -c "
   update pg_proc
   set proacl = null
   where oid = 'extensions.digest(text,text)'::regprocedure;
 " >/dev/null
 set_pgcrypto_live_acl
 
-psql_admin -c "
+psql_root -c "
   update pg_proc
   set proacl = null
   where oid = 'symphony_staging.enforce_node_transition()'::regprocedure;
@@ -1480,7 +1553,7 @@ if psql_admin -f "$migrations_dir/20260724010000_aro_169_node_enrollment.down.sq
   echo "rollback unexpectedly accepted default trigger-function ACL drift" >&2
   exit 1
 fi
-psql_admin -c "
+psql_root -c "
   update pg_proc
   set proacl = '{}'::aclitem[]
   where oid = 'symphony_staging.enforce_node_transition()'::regprocedure;
@@ -1490,7 +1563,7 @@ if psql_admin -f "$migrations_dir/20260724010000_aro_169_node_enrollment.down.sq
   echo "rollback unexpectedly accepted explicit-empty trigger-function ACL drift" >&2
   exit 1
 fi
-psql_admin -c "
+psql_root -c "
   update pg_proc procedure
   set proacl = array[
     pg_catalog.format(
@@ -1740,7 +1813,7 @@ if psql_admin -f "$migrations_dir/20260724010000_aro_169_node_enrollment.down.sq
   echo "rollback unexpectedly accepted rewrite-rule drift" >&2
   exit 1
 fi
-psql_admin -c "
+psql_root -c "
   drop rule aro169_nodes_noop on symphony_staging.nodes;
   alter table symphony_staging.node_bindings disable trigger all;
   alter table symphony_staging.node_bindings
@@ -1751,7 +1824,7 @@ if psql_admin -f "$migrations_dir/20260724010000_aro_169_node_enrollment.down.sq
   echo "rollback unexpectedly accepted internal-trigger drift" >&2
   exit 1
 fi
-psql_admin -c "
+psql_root -c "
   alter table symphony_staging.node_bindings enable trigger all;
 " >/dev/null
 
