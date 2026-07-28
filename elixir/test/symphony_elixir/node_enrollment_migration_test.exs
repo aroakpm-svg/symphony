@@ -89,6 +89,10 @@ defmodule SymphonyElixir.NodeEnrollmentMigrationTest do
     assert sql =~ "'aroak.pgcrypto_runtime_fingerprint'"
     assert sql =~ "ARO-169 pgcrypto runtime state changed during apply"
     assert length(Regex.scan(~r/to_jsonb\(runtime_state\)::text/, sql)) == 2
+
+    assert sql =~
+             ~r/lock table\s+pg_catalog\.pg_proc,\s+pg_catalog\.pg_extension,\s+pg_catalog\.pg_namespace,\s+pg_catalog\.pg_authid\s+in share mode;/s
+
     assert sql =~ "issue_graphql_placeholder"
     assert sql =~ "issue_pg_cron_access"
     assert sql =~ "issue_pg_graphql_access"

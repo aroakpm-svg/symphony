@@ -66,6 +66,9 @@ decision or survives into the apply/rollback fingerprint.
   complete extension/function runtime signature immediately after preflight
   and recomputes it immediately before manifest insertion, so a privileged
   concurrent ACL or definition mutation cannot become the accepted baseline.
+  Transaction-scoped `SHARE` locks on `pg_proc`, `pg_extension`,
+  `pg_namespace`, and `pg_authid` cover every catalog write that can change
+  those signatures and remain held through manifest insertion and commit.
 - Managed-schema inventory identities that enter the stored fingerprint must
   be visibility independent:
   - functions and trigger functions;

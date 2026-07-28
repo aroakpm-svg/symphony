@@ -361,6 +361,17 @@ begin
     true
   );
 
+  -- PostgreSQL has no row-level LOCK syntax for functions or extensions.
+  -- Hold the catalog relations that own every behavior-bearing pgcrypto
+  -- identity through manifest insertion, so privileged GRANT/REVOKE/ALTER
+  -- cannot race the initial and final canonical snapshots.
+  lock table
+    pg_catalog.pg_proc,
+    pg_catalog.pg_extension,
+    pg_catalog.pg_namespace,
+    pg_catalog.pg_authid
+    in share mode;
+
   if not exists (
     select 1
     from pg_extension extension
