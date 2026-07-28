@@ -178,7 +178,7 @@ begin
         procedure.proleakproof, procedure.proisstrict,
         procedure.proretset, procedure.provolatile::text,
         procedure.proparallel::text, procedure.procost, procedure.prorows,
-        procedure.provariadic, procedure.protransform, procedure.prosupport,
+        procedure.provariadic, procedure.prosupport,
         procedure.pronargs, procedure.pronargdefaults, procedure.proargtypes,
         procedure.proallargtypes, procedure.proargmodes,
         procedure.proargnames, procedure.proargdefaults,

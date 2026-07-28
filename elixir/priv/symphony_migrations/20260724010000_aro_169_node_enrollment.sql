@@ -111,7 +111,7 @@ begin
         procedure.prokind, procedure.prosecdef, procedure.proleakproof,
         procedure.proisstrict, procedure.proretset, procedure.provolatile,
         procedure.proparallel, procedure.procost, procedure.prorows,
-        procedure.provariadic, procedure.protransform, procedure.prosupport,
+        procedure.provariadic, procedure.prosupport,
         procedure.pronargs, procedure.pronargdefaults, procedure.proargtypes,
         procedure.proallargtypes, procedure.proargmodes, procedure.proargnames,
         procedure.proargdefaults, procedure.protrftypes, procedure.proconfig,
@@ -179,7 +179,6 @@ begin
         and actual.procost = 100
         and actual.prorows = 0
         and actual.provariadic = 0
-        and actual.protransform = 0
         and actual.prosupport = 0
         and actual.pronargs = 0
         and actual.pronargdefaults = 0
@@ -233,7 +232,7 @@ begin
           procedure.proleakproof, procedure.proisstrict,
           procedure.proretset, procedure.provolatile::text,
           procedure.proparallel::text, procedure.procost, procedure.prorows,
-          procedure.provariadic, procedure.protransform, procedure.prosupport,
+          procedure.provariadic, procedure.prosupport,
           procedure.pronargs, procedure.pronargdefaults, procedure.proargtypes,
           procedure.proallargtypes, procedure.proargmodes,
           procedure.proargnames, procedure.proargdefaults,
@@ -2517,7 +2516,7 @@ begin
            procedure.proleakproof, procedure.proisstrict,
            procedure.proretset, procedure.provolatile::text,
            procedure.proparallel::text, procedure.procost, procedure.prorows,
-           procedure.provariadic, procedure.protransform, procedure.prosupport,
+           procedure.provariadic, procedure.prosupport,
            procedure.pronargs, procedure.pronargdefaults,
            procedure.proargtypes, procedure.proallargtypes,
            procedure.proargmodes, procedure.proargnames,
