@@ -56,8 +56,8 @@ decision or survives into the apply/rollback fingerprint.
   - sequence types;
   - production-function isolation.
 - Raw ACL arrays in behavior-bearing fingerprints must be converted to sorted
-  grantor/grantee/privilege/grant-option rows. Array storage order is not a
-  contract.
+  grantor/grantee/privilege/grant-option rows, including schema and default
+  ACLs. Array storage order is not a contract.
 
 ### Safety decisions whose identity text is diagnostic only
 

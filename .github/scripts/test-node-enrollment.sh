@@ -664,6 +664,32 @@ PGOPTIONS="-c search_path=public,extensions,pg_catalog" \
 
 psql_admin -c "drop function public.pgrst_drop_watch();" >/dev/null
 
+psql_admin <<'SQL'
+update pg_namespace namespace
+set nspacl = (
+  select array_agg(acl_item order by ordinal desc)
+  from unnest(namespace.nspacl) with ordinality reordered_acl(acl_item, ordinal)
+)
+where namespace.nspname in ('symphony_staging', 'symphony_production')
+  and pg_catalog.cardinality(namespace.nspacl) > 1;
+
+update pg_default_acl default_acl
+set defaclacl = (
+  select array_agg(acl_item order by ordinal desc)
+  from unnest(default_acl.defaclacl) with ordinality
+    reordered_acl(acl_item, ordinal)
+)
+where pg_catalog.cardinality(default_acl.defaclacl) > 1
+  and pg_get_userbyid(default_acl.defaclrole) = 'postgres'
+  and (
+    default_acl.defaclnamespace = 0
+    or default_acl.defaclnamespace in (
+      'symphony_staging'::regnamespace,
+      'symphony_production'::regnamespace
+    )
+  );
+SQL
+
 provisioned="$(
   psql_admin -A -t -F '|' -c \
     "set password_encryption = 'md5';

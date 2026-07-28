@@ -2796,7 +2796,21 @@ from (
   select
     'schema:' || namespace.nspname || ':' ||
     pg_get_userbyid(namespace.nspowner) || ':' ||
-    coalesce(namespace.nspacl::text, '')
+    case when namespace.nspacl is null then '<default>' else '<explicit>:' ||
+      coalesce((
+        select string_agg(
+          grantor.rolname || '>' ||
+          case when acl.grantee = 0 then 'PUBLIC' else grantee.rolname end ||
+          '>' || acl.privilege_type || '>' || acl.is_grantable::text,
+          ',' order by grantor.rolname,
+                       case when acl.grantee = 0
+                            then 'PUBLIC' else grantee.rolname end,
+                       acl.privilege_type, acl.is_grantable
+        )
+        from pg_catalog.aclexplode(namespace.nspacl) acl
+        join pg_roles grantor on grantor.oid = acl.grantor
+        left join pg_roles grantee on grantee.oid = acl.grantee
+      ), '<empty>') end
   from pg_namespace namespace
   where namespace.nspname in ('symphony_staging', 'symphony_production')
   union all
@@ -2804,7 +2818,20 @@ from (
     'default-acl:' || pg_get_userbyid(default_acl.defaclrole) || ':' ||
     coalesce(namespace.nspname, '') || ':' ||
     default_acl.defaclobjtype::text || ':' ||
-    default_acl.defaclacl::text
+    coalesce((
+      select string_agg(
+        grantor.rolname || '>' ||
+        case when acl.grantee = 0 then 'PUBLIC' else grantee.rolname end ||
+        '>' || acl.privilege_type || '>' || acl.is_grantable::text,
+        ',' order by grantor.rolname,
+                     case when acl.grantee = 0
+                          then 'PUBLIC' else grantee.rolname end,
+                     acl.privilege_type, acl.is_grantable
+      )
+      from pg_catalog.aclexplode(default_acl.defaclacl) acl
+      join pg_roles grantor on grantor.oid = acl.grantor
+      left join pg_roles grantee on grantee.oid = acl.grantee
+    ), '<empty>')
   from pg_default_acl default_acl
   left join pg_namespace namespace
     on namespace.oid = default_acl.defaclnamespace

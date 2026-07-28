@@ -92,12 +92,19 @@ defmodule SymphonyElixir.NodeEnrollmentMigrationTest do
 
     assert sql =~ "case when parser.prsheadline = 0 then '<none>'"
     assert sql =~ "case when template.tmplinit = 0 then '<none>'"
+    assert sql =~ "pg_catalog.aclexplode(namespace.nspacl)"
+    assert sql =~ "pg_catalog.aclexplode(default_acl.defaclacl)"
+    refute sql =~ "namespace.nspacl::text"
+    refute sql =~ "default_acl.defaclacl::text"
 
     assert File.read!(@rollback) =~
              "case when procedure.proacl is null then '<default>' else '<explicit>:'"
 
     assert File.read!(@rollback) =~
              "case when opclass_object.opckeytype = 0 then '<none>'"
+
+    refute File.read!(@rollback) =~ "namespace.nspacl::text"
+    refute File.read!(@rollback) =~ "default_acl.defaclacl::text"
 
     assert sql =~ "pg_catalog.pg_proc:function:"
     assert sql =~ "set local search_path = pg_catalog"
