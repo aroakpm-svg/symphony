@@ -637,11 +637,10 @@ psql_admin -c "
 
 psql_admin <<'SQL'
 update pg_proc procedure
-set proacl = reordered.proacl
-from lateral (
+set proacl = (
   select array_agg(acl_item order by ordinal desc) as proacl
   from unnest(procedure.proacl) with ordinality reordered_acl(acl_item, ordinal)
-) reordered
+)
 where procedure.oid in (
   'extensions.set_graphql_placeholder()'::regprocedure,
   'extensions.grant_pg_cron_access()'::regprocedure,
