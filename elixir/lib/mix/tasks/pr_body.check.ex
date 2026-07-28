@@ -235,20 +235,20 @@ defmodule Mix.Tasks.PrBody.Check do
   end
 
   defp heading_position(body, heading) do
-    case :binary.match(body, heading) do
+    case exact_heading_match(body, heading) do
       {idx, _len} -> idx
-      :nomatch -> :nomatch
+      nil -> :nomatch
     end
   end
 
   defp capture_heading_section(doc, heading, headings) do
-    with {heading_idx, _} <- :binary.match(doc, heading),
-         section_start <- heading_idx + byte_size(heading),
+    with {heading_idx, heading_length} <- exact_heading_match(doc, heading),
+         section_start <- heading_idx + heading_length,
          true <- section_start + 2 <= byte_size(doc),
          "\n\n" <- binary_part(doc, section_start, 2) do
       extract_section_content(doc, section_start + 2, heading, headings)
     else
-      :nomatch -> nil
+      nil -> nil
       false -> ""
       _ -> nil
     end
@@ -265,8 +265,8 @@ defmodule Mix.Tasks.PrBody.Check do
 
   defp next_heading_offset(content, heading, headings) do
     headings_after(heading, headings)
-    |> Enum.map(fn marker -> :binary.match(content, marker) end)
-    |> Enum.filter(&(&1 != :nomatch))
+    |> Enum.map(&following_heading_match(content, &1))
+    |> Enum.reject(&is_nil/1)
     |> Enum.map(fn {idx, _} -> idx end)
     |> case do
       [] -> nil
@@ -277,6 +277,23 @@ defmodule Mix.Tasks.PrBody.Check do
   defp headings_after(current_heading, headings) do
     headings
     |> Enum.filter(&(&1 != current_heading))
-    |> Enum.map(&("\n" <> &1))
+  end
+
+  defp exact_heading_match(doc, heading) do
+    pattern = ~r/^#{Regex.escape(heading)}(?:[ \t]+#+)?[ \t]*$/m
+
+    case Regex.run(pattern, doc, return: :index, capture: :first) do
+      [{idx, length}] -> {idx, length}
+      nil -> nil
+    end
+  end
+
+  defp following_heading_match(doc, heading) do
+    pattern = ~r/\n#{Regex.escape(heading)}(?:[ \t]+#+)?[ \t]*$/m
+
+    case Regex.run(pattern, doc, return: :index, capture: :first) do
+      [{idx, length}] -> {idx, length}
+      nil -> nil
+    end
   end
 end

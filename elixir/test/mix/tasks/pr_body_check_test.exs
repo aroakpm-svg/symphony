@@ -886,6 +886,25 @@ defmodule Mix.Tasks.PrBody.CheckTest do
     end)
   end
 
+  test "ignores an inline H4 heading name before the real template heading" do
+    # Mutation caught: locating required headings by arbitrary substring instead of visible line-level H4 tokens.
+    in_temp_repo(fn ->
+      write_template!(@template)
+
+      body =
+        String.replace(
+          @valid_body,
+          "Context text.",
+          "Context text explains the literal `#### Scope Contract` heading before the real section."
+        )
+
+      File.write!("body.md", body)
+
+      output = capture_io(fn -> Check.run(["lint", "--file", "body.md"]) end)
+      assert output =~ "PR body format OK"
+    end)
+  end
+
   test "rejects every non-dash Work Item list marker through the shared parser" do
     # Mutation caught: formatting only dash-list errors while alternate and ordered markers parse as prose.
     in_temp_repo(fn ->

@@ -854,6 +854,21 @@ defmodule SymphonyElixir.ScopeContractTest do
             }} = ScopeContract.parse_pr_body(body)
   end
 
+  test "rejects list content hidden behind CommonMark over-padding" do
+    # Mutation caught: absorbing five spaces after a marker as valid list padding instead of indented code content.
+    body =
+      String.replace(
+        @complete_contract,
+        "- AC-1: Parse a complete scope contract.",
+        "-     AC-1: Parse a complete scope contract."
+      )
+
+    assert {:error,
+            [
+              {:malformed_bullet, :acceptance_criteria, "-     AC-1: Parse a complete scope contract."}
+            ]} = ScopeContract.parse_pr_body(body)
+  end
+
   test "rejects an indented continuation before the first list bullet" do
     # Mutation caught: accepting an orphan continuation merely because it has legal continuation indentation.
     body = """

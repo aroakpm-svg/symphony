@@ -440,8 +440,12 @@ defmodule SymphonyElixir.ScopeContract do
          {:list_item, %{"content" => content, "marker" => marker, "spacing" => spacing}},
          indent
        ) do
-    content_indent = list_item_content_indent(indent, marker, spacing)
-    {:list_item, marker, String.trim(content), content_indent}
+    if content != "" and list_item_padding(indent, marker, spacing) > 4 do
+      :indented_code
+    else
+      content_indent = list_item_content_indent(indent, marker, spacing)
+      {:list_item, marker, String.trim(content), content_indent}
+    end
   end
 
   defp normalize_atx_title(content, closing) when closing != "", do: String.trim_trailing(content)
@@ -455,6 +459,12 @@ defmodule SymphonyElixir.ScopeContract do
   defp list_item_content_indent(indent, marker, spacing) do
     {_remaining, content_indent} = split_indentation(spacing, indent + String.length(marker))
     content_indent
+  end
+
+  defp list_item_padding(indent, marker, spacing) do
+    marker_end = indent + String.length(marker)
+    {_remaining, content_end} = split_indentation(spacing, marker_end)
+    content_end - marker_end
   end
 
   defp classify_indented_code(%{value: ""} = token, _list_content_indent), do: token
