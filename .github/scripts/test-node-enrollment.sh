@@ -561,6 +561,32 @@ psql_admin -c "
   drop type symphony_production.aro169_unexpected_type;
 " >/dev/null
 
+psql_admin -c "
+  select event_trigger.evtname,
+         encode(extensions.digest(procedure.prosrc, 'sha256'), 'hex') as source_sha256,
+         procedure.proacl, procedure.proconfig,
+         (select string_agg(
+            dependency.refclassid::regclass::text || ':' ||
+            pg_describe_object(dependency.refclassid, dependency.refobjid, dependency.refobjsubid) ||
+            ':' || dependency.deptype::text,
+            ',' order by dependency.refclassid::regclass::text,
+                         dependency.refobjid, dependency.refobjsubid, dependency.deptype)
+          from pg_depend dependency
+          where dependency.classid = 'pg_proc'::regclass
+            and dependency.objid = procedure.oid and dependency.objsubid = 0) as function_dependencies,
+         (select string_agg(
+            dependency.refclassid::regclass::text || ':' ||
+            pg_describe_object(dependency.refclassid, dependency.refobjid, dependency.refobjsubid) ||
+            ':' || dependency.deptype::text,
+            ',' order by dependency.refclassid::regclass::text,
+                         dependency.refobjid, dependency.refobjsubid, dependency.deptype)
+          from pg_depend dependency
+          where dependency.classid = 'pg_event_trigger'::regclass
+            and dependency.objid = event_trigger.oid and dependency.objsubid = 0) as trigger_dependencies
+  from pg_event_trigger event_trigger
+  join pg_proc procedure on procedure.oid = event_trigger.evtfoid
+  order by event_trigger.evtname;
+"
 psql_admin -f "$migrations_dir/20260724010000_aro_169_node_enrollment.sql"
 
 provisioned="$(
