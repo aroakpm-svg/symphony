@@ -45,6 +45,9 @@ decision or survives into the apply/rollback fingerprint.
     role names.
   - ACL rows sort the same encoded fields with explicit `C` collation, so
     canonical order is independent of the database locale.
+  - Grantees include a `pseudo` versus `role:` discriminator before encoding,
+    so PostgreSQL's pseudo-role `PUBLIC` cannot collide with a quoted role
+    named `"PUBLIC"`.
   - `pg_describe_object` dependency text must be replaced by catalog-derived,
     schema-qualified symbolic identities.
   - function return types must use catalog namespace/name, not

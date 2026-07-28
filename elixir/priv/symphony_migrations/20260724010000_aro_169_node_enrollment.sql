@@ -75,27 +75,27 @@ begin
         ('issue_graphql_placeholder', 'sql_drop', 'O'::"char",
          array['DROP EXTENSION']::text[], 'set_graphql_placeholder',
          '19e858a99cf5698c4730343fb43cdad4ab2f0717a8ded8a691a0e2786b859708',
-         '<explicit>:73757061626173655f61646d696e>5055424c4943>45584543555445>false,73757061626173655f61646d696e>706f737467726573>45584543555445>true,73757061626173655f61646d696e>73757061626173655f61646d696e>45584543555445>false'),
+         '<explicit>:73757061626173655f61646d696e>70736575646f>45584543555445>false,73757061626173655f61646d696e>726f6c653a706f737467726573>45584543555445>true,73757061626173655f61646d696e>726f6c653a73757061626173655f61646d696e>45584543555445>false'),
         ('issue_pg_cron_access', 'ddl_command_end', 'O'::"char",
          array['CREATE EXTENSION']::text[], 'grant_pg_cron_access',
          'da790d5f185c54fb41cfc6038beacc24ce7a7387aca4249ad77a47ea22a99e33',
-         '<explicit>:73757061626173655f61646d696e>5055424c4943>45584543555445>false,73757061626173655f61646d696e>64617368626f6172645f75736572>45584543555445>false,73757061626173655f61646d696e>73757061626173655f61646d696e>45584543555445>true'),
+         '<explicit>:73757061626173655f61646d696e>70736575646f>45584543555445>false,73757061626173655f61646d696e>726f6c653a64617368626f6172645f75736572>45584543555445>false,73757061626173655f61646d696e>726f6c653a73757061626173655f61646d696e>45584543555445>true'),
         ('issue_pg_graphql_access', 'ddl_command_end', 'O'::"char",
          array['CREATE EXTENSION']::text[], 'grant_pg_graphql_access',
          'fb5a80e6d30734718db960270a5f0eac0d655e238e8128ba56803b74a052bc1e',
-         '<explicit>:73757061626173655f61646d696e>5055424c4943>45584543555445>false,73757061626173655f61646d696e>706f737467726573>45584543555445>true,73757061626173655f61646d696e>73757061626173655f61646d696e>45584543555445>false'),
+         '<explicit>:73757061626173655f61646d696e>70736575646f>45584543555445>false,73757061626173655f61646d696e>726f6c653a706f737467726573>45584543555445>true,73757061626173655f61646d696e>726f6c653a73757061626173655f61646d696e>45584543555445>false'),
         ('issue_pg_net_access', 'ddl_command_end', 'O'::"char",
          array['CREATE EXTENSION']::text[], 'grant_pg_net_access',
          '55abda380efd46b37b26d3c6e4f3b514e28b7c7c1df44f5ae0315ece4052370d',
-         '<explicit>:73757061626173655f61646d696e>5055424c4943>45584543555445>false,73757061626173655f61646d696e>64617368626f6172645f75736572>45584543555445>false,73757061626173655f61646d696e>73757061626173655f61646d696e>45584543555445>true'),
+         '<explicit>:73757061626173655f61646d696e>70736575646f>45584543555445>false,73757061626173655f61646d696e>726f6c653a64617368626f6172645f75736572>45584543555445>false,73757061626173655f61646d696e>726f6c653a73757061626173655f61646d696e>45584543555445>true'),
         ('pgrst_ddl_watch', 'ddl_command_end', 'O'::"char",
          null::text[], 'pgrst_ddl_watch',
          'de987df746eb39647098459e7993bd8595e592969b0cd647828a3d13d37cffe0',
-         '<explicit>:73757061626173655f61646d696e>5055424c4943>45584543555445>false,73757061626173655f61646d696e>706f737467726573>45584543555445>true,73757061626173655f61646d696e>73757061626173655f61646d696e>45584543555445>false'),
+         '<explicit>:73757061626173655f61646d696e>70736575646f>45584543555445>false,73757061626173655f61646d696e>726f6c653a706f737467726573>45584543555445>true,73757061626173655f61646d696e>726f6c653a73757061626173655f61646d696e>45584543555445>false'),
         ('pgrst_drop_watch', 'sql_drop', 'O'::"char",
          null::text[], 'pgrst_drop_watch',
          '791b41f0632fc86e0fc86a303ec0fd710c4e2ecf947a23422dae2b7a2c122f1d',
-         '<explicit>:73757061626173655f61646d696e>5055424c4943>45584543555445>false,73757061626173655f61646d696e>706f737467726573>45584543555445>true,73757061626173655f61646d696e>73757061626173655f61646d696e>45584543555445>false')
+         '<explicit>:73757061626173655f61646d696e>70736575646f>45584543555445>false,73757061626173655f61646d696e>726f6c653a706f737467726573>45584543555445>true,73757061626173655f61646d696e>726f6c653a73757061626173655f61646d696e>45584543555445>false')
     ),
     actual as (
       select
@@ -128,10 +128,10 @@ begin
         case when procedure.proacl is null then '<default>' else '<explicit>:' || coalesce((
           select string_agg(
             encode(convert_to(grantor.rolname::text, 'UTF8'), 'hex') || '>' ||
-            encode(convert_to(case when acl.grantee = 0 then 'PUBLIC' else grantee.rolname::text end, 'UTF8'), 'hex') ||
+            encode(convert_to(case when acl.grantee = 0 then 'pseudo' else 'role:' || grantee.rolname::text end, 'UTF8'), 'hex') ||
             '>' || encode(convert_to(acl.privilege_type, 'UTF8'), 'hex') || '>' || acl.is_grantable::text,
             ',' order by encode(convert_to(grantor.rolname::text, 'UTF8'), 'hex') collate "C",
-                         encode(convert_to(case when acl.grantee = 0 then 'PUBLIC' else grantee.rolname::text end, 'UTF8'), 'hex') collate "C",
+                         encode(convert_to(case when acl.grantee = 0 then 'pseudo' else 'role:' || grantee.rolname::text end, 'UTF8'), 'hex') collate "C",
                          encode(convert_to(acl.privilege_type, 'UTF8'), 'hex') collate "C", acl.is_grantable
           )
           from pg_catalog.aclexplode(procedure.proacl) acl
@@ -284,10 +284,10 @@ begin
           case when procedure.proacl is null then '<default>' else '<explicit>:' || coalesce((
             select string_agg(
               encode(convert_to(grantor.rolname::text, 'UTF8'), 'hex') || '>' ||
-              encode(convert_to(case when acl.grantee = 0 then 'PUBLIC' else grantee.rolname::text end, 'UTF8'), 'hex') ||
+              encode(convert_to(case when acl.grantee = 0 then 'pseudo' else 'role:' || grantee.rolname::text end, 'UTF8'), 'hex') ||
               '>' || encode(convert_to(acl.privilege_type, 'UTF8'), 'hex') || '>' || acl.is_grantable::text,
               ',' order by encode(convert_to(grantor.rolname::text, 'UTF8'), 'hex') collate "C",
-                           encode(convert_to(case when acl.grantee = 0 then 'PUBLIC' else grantee.rolname::text end, 'UTF8'), 'hex') collate "C",
+                           encode(convert_to(case when acl.grantee = 0 then 'pseudo' else 'role:' || grantee.rolname::text end, 'UTF8'), 'hex') collate "C",
                            encode(convert_to(acl.privilege_type, 'UTF8'), 'hex') collate "C", acl.is_grantable
             )
             from pg_catalog.aclexplode(procedure.proacl) acl
@@ -2646,10 +2646,10 @@ begin
            case when procedure.proacl is null then '<default>' else '<explicit>:' || coalesce((
              select string_agg(
                encode(convert_to(grantor.rolname::text, 'UTF8'), 'hex') || '>' ||
-               encode(convert_to(case when acl.grantee = 0 then 'PUBLIC' else grantee.rolname::text end, 'UTF8'), 'hex') ||
+               encode(convert_to(case when acl.grantee = 0 then 'pseudo' else 'role:' || grantee.rolname::text end, 'UTF8'), 'hex') ||
                '>' || encode(convert_to(acl.privilege_type, 'UTF8'), 'hex') || '>' || acl.is_grantable::text,
                ',' order by encode(convert_to(grantor.rolname::text, 'UTF8'), 'hex') collate "C",
-                            encode(convert_to(case when acl.grantee = 0 then 'PUBLIC' else grantee.rolname::text end, 'UTF8'), 'hex') collate "C",
+                            encode(convert_to(case when acl.grantee = 0 then 'pseudo' else 'role:' || grantee.rolname::text end, 'UTF8'), 'hex') collate "C",
                             encode(convert_to(acl.privilege_type, 'UTF8'), 'hex') collate "C", acl.is_grantable
              )
              from pg_catalog.aclexplode(procedure.proacl) acl
@@ -2797,10 +2797,10 @@ from (
       coalesce((
         select string_agg(
           encode(convert_to(grantor.rolname::text, 'UTF8'), 'hex') || '>' ||
-          encode(convert_to(case when acl.grantee = 0 then 'PUBLIC' else grantee.rolname::text end, 'UTF8'), 'hex') ||
+          encode(convert_to(case when acl.grantee = 0 then 'pseudo' else 'role:' || grantee.rolname::text end, 'UTF8'), 'hex') ||
           '>' || encode(convert_to(acl.privilege_type, 'UTF8'), 'hex') || '>' || acl.is_grantable::text,
           ',' order by encode(convert_to(grantor.rolname::text, 'UTF8'), 'hex') collate "C",
-                       encode(convert_to(case when acl.grantee = 0 then 'PUBLIC' else grantee.rolname::text end, 'UTF8'), 'hex') collate "C",
+                       encode(convert_to(case when acl.grantee = 0 then 'pseudo' else 'role:' || grantee.rolname::text end, 'UTF8'), 'hex') collate "C",
                        encode(convert_to(acl.privilege_type, 'UTF8'), 'hex') collate "C", acl.is_grantable
         )
         from pg_catalog.aclexplode(namespace.nspacl) acl
@@ -2817,10 +2817,10 @@ from (
     coalesce((
       select string_agg(
         encode(convert_to(grantor.rolname::text, 'UTF8'), 'hex') || '>' ||
-        encode(convert_to(case when acl.grantee = 0 then 'PUBLIC' else grantee.rolname::text end, 'UTF8'), 'hex') ||
+        encode(convert_to(case when acl.grantee = 0 then 'pseudo' else 'role:' || grantee.rolname::text end, 'UTF8'), 'hex') ||
         '>' || encode(convert_to(acl.privilege_type, 'UTF8'), 'hex') || '>' || acl.is_grantable::text,
         ',' order by encode(convert_to(grantor.rolname::text, 'UTF8'), 'hex') collate "C",
-                     encode(convert_to(case when acl.grantee = 0 then 'PUBLIC' else grantee.rolname::text end, 'UTF8'), 'hex') collate "C",
+                     encode(convert_to(case when acl.grantee = 0 then 'pseudo' else 'role:' || grantee.rolname::text end, 'UTF8'), 'hex') collate "C",
                      encode(convert_to(acl.privilege_type, 'UTF8'), 'hex') collate "C", acl.is_grantable
       )
       from pg_catalog.aclexplode(default_acl.defaclacl) acl
@@ -3025,10 +3025,10 @@ from (
     case when procedure.proacl is null then '<default>' else '<explicit>:' || coalesce((
       select string_agg(
         encode(convert_to(grantor.rolname::text, 'UTF8'), 'hex') || '>' ||
-        encode(convert_to(case when acl.grantee = 0 then 'PUBLIC' else grantee.rolname::text end, 'UTF8'), 'hex') ||
+        encode(convert_to(case when acl.grantee = 0 then 'pseudo' else 'role:' || grantee.rolname::text end, 'UTF8'), 'hex') ||
         '>' || encode(convert_to(acl.privilege_type, 'UTF8'), 'hex') || '>' || acl.is_grantable::text,
         ',' order by encode(convert_to(grantor.rolname::text, 'UTF8'), 'hex') collate "C",
-                     encode(convert_to(case when acl.grantee = 0 then 'PUBLIC' else grantee.rolname::text end, 'UTF8'), 'hex') collate "C",
+                     encode(convert_to(case when acl.grantee = 0 then 'pseudo' else 'role:' || grantee.rolname::text end, 'UTF8'), 'hex') collate "C",
                      encode(convert_to(acl.privilege_type, 'UTF8'), 'hex') collate "C", acl.is_grantable
       )
       from pg_catalog.aclexplode(procedure.proacl) acl
@@ -3236,10 +3236,10 @@ from (
     case when procedure.proacl is null then '<default>' else '<explicit>:' || coalesce((
       select string_agg(
         encode(convert_to(grantor.rolname::text, 'UTF8'), 'hex') || '>' ||
-        encode(convert_to(case when acl.grantee = 0 then 'PUBLIC' else grantee.rolname::text end, 'UTF8'), 'hex') ||
+        encode(convert_to(case when acl.grantee = 0 then 'pseudo' else 'role:' || grantee.rolname::text end, 'UTF8'), 'hex') ||
         '>' || encode(convert_to(acl.privilege_type, 'UTF8'), 'hex') || '>' || acl.is_grantable::text,
         ',' order by encode(convert_to(grantor.rolname::text, 'UTF8'), 'hex') collate "C",
-                     encode(convert_to(case when acl.grantee = 0 then 'PUBLIC' else grantee.rolname::text end, 'UTF8'), 'hex') collate "C",
+                     encode(convert_to(case when acl.grantee = 0 then 'pseudo' else 'role:' || grantee.rolname::text end, 'UTF8'), 'hex') collate "C",
                      encode(convert_to(acl.privilege_type, 'UTF8'), 'hex') collate "C", acl.is_grantable
       )
       from pg_catalog.aclexplode(procedure.proacl) acl
@@ -3282,10 +3282,10 @@ from (
     case when relation.relacl is null then '<default>' else '<explicit>:' || coalesce((
       select string_agg(
         encode(convert_to(grantor.rolname::text, 'UTF8'), 'hex') || '>' ||
-        encode(convert_to(case when acl.grantee = 0 then 'PUBLIC' else grantee.rolname::text end, 'UTF8'), 'hex') ||
+        encode(convert_to(case when acl.grantee = 0 then 'pseudo' else 'role:' || grantee.rolname::text end, 'UTF8'), 'hex') ||
         '>' || encode(convert_to(acl.privilege_type, 'UTF8'), 'hex') || '>' || acl.is_grantable::text,
         ',' order by encode(convert_to(grantor.rolname::text, 'UTF8'), 'hex') collate "C",
-                     encode(convert_to(case when acl.grantee = 0 then 'PUBLIC' else grantee.rolname::text end, 'UTF8'), 'hex') collate "C",
+                     encode(convert_to(case when acl.grantee = 0 then 'pseudo' else 'role:' || grantee.rolname::text end, 'UTF8'), 'hex') collate "C",
                      encode(convert_to(acl.privilege_type, 'UTF8'), 'hex') collate "C", acl.is_grantable
       )
       from pg_catalog.aclexplode(relation.relacl) acl
@@ -3399,10 +3399,10 @@ from (
     case when attribute.attacl is null then '<default>' else '<explicit>:' || coalesce((
       select string_agg(
         encode(convert_to(grantor.rolname::text, 'UTF8'), 'hex') || '>' ||
-        encode(convert_to(case when acl.grantee = 0 then 'PUBLIC' else grantee.rolname::text end, 'UTF8'), 'hex') ||
+        encode(convert_to(case when acl.grantee = 0 then 'pseudo' else 'role:' || grantee.rolname::text end, 'UTF8'), 'hex') ||
         '>' || encode(convert_to(acl.privilege_type, 'UTF8'), 'hex') || '>' || acl.is_grantable::text,
         ',' order by encode(convert_to(grantor.rolname::text, 'UTF8'), 'hex') collate "C",
-                     encode(convert_to(case when acl.grantee = 0 then 'PUBLIC' else grantee.rolname::text end, 'UTF8'), 'hex') collate "C",
+                     encode(convert_to(case when acl.grantee = 0 then 'pseudo' else 'role:' || grantee.rolname::text end, 'UTF8'), 'hex') collate "C",
                      encode(convert_to(acl.privilege_type, 'UTF8'), 'hex') collate "C", acl.is_grantable
       )
       from pg_catalog.aclexplode(attribute.attacl) acl
@@ -3492,10 +3492,10 @@ from (
       '<explicit>:' || (
       select string_agg(
         encode(convert_to(grantor.rolname::text, 'UTF8'), 'hex') || '>' ||
-        encode(convert_to(case when acl.grantee = 0 then 'PUBLIC' else grantee.rolname::text end, 'UTF8'), 'hex') ||
+        encode(convert_to(case when acl.grantee = 0 then 'pseudo' else 'role:' || grantee.rolname::text end, 'UTF8'), 'hex') ||
         '>' || encode(convert_to(acl.privilege_type, 'UTF8'), 'hex') || '>' || acl.is_grantable::text,
         ',' order by encode(convert_to(grantor.rolname::text, 'UTF8'), 'hex') collate "C",
-                     encode(convert_to(case when acl.grantee = 0 then 'PUBLIC' else grantee.rolname::text end, 'UTF8'), 'hex') collate "C",
+                     encode(convert_to(case when acl.grantee = 0 then 'pseudo' else 'role:' || grantee.rolname::text end, 'UTF8'), 'hex') collate "C",
                      encode(convert_to(acl.privilege_type, 'UTF8'), 'hex') collate "C", acl.is_grantable
       )
       from pg_catalog.aclexplode(trigger_function.proacl) acl

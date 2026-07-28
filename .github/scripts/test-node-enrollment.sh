@@ -26,28 +26,28 @@ begin
   if exists (
     with expected(trigger_name, grantor, grantee, privilege_type, is_grantable) as (
       values
-        ('issue_graphql_placeholder', 'supabase_admin', 'PUBLIC', 'EXECUTE', false),
-        ('issue_graphql_placeholder', 'supabase_admin', 'postgres', 'EXECUTE', true),
-        ('issue_graphql_placeholder', 'supabase_admin', 'supabase_admin', 'EXECUTE', false),
-        ('issue_pg_cron_access', 'supabase_admin', 'PUBLIC', 'EXECUTE', false),
-        ('issue_pg_cron_access', 'supabase_admin', 'dashboard_user', 'EXECUTE', false),
-        ('issue_pg_cron_access', 'supabase_admin', 'supabase_admin', 'EXECUTE', true),
-        ('issue_pg_graphql_access', 'supabase_admin', 'PUBLIC', 'EXECUTE', false),
-        ('issue_pg_graphql_access', 'supabase_admin', 'postgres', 'EXECUTE', true),
-        ('issue_pg_graphql_access', 'supabase_admin', 'supabase_admin', 'EXECUTE', false),
-        ('issue_pg_net_access', 'supabase_admin', 'PUBLIC', 'EXECUTE', false),
-        ('issue_pg_net_access', 'supabase_admin', 'dashboard_user', 'EXECUTE', false),
-        ('issue_pg_net_access', 'supabase_admin', 'supabase_admin', 'EXECUTE', true),
-        ('pgrst_ddl_watch', 'supabase_admin', 'PUBLIC', 'EXECUTE', false),
-        ('pgrst_ddl_watch', 'supabase_admin', 'postgres', 'EXECUTE', true),
-        ('pgrst_ddl_watch', 'supabase_admin', 'supabase_admin', 'EXECUTE', false),
-        ('pgrst_drop_watch', 'supabase_admin', 'PUBLIC', 'EXECUTE', false),
-        ('pgrst_drop_watch', 'supabase_admin', 'postgres', 'EXECUTE', true),
-        ('pgrst_drop_watch', 'supabase_admin', 'supabase_admin', 'EXECUTE', false)
+        ('issue_graphql_placeholder', 'supabase_admin', 'pseudo', 'EXECUTE', false),
+        ('issue_graphql_placeholder', 'supabase_admin', 'role:postgres', 'EXECUTE', true),
+        ('issue_graphql_placeholder', 'supabase_admin', 'role:supabase_admin', 'EXECUTE', false),
+        ('issue_pg_cron_access', 'supabase_admin', 'pseudo', 'EXECUTE', false),
+        ('issue_pg_cron_access', 'supabase_admin', 'role:dashboard_user', 'EXECUTE', false),
+        ('issue_pg_cron_access', 'supabase_admin', 'role:supabase_admin', 'EXECUTE', true),
+        ('issue_pg_graphql_access', 'supabase_admin', 'pseudo', 'EXECUTE', false),
+        ('issue_pg_graphql_access', 'supabase_admin', 'role:postgres', 'EXECUTE', true),
+        ('issue_pg_graphql_access', 'supabase_admin', 'role:supabase_admin', 'EXECUTE', false),
+        ('issue_pg_net_access', 'supabase_admin', 'pseudo', 'EXECUTE', false),
+        ('issue_pg_net_access', 'supabase_admin', 'role:dashboard_user', 'EXECUTE', false),
+        ('issue_pg_net_access', 'supabase_admin', 'role:supabase_admin', 'EXECUTE', true),
+        ('pgrst_ddl_watch', 'supabase_admin', 'pseudo', 'EXECUTE', false),
+        ('pgrst_ddl_watch', 'supabase_admin', 'role:postgres', 'EXECUTE', true),
+        ('pgrst_ddl_watch', 'supabase_admin', 'role:supabase_admin', 'EXECUTE', false),
+        ('pgrst_drop_watch', 'supabase_admin', 'pseudo', 'EXECUTE', false),
+        ('pgrst_drop_watch', 'supabase_admin', 'role:postgres', 'EXECUTE', true),
+        ('pgrst_drop_watch', 'supabase_admin', 'role:supabase_admin', 'EXECUTE', false)
     ),
     actual as (
       select event_trigger.evtname, grantor.rolname,
-             case when acl.grantee = 0 then 'PUBLIC' else grantee.rolname end,
+             case when acl.grantee = 0 then 'pseudo' else 'role:' || grantee.rolname end,
              acl.privilege_type, acl.is_grantable
       from pg_event_trigger event_trigger
       join pg_proc procedure on procedure.oid = event_trigger.evtfoid
@@ -190,6 +190,17 @@ if psql_admin \
   echo "v3 apply unexpectedly accepted managed trigger function ACL drift" >&2
   exit 1
 fi
+
+psql_admin -c 'create role "PUBLIC" nologin;' >/dev/null
+if psql_admin \
+  -c 'begin; set local role supabase_admin; revoke execute on function extensions.pgrst_drop_watch() from public; grant execute on function extensions.pgrst_drop_watch() to "PUBLIC";' \
+  -f "$migrations_dir/20260724010000_aro_169_node_enrollment.sql" \
+  >/dev/null 2>&1; then
+  echo 'v3 apply unexpectedly conflated pseudo-PUBLIC with role "PUBLIC"' >&2
+  exit 1
+fi
+test "$(psql_admin -A -t -c "select to_regclass('symphony_staging.node_login_principals') is null;")" = "t"
+psql_admin -c 'drop role "PUBLIC";' >/dev/null
 
 if psql_admin \
   -c "begin; revoke grant option for execute on function extensions.pgrst_drop_watch() from postgres;" \
