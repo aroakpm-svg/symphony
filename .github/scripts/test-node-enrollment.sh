@@ -654,6 +654,9 @@ create function public.pgrst_drop_watch()
 returns event_trigger
 language plpgsql
 as 'begin null; end';
+create table public.pg_proc (shadow text);
+create table public.pg_namespace (shadow text);
+create table public.pg_language (shadow text);
 SQL
 
 PGOPTIONS="-c search_path=public,extensions,pg_catalog" \
@@ -1510,7 +1513,8 @@ managed_identity_extensions_path="$(
 test "$managed_identity_default" = "$managed_identity_extensions_path"
 test "$managed_identity_default" = "extensions.pgrst_drop_watch()"
 rollback_started_at="$(date +%s)"
-psql_admin -f "$migrations_dir/20260724010000_aro_169_node_enrollment.down.sql"
+PGOPTIONS="-c search_path=public,extensions,pg_catalog" \
+  psql_admin -f "$migrations_dir/20260724010000_aro_169_node_enrollment.down.sql"
 rollback_elapsed="$(( $(date +%s) - rollback_started_at ))"
 wait "$migration_lock_pid"
 if [ "$rollback_elapsed" -lt 2 ]; then
@@ -1521,6 +1525,7 @@ fi
 test "$(psql_admin -A -t -c "select contract_version from symphony_staging.contract_versions where contract_name = 'node-identity-routing-foundation';")" = "2"
 test "$(psql_admin -A -t -c "select has_table_privilege('symphony_staging_provisioner', 'symphony_staging.nodes', 'SELECT,INSERT,UPDATE');")" = "t"
 test "$(psql_admin -A -t -c "select count(*) from pg_policies where schemaname = 'symphony_staging' and policyname in ('provisioner_manage_nodes', 'provisioner_manage_node_bindings', 'provisioner_manage_routing_assignments') and roles = array['symphony_staging_provisioner']::name[];")" = "3"
-psql_admin -f "$migrations_dir/20260724010000_aro_169_node_enrollment.sql"
+PGOPTIONS="-c search_path=public,extensions,pg_catalog" \
+  psql_admin -f "$migrations_dir/20260724010000_aro_169_node_enrollment.sql"
 
 echo "ARO-169 disposable PostgreSQL lifecycle passed without printing credentials"

@@ -84,6 +84,9 @@ defmodule SymphonyElixir.NodeEnrollmentMigrationTest do
     assert sql =~ "pg_catalog.aclexplode(procedure.proacl)"
     assert sql =~ "actual.function_acl = expected.function_acl"
     assert sql =~ "pg_catalog.pg_proc:function:"
+    assert sql =~ "set local search_path = pg_catalog"
+    refute sql =~ "'pg_proc'::regclass"
+    refute File.read!(@rollback) =~ "'pg_proc'::regclass"
     refute sql =~ "pg_describe_object("
     assert File.read!(@rollback) =~ "managed-event-trigger-inventory:"
     refute File.read!(@rollback) =~ "pg_describe_object("
@@ -140,6 +143,9 @@ defmodule SymphonyElixir.NodeEnrollmentMigrationTest do
     assert lifecycle_script =~ "managed event-trigger ACL fixture differs from live facts"
     assert lifecycle_script =~ "array_agg(acl_item order by ordinal desc)"
     assert lifecycle_script =~ "search_path=public,extensions,pg_catalog"
+    assert lifecycle_script =~ "create table public.pg_proc"
+    assert lifecycle_script =~ "create table public.pg_namespace"
+    assert lifecycle_script =~ "create table public.pg_language"
     assert lifecycle_script =~ "managed trigger function config drift"
     assert lifecycle_script =~ "managed trigger function cost drift"
     assert lifecycle_script =~ "managed_identity_extensions_path"
@@ -338,8 +344,10 @@ defmodule SymphonyElixir.NodeEnrollmentMigrationTest do
     assert File.read!(@rollback) =~
              "dependency.classid = 'pg_constraint'::regclass"
 
-    assert File.read!(@migration) =~ "dependency.refobjsubid::text"
-    assert File.read!(@rollback) =~ "dependency.refobjsubid::text"
+    refute File.read!(@migration) =~ "dependency.refobjsubid::text"
+    refute File.read!(@rollback) =~ "dependency.refobjsubid::text"
+    assert File.read!(@migration) =~ "class_namespace.nspname"
+    assert File.read!(@rollback) =~ "class_namespace.nspname"
 
     assert File.read!(@migration) =~
              "detail = 'cross-boundary-edge-id=' || external_dependency_edge"

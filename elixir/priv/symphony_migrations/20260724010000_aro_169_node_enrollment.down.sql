@@ -1,5 +1,7 @@
 begin;
 
+set local search_path = pg_catalog;
+
 select pg_catalog.pg_advisory_xact_lock(
   pg_catalog.hashtextextended('aroak:symphony_staging:migrations', 0)
 );
@@ -215,11 +217,11 @@ begin
         (
           select string_agg(
             case
-              when dependency.refclassid = 'pg_language'::regclass then
+              when dependency.refclassid = 'pg_catalog.pg_language'::regclass then
                 'pg_catalog.pg_language:language:' ||
                 (select item.lanname from pg_language item
                   where item.oid = dependency.refobjid)
-              when dependency.refclassid = 'pg_namespace'::regclass then
+              when dependency.refclassid = 'pg_catalog.pg_namespace'::regclass then
                 'pg_catalog.pg_namespace:schema:' ||
                 (select item.nspname from pg_namespace item
                   where item.oid = dependency.refobjid)
@@ -229,14 +231,14 @@ begin
                          dependency.refobjsubid, dependency.deptype
           )
           from pg_depend dependency
-          where dependency.classid = 'pg_proc'::regclass
+          where dependency.classid = 'pg_catalog.pg_proc'::regclass
             and dependency.objid = procedure.oid
             and dependency.objsubid = 0
         ) as function_dependencies,
         (
           select string_agg(
             case
-              when dependency.refclassid = 'pg_proc'::regclass then
+              when dependency.refclassid = 'pg_catalog.pg_proc'::regclass then
                 'pg_catalog.pg_proc:function:' ||
                 (select pg_catalog.format(
                    '%I.%I(%s)', item_namespace.nspname, item.proname,
@@ -252,7 +254,7 @@ begin
                          dependency.refobjsubid, dependency.deptype
           )
           from pg_depend dependency
-          where dependency.classid = 'pg_event_trigger'::regclass
+          where dependency.classid = 'pg_catalog.pg_event_trigger'::regclass
             and dependency.objid = event_trigger.oid
             and dependency.objsubid = 0
         ) as trigger_dependencies
@@ -273,12 +275,12 @@ begin
       managed_namespace.nspname || '.' || managed_relation.relname
     from pg_depend dependency
     join pg_class managed_relation
-      on dependency.refclassid = 'pg_class'::regclass
+      on dependency.refclassid = 'pg_catalog.pg_class'::regclass
      and dependency.refobjid = managed_relation.oid
     join pg_namespace managed_namespace
       on managed_namespace.oid = managed_relation.relnamespace
     join pg_rewrite rewrite
-      on dependency.classid = 'pg_rewrite'::regclass
+      on dependency.classid = 'pg_catalog.pg_rewrite'::regclass
      and dependency.objid = rewrite.oid
     join pg_class external_relation on external_relation.oid = rewrite.ev_class
     join pg_namespace external_namespace
@@ -322,9 +324,37 @@ begin
       pg_get_constraintdef(constraint_state.oid, true) || ':' ||
       coalesce((
         select string_agg(
-          dependency.refclassid::regclass::text || ':' ||
-          dependency.refobjid::text || ':' ||
-          dependency.refobjsubid::text || ':' ||
+          (
+            select pg_catalog.format(
+              '%I.%I', class_namespace.nspname, class_relation.relname
+            )
+            from pg_class class_relation
+            join pg_namespace class_namespace
+              on class_namespace.oid = class_relation.relnamespace
+            where class_relation.oid = dependency.refclassid
+          ) || ':' ||
+          case
+            when dependency.refclassid = 'pg_catalog.pg_class'::regclass then
+              (
+                select pg_catalog.format(
+                  '%I.%I%s',
+                  object_namespace.nspname,
+                  object_relation.relname,
+                  case
+                    when dependency.refobjsubid = 0 then ''
+                    else '.' || pg_catalog.quote_ident(object_attribute.attname)
+                  end
+                )
+                from pg_class object_relation
+                join pg_namespace object_namespace
+                  on object_namespace.oid = object_relation.relnamespace
+                left join pg_attribute object_attribute
+                  on object_attribute.attrelid = object_relation.oid
+                 and object_attribute.attnum = dependency.refobjsubid
+                where object_relation.oid = dependency.refobjid
+              )
+            else 'unsupported'
+          end || ':' ||
           dependency.deptype::text,
           ',' order by
             dependency.refclassid,
@@ -333,7 +363,7 @@ begin
             dependency.deptype
         )
         from pg_depend dependency
-        where dependency.classid = 'pg_constraint'::regclass
+        where dependency.classid = 'pg_catalog.pg_constraint'::regclass
           and dependency.objid = constraint_state.oid
           and dependency.objsubid = 0
       ), '')
@@ -357,12 +387,12 @@ begin
       ':' || managed_namespace.nspname || '.' || managed_relation.relname
     from pg_depend dependency
     join pg_class managed_relation
-      on dependency.refclassid = 'pg_class'::regclass
+      on dependency.refclassid = 'pg_catalog.pg_class'::regclass
      and dependency.refobjid = managed_relation.oid
     join pg_namespace managed_namespace
       on managed_namespace.oid = managed_relation.relnamespace
     join pg_proc external_procedure
-      on dependency.classid = 'pg_proc'::regclass
+      on dependency.classid = 'pg_catalog.pg_proc'::regclass
      and dependency.objid = external_procedure.oid
     join pg_namespace external_namespace
       on external_namespace.oid = external_procedure.pronamespace
@@ -415,9 +445,9 @@ begin
       on return_type_namespace.oid = return_type.typnamespace
     join pg_language language on language.oid = procedure.prolang
     join pg_depend dependency
-      on dependency.classid = 'pg_proc'::regclass
+      on dependency.classid = 'pg_catalog.pg_proc'::regclass
      and dependency.objid = procedure.oid
-     and dependency.refclassid = 'pg_extension'::regclass
+     and dependency.refclassid = 'pg_catalog.pg_extension'::regclass
     join pg_extension extension on extension.oid = dependency.refobjid
     where procedure.oid in (
       'extensions.gen_random_bytes(integer)'::regprocedure,

@@ -72,8 +72,9 @@ decision or survives into the apply/rollback fingerprint.
 - Pure exception detail that is neither compared nor persisted does not need
   mechanical replacement.
 - Catalog class comparisons such as
-  `dependency.classid = 'pg_proc'::regclass` compare OIDs within one catalog
-  snapshot and do not render an identity.
+  `dependency.classid = 'pg_catalog.pg_proc'::regclass` compare OIDs within
+  one catalog snapshot. Up and down also pin the local migration search path
+  to `pg_catalog`, so a caller-provided path cannot redirect catalog reads.
 
 ## Required regression matrix
 
