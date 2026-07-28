@@ -339,10 +339,10 @@ defmodule SymphonyElixir.NodeEnrollmentMigrationTest do
     assert File.read!(@rollback) =~ "constraint_state.confrelid"
 
     assert File.read!(@migration) =~
-             "dependency.classid = 'pg_constraint'::regclass"
+             "dependency.classid = 'pg_catalog.pg_constraint'::regclass"
 
     assert File.read!(@rollback) =~
-             "dependency.classid = 'pg_constraint'::regclass"
+             "dependency.classid = 'pg_catalog.pg_constraint'::regclass"
 
     refute File.read!(@migration) =~ "dependency.refobjsubid::text"
     refute File.read!(@rollback) =~ "dependency.refobjsubid::text"
