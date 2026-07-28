@@ -195,10 +195,10 @@ SQL
 psql_root <<'SQL'
 revoke symphony_staging_runtime, symphony_staging_provisioner from postgres;
 alter role supabase_admin superuser;
-set role supabase_admin;
+set session authorization supabase_admin;
 grant symphony_staging_runtime, symphony_staging_provisioner to postgres
   with admin option, inherit false, set false;
-reset role;
+reset session authorization;
 alter role supabase_admin nosuperuser;
 SQL
 psql_admin -c "
@@ -207,17 +207,6 @@ psql_admin -c "
     granted by postgres;
 "
 psql_root -c "alter role postgres nosuperuser;"
-psql_admin -c "
-  select granted_role.rolname, member_role.rolname, grantor_role.rolname,
-         membership.admin_option, membership.inherit_option, membership.set_option
-  from pg_auth_members membership
-  join pg_roles granted_role on granted_role.oid = membership.roleid
-  join pg_roles member_role on member_role.oid = membership.member
-  join pg_roles grantor_role on grantor_role.oid = membership.grantor
-  where granted_role.rolname in (
-    'symphony_staging_runtime', 'symphony_staging_provisioner'
-  );
-"
 
 psql_admin -f "$migrations_dir/20260724000000_aro_168_staging_reconciliation.sql"
 psql_root -c "alter role postgres superuser;"
