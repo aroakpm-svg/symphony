@@ -552,6 +552,7 @@ set_pgcrypto_live_acl
 
 psql_admin <<'SQL'
 create role "aro169>pgcrypto,角色\grantor" nologin;
+grant usage on schema extensions to "aro169>pgcrypto,角色\grantor";
 grant execute on function extensions.digest(text, text)
   to "aro169>pgcrypto,角色\grantor" with grant option;
 set role "aro169>pgcrypto,角色\grantor";
@@ -570,6 +571,7 @@ revoke execute on function extensions.digest(text, text) from authenticated;
 reset role;
 revoke execute on function extensions.digest(text, text)
   from "aro169>pgcrypto,角色\grantor";
+revoke usage on schema extensions from "aro169>pgcrypto,角色\grantor";
 drop role "aro169>pgcrypto,角色\grantor";
 SQL
 set_pgcrypto_live_acl
