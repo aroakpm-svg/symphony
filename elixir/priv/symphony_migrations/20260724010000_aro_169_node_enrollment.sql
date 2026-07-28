@@ -173,8 +173,7 @@ begin
         and actual.proacl is null
         and actual.function_dependencies =
           'pg_language:language plpgsql:n,' ||
-          'pg_namespace:schema extensions:n,' ||
-          'pg_type:type event_trigger:n'
+          'pg_namespace:schema extensions:n'
         and actual.trigger_dependencies =
           'pg_proc:function extensions.' || actual.function_name || '():n'
     )
