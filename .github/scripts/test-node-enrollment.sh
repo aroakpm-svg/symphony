@@ -807,7 +807,7 @@ if psql_admin -f "$migrations_dir/20260724010000_aro_169_node_enrollment.sql" \
   echo "v3 apply unexpectedly accepted an extra v2 contract row" >&2
   exit 1
 fi
-psql_admin -c "
+psql_root -c "
   delete from symphony_staging.contract_versions
   where contract_name = 'aro169-unexpected-contract';
   alter table symphony_staging.node_bindings disable trigger all;
@@ -819,7 +819,7 @@ if psql_admin -f "$migrations_dir/20260724010000_aro_169_node_enrollment.sql" \
   echo "v3 apply unexpectedly accepted disabled internal FK triggers" >&2
   exit 1
 fi
-psql_admin -c "
+psql_root -c "
   alter table symphony_staging.node_bindings enable trigger all;
   alter table symphony_staging.foundation_audit_events set unlogged;
 " >/dev/null
@@ -848,7 +848,7 @@ if psql_admin -f "$migrations_dir/20260724010000_aro_169_node_enrollment.sql" \
   echo "v3 apply unexpectedly accepted rewrite-rule drift" >&2
   exit 1
 fi
-psql_admin -c "
+psql_root -c "
   drop rule aro169_nodes_noop on symphony_staging.nodes;
   create type symphony_production.aro169_unexpected_type as enum ('drift');
 " >/dev/null
@@ -1813,7 +1813,7 @@ if psql_admin -f "$migrations_dir/20260724010000_aro_169_node_enrollment.down.sq
   echo "rollback unexpectedly accepted rewrite-rule drift" >&2
   exit 1
 fi
-psql_admin -c "
+psql_root -c "
   drop rule aro169_nodes_noop on symphony_staging.nodes;
   alter table symphony_staging.node_bindings disable trigger all;
   alter table symphony_staging.node_bindings
@@ -1824,7 +1824,7 @@ if psql_admin -f "$migrations_dir/20260724010000_aro_169_node_enrollment.down.sq
   echo "rollback unexpectedly accepted internal-trigger drift" >&2
   exit 1
 fi
-psql_admin -c "
+psql_root -c "
   alter table symphony_staging.node_bindings enable trigger all;
 " >/dev/null
 
