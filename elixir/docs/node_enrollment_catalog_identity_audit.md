@@ -37,6 +37,8 @@ decision or survives into the apply/rollback fingerprint.
   stored manifest, and rollback recomputation:
   - `proacl` must be represented as sorted
     grantor/grantee/privilege/grant-option rows from `aclexplode`.
+  - ACL fingerprints must preserve the distinction between catalog-default
+    `NULL`, an explicit empty ACL, and an explicit non-empty ACL.
   - `pg_describe_object` dependency text must be replaced by catalog-derived,
     schema-qualified symbolic identities.
   - function return types must use catalog namespace/name, not
@@ -49,7 +51,8 @@ decision or survives into the apply/rollback fingerprint.
   - functions and trigger functions;
   - conversion functions;
   - operator-class input/key types;
-  - text-search parser/template functions;
+  - text-search parser/template functions, including explicit `<none>`
+    sentinels for zero-valued optional function/type OIDs;
   - sequence types;
   - production-function isolation.
 - Raw ACL arrays in behavior-bearing fingerprints must be converted to sorted

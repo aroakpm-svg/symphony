@@ -1220,6 +1220,22 @@ psql_admin -c "
 " >/dev/null
 
 psql_admin -c "
+  update pg_proc
+  set proacl = '{}'::aclitem[]
+  where oid = 'extensions.digest(text,text)'::regprocedure;
+" >/dev/null
+if psql_admin -f "$migrations_dir/20260724010000_aro_169_node_enrollment.down.sql" \
+  >/dev/null 2>&1; then
+  echo "rollback unexpectedly treated an explicit empty ACL as the default ACL" >&2
+  exit 1
+fi
+psql_admin -c "
+  update pg_proc
+  set proacl = null
+  where oid = 'extensions.digest(text,text)'::regprocedure;
+" >/dev/null
+
+psql_admin -c "
   alter table symphony_staging.node_lifecycle_operations
     alter column operation_type type text collate pg_catalog.\"C\";
 " >/dev/null

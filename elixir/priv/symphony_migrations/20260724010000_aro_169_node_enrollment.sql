@@ -75,27 +75,27 @@ begin
         ('issue_graphql_placeholder', 'sql_drop', 'O'::"char",
          array['DROP EXTENSION']::text[], 'set_graphql_placeholder',
          '19e858a99cf5698c4730343fb43cdad4ab2f0717a8ded8a691a0e2786b859708',
-         'supabase_admin>PUBLIC>EXECUTE>false,supabase_admin>postgres>EXECUTE>true,supabase_admin>supabase_admin>EXECUTE>false'),
+         '<explicit>:supabase_admin>PUBLIC>EXECUTE>false,supabase_admin>postgres>EXECUTE>true,supabase_admin>supabase_admin>EXECUTE>false'),
         ('issue_pg_cron_access', 'ddl_command_end', 'O'::"char",
          array['CREATE EXTENSION']::text[], 'grant_pg_cron_access',
          'da790d5f185c54fb41cfc6038beacc24ce7a7387aca4249ad77a47ea22a99e33',
-         'supabase_admin>PUBLIC>EXECUTE>false,supabase_admin>dashboard_user>EXECUTE>false,supabase_admin>supabase_admin>EXECUTE>true'),
+         '<explicit>:supabase_admin>PUBLIC>EXECUTE>false,supabase_admin>dashboard_user>EXECUTE>false,supabase_admin>supabase_admin>EXECUTE>true'),
         ('issue_pg_graphql_access', 'ddl_command_end', 'O'::"char",
          array['CREATE EXTENSION']::text[], 'grant_pg_graphql_access',
          'fb5a80e6d30734718db960270a5f0eac0d655e238e8128ba56803b74a052bc1e',
-         'supabase_admin>PUBLIC>EXECUTE>false,supabase_admin>postgres>EXECUTE>true,supabase_admin>supabase_admin>EXECUTE>false'),
+         '<explicit>:supabase_admin>PUBLIC>EXECUTE>false,supabase_admin>postgres>EXECUTE>true,supabase_admin>supabase_admin>EXECUTE>false'),
         ('issue_pg_net_access', 'ddl_command_end', 'O'::"char",
          array['CREATE EXTENSION']::text[], 'grant_pg_net_access',
          '55abda380efd46b37b26d3c6e4f3b514e28b7c7c1df44f5ae0315ece4052370d',
-         'supabase_admin>PUBLIC>EXECUTE>false,supabase_admin>dashboard_user>EXECUTE>false,supabase_admin>supabase_admin>EXECUTE>true'),
+         '<explicit>:supabase_admin>PUBLIC>EXECUTE>false,supabase_admin>dashboard_user>EXECUTE>false,supabase_admin>supabase_admin>EXECUTE>true'),
         ('pgrst_ddl_watch', 'ddl_command_end', 'O'::"char",
          null::text[], 'pgrst_ddl_watch',
          'de987df746eb39647098459e7993bd8595e592969b0cd647828a3d13d37cffe0',
-         'supabase_admin>PUBLIC>EXECUTE>false,supabase_admin>postgres>EXECUTE>true,supabase_admin>supabase_admin>EXECUTE>false'),
+         '<explicit>:supabase_admin>PUBLIC>EXECUTE>false,supabase_admin>postgres>EXECUTE>true,supabase_admin>supabase_admin>EXECUTE>false'),
         ('pgrst_drop_watch', 'sql_drop', 'O'::"char",
          null::text[], 'pgrst_drop_watch',
          '791b41f0632fc86e0fc86a303ec0fd710c4e2ecf947a23422dae2b7a2c122f1d',
-         'supabase_admin>PUBLIC>EXECUTE>false,supabase_admin>postgres>EXECUTE>true,supabase_admin>supabase_admin>EXECUTE>false')
+         '<explicit>:supabase_admin>PUBLIC>EXECUTE>false,supabase_admin>postgres>EXECUTE>true,supabase_admin>supabase_admin>EXECUTE>false')
     ),
     actual as (
       select
@@ -125,7 +125,7 @@ begin
         procedure.pronargs, procedure.pronargdefaults, procedure.proargtypes,
         procedure.proallargtypes, procedure.proargmodes, procedure.proargnames,
         procedure.proargdefaults, procedure.protrftypes, procedure.proconfig,
-        (
+        case when procedure.proacl is null then '<default>' else '<explicit>:' || coalesce((
           select string_agg(
             grantor.rolname || '>' ||
             case when acl.grantee = 0 then 'PUBLIC' else grantee.rolname end ||
@@ -138,7 +138,7 @@ begin
           from pg_catalog.aclexplode(procedure.proacl) acl
           join pg_roles grantor on grantor.oid = acl.grantor
           left join pg_roles grantee on grantee.oid = acl.grantee
-        ) as function_acl,
+        ), '<empty>') end as function_acl,
         procedure.probin, procedure.prosqlbody,
         (
           select string_agg(
@@ -282,7 +282,7 @@ begin
           procedure.proallargtypes, procedure.proargmodes,
           procedure.proargnames, procedure.proargdefaults,
           procedure.protrftypes, procedure.proconfig,
-          (
+          case when procedure.proacl is null then '<default>' else '<explicit>:' || coalesce((
             select string_agg(
               grantor.rolname || '>' ||
               case when acl.grantee = 0 then 'PUBLIC' else grantee.rolname end ||
@@ -295,7 +295,7 @@ begin
             from pg_catalog.aclexplode(procedure.proacl) acl
             join pg_roles grantor on grantor.oid = acl.grantor
             left join pg_roles grantee on grantee.oid = acl.grantee
-          ) as function_acl,
+          ), '<empty>') end as function_acl,
           procedure.probin, procedure.prosqlbody,
           encode(
             pg_catalog.sha256(
@@ -2645,7 +2645,7 @@ begin
            procedure.proargmodes, procedure.proargnames,
            procedure.proargdefaults, procedure.protrftypes,
            procedure.proconfig,
-           (
+           case when procedure.proacl is null then '<default>' else '<explicit>:' || coalesce((
              select string_agg(
                grantor.rolname || '>' ||
                case when acl.grantee = 0 then 'PUBLIC' else grantee.rolname end ||
@@ -2658,7 +2658,7 @@ begin
              from pg_catalog.aclexplode(procedure.proacl) acl
              join pg_roles grantor on grantor.oid = acl.grantor
              left join pg_roles grantee on grantee.oid = acl.grantee
-           ) as function_acl,
+           ), '<empty>') end as function_acl,
            procedure.probin,
            procedure.prosqlbody,
            encode(
@@ -3000,7 +3000,7 @@ from (
     procedure.prosecdef::text || ':' || procedure.proleakproof::text || ':' ||
     procedure.proisstrict::text || ':' || procedure.provolatile::text || ':' ||
     procedure.proparallel::text || ':' || coalesce(procedure.proconfig::text, '') || ':' ||
-    coalesce((
+    case when procedure.proacl is null then '<default>' else '<explicit>:' || coalesce((
       select string_agg(
         grantor.rolname || '>' ||
         case when acl.grantee = 0 then 'PUBLIC' else grantee.rolname end ||
@@ -3013,7 +3013,7 @@ from (
       from pg_catalog.aclexplode(procedure.proacl) acl
       join pg_roles grantor on grantor.oid = acl.grantor
       left join pg_roles grantee on grantee.oid = acl.grantee
-    ), '') || ':' ||
+    ), '<empty>') end || ':' ||
     coalesce(procedure.probin, '') || ':' || procedure.prosrc || ':' ||
     extension.extname || ':' || dependency.deptype::text
   from pg_proc procedure
@@ -3101,13 +3101,13 @@ from (
         on type_namespace.oid = type_row.typnamespace
       where type_row.oid = opclass_object.opcintype
     ) || ':' ||
-    (
+    case when opclass_object.opckeytype = 0 then '<none>' else (
       select pg_catalog.format('%I.%I', type_namespace.nspname, type_row.typname)
       from pg_type type_row
       join pg_namespace type_namespace
         on type_namespace.oid = type_row.typnamespace
       where type_row.oid = opclass_object.opckeytype
-    ) || ':' ||
+    ) end || ':' ||
     family_namespace.nspname || '.' || family.opfname || ':' ||
     opclass_object.opcdefault::text
   from pg_opclass opclass_object
@@ -3176,11 +3176,11 @@ from (
        pg_catalog.pg_get_function_identity_arguments(p.oid)
      ) from pg_proc p join pg_namespace n on n.oid = p.pronamespace
        where p.oid = parser.prsend) || ':' ||
-    (select pg_catalog.format(
+    case when parser.prsheadline = 0 then '<none>' else (select pg_catalog.format(
        '%I.%I(%s)', n.nspname, p.proname,
        pg_catalog.pg_get_function_identity_arguments(p.oid)
      ) from pg_proc p join pg_namespace n on n.oid = p.pronamespace
-       where p.oid = parser.prsheadline) || ':' ||
+       where p.oid = parser.prsheadline) end || ':' ||
     (select pg_catalog.format(
        '%I.%I(%s)', n.nspname, p.proname,
        pg_catalog.pg_get_function_identity_arguments(p.oid)
@@ -3192,11 +3192,11 @@ from (
   union all
   select
     'inventory-ts-template:' || template.tmplname || ':' ||
-    coalesce((select pg_catalog.format(
+    case when template.tmplinit = 0 then '<none>' else (select pg_catalog.format(
        '%I.%I(%s)', n.nspname, p.proname,
        pg_catalog.pg_get_function_identity_arguments(p.oid)
      ) from pg_proc p join pg_namespace n on n.oid = p.pronamespace
-       where p.oid = template.tmplinit), '') || ':' ||
+       where p.oid = template.tmplinit) end || ':' ||
     (select pg_catalog.format(
        '%I.%I(%s)', n.nspname, p.proname,
        pg_catalog.pg_get_function_identity_arguments(p.oid)
@@ -3212,7 +3212,7 @@ from (
       pg_catalog.pg_get_function_identity_arguments(procedure.oid)
     ) || ':' ||
     pg_get_userbyid(procedure.proowner) || ':' ||
-    coalesce((
+    case when procedure.proacl is null then '<default>' else '<explicit>:' || coalesce((
       select string_agg(
         grantor.rolname || '>' ||
         case when acl.grantee = 0 then 'PUBLIC' else grantee.rolname end ||
@@ -3225,7 +3225,7 @@ from (
       from pg_catalog.aclexplode(procedure.proacl) acl
       join pg_roles grantor on grantor.oid = acl.grantor
       left join pg_roles grantee on grantee.oid = acl.grantee
-    ), '') || ':' ||
+    ), '<empty>') end || ':' ||
     pg_get_functiondef(procedure.oid) as signature
   from pg_proc procedure
   join pg_namespace namespace on namespace.oid = procedure.pronamespace
@@ -3259,7 +3259,7 @@ from (
     relation.relforcerowsecurity::text || ':' ||
     relation.relispopulated::text || ':' ||
     coalesce(relation.reloptions::text, '') || ':' ||
-    coalesce((
+    case when relation.relacl is null then '<default>' else '<explicit>:' || coalesce((
       select string_agg(
         grantor.rolname || '>' ||
         case when acl.grantee = 0 then 'PUBLIC' else grantee.rolname end ||
@@ -3272,7 +3272,7 @@ from (
       from pg_catalog.aclexplode(relation.relacl) acl
       join pg_roles grantor on grantor.oid = acl.grantor
       left join pg_roles grantee on grantee.oid = acl.grantee
-    ), '')
+    ), '<empty>') end
   from pg_class relation
   join pg_namespace namespace on namespace.oid = relation.relnamespace
   where namespace.nspname = 'symphony_staging'
@@ -3377,7 +3377,7 @@ from (
       else quote_ident(collation_namespace.nspname) || '.' ||
            quote_ident(collation_object.collname)
     end || ':' ||
-    coalesce((
+    case when attribute.attacl is null then '<default>' else '<explicit>:' || coalesce((
       select string_agg(
         grantor.rolname || '>' ||
         case when acl.grantee = 0 then 'PUBLIC' else grantee.rolname end ||
@@ -3390,7 +3390,7 @@ from (
       from pg_catalog.aclexplode(attribute.attacl) acl
       join pg_roles grantor on grantor.oid = acl.grantor
       left join pg_roles grantee on grantee.oid = acl.grantee
-    ), '')
+    ), '<empty>') end
   from pg_class relation
   join pg_namespace namespace on namespace.oid = relation.relnamespace
   join pg_attribute attribute on attribute.attrelid = relation.oid

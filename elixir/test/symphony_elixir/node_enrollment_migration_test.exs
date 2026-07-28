@@ -83,6 +83,19 @@ defmodule SymphonyElixir.NodeEnrollmentMigrationTest do
     assert sql =~ "procedure.proconfig is null"
     assert sql =~ "pg_catalog.aclexplode(procedure.proacl)"
     assert sql =~ "actual.function_acl = expected.function_acl"
+    assert sql =~
+             "case when procedure.proacl is null then '<default>' else '<explicit>:'"
+
+    assert sql =~
+             "case when opclass_object.opckeytype = 0 then '<none>'"
+
+    assert sql =~ "case when parser.prsheadline = 0 then '<none>'"
+    assert sql =~ "case when template.tmplinit = 0 then '<none>'"
+    assert File.read!(@rollback) =~
+             "case when procedure.proacl is null then '<default>' else '<explicit>:'"
+
+    assert File.read!(@rollback) =~
+             "case when opclass_object.opckeytype = 0 then '<none>'"
     assert sql =~ "pg_catalog.pg_proc:function:"
     assert sql =~ "set local search_path = pg_catalog"
     refute sql =~ "'pg_proc'::regclass"
