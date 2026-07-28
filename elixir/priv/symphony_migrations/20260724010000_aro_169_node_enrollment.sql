@@ -369,7 +369,10 @@ begin
     pg_catalog.pg_proc,
     pg_catalog.pg_extension,
     pg_catalog.pg_namespace,
-    pg_catalog.pg_authid
+    pg_catalog.pg_authid,
+    pg_catalog.pg_language,
+    pg_catalog.pg_type,
+    pg_catalog.pg_depend
     in share mode;
 
   if not exists (
