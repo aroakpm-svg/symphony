@@ -13,6 +13,10 @@ defmodule SymphonyElixir.NodeEnrollmentMigrationTest do
                       "../../../.github/scripts/test-node-enrollment.sh",
                       __DIR__
                     )
+  @managed_event_trigger_fixture Path.expand(
+                                   "../../../.github/fixtures/aro-169-supabase-managed-event-triggers.sql",
+                                   __DIR__
+                                 )
 
   test "requires contract v2 and publishes contract v3" do
     sql = File.read!(@migration)
@@ -52,8 +56,24 @@ defmodule SymphonyElixir.NodeEnrollmentMigrationTest do
     assert sql =~ "pg_publication_namespace"
     assert sql =~ "pg_publication_rel"
     assert sql =~ "pg_event_trigger"
-    assert sql =~ "ARO-169 refuses enabled database event triggers"
+    assert sql =~ "ARO-169 requires the exact Supabase managed event-trigger inventory"
     assert sql =~ "ARO-169 event-trigger state changed during apply"
+    assert sql =~ "issue_graphql_placeholder"
+    assert sql =~ "issue_pg_cron_access"
+    assert sql =~ "issue_pg_graphql_access"
+    assert sql =~ "issue_pg_net_access"
+    assert sql =~ "pgrst_ddl_watch"
+    assert sql =~ "pgrst_drop_watch"
+    assert sql =~ "source_sha256"
+    assert sql =~ "function_dependencies"
+    assert sql =~ "trigger_dependencies"
+    assert sql =~ "procedure.proconfig is null"
+    assert sql =~ "procedure.proacl is null"
+    assert File.read!(@rollback) =~ "managed-event-trigger-inventory:"
+
+    fixture = File.read!(@managed_event_trigger_fixture)
+    assert fixture =~ "alter event trigger pgrst_drop_watch owner to supabase_admin"
+    assert fixture =~ "alter function extensions.pgrst_drop_watch() owner to supabase_admin"
     assert sql =~ "attribute.attcollation"
     assert sql =~ "index_state.indcollation"
     assert sql =~ "index_state.indclass"
@@ -83,7 +103,11 @@ defmodule SymphonyElixir.NodeEnrollmentMigrationTest do
     assert lifecycle_script =~ "routing conflict unexpectedly provisioned a partial node"
     assert lifecycle_script =~ "replayed_reenroll_credential"
     assert lifecycle_script =~ "for publication_kind in all_tables staging_schema explicit_relation"
-    assert lifecycle_script =~ "enabled event trigger"
+    assert lifecycle_script =~ "same-name managed trigger replacement"
+    assert lifecycle_script =~ "managed trigger owner drift"
+    assert lifecycle_script =~ "managed trigger definition drift"
+    assert lifecycle_script =~ "managed trigger function ACL drift"
+    assert lifecycle_script =~ "managed trigger function config drift"
     assert lifecycle_script =~ "column collation drift"
     assert lifecycle_script =~ "index collation drift"
     assert lifecycle_script =~ "missing pgcrypto"

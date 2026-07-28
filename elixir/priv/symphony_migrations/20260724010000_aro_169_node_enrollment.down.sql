@@ -159,11 +159,69 @@ begin
     where namespace.nspname in ('symphony_staging', 'symphony_production')
     union all
     select
-      'event-trigger:' || event_trigger.evtname || ':' ||
-      event_trigger.evtevent || ':' || event_trigger.evtenabled::text || ':' ||
-      event_trigger.evtfoid::regprocedure::text || ':' ||
-      coalesce(event_trigger.evttags::text, '')
-    from pg_event_trigger event_trigger
+      'managed-event-trigger-inventory:' ||
+      md5(string_agg(to_jsonb(inventory)::text, E'\n'
+                     order by inventory.trigger_name))
+    from (
+      select
+        event_trigger.evtname as trigger_name,
+        event_trigger.evtevent as trigger_event,
+        event_trigger.evtenabled::text as enabled_state,
+        event_trigger.evttags as tags,
+        trigger_owner.rolname as trigger_owner,
+        namespace.nspname as function_schema,
+        procedure.oid::regprocedure::text as function_identity,
+        function_owner.rolname as function_owner,
+        language.lanname as function_language,
+        procedure.prorettype::regtype::text as return_type,
+        procedure.prokind::text, procedure.prosecdef,
+        procedure.proleakproof, procedure.proisstrict,
+        procedure.proretset, procedure.provolatile::text,
+        procedure.proparallel::text, procedure.pronargs,
+        procedure.proargmodes, procedure.proconfig, procedure.proacl,
+        encode(extensions.digest(procedure.prosrc, 'sha256'), 'hex')
+          as source_sha256,
+        (
+          select string_agg(
+            dependency.refclassid::regclass::text || ':' ||
+            pg_describe_object(
+              dependency.refclassid,
+              dependency.refobjid,
+              dependency.refobjsubid
+            ) || ':' || dependency.deptype::text,
+            ',' order by dependency.refclassid::regclass::text,
+                         dependency.refobjid, dependency.refobjsubid,
+                         dependency.deptype
+          )
+          from pg_depend dependency
+          where dependency.classid = 'pg_proc'::regclass
+            and dependency.objid = procedure.oid
+            and dependency.objsubid = 0
+        ) as function_dependencies,
+        (
+          select string_agg(
+            dependency.refclassid::regclass::text || ':' ||
+            pg_describe_object(
+              dependency.refclassid,
+              dependency.refobjid,
+              dependency.refobjsubid
+            ) || ':' || dependency.deptype::text,
+            ',' order by dependency.refclassid::regclass::text,
+                         dependency.refobjid, dependency.refobjsubid,
+                         dependency.deptype
+          )
+          from pg_depend dependency
+          where dependency.classid = 'pg_event_trigger'::regclass
+            and dependency.objid = event_trigger.oid
+            and dependency.objsubid = 0
+        ) as trigger_dependencies
+      from pg_event_trigger event_trigger
+      join pg_roles trigger_owner on trigger_owner.oid = event_trigger.evtowner
+      join pg_proc procedure on procedure.oid = event_trigger.evtfoid
+      join pg_namespace namespace on namespace.oid = procedure.pronamespace
+      join pg_roles function_owner on function_owner.oid = procedure.proowner
+      join pg_language language on language.oid = procedure.prolang
+    ) inventory
     union all
     select
       'external-rewrite:' || external_namespace.nspname || '.' ||

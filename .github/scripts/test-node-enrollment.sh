@@ -18,6 +18,8 @@ create role service_role nologin;
 create schema symphony_production;
 SQL
 
+psql_admin -f "$root_dir/.github/fixtures/aro-169-supabase-managed-event-triggers.sql"
+
 psql_admin -f "$migrations_dir/20260723000000_aro_163_staging_foundation.sql"
 
 psql_admin <<'SQL'
@@ -73,6 +75,47 @@ drop event trigger aro169_grant_drift;
 drop function public.aro169_grant_drift();
 revoke usage on schema symphony_staging from service_role;
 SQL
+
+if psql_admin \
+  -c "begin; drop event trigger issue_pg_net_access; create event trigger issue_pg_net_access on ddl_command_end execute function extensions.pgrst_ddl_watch();" \
+  -f "$migrations_dir/20260724010000_aro_169_node_enrollment.sql" \
+  >/dev/null 2>&1; then
+  echo "v3 apply unexpectedly accepted a same-name managed trigger replacement" >&2
+  exit 1
+fi
+test "$(psql_admin -A -t -c "select to_regclass('symphony_staging.node_login_principals') is null;")" = "t"
+
+if psql_admin \
+  -c "begin; alter event trigger pgrst_ddl_watch owner to postgres;" \
+  -f "$migrations_dir/20260724010000_aro_169_node_enrollment.sql" \
+  >/dev/null 2>&1; then
+  echo "v3 apply unexpectedly accepted managed trigger owner drift" >&2
+  exit 1
+fi
+
+if psql_admin \
+  -c "begin; create or replace function extensions.pgrst_drop_watch() returns event_trigger language plpgsql as 'begin null; end';" \
+  -f "$migrations_dir/20260724010000_aro_169_node_enrollment.sql" \
+  >/dev/null 2>&1; then
+  echo "v3 apply unexpectedly accepted managed trigger definition drift" >&2
+  exit 1
+fi
+
+if psql_admin \
+  -c "begin; grant execute on function extensions.pgrst_drop_watch() to service_role;" \
+  -f "$migrations_dir/20260724010000_aro_169_node_enrollment.sql" \
+  >/dev/null 2>&1; then
+  echo "v3 apply unexpectedly accepted managed trigger function ACL drift" >&2
+  exit 1
+fi
+
+if psql_admin \
+  -c "begin; alter function extensions.pgrst_drop_watch() set search_path = pg_catalog;" \
+  -f "$migrations_dir/20260724010000_aro_169_node_enrollment.sql" \
+  >/dev/null 2>&1; then
+  echo "v3 apply unexpectedly accepted managed trigger function config drift" >&2
+  exit 1
+fi
 
 psql_admin -c "
   alter role symphony_staging_provisioner in database postgres

@@ -65,14 +65,201 @@ begin
   end if;
 
   if exists (
-    select 1
-    from pg_event_trigger event_trigger
-    where event_trigger.evtenabled <> 'D'
+    with expected(
+      trigger_name, trigger_event, enabled_state, tags,
+      function_name, source_sha256
+    ) as (
+      values
+        ('issue_graphql_placeholder', 'sql_drop', 'O'::"char",
+         array['DROP EXTENSION']::text[], 'set_graphql_placeholder',
+         '19e858a99cf5698c4730343fb43cdad4ab2f0717a8ded8a691a0e2786b859708'),
+        ('issue_pg_cron_access', 'ddl_command_end', 'O'::"char",
+         array['CREATE EXTENSION']::text[], 'grant_pg_cron_access',
+         'da790d5f185c54fb41cfc6038beacc24ce7a7387aca4249ad77a47ea22a99e33'),
+        ('issue_pg_graphql_access', 'ddl_command_end', 'O'::"char",
+         array['CREATE EXTENSION']::text[], 'grant_pg_graphql_access',
+         'fb5a80e6d30734718db960270a5f0eac0d655e238e8128ba56803b74a052bc1e'),
+        ('issue_pg_net_access', 'ddl_command_end', 'O'::"char",
+         array['CREATE EXTENSION']::text[], 'grant_pg_net_access',
+         '55abda380efd46b37b26d3c6e4f3b514e28b7c7c1df44f5ae0315ece4052370d'),
+        ('pgrst_ddl_watch', 'ddl_command_end', 'O'::"char",
+         null::text[], 'pgrst_ddl_watch',
+         'de987df746eb39647098459e7993bd8595e592969b0cd647828a3d13d37cffe0'),
+        ('pgrst_drop_watch', 'sql_drop', 'O'::"char",
+         null::text[], 'pgrst_drop_watch',
+         '791b41f0632fc86e0fc86a303ec0fd710c4e2ecf947a23422dae2b7a2c122f1d')
+    ),
+    actual as (
+      select
+        event_trigger.evtname as trigger_name,
+        event_trigger.evtevent as trigger_event,
+        event_trigger.evtenabled as enabled_state,
+        event_trigger.evttags as tags,
+        procedure.proname as function_name,
+        encode(extensions.digest(procedure.prosrc, 'sha256'), 'hex')
+          as source_sha256,
+        trigger_owner.rolname as trigger_owner,
+        namespace.nspname as function_schema,
+        function_owner.rolname as function_owner,
+        language.lanname as function_language,
+        procedure.prorettype::regtype::text as return_type,
+        procedure.prokind, procedure.prosecdef, procedure.proleakproof,
+        procedure.proisstrict, procedure.proretset, procedure.provolatile,
+        procedure.proparallel, procedure.pronargs, procedure.proargmodes,
+        procedure.proconfig, procedure.proacl,
+        (
+          select string_agg(
+            dependency.refclassid::regclass::text || ':' ||
+            pg_describe_object(
+              dependency.refclassid,
+              dependency.refobjid,
+              dependency.refobjsubid
+            ) || ':' || dependency.deptype::text,
+            ',' order by dependency.refclassid::regclass::text,
+                         dependency.refobjid, dependency.refobjsubid,
+                         dependency.deptype
+          )
+          from pg_depend dependency
+          where dependency.classid = 'pg_proc'::regclass
+            and dependency.objid = procedure.oid
+            and dependency.objsubid = 0
+        ) as function_dependencies,
+        (
+          select string_agg(
+            dependency.refclassid::regclass::text || ':' ||
+            pg_describe_object(
+              dependency.refclassid,
+              dependency.refobjid,
+              dependency.refobjsubid
+            ) || ':' || dependency.deptype::text,
+            ',' order by dependency.refclassid::regclass::text,
+                         dependency.refobjid, dependency.refobjsubid,
+                         dependency.deptype
+          )
+          from pg_depend dependency
+          where dependency.classid = 'pg_event_trigger'::regclass
+            and dependency.objid = event_trigger.oid
+            and dependency.objsubid = 0
+        ) as trigger_dependencies
+      from pg_event_trigger event_trigger
+      join pg_roles trigger_owner on trigger_owner.oid = event_trigger.evtowner
+      join pg_proc procedure on procedure.oid = event_trigger.evtfoid
+      join pg_namespace namespace on namespace.oid = procedure.pronamespace
+      join pg_roles function_owner on function_owner.oid = procedure.proowner
+      join pg_language language on language.oid = procedure.prolang
+    ),
+    canonical as (
+      select expected.*
+      from expected
+      join actual using (
+        trigger_name, trigger_event, enabled_state, function_name, source_sha256
+      )
+      where actual.tags is not distinct from expected.tags
+        and actual.trigger_owner = 'supabase_admin'
+        and actual.function_schema = 'extensions'
+        and actual.function_owner = 'supabase_admin'
+        and actual.function_language = 'plpgsql'
+        and actual.return_type = 'event_trigger'
+        and actual.prokind = 'f'
+        and not actual.prosecdef
+        and not actual.proleakproof
+        and not actual.proisstrict
+        and not actual.proretset
+        and actual.provolatile = 'v'
+        and actual.proparallel = 'u'
+        and actual.pronargs = 0
+        and actual.proargmodes is null
+        and actual.proconfig is null
+        and actual.proacl is null
+        and actual.function_dependencies =
+          'pg_language:language plpgsql:n,' ||
+          'pg_namespace:schema extensions:n,' ||
+          'pg_type:type event_trigger:n'
+        and actual.trigger_dependencies =
+          'pg_proc:function extensions.' || actual.function_name || '():n'
+    )
+    select trigger_name from actual
+    except
+    select trigger_name from canonical
+    union all
+    select trigger_name from expected
+    except
+    select trigger_name from canonical
   ) then
     raise exception using
       errcode = '55000',
-      message = 'ARO-169 refuses enabled database event triggers';
+      message = 'ARO-169 requires the exact Supabase managed event-trigger inventory';
   end if;
+
+  perform set_config(
+    'aroak.managed_event_trigger_fingerprint',
+    (
+      select md5(string_agg(to_jsonb(inventory)::text, E'\n'
+                            order by inventory.trigger_name))
+      from (
+        select
+          event_trigger.evtname as trigger_name,
+          event_trigger.evtevent as trigger_event,
+          event_trigger.evtenabled::text as enabled_state,
+          event_trigger.evttags as tags,
+          trigger_owner.rolname as trigger_owner,
+          namespace.nspname as function_schema,
+          procedure.oid::regprocedure::text as function_identity,
+          function_owner.rolname as function_owner,
+          language.lanname as function_language,
+          procedure.prorettype::regtype::text as return_type,
+          procedure.prokind::text, procedure.prosecdef,
+          procedure.proleakproof, procedure.proisstrict,
+          procedure.proretset, procedure.provolatile::text,
+          procedure.proparallel::text, procedure.pronargs,
+          procedure.proargmodes, procedure.proconfig, procedure.proacl,
+          encode(extensions.digest(procedure.prosrc, 'sha256'), 'hex')
+            as source_sha256,
+          (
+            select string_agg(
+              dependency.refclassid::regclass::text || ':' ||
+              pg_describe_object(
+                dependency.refclassid,
+                dependency.refobjid,
+                dependency.refobjsubid
+              ) || ':' || dependency.deptype::text,
+              ',' order by dependency.refclassid::regclass::text,
+                           dependency.refobjid, dependency.refobjsubid,
+                           dependency.deptype
+            )
+            from pg_depend dependency
+            where dependency.classid = 'pg_proc'::regclass
+              and dependency.objid = procedure.oid
+              and dependency.objsubid = 0
+          ) as function_dependencies,
+          (
+            select string_agg(
+              dependency.refclassid::regclass::text || ':' ||
+              pg_describe_object(
+                dependency.refclassid,
+                dependency.refobjid,
+                dependency.refobjsubid
+              ) || ':' || dependency.deptype::text,
+              ',' order by dependency.refclassid::regclass::text,
+                           dependency.refobjid, dependency.refobjsubid,
+                           dependency.deptype
+            )
+            from pg_depend dependency
+            where dependency.classid = 'pg_event_trigger'::regclass
+              and dependency.objid = event_trigger.oid
+              and dependency.objsubid = 0
+          ) as trigger_dependencies
+        from pg_event_trigger event_trigger
+        join pg_roles trigger_owner
+          on trigger_owner.oid = event_trigger.evtowner
+        join pg_proc procedure on procedure.oid = event_trigger.evtfoid
+        join pg_namespace namespace on namespace.oid = procedure.pronamespace
+        join pg_roles function_owner on function_owner.oid = procedure.proowner
+        join pg_language language on language.oid = procedure.prolang
+      ) inventory
+    ),
+    true
+  );
 
   if not exists (
     select 1
@@ -2279,11 +2466,72 @@ grant execute on function
 
 do $$
 begin
-  if exists (
-    select 1
-    from pg_event_trigger event_trigger
-    where event_trigger.evtenabled <> 'D'
-  ) then
+  if current_setting('aroak.managed_event_trigger_fingerprint', true)
+     is distinct from (
+       select md5(string_agg(to_jsonb(inventory)::text, E'\n'
+                             order by inventory.trigger_name))
+       from (
+         select
+           event_trigger.evtname as trigger_name,
+           event_trigger.evtevent as trigger_event,
+           event_trigger.evtenabled::text as enabled_state,
+           event_trigger.evttags as tags,
+           trigger_owner.rolname as trigger_owner,
+           namespace.nspname as function_schema,
+           procedure.oid::regprocedure::text as function_identity,
+           function_owner.rolname as function_owner,
+           language.lanname as function_language,
+           procedure.prorettype::regtype::text as return_type,
+           procedure.prokind::text, procedure.prosecdef,
+           procedure.proleakproof, procedure.proisstrict,
+           procedure.proretset, procedure.provolatile::text,
+           procedure.proparallel::text, procedure.pronargs,
+           procedure.proargmodes, procedure.proconfig, procedure.proacl,
+           encode(extensions.digest(procedure.prosrc, 'sha256'), 'hex')
+             as source_sha256,
+           (
+             select string_agg(
+               dependency.refclassid::regclass::text || ':' ||
+               pg_describe_object(
+                 dependency.refclassid,
+                 dependency.refobjid,
+                 dependency.refobjsubid
+               ) || ':' || dependency.deptype::text,
+               ',' order by dependency.refclassid::regclass::text,
+                            dependency.refobjid, dependency.refobjsubid,
+                            dependency.deptype
+             )
+             from pg_depend dependency
+             where dependency.classid = 'pg_proc'::regclass
+               and dependency.objid = procedure.oid
+               and dependency.objsubid = 0
+           ) as function_dependencies,
+           (
+             select string_agg(
+               dependency.refclassid::regclass::text || ':' ||
+               pg_describe_object(
+                 dependency.refclassid,
+                 dependency.refobjid,
+                 dependency.refobjsubid
+               ) || ':' || dependency.deptype::text,
+               ',' order by dependency.refclassid::regclass::text,
+                            dependency.refobjid, dependency.refobjsubid,
+                            dependency.deptype
+             )
+             from pg_depend dependency
+             where dependency.classid = 'pg_event_trigger'::regclass
+               and dependency.objid = event_trigger.oid
+               and dependency.objsubid = 0
+           ) as trigger_dependencies
+         from pg_event_trigger event_trigger
+         join pg_roles trigger_owner
+           on trigger_owner.oid = event_trigger.evtowner
+         join pg_proc procedure on procedure.oid = event_trigger.evtfoid
+         join pg_namespace namespace on namespace.oid = procedure.pronamespace
+         join pg_roles function_owner on function_owner.oid = procedure.proowner
+         join pg_language language on language.oid = procedure.prolang
+       ) inventory
+     ) then
     raise exception using
       errcode = '55000',
       message = 'ARO-169 event-trigger state changed during apply';
@@ -2404,11 +2652,8 @@ from (
   where namespace.nspname in ('symphony_staging', 'symphony_production')
   union all
   select
-    'event-trigger:' || event_trigger.evtname || ':' ||
-    event_trigger.evtevent || ':' || event_trigger.evtenabled::text || ':' ||
-    event_trigger.evtfoid::regprocedure::text || ':' ||
-    coalesce(event_trigger.evttags::text, '')
-  from pg_event_trigger event_trigger
+    'managed-event-trigger-inventory:' ||
+    current_setting('aroak.managed_event_trigger_fingerprint')
   union all
   select
     'external-rewrite:' || external_namespace.nspname || '.' ||
