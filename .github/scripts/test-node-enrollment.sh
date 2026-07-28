@@ -27,9 +27,10 @@ grant execute on function extensions.gen_random_bytes(integer),
 SQL
 }
 
-psql_admin <<'SQL'
-create role aro169_ci_root login superuser createrole createdb replication bypassrls
+psql_root <<'SQL'
+create role postgres login superuser createrole createdb replication bypassrls
   password 'disposable';
+alter database postgres owner to postgres;
 SQL
 
 psql_admin <<'SQL'
@@ -189,6 +190,25 @@ alter role symphony_staging_runtime
   set search_path = pg_catalog, symphony_staging;
 alter role symphony_staging_provisioner
   set search_path = pg_catalog, symphony_staging;
+SQL
+
+psql_root <<'SQL'
+-- Model the hosted control plane's canonical foundation grantor identity. This
+-- disposable bootstrap step is never executed by the product migration.
+update pg_catalog.pg_auth_members
+set grantor = (select oid from pg_catalog.pg_roles where rolname = 'postgres')
+where roleid in (
+    select oid
+    from pg_catalog.pg_roles
+    where rolname in (
+      'symphony_staging_runtime',
+      'symphony_staging_provisioner'
+    )
+  )
+  and member = (select oid from pg_catalog.pg_roles where rolname = 'postgres')
+  and grantor = (
+    select oid from pg_catalog.pg_roles where rolname = 'aro169_ci_root'
+  );
 SQL
 
 psql_admin -f "$migrations_dir/20260724000000_aro_168_staging_reconciliation.sql"
@@ -872,6 +892,27 @@ set role supabase_admin;
 grant symphony_staging_runtime, symphony_staging_provisioner to postgres
   with admin option, inherit false, set false;
 reset role;
+-- Supabase owns this managed grant edge; pin that recorded catalog identity in
+-- the disposable fixture before dropping the migration role's superuser bit.
+update pg_catalog.pg_auth_members
+set grantor = (
+  select oid from pg_catalog.pg_roles where rolname = 'supabase_admin'
+)
+where roleid in (
+    select oid
+    from pg_catalog.pg_roles
+    where rolname in (
+      'symphony_staging_runtime',
+      'symphony_staging_provisioner'
+    )
+  )
+  and member = (select oid from pg_catalog.pg_roles where rolname = 'postgres')
+  and grantor = (
+    select oid from pg_catalog.pg_roles where rolname = 'aro169_ci_root'
+  )
+  and admin_option
+  and not inherit_option
+  and not set_option;
 alter role postgres
   nosuperuser createrole createdb replication bypassrls;
 SQL
