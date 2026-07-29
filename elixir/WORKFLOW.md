@@ -25,13 +25,7 @@ hooks:
       set +a
     fi
     : "${SOURCE_REPO_URL:=https://github.com/aroakpm-svg/aroak-central-brain.git}"
-    : "${SOURCE_REPO_DEFAULT_BRANCH:=}"
-    if [ -n "$SOURCE_REPO_DEFAULT_BRANCH" ]; then
-      git clone --branch "$SOURCE_REPO_DEFAULT_BRANCH" "$SOURCE_REPO_URL" .
-    else
-      git clone "$SOURCE_REPO_URL" .
-    fi
-    git checkout -b "codex/init-$(date +%s)"
+    git clone "$SOURCE_REPO_URL" .
 agent:
   max_concurrent_agents: 2
   max_turns: 5
@@ -243,7 +237,7 @@ The latest Linear issue comments before editing files. If the issue description 
 
 The repository AGENTS.md, CLAUDE.md, README.md, or equivalent agent instructions if present.
 
-The latest remote default branch code state. Fetch the remote before implementation, prefer origin/main, and if the repository default branch is not main use the actual default branch.
+The latest remote default branch code state. Symphony resolves the live origin HEAD symref and verifies the exact fetched SHA before dispatch; do not replace that receipt with a hard-coded main assumption.
 
 Existing source code and tests from a feature branch created from the latest fetched base branch, not from a stale checkout or old issue branch.
 
@@ -295,25 +289,29 @@ Before editing files or moving the issue forward:
 
 Read the latest Linear issue comments.
 
-Fetch the latest remote refs.
+Before Codex starts, Symphony validates the live remote default symref, fetches that exact ref, and verifies the advertised and fetched SHAs match. The canonical receipt remains in Symphony's runtime/operator log; it is not injected into this prompt.
 
-Check the latest remote main or default branch SHA. Prefer origin/main; if the repository default branch is not main, use the actual default branch.
+Do not infer the default from local origin/HEAD, a hard-coded main branch, or issue prose.
 
-Record that SHA in your Linear comment, PR body, or final handoff.
+Confirm the checked-out branch is the tracker-provided issue branch selected by Symphony, confirm its current HEAD, and record those values in your Linear comment, PR body, or final handoff. Reference the canonical receipt only when an operator provides it.
 
-Create or reset the issue feature branch from the latest fetched base branch before editing files.
+For independent new work, Symphony creates that issue branch from the verified live canonical SHA in a clean workspace.
+
+For continuation work, preserve and reuse the existing matching issue/PR branch even if the default branch advanced. Do not reset or rebase it merely to catch up.
+
+Stacked work is allowed only when Symphony receives one exact typed upstream branch and head SHA and verifies both. Never infer a stack from issue descriptions, comments, PR prose, blocker text, or filenames.
 
 Search for an existing GitHub PR by issue identifier, issue URL, and branch name.
 
 If an existing PR already matches this issue, reuse it. Do not create a duplicate PR.
 
-If the issue is already fixed on current main, do not code. Comment with the evidence and leave the issue in the correct state.
+If the issue is already fixed on the verified current canonical default, do not code. Comment with the evidence and leave the issue in the correct state.
 
 If required secrets, repo access, package install access, or GitHub/Linear auth are missing, follow the Fail Fast Blocker Rules and stop.
 
 Fail Fast Blocker Rules
 
-External blockers include: repository has no base commit or default branch, SOURCE_REPO_URL is missing or wrong, GitHub auth is missing, remote base SHA cannot be obtained, package install access is missing, Linear auth is missing, or the Linear issue lacks clear scope or acceptance criteria.
+External blockers include: repository has no base commit or canonical default symref, SOURCE_REPO_URL is missing or wrong, the issue branch name is missing or invalid, remote base SHA cannot be fetched and verified, typed stacked evidence is missing/ambiguous/stale, the workspace is detached or mismatched, GitHub auth is missing, package install access is missing, Linear auth is missing, or the Linear issue lacks clear scope or acceptance criteria.
 
 Before leaving a blocker comment, read the latest Linear comments.
 

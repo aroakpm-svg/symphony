@@ -1,0 +1,852 @@
+defmodule SymphonyElixir.ReadinessGate do
+  @moduledoc """
+  Proves an issue workspace is safe to dispatch without repairing existing work branches.
+  """
+
+  alias SymphonyElixir.GitBranchResolver
+  alias SymphonyElixir.GitBranchResolver.Receipt, as: GitReceipt
+  alias SymphonyElixir.Linear.Issue
+  alias SymphonyElixir.Linear.Issue.StackedBase
+  alias SymphonyElixir.Workspace
+  alias SymphonyElixir.Workspace.ReadinessState
+
+  defmodule Receipt do
+    @moduledoc "Typed pre-dispatch branch readiness evidence."
+
+    @enforce_keys [:classification, :issue_branch, :head_sha, :canonical]
+    defstruct [:classification, :issue_branch, :head_sha, :canonical, :upstream]
+
+    @type t :: %__MODULE__{
+            classification: :continuation | :independent_new | :explicit_stack,
+            issue_branch: String.t(),
+            head_sha: String.t(),
+            canonical: GitBranchResolver.Receipt.t(),
+            upstream: GitBranchResolver.Receipt.t() | nil
+          }
+  end
+
+  defmodule Failure do
+    @moduledoc "Fail-closed readiness result with the smallest operator action."
+
+    @enforce_keys [:code, :detail, :operator_action]
+    defstruct [:code, :command, :detail, :operator_action]
+
+    @type t :: %__MODULE__{
+            code: atom(),
+            command: String.t() | nil,
+            detail: String.t(),
+            operator_action: String.t()
+          }
+  end
+
+  @sha_pattern ~r/\A(?:[0-9a-fA-F]{40}|[0-9a-fA-F]{64})\z/
+
+  @typep provenance_mode :: :ready | :fresh_unverified | :legacy_unverified
+  @typep checkout_status :: :checked_out | :not_checked_out
+  @typep branch_presence :: :present | :missing
+  @typep provenance_decision ::
+           :verify_ready_continuation
+           | :verify_unverified_remote
+           | :finish_local_continuation
+           | :block_fresh_local
+           | :block_ready_missing
+           | :block_legacy_missing
+           | :checkout_local_continuation
+           | :materialize_remote
+           | :materialize_new
+
+  @spec check(Path.t(), Issue.t(), keyword()) :: {:ok, Receipt.t()} | {:error, Failure.t()}
+  def check(workspace, %Issue{} = issue, opts \\ [])
+      when is_binary(workspace) and is_list(opts) do
+    with {:ok, provenance} <- workspace_provenance(workspace, issue, opts),
+         {:ok, issue_branch} <- issue_branch(workspace, issue, opts),
+         {:ok, canonical} <- resolve_canonical(workspace, opts),
+         :ok <- validate_issue_branch_not_canonical(issue_branch, canonical),
+         {:ok, state} <- inspect_workspace(workspace, issue_branch, opts),
+         {:ok, remote_issue_branch} <- lookup_branch(workspace, issue_branch, opts) do
+      classify(
+        workspace,
+        issue,
+        issue_branch,
+        provenance,
+        canonical,
+        state,
+        remote_issue_branch,
+        opts
+      )
+    end
+  end
+
+  defp classify(
+         workspace,
+         issue,
+         issue_branch,
+         provenance,
+         canonical,
+         state,
+         remote_issue_branch,
+         opts
+       ) do
+    decision =
+      decide_provenance_recovery(
+        provenance,
+        checkout_status(state, issue_branch),
+        local_branch_presence(state, issue_branch),
+        remote_branch_presence(remote_issue_branch)
+      )
+
+    execute_provenance_decision(decision, %{
+      workspace: workspace,
+      issue: issue,
+      issue_branch: issue_branch,
+      canonical: canonical,
+      state: state,
+      remote_issue_branch: remote_issue_branch,
+      opts: opts
+    })
+  end
+
+  defp checkout_status(%{current_branch: issue_branch}, issue_branch), do: :checked_out
+  defp checkout_status(_state, _issue_branch), do: :not_checked_out
+
+  defp local_branch_presence(%{current_branch: issue_branch}, issue_branch), do: :present
+  defp local_branch_presence(%{local_issue_branch?: true}, _issue_branch), do: :present
+  defp local_branch_presence(_state, _issue_branch), do: :missing
+
+  defp remote_branch_presence(:missing), do: :missing
+  defp remote_branch_presence(%GitReceipt{}), do: :present
+
+  @spec decide_provenance_recovery(
+          provenance_mode(),
+          checkout_status(),
+          branch_presence(),
+          branch_presence()
+        ) :: provenance_decision()
+  defp decide_provenance_recovery(:ready, :checked_out, _local, _remote),
+    do: :verify_ready_continuation
+
+  defp decide_provenance_recovery(:ready, :not_checked_out, _local, _remote),
+    do: :block_ready_missing
+
+  defp decide_provenance_recovery(
+         :fresh_unverified,
+         _checkout,
+         :present,
+         :missing
+       ),
+       do: :block_fresh_local
+
+  defp decide_provenance_recovery(
+         :legacy_unverified,
+         :checked_out,
+         :present,
+         :missing
+       ),
+       do: :finish_local_continuation
+
+  defp decide_provenance_recovery(
+         :legacy_unverified,
+         :not_checked_out,
+         :present,
+         :missing
+       ),
+       do: :checkout_local_continuation
+
+  defp decide_provenance_recovery(
+         :legacy_unverified,
+         _checkout,
+         :missing,
+         :missing
+       ),
+       do: :block_legacy_missing
+
+  defp decide_provenance_recovery(provenance, :checked_out, :present, :present)
+       when provenance in [:fresh_unverified, :legacy_unverified],
+       do: :verify_unverified_remote
+
+  defp decide_provenance_recovery(provenance, :not_checked_out, :present, :present)
+       when provenance in [:fresh_unverified, :legacy_unverified],
+       do: :checkout_local_continuation
+
+  defp decide_provenance_recovery(provenance, _checkout, :missing, :present)
+       when provenance in [:fresh_unverified, :legacy_unverified],
+       do: :materialize_remote
+
+  defp decide_provenance_recovery(
+         :fresh_unverified,
+         _checkout,
+         :missing,
+         :missing
+       ),
+       do: :materialize_new
+
+  defp execute_provenance_decision(:verify_ready_continuation, context) do
+    runner = command_runner(context.workspace, context.opts)
+
+    with :ok <-
+           verify_continuation_remote(
+             runner,
+             context.remote_issue_branch,
+             context.issue_branch,
+             context.state.head_sha
+           ) do
+      finish_continuation(
+        runner,
+        context.issue_branch,
+        context.state,
+        context.canonical
+      )
+    end
+  end
+
+  defp execute_provenance_decision(:verify_unverified_remote, context) do
+    local_sha = context.state.head_sha
+    remote_sha = context.remote_issue_branch.fetched_sha
+
+    if local_sha == remote_sha do
+      context.workspace
+      |> command_runner(context.opts)
+      |> finish_continuation(context.issue_branch, context.state, context.canonical)
+    else
+      failure(
+        :new_issue_branch_remote_mismatch,
+        "unverified local branch #{context.issue_branch} is #{local_sha}, but origin advertises #{remote_sha}",
+        "Preserve the local branch and reconcile it manually with the exact remote branch before retrying."
+      )
+    end
+  end
+
+  defp execute_provenance_decision(:finish_local_continuation, context) do
+    context.workspace
+    |> command_runner(context.opts)
+    |> finish_continuation(context.issue_branch, context.state, context.canonical)
+  end
+
+  defp execute_provenance_decision(:block_fresh_local, context) do
+    failure(
+      :new_issue_branch_already_exists,
+      "new workspace already contains local branch #{context.issue_branch}; current checkout is #{context.state.current_branch}@#{context.state.head_sha}",
+      "Preserve the local issue branch for inspection and recreate a clean issue workspace from the live default head."
+    )
+  end
+
+  defp execute_provenance_decision(:block_ready_missing, context) do
+    failure(
+      :verified_continuation_missing,
+      "durable readiness expects continuation #{context.issue_branch}, but the workspace is on #{context.state.current_branch}@#{context.state.head_sha}",
+      "Preserve the verified workspace and restore or check out the exact issue branch manually before retrying."
+    )
+  end
+
+  defp execute_provenance_decision(:block_legacy_missing, context) do
+    failure(
+      :legacy_workspace_provenance_unverified,
+      "legacy workspace on #{context.state.current_branch}@#{context.state.head_sha} has no local or remote continuation for #{context.issue_branch}",
+      "Restore or publish one exact issue continuation branch, or recreate the legacy workspace before retrying."
+    )
+  end
+
+  defp execute_provenance_decision(:checkout_local_continuation, context) do
+    failure(
+      :continuation_branch_not_checked_out,
+      "issue branch #{context.issue_branch} exists locally, but the workspace is on #{context.state.current_branch}",
+      "Check out the matching issue branch manually without resetting or rebasing it, then retry."
+    )
+  end
+
+  defp execute_provenance_decision(
+         :materialize_remote,
+         %{state: %{dirty: false}} = context
+       ) do
+    create_and_verify_branch(
+      context.workspace,
+      context.issue_branch,
+      context.remote_issue_branch.fetched_sha,
+      :continuation,
+      context.canonical,
+      context.remote_issue_branch,
+      context.opts
+    )
+  end
+
+  defp execute_provenance_decision(
+         :materialize_remote,
+         %{state: %{dirty: true, status: status}} = context
+       ) do
+    failure(
+      :continuation_workspace_dirty,
+      "cannot materialize remote issue branch #{context.issue_branch} while workspace has changes: #{status}",
+      "Preserve or remove the current workspace changes manually, then retry."
+    )
+  end
+
+  defp execute_provenance_decision(
+         :materialize_new,
+         %{state: %{dirty: true, status: status}} = context
+       ) do
+    failure(
+      :independent_workspace_dirty,
+      "cannot create #{context.issue_branch} while workspace has changes: #{status}",
+      "Preserve or remove the workspace changes manually, then retry."
+    )
+  end
+
+  defp execute_provenance_decision(
+         :materialize_new,
+         %{state: %{dirty: false}} = context
+       ) do
+    materialize_new_branch(context)
+  end
+
+  defp materialize_new_branch(%{issue: %Issue{readiness_base: :canonical}} = context) do
+    create_and_verify_branch(
+      context.workspace,
+      context.issue_branch,
+      context.canonical.fetched_sha,
+      :independent_new,
+      context.canonical,
+      nil,
+      context.opts
+    )
+  end
+
+  defp materialize_new_branch(%{issue: %Issue{readiness_base: {:stacked, candidates}}} = context) do
+    with {:ok, evidence} <-
+           one_stacked_evidence(
+             candidates,
+             context.issue_branch,
+             command_runner(context.workspace, context.opts)
+           ),
+         {:ok, upstream} <-
+           lookup_stacked_branch(context.workspace, evidence, context.opts) do
+      create_and_verify_branch(
+        context.workspace,
+        context.issue_branch,
+        upstream.fetched_sha,
+        :explicit_stack,
+        context.canonical,
+        upstream,
+        context.opts
+      )
+    end
+  end
+
+  defp materialize_new_branch(%{issue: %Issue{readiness_base: readiness_base}}) do
+    failure(
+      :readiness_base_invalid,
+      "unsupported typed readiness base: #{inspect(readiness_base)}",
+      "Set readiness_base to :canonical or one exact typed stacked evidence entry."
+    )
+  end
+
+  defp inspect_workspace(workspace, issue_branch, opts) do
+    runner = command_runner(workspace, opts)
+
+    with {:ok, checkout} <- GitBranchResolver.current_checkout(runner),
+         {:ok, refs_output} <-
+           run(runner, ["for-each-ref", "--format=%(refname)", "refs/heads/#{issue_branch}"]),
+         {:ok, status} <- run(runner, ["status", "--porcelain=v1", "--untracked-files=all"]) do
+      {:ok,
+       %{
+         current_branch: checkout.branch,
+         head_sha: checkout.head_sha,
+         local_issue_branch?: local_branch?(refs_output, issue_branch),
+         dirty: String.trim(status) != "",
+         status: sanitize(String.trim(status))
+       }}
+    else
+      {:error, %GitBranchResolver.Failure{} = failure} -> from_resolver_failure(failure)
+      {:error, %Failure{} = failure} -> {:error, failure}
+    end
+  end
+
+  defp validate_issue_branch_not_canonical(
+         issue_branch,
+         %GitReceipt{branch: issue_branch}
+       ) do
+    failure(
+      :issue_branch_is_canonical_default,
+      "tracker issue branch #{issue_branch} is the live canonical default branch",
+      "Set a distinct tracker issue branch before dispatch; preserve the canonical default branch."
+    )
+  end
+
+  defp validate_issue_branch_not_canonical(_issue_branch, %GitReceipt{}), do: :ok
+
+  defp verify_continuation_remote(_runner, :missing, _issue_branch, _local_sha), do: :ok
+
+  defp verify_continuation_remote(
+         _runner,
+         %GitReceipt{fetched_sha: sha},
+         _issue_branch,
+         sha
+       ),
+       do: :ok
+
+  defp verify_continuation_remote(
+         runner,
+         %GitReceipt{fetched_sha: remote_sha},
+         issue_branch,
+         local_sha
+       ) do
+    args = ["merge-base", "--is-ancestor", remote_sha, local_sha]
+    command = Enum.join(["git" | args], " ")
+
+    call_runner(runner, args, command, fn
+      {:ok, output} when is_binary(output) ->
+        :ok
+
+      {:error, {:git_command_failed, _failed_command, 1, _output}} ->
+        failure(
+          :continuation_remote_not_ancestor,
+          "origin/#{issue_branch} at #{remote_sha} is not an ancestor of local HEAD #{local_sha}",
+          "Preserve both branch heads and reconcile the behind, diverged, or unrelated continuation manually before retrying.",
+          command
+        )
+
+      result ->
+        normalize_run_result(result, command)
+    end)
+  end
+
+  defp finish_continuation(runner, issue_branch, initial_state, canonical) do
+    with {:ok, final_state} <- reread_branch_and_head(runner),
+         :ok <- verify_workspace_unchanged(initial_state, final_state) do
+      ready(:continuation, issue_branch, final_state.head_sha, canonical)
+    end
+  end
+
+  defp reread_branch_and_head(runner) do
+    case GitBranchResolver.current_checkout(runner) do
+      {:ok, checkout} ->
+        {:ok, %{current_branch: checkout.branch, head_sha: checkout.head_sha}}
+
+      {:error, %GitBranchResolver.Failure{} = failure} ->
+        from_resolver_failure(failure)
+    end
+  end
+
+  defp verify_workspace_unchanged(
+         %{current_branch: branch, head_sha: sha},
+         %{current_branch: branch, head_sha: sha}
+       ),
+       do: :ok
+
+  defp verify_workspace_unchanged(initial_state, final_state) do
+    failure(
+      :workspace_changed_during_readiness,
+      "workspace changed from #{initial_state.current_branch}@#{initial_state.head_sha} to #{final_state.current_branch}@#{final_state.head_sha} during readiness",
+      "Preserve the workspace and inspect the concurrent Git change before retrying."
+    )
+  end
+
+  defp local_branch?(output, issue_branch) do
+    Enum.member?(lines(output), "refs/heads/#{issue_branch}")
+  end
+
+  defp one_stacked_evidence([], _issue_branch, _runner) do
+    failure(
+      :stacked_evidence_missing,
+      "explicit stacked readiness has no upstream evidence",
+      "Provide exactly one typed upstream branch and full head SHA, then retry."
+    )
+  end
+
+  defp one_stacked_evidence([%StackedBase{} = evidence], issue_branch, runner) do
+    with branch when is_binary(branch) <- evidence.branch,
+         :ok <- GitBranchResolver.validate_branch(branch, runner, :stacked_evidence_invalid),
+         false <- branch == issue_branch,
+         head_sha when is_binary(head_sha) <- evidence.head_sha,
+         true <- Regex.match?(@sha_pattern, head_sha) do
+      {:ok, %{branch: branch, head_sha: String.downcase(head_sha)}}
+    else
+      _ ->
+        failure(
+          :stacked_evidence_invalid,
+          "typed stacked evidence must contain a distinct valid branch and one full head SHA",
+          "Correct the typed upstream branch and SHA; do not infer them from issue or PR prose."
+        )
+    end
+  end
+
+  defp one_stacked_evidence([_invalid], _issue_branch, _runner) do
+    failure(
+      :stacked_evidence_invalid,
+      "explicit stacked readiness evidence has an invalid type",
+      "Provide one StackedBase value with an exact branch and head SHA."
+    )
+  end
+
+  defp one_stacked_evidence(_candidates, _issue_branch, _runner) do
+    failure(
+      :stacked_evidence_ambiguous,
+      "explicit stacked readiness has multiple upstream candidates",
+      "Choose exactly one typed upstream branch and head SHA, then retry."
+    )
+  end
+
+  defp lookup_stacked_branch(workspace, evidence, opts) do
+    case lookup_branch(workspace, evidence.branch, opts) do
+      {:ok, :missing} ->
+        failure(
+          :stacked_branch_missing,
+          "origin does not advertise typed upstream branch #{evidence.branch}",
+          "Publish the exact upstream branch or correct the typed evidence, then retry."
+        )
+
+      {:ok, %GitReceipt{fetched_sha: fetched_sha} = receipt}
+      when fetched_sha == evidence.head_sha ->
+        {:ok, receipt}
+
+      {:ok, %GitReceipt{fetched_sha: fetched_sha}} ->
+        failure(
+          :stacked_head_mismatch,
+          "typed upstream #{evidence.branch} expects #{evidence.head_sha}, but origin is #{fetched_sha}",
+          "Update the typed evidence to the intended exact upstream head or restore that remote head."
+        )
+
+      {:error, %Failure{} = failure} ->
+        {:error, failure}
+    end
+  end
+
+  defp create_and_verify_branch(
+         workspace,
+         issue_branch,
+         base_sha,
+         classification,
+         canonical,
+         upstream,
+         opts
+       ) do
+    runner = command_runner(workspace, opts)
+
+    with {:ok, _output} <-
+           run(runner, ["switch", "--no-overwrite-ignore", "-c", issue_branch, base_sha]),
+         {:ok, final_state} <- inspect_materialized_workspace(runner) do
+      verify_created_branch(
+        final_state,
+        issue_branch,
+        base_sha,
+        classification,
+        canonical,
+        upstream
+      )
+    end
+  end
+
+  defp inspect_materialized_workspace(runner) do
+    with {:ok, state} <- reread_branch_and_head(runner),
+         {:ok, status} <- run(runner, ["status", "--porcelain=v1", "--untracked-files=all"]) do
+      normalized_status = String.trim(status)
+
+      {:ok,
+       Map.merge(state, %{
+         dirty: normalized_status != "",
+         status: sanitize(normalized_status)
+       })}
+    end
+  end
+
+  defp verify_created_branch(
+         %{current_branch: actual_branch},
+         issue_branch,
+         _base_sha,
+         _classification,
+         _canonical,
+         _upstream
+       )
+       when actual_branch != issue_branch do
+    failure(
+      :created_branch_mismatch,
+      "created branch re-read as #{actual_branch}, expected #{issue_branch}",
+      "Preserve the workspace and inspect the concurrent Git change before retrying."
+    )
+  end
+
+  defp verify_created_branch(
+         %{head_sha: actual_sha},
+         _issue_branch,
+         base_sha,
+         _classification,
+         _canonical,
+         _upstream
+       )
+       when actual_sha != base_sha do
+    failure(
+      :created_branch_head_mismatch,
+      "created branch re-read at #{actual_sha}, expected #{base_sha}",
+      "Preserve the workspace and inspect the concurrent Git change before retrying."
+    )
+  end
+
+  defp verify_created_branch(
+         %{dirty: true, status: status},
+         _issue_branch,
+         _base_sha,
+         _classification,
+         _canonical,
+         _upstream
+       ) do
+    failure(
+      :workspace_changed_during_readiness,
+      "materialized issue branch became dirty during readiness: #{status}",
+      "Preserve the workspace changes and inspect the concurrent writer before retrying."
+    )
+  end
+
+  defp verify_created_branch(
+         %{head_sha: actual_sha},
+         issue_branch,
+         _base_sha,
+         classification,
+         canonical,
+         upstream
+       ) do
+    ready(classification, issue_branch, actual_sha, canonical, upstream)
+  end
+
+  defp resolve_canonical(workspace, opts) do
+    case GitBranchResolver.resolve(workspace, resolver_opts(opts)) do
+      {:ok, receipt} -> {:ok, receipt}
+      {:error, resolver_failure} -> from_resolver_failure(resolver_failure)
+    end
+  end
+
+  defp lookup_branch(workspace, branch, opts) do
+    case GitBranchResolver.lookup_branch(workspace, branch, resolver_opts(opts)) do
+      {:ok, result} -> {:ok, result}
+      {:error, resolver_failure} -> from_resolver_failure(resolver_failure)
+    end
+  end
+
+  defp from_resolver_failure(%GitBranchResolver.Failure{} = resolver_failure) do
+    {:error,
+     %Failure{
+       code: resolver_failure.code,
+       command: resolver_failure.command,
+       detail: resolver_failure.detail,
+       operator_action: resolver_failure.operator_action
+     }}
+  end
+
+  defp workspace_provenance(workspace, %Issue{} = issue, opts) do
+    case Keyword.fetch(opts, :workspace_readiness_state) do
+      {:ok, %ReadinessState{} = state} ->
+        parse_workspace_readiness_state(state, workspace, issue)
+
+      {:ok, _invalid_state} ->
+        invalid_workspace_provenance("workspace_readiness_state is not typed")
+
+      :error ->
+        legacy_workspace_created_now(opts)
+    end
+  end
+
+  defp parse_workspace_readiness_state(
+         %ReadinessState{version: 1} = state,
+         workspace,
+         %Issue{} = issue
+       ) do
+    with :ok <- validate_workspace_readiness_identity(state, workspace, issue) do
+      workspace_readiness_mode(state)
+    end
+  end
+
+  defp parse_workspace_readiness_state(_state, _workspace, _issue) do
+    invalid_workspace_provenance("workspace readiness schema version is unsupported")
+  end
+
+  defp validate_workspace_readiness_identity(state, workspace, issue) do
+    if state.issue_id == issue.id and state.issue_identifier == issue.identifier and
+         state.issue_branch == issue.branch_name and state.workspace_path == workspace do
+      :ok
+    else
+      invalid_workspace_provenance("workspace readiness identity does not match the issue and path")
+    end
+  end
+
+  defp workspace_readiness_mode(%ReadinessState{
+         provenance: :created,
+         phase: :unverified,
+         verified_head_sha: nil
+       }),
+       do: {:ok, :fresh_unverified}
+
+  defp workspace_readiness_mode(%ReadinessState{
+         provenance: :legacy,
+         phase: :unverified,
+         verified_head_sha: nil
+       }),
+       do: {:ok, :legacy_unverified}
+
+  defp workspace_readiness_mode(%ReadinessState{
+         provenance: provenance,
+         phase: :ready,
+         verified_head_sha: verified_head_sha
+       })
+       when provenance in [:created, :legacy] and is_binary(verified_head_sha) do
+    if Regex.match?(@sha_pattern, verified_head_sha) do
+      {:ok, :ready}
+    else
+      invalid_workspace_provenance("workspace readiness verified head is invalid")
+    end
+  end
+
+  defp workspace_readiness_mode(_state) do
+    invalid_workspace_provenance("workspace readiness phase or provenance is invalid")
+  end
+
+  defp legacy_workspace_created_now(opts) do
+    case Keyword.fetch(opts, :workspace_created_now) do
+      {:ok, true} ->
+        {:ok, :fresh_unverified}
+
+      {:ok, false} ->
+        {:ok, :ready}
+
+      _ ->
+        failure(
+          :workspace_provenance_missing,
+          "readiness requires durable state or created_now evidence from Workspace",
+          "Retry through AgentRunner so workspace creation/reuse provenance is supplied."
+        )
+    end
+  end
+
+  defp invalid_workspace_provenance(detail) do
+    failure(
+      :workspace_provenance_invalid,
+      detail,
+      "Preserve the workspace and repair or recreate its durable readiness state before retrying."
+    )
+  end
+
+  defp issue_branch(workspace, %Issue{branch_name: branch}, opts) when is_binary(branch) do
+    runner = command_runner(workspace, opts)
+
+    case GitBranchResolver.validate_branch(branch, runner, :issue_branch_missing_or_invalid) do
+      :ok -> {:ok, branch}
+      {:error, %GitBranchResolver.Failure{} = failure} -> from_resolver_failure(failure)
+    end
+  end
+
+  defp issue_branch(_workspace, %Issue{branch_name: branch}, _opts), do: invalid_issue_branch(branch)
+
+  defp invalid_issue_branch(branch) do
+    failure(
+      :issue_branch_missing_or_invalid,
+      "issue branch evidence is missing or invalid: #{inspect(branch)}",
+      "Set one exact typed tracker branch name before dispatch."
+    )
+  end
+
+  defp command_runner(workspace, opts) do
+    case Keyword.get(opts, :command_runner) do
+      runner when is_function(runner, 1) -> runner
+      nil -> fn args -> Workspace.run_git_command(workspace, args, Keyword.get(opts, :worker_host)) end
+    end
+  end
+
+  defp resolver_opts(opts) do
+    opts
+    |> Keyword.take([:command_runner, :worker_host])
+  end
+
+  defp run(runner, args) do
+    command = Enum.join(["git" | args], " ")
+
+    call_runner(runner, args, command, &normalize_run_result(&1, command))
+  end
+
+  defp call_runner(runner, args, command, result_handler) do
+    runner.(args)
+    |> result_handler.()
+  rescue
+    error ->
+      failure(
+        :command_failed,
+        Exception.message(error),
+        "Verify the readiness Git command runner, then retry.",
+        command
+      )
+  catch
+    kind, reason ->
+      failure(
+        :command_failed,
+        inspect({kind, reason}),
+        "Verify the readiness Git command runner, then retry.",
+        command
+      )
+  end
+
+  defp normalize_run_result(result, command) do
+    case result do
+      {:ok, output} when is_binary(output) ->
+        {:ok, output}
+
+      {:error, {:workspace_hook_timeout, _timed_command, timeout_ms}} ->
+        failure(
+          :command_timeout,
+          "#{command} timed out after #{timeout_ms}ms",
+          "Verify the worker and Git command responsiveness, then retry.",
+          command
+        )
+
+      {:error, {:git_command_failed, failed_command, status, output}} ->
+        failure(
+          :command_failed,
+          "status=#{status} output=#{sanitize(output)}",
+          "Inspect the Git error without changing existing branches, then retry.",
+          failed_command
+        )
+
+      {:error, {:git_command_failed, failed_command, detail}} ->
+        failure(
+          :command_failed,
+          sanitize(detail),
+          "Inspect the Git error without changing existing branches, then retry.",
+          failed_command
+        )
+
+      other ->
+        failure(
+          :command_failed,
+          "unexpected command result: #{inspect(other)}",
+          "Verify the readiness Git command runner, then retry.",
+          command
+        )
+    end
+  end
+
+  defp ready(classification, issue_branch, head_sha, canonical, upstream \\ nil) do
+    {:ok,
+     %Receipt{
+       classification: classification,
+       issue_branch: issue_branch,
+       head_sha: head_sha,
+       canonical: canonical,
+       upstream: upstream
+     }}
+  end
+
+  defp failure(code, detail, operator_action, command \\ nil) do
+    {:error,
+     %Failure{
+       code: code,
+       command: command,
+       detail: sanitize(detail),
+       operator_action: operator_action
+     }}
+  end
+
+  defp lines(output) do
+    output
+    |> String.split(~r/\r?\n/, trim: true)
+    |> Enum.map(&String.trim/1)
+    |> Enum.reject(&(&1 == ""))
+  end
+
+  defp sanitize(value) when is_binary(value), do: Workspace.sanitize_command_output(value)
+  defp sanitize(value), do: value |> inspect() |> Workspace.sanitize_command_output()
+end

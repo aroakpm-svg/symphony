@@ -165,6 +165,10 @@ Fields:
   - Current tracker state name.
 - `branch_name` (string or null)
   - Tracker-provided branch metadata if available.
+- `readiness_base` (typed canonical or stacked base policy, implementation extension)
+  - Canonical independent work uses the verified live remote default head.
+  - Explicit stacked work carries exactly one upstream branch and full head SHA.
+  - Free-form issue/PR text and blocker prose MUST NOT be interpreted as stacked evidence.
 - `url` (string or null)
 - `labels` (list of strings)
   - Normalized to lowercase.
@@ -423,6 +427,11 @@ Fields:
     retryable worker failure.
   - If source repository URLs contain credentials, implementations MUST NOT expose those credentials
     in logs, status surfaces, or remote command arguments.
+  - A Git-backed implementation MAY also run a branch readiness gate after basic workspace checks
+    and before `before_run`. When enabled, the gate MUST resolve the live canonical default ref from
+    the remote symref, fetch that exact ref, and verify the fetched SHA before using it as a new-work
+    base. It MUST preserve matching continuation branches and MUST NOT reset, rebase, force-checkout,
+    or delete existing work branches.
 - `after_run` (multiline shell script string, OPTIONAL)
   - Runs after each agent attempt (success, failure, timeout, or cancellation) once the workspace
     exists.
@@ -911,6 +920,26 @@ Failure handling:
 - Reused workspaces SHOULD NOT be destructively reset on population failure unless that policy is
   explicitly chosen and documented.
 
+Git branch readiness profile (when implemented):
+
+- Resolve canonical authority with live `git ls-remote --symref origin HEAD`; do not use a
+  hard-coded branch or stale local `origin/HEAD` as proof.
+- Fetch the advertised canonical ref and require its fetched commit SHA to equal the advertised
+  SHA. A race, timeout, auth failure, malformed symref, or missing evidence fails closed.
+- The tracker issue branch MUST differ from the resolved canonical default branch.
+- A matching branch in a reused issue workspace is continuation work and is preserved even when the
+  canonical default has advanced. If a same-name remote exists, its verified head MUST equal local
+  `HEAD` or be an ancestor of local `HEAD`; behind, diverged, or unrelated state fails closed without
+  reset or rebase. A continuation with no same-name remote remains valid local work.
+- A fresh independent issue branch is created only in a clean workspace at the verified canonical
+  SHA. Every ready path re-reads branch/HEAD, and any materialized path also revalidates cleanliness
+  after switching; a concurrent change fails closed and is preserved.
+- A fresh remote issue/PR branch MAY be materialized only from its exact verified remote SHA.
+- Stacked work requires exactly one typed upstream branch and head SHA, both verified against the
+  remote. Missing, multiple, stale, or mismatched typed evidence fails closed. Implementations MUST
+  NOT infer stacking from descriptions, comments, PR prose, filenames, or ordinary blocker text.
+- The same checks and failure semantics apply to local and SSH workers.
+
 ### 9.4 Workspace Hooks
 
 Supported hooks:
@@ -1174,8 +1203,8 @@ The `Agent Runner` wraps workspace + prompt + app-server client.
 Behavior:
 
 1. Create/reuse workspace for issue.
-2. Run implementation-defined workspace preflight if enabled.
-3. If workspace preflight returns a hard blocker, run `after_run` cleanup if configured, report the
+2. Run implementation-defined workspace preflight and branch readiness gates if enabled.
+3. If either gate returns a hard blocker, run `after_run` cleanup if configured, report the
    blocker after cleanup finishes, and exit normally so the orchestrator does not retry.
 4. Build prompt from workflow template.
 5. Start app-server session.
@@ -2033,6 +2062,9 @@ Unless otherwise noted, Sections 17.1 through 17.7 are `Core Conformance`. Bulle
 - `before_run` hook runs before each attempt and failure/timeouts abort the current attempt
 - If implemented, workspace preflight failures are surfaced without leaking URL credentials and any
   hard-blocker signal is reported after `after_run` cleanup completes
+- If implemented, branch readiness resolves and fetch-verifies the live remote default, preserves
+  continuations, creates clean independent/typed-stacked branches at exact verified SHAs, and fails
+  closed before `before_run` / coding-agent launch without destructive branch repair
 - `after_run` hook runs after each attempt and failure/timeouts are logged and ignored
 - `before_remove` hook runs on cleanup and failures/timeouts are ignored
 - Workspace path sanitization and root containment invariants are enforced before agent launch
@@ -2206,6 +2238,8 @@ Extension config:
 - A remote host SHOULD satisfy the same basic contract as a local worker environment: reachable
   shell, writable workspace root, coding-agent executable, and any required auth or repository
   prerequisites.
+- Workspace preflight and branch readiness commands use the same timeout, credential-redaction, and
+  fail-closed contracts on remote hosts as they do locally.
 
 ### A.2 Scheduling Notes
 

@@ -333,6 +333,49 @@ defmodule SymphonyElixir.WorkspacePreflightBlockerTest do
     end
   end
 
+  test "readiness-state preparation failure runs after_run once before blocker reporting" do
+    workspace_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-readiness-state-cleanup-#{System.unique_integer([:positive])}"
+      )
+
+    first_issue = %Issue{
+      id: "issue-readiness-state-first",
+      identifier: "MT/CLEANUP",
+      title: "Initial readiness owner",
+      state: "In Progress",
+      branch_name: "codex/initial"
+    }
+
+    colliding_issue = %Issue{
+      id: "issue-readiness-state-second",
+      identifier: "MT_CLEANUP",
+      title: "Mismatched readiness owner",
+      state: "In Progress",
+      branch_name: "codex/colliding"
+    }
+
+    try do
+      write_workflow_file!(Workflow.workflow_file_path(), workspace_root: workspace_root)
+      assert {:ok, %{path: workspace}} = Workspace.prepare_for_issue(first_issue)
+
+      write_workflow_file!(Workflow.workflow_file_path(),
+        workspace_root: workspace_root,
+        hook_after_run: "printf 'cleanup\\n' >> cleanup.log"
+      )
+
+      assert :ok = AgentRunner.run(colliding_issue, self())
+
+      assert_receive {:agent_hard_blocker, "issue-readiness-state-second", blocker}
+      assert blocker.error =~ "workspace readiness state failed"
+      assert blocker.workspace_path == workspace
+      assert File.read!(Path.join(workspace, "cleanup.log")) == "cleanup\n"
+    after
+      File.rm_rf(workspace_root)
+    end
+  end
+
   defp wait_for_blocked_issue(pid, issue_id, timeout_ms \\ 200) do
     deadline_ms = System.monotonic_time(:millisecond) + timeout_ms
     do_wait_for_blocked_issue(pid, issue_id, deadline_ms)
