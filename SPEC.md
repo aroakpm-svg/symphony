@@ -525,6 +525,25 @@ Dispatch gating behavior:
 - Workflow file read/YAML errors block new dispatches until fixed.
 - Template errors fail only the affected run attempt.
 
+### 5.6 Pull-Request Scope Contract (Static Validation Boundary)
+
+Any pull-request description evaluated by `pr_body.check` MUST contain a typed scope contract that
+states the work item, invariants, acceptance criteria, non-goals, dependencies, and follow-ups.
+Contract validation is static: it MUST reject a missing contract and missing, malformed, duplicate,
+or placeholder fields without inferring meaning from free-form prose.
+
+- Finding severity and scope ownership are separate concepts. Severity alone MUST NOT establish
+  whether a finding belongs to the current pull request.
+- This contract defines and statically validates the pull-request boundary only. It MUST NOT
+  classify findings, move tracker issues, or otherwise change review-routing state.
+- A later routing policy MAY consume the typed contract, but that policy is a separate extension.
+  It MAY return a finding to the same pull request only after proving that the finding violates a
+  declared invariant or acceptance criterion, or that the pull request introduced the defect.
+- If ownership cannot be established, the later policy MUST fail closed: keep the issue in review
+  for follow-up or human disposition rather than returning it to the pull request.
+- When this lint applies to an existing pull request, its description MUST be migrated to the
+  structured contract before it can pass validation.
+
 ## 6. Configuration Specification
 
 ### 6.1 Configuration Resolution Pipeline
