@@ -6,6 +6,38 @@ migrations_dir="$root_dir/elixir/priv/symphony_migrations"
 admin_url="${TEST_DATABASE_URL:?TEST_DATABASE_URL is required}"
 root_url="${TEST_ROOT_DATABASE_URL:?TEST_ROOT_DATABASE_URL is required}"
 
+service_fixture="$(mktemp)"
+ARO169_POSTFLIGHT_DATABASE_URL='postgresql://authority_user:authority_password@authority.example:5432/path_db?host=query.example&port=6543&user=query_user&password=a+b&dbname=query_db' \
+  python3 "$root_dir/elixir/bin/node-enrollment-postflight-service.py" \
+  "$service_fixture"
+test "$(grep -c '^host=' "$service_fixture")" = "1"
+test "$(grep -c '^port=' "$service_fixture")" = "1"
+test "$(grep -c '^user=' "$service_fixture")" = "1"
+test "$(grep -c '^password=' "$service_fixture")" = "1"
+test "$(grep -c '^dbname=' "$service_fixture")" = "1"
+grep -Fx 'host=query.example' "$service_fixture" >/dev/null
+grep -Fx 'port=6543' "$service_fixture" >/dev/null
+grep -Fx 'user=query_user' "$service_fixture" >/dev/null
+grep -Fx 'password=a+b' "$service_fixture" >/dev/null
+grep -Fx 'dbname=query_db' "$service_fixture" >/dev/null
+rm -f "$service_fixture"
+
+invalid_service_fixture="$(mktemp)"
+if parser_error="$(
+  ARO169_POSTFLIGHT_DATABASE_URL='postgresql://user:topsecret@example.com／oops/db' \
+    python3 "$root_dir/elixir/bin/node-enrollment-postflight-service.py" \
+    "$invalid_service_fixture" 2>&1
+)"; then
+  echo "postflight service parser unexpectedly accepted NFKC-invalid authority" >&2
+  exit 1
+fi
+rm -f "$invalid_service_fixture"
+test "$parser_error" = "ARO169_POSTFLIGHT_DATABASE_URL is invalid"
+if [[ "$parser_error" == *topsecret* ]]; then
+  echo "postflight service parser exposed a credential" >&2
+  exit 1
+fi
+
 psql_admin() {
   psql -X -q -v ON_ERROR_STOP=1 -d "$admin_url" "$@"
 }
@@ -1924,7 +1956,7 @@ if [ "$snapshot_seen" != true ]; then
 fi
 
 psql_root -c "
-  alter function extensions.digest(text, text) volatile;
+  alter function extensions.digest(text, text) cost 999;
 " >/dev/null
 printf 'commit;\n\\q\n' >&"$migration_input"
 exec {migration_input}>&-

@@ -85,8 +85,15 @@ defmodule SymphonyElixir.NodeEnrollmentMigrationTest do
     refute command =~ ~s(--dbname="$ARO169_POSTFLIGHT_DATABASE_URL")
 
     assert postflight_service =~ ~s(os.environ["ARO169_POSTFLIGHT_DATABASE_URL"])
-    assert postflight_service =~ "urlsplit(url)"
-    assert postflight_service =~ "parse_qsl(parsed.query, keep_blank_values=True)"
+    assert postflight_service =~ "parsed = urlsplit(url)"
+    assert postflight_service =~ "except (UnicodeError, ValueError)"
+
+    assert postflight_service =~
+             ~s|raise SystemExit("ARO169_POSTFLIGHT_DATABASE_URL is invalid") from None|
+
+    assert postflight_service =~ "for item in parsed.query.split(\"&\")"
+    assert postflight_service =~ "value = unquote(raw_value)"
+    assert postflight_service =~ "parameters[key] = value"
     assert postflight_service =~ "os.chmod(target, 0o600)"
     assert postflight_service =~ ~s|any(character in value for character in "\\r\\n\\0")|
 
@@ -100,10 +107,12 @@ defmodule SymphonyElixir.NodeEnrollmentMigrationTest do
     assert postflight_sql =~ "contract_version = 3"
     assert postflight_sql =~ "extension.extname = 'pgcrypto'"
     assert postflight_sql =~ "procedure.proacl is null"
+    assert postflight_sql =~ "procedure.procost = 1"
     assert postflight_sql =~ "postflight detected pgcrypto identity or ACL drift"
 
     assert lifecycle_script =~ "postflight unexpectedly accepted committed pgcrypto drift"
     assert lifecycle_script =~ "migration snapshot acquired before postflight race"
+    assert lifecycle_script =~ "alter function extensions.digest(text, text) cost 999"
   end
 
   test "uses independent login credentials and stores only a verifier" do

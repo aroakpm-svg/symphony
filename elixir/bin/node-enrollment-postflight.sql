@@ -53,6 +53,7 @@ begin
       and not procedure.proleakproof
       and procedure.proisstrict
       and procedure.proparallel = 's'
+      and procedure.procost = 1
       and procedure.proconfig is null
       and case when procedure.proacl is null then '<default>' else '<explicit>:' || coalesce((
         select string_agg(
