@@ -941,6 +941,32 @@ defmodule Mix.Tasks.PrBody.CheckTest do
     end)
   end
 
+  test "keeps headings masked until a matching tilde fence closes" do
+    in_temp_repo(fn ->
+      write_template!(@template)
+
+      body =
+        String.replace(
+          @valid_body,
+          "Context text.",
+          """
+          Context text includes an example:
+
+          ~~~markdown
+          #### Scope Contract
+          ```
+          ~~
+          ~~~
+          """
+        )
+
+      File.write!("body.md", body)
+
+      output = capture_io(fn -> Check.run(["lint", "--file", "body.md"]) end)
+      assert output =~ "PR body format OK"
+    end)
+  end
+
   test "rejects every non-dash Work Item list marker through the shared parser" do
     # Mutation caught: formatting only dash-list errors while alternate and ordered markers parse as prose.
     in_temp_repo(fn ->
