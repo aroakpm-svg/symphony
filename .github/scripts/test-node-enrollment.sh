@@ -22,19 +22,30 @@ grep -Fx 'password=a+b' "$service_fixture" >/dev/null
 grep -Fx 'dbname=query_db' "$service_fixture" >/dev/null
 rm -f "$service_fixture"
 
+service_fixture="$(mktemp)"
+ARO169_POSTFLIGHT_DATABASE_URL='postgresql://user:top／secret@example.com/db' \
+  python3 "$root_dir/elixir/bin/node-enrollment-postflight-service.py" \
+  "$service_fixture"
+service_fixture_hex="$(od -An -tx1 "$service_fixture" | tr -d ' \n')"
+if [[ "$service_fixture_hex" != *70617373776f72643d746f70efbc8f7365637265740a* ]]; then
+  echo "postflight service parser rejected or rewrote a raw Unicode credential" >&2
+  exit 1
+fi
+rm -f "$service_fixture"
+
 invalid_service_fixture="$(mktemp)"
 if parser_error="$(
-  ARO169_POSTFLIGHT_DATABASE_URL='postgresql://user:topsecret@example.com／oops/db' \
+  ARO169_POSTFLIGHT_DATABASE_URL='postgresql://user:topsecret@example.com/db?service=operator_service' \
     python3 "$root_dir/elixir/bin/node-enrollment-postflight-service.py" \
     "$invalid_service_fixture" 2>&1
 )"; then
-  echo "postflight service parser unexpectedly accepted NFKC-invalid authority" >&2
+  echo "postflight service parser unexpectedly emitted a nested service" >&2
   exit 1
 fi
 rm -f "$invalid_service_fixture"
 test "$parser_error" = "ARO169_POSTFLIGHT_DATABASE_URL is invalid"
-if [[ "$parser_error" == *topsecret* ]]; then
-  echo "postflight service parser exposed a credential" >&2
+if [[ "$parser_error" == *topsecret* || "$parser_error" == *operator_service* ]]; then
+  echo "postflight service parser exposed a rejected service URI" >&2
   exit 1
 fi
 
@@ -2027,7 +2038,8 @@ if [ "$snapshot_seen" != true ]; then
 fi
 
 psql_root -c "
-  alter function extensions.digest(text, text) cost 999;
+  alter function extensions.digest(text, text)
+    support pg_catalog.text_starts_with_support;
 " >/dev/null
 printf 'commit;\n\\q\n' >&"$migration_input"
 exec {migration_input}>&-

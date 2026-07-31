@@ -86,7 +86,8 @@ defmodule SymphonyElixir.NodeEnrollmentMigrationTest do
 
     assert postflight_service =~ ~s(os.environ["ARO169_POSTFLIGHT_DATABASE_URL"])
     assert postflight_service =~ "libpq.PQconninfoParse(os.fsencode(url)"
-    assert postflight_service =~ "validate_nfkc_authority(url)"
+    refute postflight_service =~ "NFKC"
+    assert postflight_service =~ ~s|if b"service" in parameters:|
     assert postflight_service =~ "libpq.PQconninfoFree(options)"
     assert postflight_service =~ "libpq.PQfreemem(error)"
     assert postflight_service =~ ~s|open(target, "wb")|
@@ -105,11 +106,12 @@ defmodule SymphonyElixir.NodeEnrollmentMigrationTest do
     assert postflight_sql =~ "extension.extname = 'pgcrypto'"
     assert postflight_sql =~ "procedure.proacl is null"
     assert postflight_sql =~ "procedure.procost = 1"
+    assert postflight_sql =~ "procedure.prosupport = 0"
     assert postflight_sql =~ "postflight detected pgcrypto identity or ACL drift"
 
     assert lifecycle_script =~ "postflight unexpectedly accepted committed pgcrypto drift"
     assert lifecycle_script =~ "migration snapshot acquired before postflight race"
-    assert lifecycle_script =~ "alter function extensions.digest(text, text) cost 999"
+    assert lifecycle_script =~ "support pg_catalog.text_starts_with_support"
   end
 
   test "uses independent login credentials and stores only a verifier" do

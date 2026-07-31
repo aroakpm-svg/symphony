@@ -3,7 +3,6 @@ import ctypes
 import ctypes.util
 import os
 import sys
-import unicodedata
 
 
 class ConninfoOption(ctypes.Structure):
@@ -30,20 +29,7 @@ def load_libpq():
     return library
 
 
-def validate_nfkc_authority(url):
-    _scheme, separator, remainder = url.partition("://")
-    if not separator:
-        return
-    authority = remainder.split("/", 1)[0].split("?", 1)[0].split("#", 1)[0]
-    normalized = unicodedata.normalize(
-        "NFKC", authority.replace("@", "").replace(":", "")
-    )
-    if any(character in normalized for character in "/?#@:"):
-        raise SystemExit("ARO169_POSTFLIGHT_DATABASE_URL is invalid") from None
-
-
 def parse_url(url):
-    validate_nfkc_authority(url)
     libpq = load_libpq()
     error = ctypes.c_char_p()
     options = libpq.PQconninfoParse(os.fsencode(url), ctypes.byref(error))
@@ -67,6 +53,13 @@ def parse_url(url):
 url = os.environ["ARO169_POSTFLIGHT_DATABASE_URL"]
 target = sys.argv[1]
 parameters = parse_url(url)
+
+# A service referenced by a URI cannot be nested inside the private service
+# section used to keep credentials out of psql's argv. Flattening it would
+# require resolving operator-owned service files and environment precedence,
+# so fail closed before writing a misleading target.
+if b"service" in parameters:
+    raise SystemExit("ARO169_POSTFLIGHT_DATABASE_URL is invalid") from None
 
 if not any(parameters.get(key) for key in {b"host", b"hostaddr"}):
     raise SystemExit("ARO169_POSTFLIGHT_DATABASE_URL must identify a host")
