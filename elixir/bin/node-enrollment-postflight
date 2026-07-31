@@ -8,6 +8,6 @@ PGDATABASE=$ARO169_POSTFLIGHT_DATABASE_URL
 export PGDATABASE
 unset ARO169_POSTFLIGHT_DATABASE_URL
 
-psql -X --no-password --dbname="$PGDATABASE" -v ON_ERROR_STOP=1 \
+psql -X --no-password -v ON_ERROR_STOP=1 \
   -f "$script_dir/node-enrollment-postflight.sql"
 printf '%s\n' "ARO-169 pgcrypto catalog postflight passed"
