@@ -26,7 +26,7 @@ defmodule SymphonyElixir.NodeEnrollmentMigrationTest do
                             __DIR__
                           )
   @postflight Path.expand("../../bin/node-enrollment-postflight", __DIR__)
-  @postflight_sql Path.expand("../../bin/node-enrollment-postflight.sql", __DIR__)
+  @postflight_sql Path.expand("../../bin/node-enrollment-postflight.sql", __DIR__)\n  @postflight_service Path.expand("../../bin/node-enrollment-postflight-service.py", __DIR__)
 
   test "requires contract v2 and publishes contract v3" do
     sql = File.read!(@migration)
@@ -68,7 +68,7 @@ defmodule SymphonyElixir.NodeEnrollmentMigrationTest do
 
   test "postflight uses a dedicated fresh read-only catalog connection" do
     command = File.read!(@postflight)
-    postflight_sql = File.read!(@postflight_sql)
+    postflight_sql = File.read!(@postflight_sql)\n    postflight_service = File.read!(@postflight_service)
     lifecycle_script = File.read!(@lifecycle_script)
 
     assert command =~
@@ -76,15 +76,17 @@ defmodule SymphonyElixir.NodeEnrollmentMigrationTest do
 
     refute command =~ ~r/(?<!POSTFLIGHT_)DATABASE_URL/
     assert command =~ "service_file=$(mktemp)"
-    assert command =~ "chmod 600 \"$service_file\""
-    assert command =~ ~s(printf '[aro169_postflight]\\ndbname=%s\\n')
+    assert command =~ ~s(python3 "$script_dir/node-enrollment-postflight-service.py")
     assert command =~ "unset ARO169_POSTFLIGHT_DATABASE_URL"
-    assert command =~ "PGSERVICEFILE=$service_file PGSERVICE=aro169_postflight"
-
-    assert command =~
-             ~s(psql -X --no-password --dbname="service=aro169_postflight servicefile=$service_file")
-
+    assert command =~ "PGSERVICEFILE=$service_file"
+    assert command =~ "psql -X --no-password --dbname=service=aro169_postflight"
     refute command =~ ~s(--dbname="$ARO169_POSTFLIGHT_DATABASE_URL")
+
+    assert postflight_service =~ ~s(os.environ["ARO169_POSTFLIGHT_DATABASE_URL"])
+    assert postflight_service =~ "urlsplit(url)"
+    assert postflight_service =~ "parse_qsl(parsed.query, keep_blank_values=True)"
+    assert postflight_service =~ "os.chmod(target, 0o600)"
+    assert postflight_service =~ ~s(any(character in value for character in "\\r\\n\\0"))
 
     assert postflight_sql =~
              "begin transaction isolation level repeatable read read only"
