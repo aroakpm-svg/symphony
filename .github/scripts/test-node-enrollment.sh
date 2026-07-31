@@ -38,6 +38,44 @@ if [[ "$parser_error" == *topsecret* ]]; then
   exit 1
 fi
 
+service_fixture="$(mktemp)"
+ARO169_POSTFLIGHT_DATABASE_URL='postgresql://query_user@host1:5432,host2:5433/query_db?ssl=true' \
+  python3 "$root_dir/elixir/bin/node-enrollment-postflight-service.py" \
+  "$service_fixture"
+grep -Fx 'host=host1,host2' "$service_fixture" >/dev/null
+grep -Fx 'port=5432,5433' "$service_fixture" >/dev/null
+grep -Fx 'sslmode=require' "$service_fixture" >/dev/null
+if grep -q '^ssl=' "$service_fixture"; then
+  echo "postflight service parser emitted the URI-only ssl alias" >&2
+  exit 1
+fi
+rm -f "$service_fixture"
+
+invalid_service_fixture="$(mktemp)"
+if parser_error="$(
+  ARO169_POSTFLIGHT_DATABASE_URL='postgresql://query_user@query.example/query_db?password=a%ZZ' \
+    python3 "$root_dir/elixir/bin/node-enrollment-postflight-service.py" \
+    "$invalid_service_fixture" 2>&1
+)"; then
+  echo "postflight service parser unexpectedly accepted malformed percent encoding" >&2
+  exit 1
+fi
+rm -f "$invalid_service_fixture"
+test "$parser_error" = "ARO169_POSTFLIGHT_DATABASE_URL is invalid"
+
+invalid_service_fixture="$(mktemp)"
+if parser_error="$(
+  ARO169_POSTFLIGHT_DATABASE_URL='postgresql://query_user@query.example/query_db?password=trailing%20' \
+    python3 "$root_dir/elixir/bin/node-enrollment-postflight-service.py" \
+    "$invalid_service_fixture" 2>&1
+)"; then
+  echo "postflight service parser unexpectedly accepted trailing whitespace" >&2
+  exit 1
+fi
+rm -f "$invalid_service_fixture"
+test "$parser_error" = \
+  "ARO169_POSTFLIGHT_DATABASE_URL contains an unsafe service value"
+
 psql_admin() {
   psql -X -q -v ON_ERROR_STOP=1 -d "$admin_url" "$@"
 }

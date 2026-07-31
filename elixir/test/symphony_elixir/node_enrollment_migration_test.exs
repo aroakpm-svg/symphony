@@ -92,10 +92,15 @@ defmodule SymphonyElixir.NodeEnrollmentMigrationTest do
              ~s|raise SystemExit("ARO169_POSTFLIGHT_DATABASE_URL is invalid") from None|
 
     assert postflight_service =~ "for item in parsed.query.split(\"&\")"
-    assert postflight_service =~ "value = unquote(raw_value)"
+    assert postflight_service =~ ~s|re.search(r"%(?![0-9A-Fa-f]{2})", value)|
+    assert postflight_service =~ "value = decode_uri_component(raw_value)"
     assert postflight_service =~ "parameters[key] = value"
+    assert postflight_service =~ "host, port = parse_hosts(parsed.netloc)"
+    assert postflight_service =~ ~s|hosts.append(decode_uri_component(host))|
+    assert postflight_service =~ ~s|key, value = "sslmode", "require"|
     assert postflight_service =~ "os.chmod(target, 0o600)"
     assert postflight_service =~ ~s|any(character in value for character in "\\r\\n\\0")|
+    assert postflight_service =~ "value != value.strip()"
 
     assert File.read!(@postgres_workflow) =~
              ~s("elixir/bin/node-enrollment-postflight-service.py")
