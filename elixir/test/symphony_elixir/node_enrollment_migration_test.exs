@@ -77,7 +77,7 @@ defmodule SymphonyElixir.NodeEnrollmentMigrationTest do
     refute command =~ ~r/(?<!POSTFLIGHT_)DATABASE_URL/
     assert command =~ "PGDATABASE=$ARO169_POSTFLIGHT_DATABASE_URL"
     assert command =~ "unset ARO169_POSTFLIGHT_DATABASE_URL"
-    assert command =~ "psql -X --no-password -v ON_ERROR_STOP=1"
+    assert command =~ ~s(psql -X --no-password --dbname="$PGDATABASE")
 
     assert postflight_sql =~
              "begin transaction isolation level repeatable read read only"
