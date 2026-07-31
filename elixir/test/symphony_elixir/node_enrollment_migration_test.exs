@@ -82,7 +82,7 @@ defmodule SymphonyElixir.NodeEnrollmentMigrationTest do
     assert command =~ "PGSERVICEFILE=$service_file PGSERVICE=aro169_postflight"
 
     assert command =~
-             "psql -X --no-password --dbname=service=aro169_postflight -v ON_ERROR_STOP=1"
+             ~s(psql -X --no-password --dbname="service=aro169_postflight servicefile=$service_file")
 
     refute command =~ ~s(--dbname="$ARO169_POSTFLIGHT_DATABASE_URL")
 
