@@ -88,7 +88,7 @@ defmodule SymphonyElixir.NodeEnrollmentMigrationTest do
     assert postflight_service =~ "urlsplit(url)"
     assert postflight_service =~ "parse_qsl(parsed.query, keep_blank_values=True)"
     assert postflight_service =~ "os.chmod(target, 0o600)"
-    assert postflight_service =~ ~s(any(character in value for character in "\\r\\n\\0"))
+    assert postflight_service =~ ~s|any(character in value for character in "\\r\\n\\0")|
 
     assert File.read!(@postgres_workflow) =~
              ~s("elixir/bin/node-enrollment-postflight-service.py")
