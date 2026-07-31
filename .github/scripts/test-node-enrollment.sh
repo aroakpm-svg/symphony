@@ -76,6 +76,39 @@ rm -f "$invalid_service_fixture"
 test "$parser_error" = \
   "ARO169_POSTFLIGHT_DATABASE_URL contains an unsafe service value"
 
+service_fixture="$(mktemp)"
+ARO169_POSTFLIGHT_DATABASE_URL='postgresql:///query_db?host=query.example' \
+  python3 "$root_dir/elixir/bin/node-enrollment-postflight-service.py" \
+  "$service_fixture"
+grep -Fx 'host=query.example' "$service_fixture" >/dev/null
+rm -f "$service_fixture"
+
+service_fixture="$(mktemp)"
+ARO169_POSTFLIGHT_DATABASE_URL='postgresql://query_user@[2001:db8::1],[2001:db8::2]:5433/query_db' \
+  python3 "$root_dir/elixir/bin/node-enrollment-postflight-service.py" \
+  "$service_fixture"
+grep -Fx 'host=2001:db8::1,2001:db8::2' "$service_fixture" >/dev/null
+grep -Fx 'port=,5433' "$service_fixture" >/dev/null
+rm -f "$service_fixture"
+
+service_fixture="$(mktemp)"
+ARO169_POSTFLIGHT_DATABASE_URL='postgresql://query_user@query.example:%35%34%33%32/query_db' \
+  python3 "$root_dir/elixir/bin/node-enrollment-postflight-service.py" \
+  "$service_fixture"
+grep -Fx 'port=5432' "$service_fixture" >/dev/null
+rm -f "$service_fixture"
+
+service_fixture="$(mktemp)"
+ARO169_POSTFLIGHT_DATABASE_URL='postgresql://query_user@query.example/query_db?password=a%FFb' \
+  python3 "$root_dir/elixir/bin/node-enrollment-postflight-service.py" \
+  "$service_fixture"
+service_fixture_hex="$(od -An -tx1 "$service_fixture" | tr -d ' \n')"
+if [[ "$service_fixture_hex" != *70617373776f72643d61ff620a* ]]; then
+  echo "postflight service parser rewrote a valid non-UTF8 octet" >&2
+  exit 1
+fi
+rm -f "$service_fixture"
+
 psql_admin() {
   psql -X -q -v ON_ERROR_STOP=1 -d "$admin_url" "$@"
 }
