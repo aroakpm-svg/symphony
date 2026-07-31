@@ -80,6 +80,7 @@ defmodule SymphonyElixir.NodeEnrollmentMigrationTest do
     assert command =~ ~s(printf '[aro169_postflight]\\ndbname=%s\\n')
     assert command =~ "unset ARO169_POSTFLIGHT_DATABASE_URL"
     assert command =~ "PGSERVICEFILE=$service_file PGSERVICE=aro169_postflight"
+
     assert command =~
              "psql -X --no-password --dbname=service=aro169_postflight -v ON_ERROR_STOP=1"
 
