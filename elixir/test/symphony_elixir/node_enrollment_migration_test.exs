@@ -25,6 +25,8 @@ defmodule SymphonyElixir.NodeEnrollmentMigrationTest do
                             "../../docs/node_enrollment_catalog_identity_audit.md",
                             __DIR__
                           )
+  @postflight Path.expand("../../bin/node-enrollment-postflight", __DIR__)
+  @postflight_sql Path.expand("../../bin/node-enrollment-postflight.sql", __DIR__)
 
   test "requires contract v2 and publishes contract v3" do
     sql = File.read!(@migration)
@@ -62,6 +64,32 @@ defmodule SymphonyElixir.NodeEnrollmentMigrationTest do
     assert lifecycle_script =~ "pgcrypto grant-option drift"
     assert lifecycle_script =~ "pgcrypto grantor/special-role drift"
     assert lifecycle_script =~ "rollback unexpectedly accepted pgcrypto ACL grantee drift"
+  end
+
+  test "postflight uses a dedicated fresh read-only catalog connection" do
+    command = File.read!(@postflight)
+    postflight_sql = File.read!(@postflight_sql)
+    lifecycle_script = File.read!(@lifecycle_script)
+
+    assert command =~
+             ~s(: "${ARO169_POSTFLIGHT_DATABASE_URL:?ARO169_POSTFLIGHT_DATABASE_URL is required}")
+
+    refute command =~ ~r/(?<!POSTFLIGHT_)DATABASE_URL/
+    assert command =~ "PGDATABASE=$ARO169_POSTFLIGHT_DATABASE_URL"
+    assert command =~ "unset ARO169_POSTFLIGHT_DATABASE_URL"
+    assert command =~ "psql -X --no-password -v ON_ERROR_STOP=1"
+
+    assert postflight_sql =~
+             "begin transaction isolation level repeatable read read only"
+
+    assert postflight_sql =~ "node_enrollment_contract_manifest"
+    assert postflight_sql =~ "contract_version = 3"
+    assert postflight_sql =~ "extension.extname = 'pgcrypto'"
+    assert postflight_sql =~ "procedure.proacl is null"
+    assert postflight_sql =~ "postflight detected pgcrypto identity or ACL drift"
+
+    assert lifecycle_script =~ "postflight unexpectedly accepted committed pgcrypto drift"
+    assert lifecycle_script =~ "migration snapshot acquired before postflight race"
   end
 
   test "uses independent login credentials and stores only a verifier" do

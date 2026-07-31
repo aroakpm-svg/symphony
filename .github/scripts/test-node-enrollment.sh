@@ -1884,4 +1884,57 @@ test "$(psql_admin -A -t -c "select count(*) from pg_policies where schemaname =
 PGOPTIONS="-c search_path=public,extensions,pg_catalog" \
   psql_admin -f "$migrations_dir/20260724010000_aro_169_node_enrollment.sql"
 
+ARO169_POSTFLIGHT_DATABASE_URL="$admin_url" \
+  "$root_dir/elixir/bin/node-enrollment-postflight" >/dev/null
+
+if env -u ARO169_POSTFLIGHT_DATABASE_URL \
+  DATABASE_URL="$admin_url" \
+  "$root_dir/elixir/bin/node-enrollment-postflight" >/dev/null 2>&1; then
+  echo "postflight unexpectedly fell back to DATABASE_URL" >&2
+  exit 1
+fi
+
+psql_admin \
+  -f "$migrations_dir/20260724010000_aro_169_node_enrollment.down.sql" \
+  >/dev/null
+
+race_migration="$(mktemp)"
+trap 'rm -f "$race_migration"' EXIT
+sed '$d' "$migrations_dir/20260724010000_aro_169_node_enrollment.sql" \
+  >"$race_migration"
+
+coproc migration_psql {
+  psql -X -q -v ON_ERROR_STOP=1 -d "$admin_url"
+}
+exec {migration_input}>&"${migration_psql[1]}"
+exec {migration_output}<&"${migration_psql[0]}"
+printf '\\i %s\n\\echo migration snapshot acquired before postflight race\n' \
+  "$race_migration" >&"$migration_input"
+
+snapshot_seen=false
+while IFS= read -r -u "$migration_output" migration_line; do
+  if [ "$migration_line" = "migration snapshot acquired before postflight race" ]; then
+    snapshot_seen=true
+    break
+  fi
+done
+if [ "$snapshot_seen" != true ]; then
+  echo "migration did not reach the guarded-statement snapshot" >&2
+  exit 1
+fi
+
+psql_root -c "
+  alter function extensions.digest(text, text) volatile;
+" >/dev/null
+printf 'commit;\n\\q\n' >&"$migration_input"
+exec {migration_input}>&-
+exec {migration_output}<&-
+wait "$migration_psql_PID"
+
+if ARO169_POSTFLIGHT_DATABASE_URL="$admin_url" \
+  "$root_dir/elixir/bin/node-enrollment-postflight" >/dev/null 2>&1; then
+  echo "postflight unexpectedly accepted committed pgcrypto drift" >&2
+  exit 1
+fi
+
 echo "ARO-169 disposable PostgreSQL lifecycle passed without printing credentials"

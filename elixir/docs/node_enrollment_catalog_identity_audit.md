@@ -79,6 +79,17 @@ decision or survives into the apply/rollback fingerprint.
   a fresh read-only preflight and postflight detect drift. A commit after the
   guarded statement's snapshot is therefore detected rather than silently
   normalized or treated as an authority the migration can control.
+
+  Operators must start a manager-enforced DDL freeze before preflight and keep
+  it in place through migration commit and postflight. After commit, run
+  `ARO169_POSTFLIGHT_DATABASE_URL=... elixir/bin/node-enrollment-postflight`.
+  The command requires that dedicated URL, opens its own connection and
+  repeatable-read read-only transaction, verifies the committed v3 manifest,
+  and checks the exact pgcrypto extension/function identity and ACL. Missing
+  evidence, insufficient catalog access, or drift exits non-zero and stops the
+  rollout. A failed postflight cannot undo the committed migration; keep the
+  freeze in place and create a separately reviewed forward reconciliation only
+  when shared staging actually contains drift.
 - Managed-schema inventory identities that enter the stored fingerprint must
   be visibility independent:
   - functions and trigger functions;
