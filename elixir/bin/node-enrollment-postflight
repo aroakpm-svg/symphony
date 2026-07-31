@@ -13,6 +13,6 @@ unset ARO169_POSTFLIGHT_DATABASE_URL
 PGSERVICEFILE=$service_file PGSERVICE=aro169_postflight
 export PGSERVICEFILE PGSERVICE
 
-psql -X --no-password -v ON_ERROR_STOP=1 \
+psql -X --no-password --dbname=service=aro169_postflight -v ON_ERROR_STOP=1 \
   -f "$script_dir/node-enrollment-postflight.sql"
 printf '%s\n' "ARO-169 pgcrypto catalog postflight passed"
