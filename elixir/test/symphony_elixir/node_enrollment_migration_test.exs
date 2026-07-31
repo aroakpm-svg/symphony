@@ -75,10 +75,13 @@ defmodule SymphonyElixir.NodeEnrollmentMigrationTest do
              ~s(: "${ARO169_POSTFLIGHT_DATABASE_URL:?ARO169_POSTFLIGHT_DATABASE_URL is required}")
 
     refute command =~ ~r/(?<!POSTFLIGHT_)DATABASE_URL/
-    assert command =~ "PGDATABASE=$ARO169_POSTFLIGHT_DATABASE_URL"
+    assert command =~ "service_file=$(mktemp)"
+    assert command =~ "chmod 600 \"$service_file\""
+    assert command =~ ~s(printf '[aro169_postflight]\\ndbname=%s\\n')
     assert command =~ "unset ARO169_POSTFLIGHT_DATABASE_URL"
+    assert command =~ "PGSERVICEFILE=$service_file PGSERVICE=aro169_postflight"
     assert command =~ "psql -X --no-password -v ON_ERROR_STOP=1"
-    refute command =~ ~s(--dbname="$PGDATABASE")
+    refute command =~ "--dbname"
 
     assert postflight_sql =~
              "begin transaction isolation level repeatable read read only"
