@@ -106,7 +106,7 @@ mise exec -- ./bin/symphony ./WORKFLOW.md
 
 ## ARO-169 node-enrollment rollout postflight
 
-For an ARO-169 node-enrollment rollout, a manager must enforce a DDL freeze
+This command requires `python3` and the PostgreSQL `psql` client. For an\nARO-169 node-enrollment rollout, a manager must enforce a DDL freeze
 before preflight. Keep that freeze in place through the migration transaction,
 its commit, and the fresh-connection catalog postflight:
 
