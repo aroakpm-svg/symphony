@@ -4,9 +4,14 @@ set -eu
 : "${ARO169_POSTFLIGHT_DATABASE_URL:?ARO169_POSTFLIGHT_DATABASE_URL is required}"
 
 script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
-PGDATABASE=$ARO169_POSTFLIGHT_DATABASE_URL
-export PGDATABASE
+service_file=$(mktemp)
+trap 'rm -f "$service_file"' EXIT HUP INT TERM
+chmod 600 "$service_file"
+printf '[aro169_postflight]\ndbname=%s\n' "$ARO169_POSTFLIGHT_DATABASE_URL" >"$service_file"
 unset ARO169_POSTFLIGHT_DATABASE_URL
+
+PGSERVICEFILE=$service_file PGSERVICE=aro169_postflight
+export PGSERVICEFILE PGSERVICE
 
 psql -X --no-password -v ON_ERROR_STOP=1 \
   -f "$script_dir/node-enrollment-postflight.sql"
