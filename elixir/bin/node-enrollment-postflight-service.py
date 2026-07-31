@@ -34,7 +34,7 @@ if not any(key == "dbname" and value for key, value in parameters):
 def service_value(value):
     if any(character in value for character in "\r\n\0"):
         raise SystemExit("ARO169_POSTFLIGHT_DATABASE_URL contains an unsafe service value")
-    return "'" + value.replace("\\", "\\\\").replace("'", "\\'") + "'"
+    return value
 
 with open(target, "w", encoding="utf-8", newline="\n") as service:
     service.write("[aro169_postflight]\n")
