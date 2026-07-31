@@ -104,6 +104,24 @@ mise exec -- mix build
 mise exec -- ./bin/symphony ./WORKFLOW.md
 ```
 
+## ARO-169 node-enrollment rollout postflight
+
+For an ARO-169 node-enrollment rollout, a manager must enforce a DDL freeze
+before preflight. Keep that freeze in place through the migration transaction,
+its commit, and the fresh-connection catalog postflight:
+
+```bash
+ARO169_POSTFLIGHT_DATABASE_URL=... ./bin/node-enrollment-postflight
+```
+
+The command accepts only `ARO169_POSTFLIGHT_DATABASE_URL`; it does not fall
+back to `DATABASE_URL`. It opens its own read-only, repeatable-read transaction
+and exits non-zero when the committed v3 manifest or exact pgcrypto identity and
+ACL cannot be verified. A failure stops the rollout and does not undo the
+committed migration. Keep the freeze in place while the result is investigated;
+create a separately reviewed forward reconciliation only when shared staging
+actually contains drift. Release the DDL freeze only after postflight succeeds.
+
 ## Configuration
 
 Pass a custom workflow file path to `./bin/symphony` when starting the service:
