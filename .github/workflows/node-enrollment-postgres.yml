@@ -7,6 +7,9 @@ on:
       - ".github/fixtures/aro-169-supabase-managed-event-triggers.sql"
       - ".github/scripts/test-node-enrollment.sh"
       - ".github/workflows/node-enrollment-postgres.yml"
+      - "elixir/bin/node-enrollment-postflight"
+      - "elixir/bin/node-enrollment-postflight-service.py"
+      - "elixir/bin/node-enrollment-postflight.sql"
       - "elixir/priv/symphony_migrations/**"
 
 jobs:

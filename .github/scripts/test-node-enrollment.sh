@@ -6,6 +6,120 @@ migrations_dir="$root_dir/elixir/priv/symphony_migrations"
 admin_url="${TEST_DATABASE_URL:?TEST_DATABASE_URL is required}"
 root_url="${TEST_ROOT_DATABASE_URL:?TEST_ROOT_DATABASE_URL is required}"
 
+service_fixture="$(mktemp)"
+ARO169_POSTFLIGHT_DATABASE_URL='postgresql://authority_user:authority_password@authority.example:5432/path_db?host=query.example&port=6543&user=query_user&password=a+b&dbname=query_db' \
+  python3 "$root_dir/elixir/bin/node-enrollment-postflight-service.py" \
+  "$service_fixture"
+test "$(grep -c '^host=' "$service_fixture")" = "1"
+test "$(grep -c '^port=' "$service_fixture")" = "1"
+test "$(grep -c '^user=' "$service_fixture")" = "1"
+test "$(grep -c '^password=' "$service_fixture")" = "1"
+test "$(grep -c '^dbname=' "$service_fixture")" = "1"
+grep -Fx 'host=query.example' "$service_fixture" >/dev/null
+grep -Fx 'port=6543' "$service_fixture" >/dev/null
+grep -Fx 'user=query_user' "$service_fixture" >/dev/null
+grep -Fx 'password=a+b' "$service_fixture" >/dev/null
+grep -Fx 'dbname=query_db' "$service_fixture" >/dev/null
+rm -f "$service_fixture"
+
+service_fixture="$(mktemp)"
+ARO169_POSTFLIGHT_DATABASE_URL='postgresql://user:top／secret@example.com/db' \
+  python3 "$root_dir/elixir/bin/node-enrollment-postflight-service.py" \
+  "$service_fixture"
+service_fixture_hex="$(od -An -tx1 "$service_fixture" | tr -d ' \n')"
+if [[ "$service_fixture_hex" != *70617373776f72643d746f70efbc8f7365637265740a* ]]; then
+  echo "postflight service parser rejected or rewrote a raw Unicode credential" >&2
+  exit 1
+fi
+rm -f "$service_fixture"
+
+invalid_service_fixture="$(mktemp)"
+if parser_error="$(
+  ARO169_POSTFLIGHT_DATABASE_URL='postgresql://user:topsecret@example.com/db?service=operator_service' \
+    python3 "$root_dir/elixir/bin/node-enrollment-postflight-service.py" \
+    "$invalid_service_fixture" 2>&1
+)"; then
+  echo "postflight service parser unexpectedly emitted a nested service" >&2
+  exit 1
+fi
+rm -f "$invalid_service_fixture"
+test "$parser_error" = "ARO169_POSTFLIGHT_DATABASE_URL is invalid"
+if [[ "$parser_error" == *topsecret* || "$parser_error" == *operator_service* ]]; then
+  echo "postflight service parser exposed a rejected service URI" >&2
+  exit 1
+fi
+
+service_fixture="$(mktemp)"
+ARO169_POSTFLIGHT_DATABASE_URL='postgresql://query_user@host1:5432,host2:5433/query_db?ssl=true' \
+  python3 "$root_dir/elixir/bin/node-enrollment-postflight-service.py" \
+  "$service_fixture"
+grep -Fx 'host=host1,host2' "$service_fixture" >/dev/null
+grep -Fx 'port=5432,5433' "$service_fixture" >/dev/null
+grep -Fx 'sslmode=require' "$service_fixture" >/dev/null
+if grep -q '^ssl=' "$service_fixture"; then
+  echo "postflight service parser emitted the URI-only ssl alias" >&2
+  exit 1
+fi
+rm -f "$service_fixture"
+
+invalid_service_fixture="$(mktemp)"
+if parser_error="$(
+  ARO169_POSTFLIGHT_DATABASE_URL='postgresql://query_user@query.example/query_db?password=a%ZZ' \
+    python3 "$root_dir/elixir/bin/node-enrollment-postflight-service.py" \
+    "$invalid_service_fixture" 2>&1
+)"; then
+  echo "postflight service parser unexpectedly accepted malformed percent encoding" >&2
+  exit 1
+fi
+rm -f "$invalid_service_fixture"
+test "$parser_error" = "ARO169_POSTFLIGHT_DATABASE_URL is invalid"
+
+invalid_service_fixture="$(mktemp)"
+if parser_error="$(
+  ARO169_POSTFLIGHT_DATABASE_URL='postgresql://query_user@query.example/query_db?password=trailing%20' \
+    python3 "$root_dir/elixir/bin/node-enrollment-postflight-service.py" \
+    "$invalid_service_fixture" 2>&1
+)"; then
+  echo "postflight service parser unexpectedly accepted trailing whitespace" >&2
+  exit 1
+fi
+rm -f "$invalid_service_fixture"
+test "$parser_error" = \
+  "ARO169_POSTFLIGHT_DATABASE_URL contains an unsafe service value"
+
+service_fixture="$(mktemp)"
+ARO169_POSTFLIGHT_DATABASE_URL='postgresql:///query_db?host=query.example' \
+  python3 "$root_dir/elixir/bin/node-enrollment-postflight-service.py" \
+  "$service_fixture"
+grep -Fx 'host=query.example' "$service_fixture" >/dev/null
+rm -f "$service_fixture"
+
+service_fixture="$(mktemp)"
+ARO169_POSTFLIGHT_DATABASE_URL='postgresql://query_user@[2001:db8::1],[2001:db8::2]:5433/query_db' \
+  python3 "$root_dir/elixir/bin/node-enrollment-postflight-service.py" \
+  "$service_fixture"
+grep -Fx 'host=2001:db8::1,2001:db8::2' "$service_fixture" >/dev/null
+grep -Fx 'port=,5433' "$service_fixture" >/dev/null
+rm -f "$service_fixture"
+
+service_fixture="$(mktemp)"
+ARO169_POSTFLIGHT_DATABASE_URL='postgresql://query_user@query.example:%35%34%33%32/query_db' \
+  python3 "$root_dir/elixir/bin/node-enrollment-postflight-service.py" \
+  "$service_fixture"
+grep -Fx 'port=5432' "$service_fixture" >/dev/null
+rm -f "$service_fixture"
+
+service_fixture="$(mktemp)"
+ARO169_POSTFLIGHT_DATABASE_URL='postgresql://query_user@query.example/query_db?password=a%FFb' \
+  python3 "$root_dir/elixir/bin/node-enrollment-postflight-service.py" \
+  "$service_fixture"
+service_fixture_hex="$(od -An -tx1 "$service_fixture" | tr -d ' \n')"
+if [[ "$service_fixture_hex" != *70617373776f72643d61ff620a* ]]; then
+  echo "postflight service parser rewrote a valid non-UTF8 octet" >&2
+  exit 1
+fi
+rm -f "$service_fixture"
+
 psql_admin() {
   psql -X -q -v ON_ERROR_STOP=1 -d "$admin_url" "$@"
 }
@@ -1883,5 +1997,59 @@ test "$(psql_admin -A -t -c "select has_table_privilege('symphony_staging_provis
 test "$(psql_admin -A -t -c "select count(*) from pg_policies where schemaname = 'symphony_staging' and policyname in ('provisioner_manage_nodes', 'provisioner_manage_node_bindings', 'provisioner_manage_routing_assignments') and roles = array['symphony_staging_provisioner']::name[];")" = "3"
 PGOPTIONS="-c search_path=public,extensions,pg_catalog" \
   psql_admin -f "$migrations_dir/20260724010000_aro_169_node_enrollment.sql"
+
+ARO169_POSTFLIGHT_DATABASE_URL="$admin_url" \
+  "$root_dir/elixir/bin/node-enrollment-postflight" >/dev/null
+
+if env -u ARO169_POSTFLIGHT_DATABASE_URL \
+  DATABASE_URL="$admin_url" \
+  "$root_dir/elixir/bin/node-enrollment-postflight" >/dev/null 2>&1; then
+  echo "postflight unexpectedly fell back to DATABASE_URL" >&2
+  exit 1
+fi
+
+psql_admin \
+  -f "$migrations_dir/20260724010000_aro_169_node_enrollment.down.sql" \
+  >/dev/null
+
+race_migration="$(mktemp)"
+trap 'rm -f "$race_migration"' EXIT
+sed '$d' "$migrations_dir/20260724010000_aro_169_node_enrollment.sql" \
+  >"$race_migration"
+
+coproc migration_psql {
+  psql -X -q -v ON_ERROR_STOP=1 -d "$admin_url"
+}
+exec {migration_input}>&"${migration_psql[1]}"
+exec {migration_output}<&"${migration_psql[0]}"
+printf '\\i %s\n\\echo migration snapshot acquired before postflight race\n' \
+  "$race_migration" >&"$migration_input"
+
+snapshot_seen=false
+while IFS= read -r -u "$migration_output" migration_line; do
+  if [ "$migration_line" = "migration snapshot acquired before postflight race" ]; then
+    snapshot_seen=true
+    break
+  fi
+done
+if [ "$snapshot_seen" != true ]; then
+  echo "migration did not reach the guarded-statement snapshot" >&2
+  exit 1
+fi
+
+psql_root -c "
+  alter function extensions.digest(text, text)
+    support pg_catalog.text_starts_with_support;
+" >/dev/null
+printf 'commit;\n\\q\n' >&"$migration_input"
+exec {migration_input}>&-
+exec {migration_output}<&-
+wait "$migration_psql_PID"
+
+if ARO169_POSTFLIGHT_DATABASE_URL="$admin_url" \
+  "$root_dir/elixir/bin/node-enrollment-postflight" >/dev/null 2>&1; then
+  echo "postflight unexpectedly accepted committed pgcrypto drift" >&2
+  exit 1
+fi
 
 echo "ARO-169 disposable PostgreSQL lifecycle passed without printing credentials"

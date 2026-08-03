@@ -25,6 +25,9 @@ defmodule SymphonyElixir.NodeEnrollmentMigrationTest do
                             "../../docs/node_enrollment_catalog_identity_audit.md",
                             __DIR__
                           )
+  @postflight Path.expand("../../bin/node-enrollment-postflight", __DIR__)
+  @postflight_sql Path.expand("../../bin/node-enrollment-postflight.sql", __DIR__)
+  @postflight_service Path.expand("../../bin/node-enrollment-postflight-service.py", __DIR__)
 
   test "requires contract v2 and publishes contract v3" do
     sql = File.read!(@migration)
@@ -62,6 +65,53 @@ defmodule SymphonyElixir.NodeEnrollmentMigrationTest do
     assert lifecycle_script =~ "pgcrypto grant-option drift"
     assert lifecycle_script =~ "pgcrypto grantor/special-role drift"
     assert lifecycle_script =~ "rollback unexpectedly accepted pgcrypto ACL grantee drift"
+  end
+
+  test "postflight uses a dedicated fresh read-only catalog connection" do
+    command = File.read!(@postflight)
+    postflight_sql = File.read!(@postflight_sql)
+    postflight_service = File.read!(@postflight_service)
+    lifecycle_script = File.read!(@lifecycle_script)
+
+    assert command =~
+             ~s(: "${ARO169_POSTFLIGHT_DATABASE_URL:?ARO169_POSTFLIGHT_DATABASE_URL is required}")
+
+    refute command =~ ~r/(?<!POSTFLIGHT_)DATABASE_URL/
+    assert command =~ "service_file=$(mktemp)"
+    assert command =~ ~s(python3 "$script_dir/node-enrollment-postflight-service.py")
+    assert command =~ "unset ARO169_POSTFLIGHT_DATABASE_URL"
+    assert command =~ "PGSERVICEFILE=$service_file"
+    assert command =~ "psql -X --no-password --dbname=service=aro169_postflight"
+    refute command =~ ~s(--dbname="$ARO169_POSTFLIGHT_DATABASE_URL")
+
+    assert postflight_service =~ ~s(os.environ["ARO169_POSTFLIGHT_DATABASE_URL"])
+    assert postflight_service =~ "libpq.PQconninfoParse(os.fsencode(url)"
+    refute postflight_service =~ "NFKC"
+    assert postflight_service =~ ~s|if b"service" in parameters:|
+    assert postflight_service =~ "libpq.PQconninfoFree(options)"
+    assert postflight_service =~ "libpq.PQfreemem(error)"
+    assert postflight_service =~ ~s|open(target, "wb")|
+    assert postflight_service =~ "os.chmod(target, 0o600)"
+    assert postflight_service =~ ~s|any(character in value for character in b"\\r\\n\\0")|
+    assert postflight_service =~ "value != value.strip()"
+
+    assert File.read!(@postgres_workflow) =~
+             ~s("elixir/bin/node-enrollment-postflight-service.py")
+
+    assert postflight_sql =~
+             "begin transaction isolation level repeatable read read only"
+
+    assert postflight_sql =~ "node_enrollment_contract_manifest"
+    assert postflight_sql =~ "contract_version = 3"
+    assert postflight_sql =~ "extension.extname = 'pgcrypto'"
+    assert postflight_sql =~ "procedure.proacl is null"
+    assert postflight_sql =~ "procedure.procost = 1"
+    assert postflight_sql =~ "procedure.prosupport = 0"
+    assert postflight_sql =~ "postflight detected pgcrypto identity or ACL drift"
+
+    assert lifecycle_script =~ "postflight unexpectedly accepted committed pgcrypto drift"
+    assert lifecycle_script =~ "migration snapshot acquired before postflight race"
+    assert lifecycle_script =~ "support pg_catalog.text_starts_with_support"
   end
 
   test "uses independent login credentials and stores only a verifier" do

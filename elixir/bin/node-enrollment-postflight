@@ -1,0 +1,17 @@
+#!/usr/bin/env sh
+set -eu
+
+: "${ARO169_POSTFLIGHT_DATABASE_URL:?ARO169_POSTFLIGHT_DATABASE_URL is required}"
+
+script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+service_file=$(mktemp)
+trap 'rm -f "$service_file"' EXIT HUP INT TERM
+python3 "$script_dir/node-enrollment-postflight-service.py" "$service_file"
+unset ARO169_POSTFLIGHT_DATABASE_URL
+
+PGSERVICEFILE=$service_file
+export PGSERVICEFILE
+
+psql -X --no-password --dbname=service=aro169_postflight -v ON_ERROR_STOP=1 \
+  -f "$script_dir/node-enrollment-postflight.sql"
+printf '%s\n' "ARO-169 pgcrypto catalog postflight passed"
