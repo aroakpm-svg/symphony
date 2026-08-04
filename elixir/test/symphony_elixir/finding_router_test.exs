@@ -278,6 +278,32 @@ defmodule SymphonyElixir.FindingRouterTest do
              @head,
              @digest
            )
+
+    single_newline =
+      String.replace(body, "\n\n<!-- symphony-follow-up:v1", "\n<!-- symphony-follow-up:v1", global: false)
+
+    refute FindingRouter.trusted_follow_up_comment?(
+             Map.put(trusted, "body", single_newline),
+             "thread-1",
+             @head,
+             @digest
+           )
+
+    refute FindingRouter.trusted_follow_up_comment?(
+             Map.put(trusted, "body", body <> "\n<!-- symphony-follow-up:v1 -->"),
+             "thread-1",
+             @head,
+             @digest
+           )
+
+    [_, marker_suffix] = String.split(body, "<!-- symphony-follow-up:v1", parts: 2)
+
+    refute FindingRouter.trusted_follow_up_comment?(
+             Map.put(trusted, "body", "x<!-- symphony-follow-up:v1" <> marker_suffix),
+             "thread-1",
+             @head,
+             @digest
+           )
   end
 
   test "follow-up must be durable before Resolve and an already-resolved unmarked thread holds" do

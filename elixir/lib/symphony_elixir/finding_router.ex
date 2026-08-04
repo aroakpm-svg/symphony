@@ -16,7 +16,8 @@ defmodule SymphonyElixir.FindingRouter do
   @receipt_schema_v3 "aroak.work-routing-readiness.v3"
   @receipt_marker_v2 "<!-- aroak-readiness-receipt:v2\n"
   @receipt_marker_v3 "<!-- aroak-readiness-receipt:v3\n"
-  @follow_up_marker_start "<!-- symphony-follow-up:v1\n"
+  @follow_up_marker_token "<!-- symphony-follow-up:v1"
+  @follow_up_marker_start "#{@follow_up_marker_token}\n"
   @marker_end "\n-->"
   @full_sha ~r/\A[0-9a-f]{40}\z/
   @sha256 ~r/\A[0-9a-f]{64}\z/
@@ -137,7 +138,7 @@ defmodule SymphonyElixir.FindingRouter do
   def trusted_follow_up_comment?(comment, finding_id, source_head_sha, receipt_digest)
       when is_map(comment) do
     with true <- nested_value(comment, "user", "node_id") == @trusted_follow_up_actor_node_id,
-         {:ok, marker} <- parse_single_marker(comment["body"], @follow_up_marker_start),
+         {:ok, marker} <- parse_follow_up_marker(comment["body"]),
          true <- exact_keys?(marker, ["findingId", "sourceHeadSha", "receiptDigest"]) do
       marker == %{
         "findingId" => finding_id,
@@ -461,6 +462,26 @@ defmodule SymphonyElixir.FindingRouter do
   end
 
   defp parse_single_marker(_body, _prefix), do: {:error, :marker_missing}
+
+  defp parse_follow_up_marker(body) when is_binary(body) do
+    with 2 <- body |> String.split(@follow_up_marker_token) |> length(),
+         true <- canonical_follow_up_boundary?(body),
+         {:ok, marker} <- parse_single_marker(body, @follow_up_marker_start) do
+      {:ok, marker}
+    else
+      _ -> {:error, :marker_ambiguous}
+    end
+  end
+
+  defp parse_follow_up_marker(_body), do: {:error, :marker_missing}
+
+  defp canonical_follow_up_boundary?(body) do
+    case :binary.match(body, @follow_up_marker_token) do
+      {0, _length} -> true
+      {index, _length} when index >= 2 -> binary_part(body, index - 2, 2) == "\n\n"
+      _ -> false
+    end
+  end
 
   defp exact_keys?(map, expected) when is_map(map),
     do: map |> Map.keys() |> Enum.sort() == Enum.sort(expected)

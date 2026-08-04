@@ -94,7 +94,9 @@ finding for repair, and pending `remove_out_of_scope_change` requires removal wi
 thread. A verified removal or `suggest_follow_up` may resolve only after any required follow-up
 comment is durable. Runtime authority comes solely from actor node ID `U_kgDOEDjIhA` plus the exact
 `findingId`, `sourceHeadSha`, and `receiptDigest` hidden marker fields; visible prose and labels are
-not authority. Symphony still never merges.
+not authority. The dedicated token must appear exactly once, and the hidden marker must start the
+comment or follow one blank line; Symphony's generated template uses the blank-line form. Symphony
+still never merges.
 Rework uses Linear comment history as a scoped durable transition log: an operation intent is
 persisted before the state change, each step is retry-safe, and an incomplete operation is resumed
 even after the issue has entered In Progress or the runtime has restarted. A fix round is counted
