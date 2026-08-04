@@ -173,17 +173,44 @@ defmodule SymphonyElixir.FindingRouter do
   def trusted_follow_up_response?(_response, _expected_body), do: false
 
   defp unique_latest(candidates) do
-    if Enum.all?(candidates, &is_binary(&1["created_at"])) do
-      latest_time = candidates |> Enum.map(& &1["created_at"]) |> Enum.max()
-
-      case Enum.filter(candidates, &(&1["created_at"] == latest_time)) do
-        [latest] -> {:ok, latest}
-        _ -> {:error, :readiness_check_latest_ambiguous}
-      end
-    else
-      {:error, :readiness_check_time_missing}
+    case parse_candidate_times(candidates) do
+      {:ok, timestamped} -> select_unique_latest(timestamped)
+      {:error, reason} -> {:error, reason}
     end
   end
+
+  defp select_unique_latest(timestamped) do
+    latest_time =
+      timestamped
+      |> Enum.map(fn {_candidate, timestamp} -> timestamp end)
+      |> Enum.max(DateTime)
+
+    case Enum.filter(timestamped, &same_timestamp?(&1, latest_time)) do
+      [{latest, _timestamp}] -> {:ok, latest}
+      _ -> {:error, :readiness_check_latest_ambiguous}
+    end
+  end
+
+  defp same_timestamp?({_candidate, timestamp}, expected),
+    do: DateTime.compare(timestamp, expected) == :eq
+
+  defp parse_candidate_times(candidates), do: parse_candidate_times(candidates, [])
+
+  defp parse_candidate_times([], parsed), do: {:ok, parsed}
+
+  defp parse_candidate_times([%{"created_at" => value} = candidate | rest], parsed)
+       when is_binary(value) do
+    case DateTime.from_iso8601(value) do
+      {:ok, timestamp, _offset} ->
+        parse_candidate_times(rest, [{candidate, timestamp} | parsed])
+
+      _ ->
+        {:error, :readiness_check_time_invalid}
+    end
+  end
+
+  defp parse_candidate_times([_candidate | _rest], _parsed),
+    do: {:error, :readiness_check_time_missing}
 
   defp verify_check_and_workflow(check_run, workflow_run, identity) do
     expected_repository = identity[:repository]

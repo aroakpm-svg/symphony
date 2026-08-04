@@ -65,6 +65,19 @@ defmodule SymphonyElixir.FindingRouterTest do
     assert {:error, :readiness_check_latest_ambiguous} =
              FindingRouter.select_latest_check_run([latest, tied], @head)
 
+    malformed_time = Map.put(older, "created_at", "not-rfc3339")
+
+    assert {:error, :readiness_check_time_invalid} =
+             FindingRouter.select_latest_check_run([malformed_time, latest], @head)
+
+    same_instant =
+      latest
+      |> Map.put("id", 3)
+      |> Map.put("created_at", "2026-08-02T08:00:00+08:00")
+
+    assert {:error, :readiness_check_latest_ambiguous} =
+             FindingRouter.select_latest_check_run([latest, same_instant], @head)
+
     pending =
       latest
       |> Map.put("completed_at", nil)
