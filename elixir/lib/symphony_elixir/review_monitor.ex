@@ -353,6 +353,8 @@ defmodule SymphonyElixir.ReviewMonitor do
         receipt["receiptDigest"]
       )
 
+    post_comment_expected = settlement_plan_after_follow_up(expected, disposition)
+
     with true <- FindingRouter.valid_follow_up_body?(body),
          :ok <- verify_current_settlement_plan(expected, receipt, settings, review_client, branch),
          :ok <- verify_settlement_thread(review_client, settings.repository, disposition),
@@ -362,7 +364,14 @@ defmodule SymphonyElixir.ReviewMonitor do
              receipt["pullRequestNumber"],
              body
            ),
-         :ok <- verify_current_settlement_plan(expected, receipt, settings, review_client, branch),
+         :ok <-
+           verify_current_settlement_plan(
+             post_comment_expected,
+             receipt,
+             settings,
+             review_client,
+             branch
+           ),
          :ok <- verify_settlement_thread(review_client, settings.repository, disposition),
          :ok <- resolve_settlement_thread(review_client, settings.repository, disposition) do
       execute_router_actions(rest, receipt, settings, review_client, branch, rest)
@@ -449,6 +458,26 @@ defmodule SymphonyElixir.ReviewMonitor do
       }
     end)
     |> Enum.sort()
+  end
+
+  defp settlement_plan_after_follow_up(actions, disposition) do
+    Enum.map(actions, fn
+      {:comment_then_resolve, current} = action ->
+        if settlement_disposition_binding(current) == settlement_disposition_binding(disposition),
+          do: {:resolve, current},
+          else: action
+
+      action ->
+        action
+    end)
+  end
+
+  defp settlement_disposition_binding(disposition) do
+    {
+      disposition["findingId"],
+      disposition["findingCommentId"],
+      disposition["findingCommentDigest"]
+    }
   end
 
   defp verify_current_router_rework(receipt, findings, context) do

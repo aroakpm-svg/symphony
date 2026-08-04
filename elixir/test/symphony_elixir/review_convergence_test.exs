@@ -1441,16 +1441,25 @@ defmodule SymphonyElixir.ReviewConvergenceTest do
         "benefit" => "目前 PR 可以維持原本範圍。"
       })
 
+    receipt = router_receipt([disposition])
+    without_marker = snapshot(%{threads: [finding], issue_comments: []})
+
+    with_marker =
+      snapshot(%{
+        threads: [finding],
+        issue_comments: [trusted_follow_up_comment(disposition, receipt)]
+      })
+
     Application.put_env(
       :symphony_elixir,
       :review_snapshot,
-      {:ok, snapshot(%{threads: [finding], issue_comments: []})}
+      [{:ok, without_marker}, {:ok, without_marker}, {:ok, with_marker}]
     )
 
     Application.put_env(
       :symphony_elixir,
       :finding_router_receipt,
-      {:ok, router_receipt([disposition])}
+      [{:ok, receipt}, {:ok, receipt}, {:ok, receipt}]
     )
 
     _state =
@@ -1510,16 +1519,25 @@ defmodule SymphonyElixir.ReviewConvergenceTest do
         "benefit" => "目前 PR 可以維持原本範圍。"
       })
 
+    receipt = router_receipt([disposition])
+    without_marker = snapshot(%{threads: [finding], issue_comments: []})
+
+    with_marker =
+      snapshot(%{
+        threads: [finding],
+        issue_comments: [trusted_follow_up_comment(disposition, receipt)]
+      })
+
     Application.put_env(
       :symphony_elixir,
       :review_snapshot,
-      {:ok, snapshot(%{threads: [finding], issue_comments: []})}
+      [{:ok, without_marker}, {:ok, without_marker}, {:ok, with_marker}]
     )
 
     Application.put_env(
       :symphony_elixir,
       :finding_router_receipt,
-      {:ok, router_receipt([disposition])}
+      [{:ok, receipt}, {:ok, receipt}, {:ok, receipt}]
     )
 
     Application.put_env(
@@ -1722,15 +1740,7 @@ defmodule SymphonyElixir.ReviewConvergenceTest do
 
     receipt = router_receipt([disposition])
 
-    trusted_marker = %{
-      "body" =>
-        FindingRouter.follow_up_comment(
-          disposition,
-          receipt["headSha"],
-          receipt["receiptDigest"]
-        ),
-      "user" => %{"node_id" => FindingRouter.trusted_follow_up_actor_node_id()}
-    }
+    trusted_marker = trusted_follow_up_comment(disposition, receipt)
 
     initial = snapshot(%{threads: [finding], issue_comments: [trusted_marker]})
     marker_deleted = snapshot(%{threads: [finding], issue_comments: []})
@@ -2354,6 +2364,18 @@ defmodule SymphonyElixir.ReviewConvergenceTest do
       "findingCommentDigest" => @finding_comment_digest,
       "disposition" => disposition,
       "evidenceDigest" => String.duplicate("b", 64)
+    }
+  end
+
+  defp trusted_follow_up_comment(disposition, receipt) do
+    %{
+      "body" =>
+        FindingRouter.follow_up_comment(
+          disposition,
+          receipt["headSha"],
+          receipt["receiptDigest"]
+        ),
+      "user" => %{"node_id" => FindingRouter.trusted_follow_up_actor_node_id()}
     }
   end
 
