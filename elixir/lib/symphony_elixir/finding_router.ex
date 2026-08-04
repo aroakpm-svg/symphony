@@ -155,10 +155,20 @@ defmodule SymphonyElixir.FindingRouter do
 
   @spec trusted_follow_up_response?(map(), String.t()) :: boolean()
   def trusted_follow_up_response?(response, expected_body)
-      when is_map(response) and is_binary(expected_body),
-      do:
-        nested_value(response, "user", "node_id") == @trusted_follow_up_actor_node_id and
-          response["body"] == expected_body
+      when is_map(response) and is_binary(expected_body) do
+    with true <- response["body"] == expected_body,
+         {:ok, expected_marker} <- parse_follow_up_marker(expected_body),
+         true <- exact_keys?(expected_marker, ["findingId", "sourceHeadSha", "receiptDigest"]) do
+      trusted_follow_up_comment?(
+        response,
+        expected_marker["findingId"],
+        expected_marker["sourceHeadSha"],
+        expected_marker["receiptDigest"]
+      )
+    else
+      _ -> false
+    end
+  end
 
   def trusted_follow_up_response?(_response, _expected_body), do: false
 

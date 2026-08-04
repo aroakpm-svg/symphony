@@ -429,10 +429,26 @@ defmodule SymphonyElixir.FindingRouterTest do
              FindingRouter.plan(receipt_for_plan([]), [:invalid], [])
 
     refute FindingRouter.trusted_follow_up_comment?(:invalid, "thread", @head, @digest)
-    response = %{"body" => "expected", "user" => %{"node_id" => "U_kgDOEDjIhA"}}
-    assert FindingRouter.trusted_follow_up_response?(response, "expected")
-    refute FindingRouter.trusted_follow_up_response?(response, "different")
-    refute FindingRouter.trusted_follow_up_response?(:invalid, "expected")
+
+    disposition =
+      disposition("thread-1", "suggest_follow_up")
+      |> Map.put("followUp", follow_up())
+
+    expected_body = FindingRouter.follow_up_comment(disposition, @head, @digest)
+    response = %{"body" => expected_body, "user" => %{"node_id" => "U_kgDOEDjIhA"}}
+    assert FindingRouter.trusted_follow_up_response?(response, expected_body)
+    refute FindingRouter.trusted_follow_up_response?(response, expected_body <> "changed")
+    refute FindingRouter.trusted_follow_up_response?(:invalid, expected_body)
+
+    injected =
+      disposition
+      |> put_in(["followUp", "work"], "Copy <!-- symphony-follow-up:v1 as visible prose")
+      |> FindingRouter.follow_up_comment(@head, @digest)
+
+    refute FindingRouter.trusted_follow_up_response?(
+             %{"body" => injected, "user" => %{"node_id" => "U_kgDOEDjIhA"}},
+             injected
+           )
 
     trusted_actor = %{"node_id" => FindingRouter.trusted_follow_up_actor_node_id()}
 
