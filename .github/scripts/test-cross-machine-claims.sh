@@ -113,11 +113,15 @@ test "$stale" = "f|f|f"
 routed="$(claim claim_node_a ROUTE-CHANGE "$node_a" "$instance_a")"
 routed_id="${routed%:*}"; routed_generation="${routed#*:}"
 psql_admin -c "update symphony_staging.routing_assignments set routing_policy = 'exclusive', target_node_id = '$node_b', routing_revision = 2 where issue_id = 'ROUTE-CHANGE';"
+if claim claim_node_a ROUTE-CHANGE "$node_a" "$instance_a" >/dev/null 2>&1; then
+  echo "same-instance reclaim unexpectedly ignored changed routing" >&2; exit 1
+fi
 routed_renewal="$(PGPASSWORD=disposable psql -X -q -A -t -v ON_ERROR_STOP=1 -d "$(node_url claim_node_a)" -c \
   "select symphony_staging.renew_claim('$routed_id',$routed_generation,'$node_a','$instance_a',60000);")"
 test "$routed_renewal" = "f"
 psql_admin -c "update symphony_staging.issue_claims set released_at = clock_timestamp() where issue_id = 'ROUTE-CHANGE';"
 
 claim claim_node_a CUSTOM-STATE "$node_a" "$instance_a" 'in review' >/dev/null
+psql_admin -c "delete from symphony_staging.active_node_instances where node_id = '$node_a';"
 
 echo "ARO-164 disposable PostgreSQL claim lifecycle passed without printing credentials"

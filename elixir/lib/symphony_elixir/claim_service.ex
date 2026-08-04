@@ -37,22 +37,26 @@ defmodule SymphonyElixir.ClaimService do
 
   @spec claim(Issue.t(), pid()) :: {:ok, claim() | nil} | {:error, term()}
   def claim(%Issue{} = issue, owner \\ self()) when is_pid(owner) do
-    if enabled?(), do: safe_call({:claim, issue, owner}), else: {:ok, nil}
+    cond do
+      enabled?() -> safe_call({:claim, issue, owner})
+      coordinator_running?() -> {:error, :claim_service_disabling}
+      true -> {:ok, nil}
+    end
   end
 
   @spec release(String.t()) :: :ok | {:error, term()}
   def release(issue_id) when is_binary(issue_id) do
-    if enabled?(), do: safe_call({:release, issue_id}), else: :ok
+    if coordinator_running?(), do: safe_call({:release, issue_id}), else: :ok
   end
 
   @spec complete(String.t()) :: :ok | {:error, term()}
   def complete(issue_id) when is_binary(issue_id) do
-    if enabled?(), do: safe_call({:complete, issue_id}), else: :ok
+    if coordinator_running?(), do: safe_call({:complete, issue_id}), else: :ok
   end
 
   @spec active?(String.t()) :: boolean()
   def active?(issue_id) when is_binary(issue_id) do
-    if enabled?() do
+    if coordinator_running?() do
       case safe_call({:active?, issue_id}) do
         active when is_boolean(active) -> active
         {:error, _reason} -> false
@@ -114,6 +118,22 @@ defmodule SymphonyElixir.ClaimService do
 
   @impl true
   def handle_info(:heartbeat, state) do
+    if enabled?() do
+      renew_claims(state)
+    else
+      notify_claim_lost(state.claims, :claim_service_disabled)
+      {:stop, :normal, %{state | claims: %{}}}
+    end
+  end
+
+  def handle_info({:EXIT, connection, reason}, %{connection: connection} = state) do
+    notify_claim_lost(state.claims, {:connection_lost, reason})
+    {:stop, {:connection_lost, reason}, %{state | claims: %{}}}
+  end
+
+  def handle_info({:EXIT, _pid, _reason}, state), do: {:noreply, state}
+
+  defp renew_claims(state) do
     claims =
       Enum.reduce(state.claims, state.claims, fn {issue_id, claim}, acc ->
         case renew_query(state, claim) do
@@ -128,13 +148,6 @@ defmodule SymphonyElixir.ClaimService do
 
     {:noreply, schedule_heartbeat(%{state | claims: claims})}
   end
-
-  def handle_info({:EXIT, connection, reason}, %{connection: connection} = state) do
-    notify_claim_lost(state.claims, {:connection_lost, reason})
-    {:stop, {:connection_lost, reason}, %{state | claims: %{}}}
-  end
-
-  def handle_info({:EXIT, _pid, _reason}, state), do: {:noreply, state}
 
   defp claim_query(state, issue) do
     params = [
@@ -230,6 +243,8 @@ defmodule SymphonyElixir.ClaimService do
         end
     end
   end
+
+  defp coordinator_running?, do: Process.whereis(__MODULE__) != nil
 
   defp notify_claim_lost(claims, reason) do
     Enum.each(claims, fn {issue_id, claim} ->

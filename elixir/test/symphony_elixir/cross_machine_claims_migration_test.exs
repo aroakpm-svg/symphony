@@ -56,6 +56,15 @@ defmodule SymphonyElixir.CrossMachineClaimsMigrationTest do
     assert sql =~ "assignments.routing_revision = claims.routing_revision"
   end
 
+  test "historical claims do not block active instance retirement and reclaims fence stale snapshots" do
+    sql = File.read!(@migration)
+
+    refute sql =~ "references symphony_staging.active_node_instances(node_id, node_instance_id)"
+    assert sql =~ "route.routing_revision is distinct from current_claim.routing_revision"
+    assert sql =~ "requested_linear_updated_at is distinct from current_claim.linear_updated_at"
+    assert sql =~ "existing claim routing or Linear revision is stale"
+  end
+
   test "routing distinguishes never-claimed fallback from expired-owner takeover" do
     sql = File.read!(@migration)
 

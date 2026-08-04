@@ -25,10 +25,7 @@ create table symphony_staging.issue_claims (
   lease_expires_at timestamptz not null,
   completed_at timestamptz,
   released_at timestamptz,
-  check (completed_at is null or released_at is null),
-  foreign key (node_id, node_instance_id)
-    references symphony_staging.active_node_instances(node_id, node_instance_id)
-    on delete restrict
+  check (completed_at is null or released_at is null)
 );
 
 create index issue_claims_active_node_idx
@@ -153,6 +150,14 @@ begin
      and current_claim.lease_expires_at > db_now then
     if current_claim.node_id = requested_node_id
        and current_claim.node_instance_id = requested_node_instance_id then
+      if route.routing_policy is distinct from current_claim.routing_policy
+         or route.target_node_id is distinct from current_claim.target_node_id
+         or route.routing_revision is distinct from current_claim.routing_revision
+         or requested_linear_updated_at is distinct from current_claim.linear_updated_at
+         or (route.routing_policy = 'exclusive' and route.target_node_id <> requested_node_id) then
+        raise exception using errcode = '55000', message = 'existing claim routing or Linear revision is stale';
+      end if;
+
       update symphony_staging.issue_claims claims
       set heartbeat_at = db_now,
           lease_expires_at = db_now + make_interval(secs => requested_lease_ms / 1000.0)

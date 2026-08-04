@@ -46,6 +46,13 @@ defmodule SymphonyElixir.ClaimServiceTest do
     assert_receive {:claim_lost, "issue-2", {:connection_lost, :closed}}
   end
 
+  test "disabling coordination drains claims instead of renewing them" do
+    state = %ClaimService{claims: %{"issue-1" => %{owner: self()}}}
+
+    assert {:stop, :normal, %{claims: %{}}} = ClaimService.handle_info(:heartbeat, state)
+    assert_receive {:claim_lost, "issue-1", :claim_service_disabled}
+  end
+
   test "core supervisor couples orchestrator and worker lifecycles" do
     supervisor_state = :sys.get_state(SymphonyElixir.Supervisor)
 
