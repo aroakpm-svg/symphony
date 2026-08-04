@@ -608,6 +608,12 @@ defmodule SymphonyElixir.Orchestrator do
 
         stop_running_task(pid, ref)
 
+        if cleanup_workspace do
+          complete_distributed_claim(issue_id)
+        else
+          release_distributed_claim(issue_id)
+        end
+
         %{
           state
           | running: Map.delete(state.running, issue_id),
@@ -1253,6 +1259,13 @@ defmodule SymphonyElixir.Orchestrator do
 
   defp release_distributed_claim(issue_id) do
     case ClaimService.release(issue_id) do
+      :ok -> :ok
+      {:error, _reason} -> :ok
+    end
+  end
+
+  defp complete_distributed_claim(issue_id) do
+    case ClaimService.complete(issue_id) do
       :ok -> :ok
       {:error, _reason} -> :ok
     end

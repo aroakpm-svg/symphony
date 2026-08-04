@@ -33,30 +33,43 @@ defmodule SymphonyElixir.ClaimService do
   end
 
   @spec enabled?() :: boolean()
-  def enabled?, do: Process.whereis(__MODULE__) != nil
+  def enabled?, do: Config.settings!().claim.enabled
 
   @spec claim(Issue.t(), pid()) :: {:ok, claim() | nil} | {:error, term()}
   def claim(%Issue{} = issue, owner \\ self()) when is_pid(owner) do
-    if enabled?(), do: GenServer.call(__MODULE__, {:claim, issue, owner}, 15_000), else: {:ok, nil}
+    if enabled?(), do: safe_call({:claim, issue, owner}), else: {:ok, nil}
   end
 
   @spec release(String.t()) :: :ok | {:error, term()}
   def release(issue_id) when is_binary(issue_id) do
-    if enabled?(), do: GenServer.call(__MODULE__, {:release, issue_id}, 15_000), else: :ok
+    if enabled?(), do: safe_call({:release, issue_id}), else: :ok
   end
 
   @spec complete(String.t()) :: :ok | {:error, term()}
   def complete(issue_id) when is_binary(issue_id) do
-    if enabled?(), do: GenServer.call(__MODULE__, {:complete, issue_id}, 15_000), else: :ok
+    if enabled?(), do: safe_call({:complete, issue_id}), else: :ok
   end
 
   @spec active?(String.t()) :: boolean()
   def active?(issue_id) when is_binary(issue_id) do
-    if enabled?(), do: GenServer.call(__MODULE__, {:active?, issue_id}, 15_000), else: true
+    if enabled?() do
+      case safe_call({:active?, issue_id}) do
+        active when is_boolean(active) -> active
+        {:error, _reason} -> false
+      end
+    else
+      true
+    end
   end
+
+  @doc false
+  @spec call_for_test(term()) :: term()
+  def call_for_test(request), do: safe_call(request)
 
   @impl true
   def init(settings) do
+    Process.flag(:trap_exit, true)
+
     with {:ok, connection} <- Postgrex.start_link(url: settings.database_url) do
       {:ok, schedule_heartbeat(%__MODULE__{connection: connection, settings: settings})}
     end
@@ -116,6 +129,13 @@ defmodule SymphonyElixir.ClaimService do
     {:noreply, schedule_heartbeat(%{state | claims: claims})}
   end
 
+  def handle_info({:EXIT, connection, reason}, %{connection: connection} = state) do
+    notify_claim_lost(state.claims, {:connection_lost, reason})
+    {:stop, {:connection_lost, reason}, %{state | claims: %{}}}
+  end
+
+  def handle_info({:EXIT, _pid, _reason}, state), do: {:noreply, state}
+
   defp claim_query(state, issue) do
     params = [
       issue.id,
@@ -123,13 +143,14 @@ defmodule SymphonyElixir.ClaimService do
       state.settings.node_instance_id,
       issue_updated_at(issue),
       normalize_state(issue.state),
+      configured_active_states(),
       state.settings.lease_ms,
       state.settings.fallback_grace_ms
     ]
 
     sql = """
     select claim_id::text, generation
-    from symphony_staging.claim_issue($1, $2::uuid, $3::uuid, $4::timestamptz, $5, $6, $7)
+    from symphony_staging.claim_issue($1, $2::uuid, $3::uuid, $4::timestamptz, $5, $6::text[], $7, $8)
     """
 
     case Postgrex.query(state.connection, sql, params) do
@@ -189,4 +210,30 @@ defmodule SymphonyElixir.ClaimService do
 
   defp normalize_state(state) when is_binary(state), do: state |> String.trim() |> String.downcase()
   defp normalize_state(_state), do: ""
+
+  defp configured_active_states do
+    Config.settings!().tracker.active_states
+    |> Enum.map(&normalize_state/1)
+    |> Enum.reject(&(&1 == ""))
+  end
+
+  defp safe_call(request) do
+    case Process.whereis(__MODULE__) do
+      nil ->
+        {:error, :claim_service_unavailable}
+
+      _pid ->
+        try do
+          GenServer.call(__MODULE__, request, 15_000)
+        catch
+          :exit, reason -> {:error, {:claim_service_unavailable, reason}}
+        end
+    end
+  end
+
+  defp notify_claim_lost(claims, reason) do
+    Enum.each(claims, fn {issue_id, claim} ->
+      send(claim.owner, {:claim_lost, issue_id, reason})
+    end)
+  end
 end

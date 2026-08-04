@@ -10,7 +10,7 @@ node_url() { printf 'postgresql://%s:disposable@localhost:5432/postgres' "$1"; }
 claim() {
   local role="$1" issue="$2" node="$3" instance="$4" state="${5:-todo}" lease="${6:-60000}" grace="${7:-0}"
   PGPASSWORD=disposable psql -X -q -A -t -v ON_ERROR_STOP=1 -d "$(node_url "$role")" \
-    -c "select claim_id || ':' || generation from symphony_staging.claim_issue('$issue','$node','$instance',clock_timestamp(),'$state',$lease,$grace);"
+    -c "select claim_id || ':' || generation from symphony_staging.claim_issue('$issue','$node','$instance',clock_timestamp(),'$state',array['todo','in progress','in review'],$lease,$grace);"
 }
 
 psql_admin <<'SQL'
@@ -70,7 +70,8 @@ insert into symphony_staging.active_node_instances(node_id, node_instance_id) va
 insert into symphony_staging.routing_assignments(issue_id,routing_policy,target_node_id,routing_revision,contract_version) values
   ('RACE','unassigned',null,1,1), ('CAP-A','unassigned',null,1,1), ('CAP-B','unassigned',null,1,1),
   ('CAP-C','unassigned',null,1,1), ('EXCLUSIVE','exclusive','$node_a',1,1),
-  ('PREFERRED','preferred-with-fallback','$node_a',1,1), ('TAKEOVER','unassigned',null,1,1);
+  ('PREFERRED','preferred-with-fallback','$node_a',1,1), ('TAKEOVER','unassigned',null,1,1),
+  ('ROUTE-CHANGE','unassigned',null,1,1), ('CUSTOM-STATE','unassigned',null,1,1);
 SQL
 
 tmp_dir="$(mktemp -d)"
@@ -108,5 +109,15 @@ test "$new_generation" = 2
 stale="$(PGPASSWORD=disposable psql -X -q -A -t -v ON_ERROR_STOP=1 -d "$(node_url claim_node_c)" -c \
   "select symphony_staging.renew_claim('$old_id',$old_generation,'$node_c','$instance_c',60000), symphony_staging.validate_active_claim('$old_id',$old_generation,'$node_c','$instance_c'), symphony_staging.complete_claim('$old_id',$old_generation,'$node_c','$instance_c');")"
 test "$stale" = "f|f|f"
+
+routed="$(claim claim_node_a ROUTE-CHANGE "$node_a" "$instance_a")"
+routed_id="${routed%:*}"; routed_generation="${routed#*:}"
+psql_admin -c "update symphony_staging.routing_assignments set routing_policy = 'exclusive', target_node_id = '$node_b', routing_revision = 2 where issue_id = 'ROUTE-CHANGE';"
+routed_renewal="$(PGPASSWORD=disposable psql -X -q -A -t -v ON_ERROR_STOP=1 -d "$(node_url claim_node_a)" -c \
+  "select symphony_staging.renew_claim('$routed_id',$routed_generation,'$node_a','$instance_a',60000);")"
+test "$routed_renewal" = "f"
+psql_admin -c "update symphony_staging.issue_claims set released_at = clock_timestamp() where issue_id = 'ROUTE-CHANGE';"
+
+claim claim_node_a CUSTOM-STATE "$node_a" "$instance_a" 'in review' >/dev/null
 
 echo "ARO-164 disposable PostgreSQL claim lifecycle passed without printing credentials"

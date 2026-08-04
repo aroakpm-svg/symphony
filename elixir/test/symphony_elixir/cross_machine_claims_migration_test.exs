@@ -45,6 +45,17 @@ defmodule SymphonyElixir.CrossMachineClaimsMigrationTest do
     refute sql =~ "current_timestamp"
   end
 
+  test "claim states come from configuration and renewals revalidate routing" do
+    sql = File.read!(@migration)
+
+    assert sql =~ "requested_active_states text[]"
+    assert sql =~ "requested_issue_state = any(requested_active_states)"
+    refute sql =~ "requested_issue_state not in ('todo', 'in progress')"
+    assert sql =~ "assignments.routing_policy = claims.routing_policy"
+    assert sql =~ "assignments.target_node_id is not distinct from claims.target_node_id"
+    assert sql =~ "assignments.routing_revision = claims.routing_revision"
+  end
+
   test "routing distinguishes never-claimed fallback from expired-owner takeover" do
     sql = File.read!(@migration)
 

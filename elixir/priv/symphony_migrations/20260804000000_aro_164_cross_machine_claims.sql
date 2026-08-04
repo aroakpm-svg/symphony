@@ -70,6 +70,7 @@ create or replace function symphony_staging.claim_issue(
   requested_node_instance_id uuid,
   requested_linear_updated_at timestamptz,
   requested_issue_state text,
+  requested_active_states text[],
   requested_lease_ms integer,
   requested_fallback_grace_ms integer
 )
@@ -95,7 +96,9 @@ begin
     raise exception using errcode = '22023', message = 'complete claim identity and Linear revision are required';
   end if;
 
-  if requested_issue_state not in ('todo', 'in progress') then
+  if requested_active_states is null
+     or cardinality(requested_active_states) = 0
+     or not (requested_issue_state = any(requested_active_states)) then
     raise exception using errcode = '55000', message = 'issue state is not claimable';
   end if;
 
@@ -278,6 +281,19 @@ begin
     and claims.generation = requested_generation
     and claims.node_id = requested_node_id
     and claims.node_instance_id = requested_node_instance_id
+    and exists (
+      select 1
+      from symphony_staging.routing_assignments assignments
+      where assignments.issue_id = claims.issue_id
+        and assignments.routing_policy = claims.routing_policy
+        and assignments.target_node_id is not distinct from claims.target_node_id
+        and assignments.routing_revision = claims.routing_revision
+        and (
+          assignments.routing_policy = 'unassigned'
+          or assignments.target_node_id = requested_node_id
+          or assignments.routing_policy = 'preferred-with-fallback'
+        )
+    )
     and claims.completed_at is null
     and claims.released_at is null
     and claims.lease_expires_at > db_now;
@@ -402,6 +418,7 @@ create or replace function symphony_staging.takeover_claim(
   requested_node_id uuid,
   requested_node_instance_id uuid,
   requested_linear_updated_at timestamptz,
+  requested_active_states text[],
   requested_lease_ms integer,
   requested_fallback_grace_ms integer
 )
@@ -411,27 +428,27 @@ security definer
 set search_path = pg_catalog, pg_temp
 as $$
   select * from symphony_staging.claim_issue(
-    $1, $2, $3, $4, 'in progress', $5, $6
+    $1, $2, $3, $4, 'in progress', $5, $6, $7
   )
 $$;
 
 revoke all on function
-  symphony_staging.claim_issue(text, uuid, uuid, timestamptz, text, integer, integer),
+  symphony_staging.claim_issue(text, uuid, uuid, timestamptz, text, text[], integer, integer),
   symphony_staging.renew_claim(uuid, bigint, uuid, uuid, integer),
   symphony_staging.validate_active_claim(uuid, bigint, uuid, uuid),
   symphony_staging.finish_claim(uuid, bigint, uuid, uuid, text),
   symphony_staging.release_claim(uuid, bigint, uuid, uuid),
   symphony_staging.complete_claim(uuid, bigint, uuid, uuid),
-  symphony_staging.takeover_claim(text, uuid, uuid, timestamptz, integer, integer)
+  symphony_staging.takeover_claim(text, uuid, uuid, timestamptz, text[], integer, integer)
   from public, anon, authenticated, service_role, symphony_staging_provisioner;
 
 grant execute on function
-  symphony_staging.claim_issue(text, uuid, uuid, timestamptz, text, integer, integer),
+  symphony_staging.claim_issue(text, uuid, uuid, timestamptz, text, text[], integer, integer),
   symphony_staging.renew_claim(uuid, bigint, uuid, uuid, integer),
   symphony_staging.validate_active_claim(uuid, bigint, uuid, uuid),
   symphony_staging.release_claim(uuid, bigint, uuid, uuid),
   symphony_staging.complete_claim(uuid, bigint, uuid, uuid),
-  symphony_staging.takeover_claim(text, uuid, uuid, timestamptz, integer, integer)
+  symphony_staging.takeover_claim(text, uuid, uuid, timestamptz, text[], integer, integer)
   to symphony_staging_runtime;
 
 create or replace function symphony_staging.grant_claim_api_to_node_login()
@@ -443,12 +460,12 @@ as $$
 begin
   execute format(
     'grant execute on function '
-    'symphony_staging.claim_issue(text, uuid, uuid, timestamptz, text, integer, integer), '
+    'symphony_staging.claim_issue(text, uuid, uuid, timestamptz, text, text[], integer, integer), '
     'symphony_staging.renew_claim(uuid, bigint, uuid, uuid, integer), '
     'symphony_staging.validate_active_claim(uuid, bigint, uuid, uuid), '
     'symphony_staging.release_claim(uuid, bigint, uuid, uuid), '
     'symphony_staging.complete_claim(uuid, bigint, uuid, uuid), '
-    'symphony_staging.takeover_claim(text, uuid, uuid, timestamptz, integer, integer) to %I',
+    'symphony_staging.takeover_claim(text, uuid, uuid, timestamptz, text[], integer, integer) to %I',
     new.login_role
   );
   return new;
@@ -474,12 +491,12 @@ begin
   loop
     execute format(
       'grant execute on function '
-      'symphony_staging.claim_issue(text, uuid, uuid, timestamptz, text, integer, integer), '
+      'symphony_staging.claim_issue(text, uuid, uuid, timestamptz, text, text[], integer, integer), '
       'symphony_staging.renew_claim(uuid, bigint, uuid, uuid, integer), '
       'symphony_staging.validate_active_claim(uuid, bigint, uuid, uuid), '
       'symphony_staging.release_claim(uuid, bigint, uuid, uuid), '
       'symphony_staging.complete_claim(uuid, bigint, uuid, uuid), '
-      'symphony_staging.takeover_claim(text, uuid, uuid, timestamptz, integer, integer) to %I',
+      'symphony_staging.takeover_claim(text, uuid, uuid, timestamptz, text[], integer, integer) to %I',
       principal.login_role
     );
   end loop;
