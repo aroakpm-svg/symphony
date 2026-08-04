@@ -23,7 +23,7 @@ defmodule SymphonyElixir.FindingRouter do
 
   @type action ::
           {:comment_then_resolve, map()}
-          | {:resolve, String.t()}
+          | {:resolve, map()}
 
   @type plan ::
           {:hold, atom()}
@@ -184,7 +184,6 @@ defmodule SymphonyElixir.FindingRouter do
   defp verify_check_and_workflow(check_run, workflow_run, identity) do
     expected_repository = identity[:repository]
     expected_head = identity[:head_sha]
-    expected_base = identity[:base_sha]
 
     valid =
       Enum.all?([
@@ -192,10 +191,11 @@ defmodule SymphonyElixir.FindingRouter do
         check_run["status"] == "completed",
         check_run["head_sha"] == expected_head,
         get_in(check_run, ["app", "id"]) == @publisher_app_id,
+        is_integer(get_in(check_run, ["check_suite", "id"])),
         workflow_run["status"] == "completed",
         workflow_run["path"] == @workflow_path,
-        workflow_run["event"] == "pull_request_target",
-        workflow_run["head_sha"] == expected_base,
+        workflow_run["head_sha"] == expected_head,
+        workflow_run["check_suite_id"] == get_in(check_run, ["check_suite", "id"]),
         get_in(workflow_run, ["repository", "full_name"]) == expected_repository
       ])
 
@@ -412,13 +412,13 @@ defmodule SymphonyElixir.FindingRouter do
         :none
 
       is_nil(follow_up) ->
-        {:ok, {:resolve, disposition["findingId"]}}
+        {:ok, {:resolve, disposition}}
 
       trusted_marker_exists?(issue_comments, disposition, receipt) and resolved ->
         :none
 
       trusted_marker_exists?(issue_comments, disposition, receipt) ->
-        {:ok, {:resolve, disposition["findingId"]}}
+        {:ok, {:resolve, disposition}}
 
       resolved ->
         {:error, :follow_up_marker_missing_before_resolve}

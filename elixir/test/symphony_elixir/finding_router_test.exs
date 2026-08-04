@@ -1,7 +1,7 @@
 defmodule SymphonyElixir.FindingRouterTest do
   use ExUnit.Case, async: true
 
-  alias SymphonyElixir.FindingRouter
+  alias SymphonyElixir.{FindingRouter, GitHubReviewClient}
 
   @head String.duplicate("a", 40)
   @base String.duplicate("b", 40)
@@ -28,6 +28,13 @@ defmodule SymphonyElixir.FindingRouterTest do
              FindingRouter.verify_receipt(
                check_run,
                Map.put(workflow_run(), "head_sha", String.duplicate("d", 40)),
+               identity
+             )
+
+    assert {:error, :readiness_workflow_envelope_invalid} =
+             FindingRouter.verify_receipt(
+               check_run,
+               Map.put(workflow_run(), "check_suite_id", 999),
                identity
              )
   end
@@ -59,6 +66,30 @@ defmodule SymphonyElixir.FindingRouterTest do
 
     assert {:error, :readiness_check_envelope_invalid} =
              FindingRouter.select_latest_check_run([older, pending], @head)
+  end
+
+  test "selects the workflow run by immutable check-suite identity, not details_url" do
+    check = check_run(receipt([])) |> Map.put("details_url", "https://github.com/forged/run")
+    canonical = workflow_run()
+    other = Map.put(canonical, "check_suite_id", 88)
+
+    assert {:ok, ^canonical} =
+             GitHubReviewClient.select_bound_workflow_run_for_test(
+               [%{"workflow_runs" => [other, canonical]}],
+               check
+             )
+
+    assert {:error, :readiness_workflow_run_missing} =
+             GitHubReviewClient.select_bound_workflow_run_for_test(
+               [%{"workflow_runs" => [other]}],
+               check
+             )
+
+    assert {:error, :readiness_workflow_run_ambiguous} =
+             GitHubReviewClient.select_bound_workflow_run_for_test(
+               [%{"workflow_runs" => [canonical, Map.put(canonical, "id", 2)]}],
+               check
+             )
   end
 
   test "fails closed on malformed, mismatched, or outcome-inconsistent receipts" do
@@ -173,7 +204,7 @@ defmodule SymphonyElixir.FindingRouterTest do
       "user" => %{"node_id" => FindingRouter.trusted_follow_up_actor_node_id()}
     }
 
-    assert {:settle, [{:resolve, "thread-1"}]} =
+    assert {:settle, [{:resolve, ^disposition}]} =
              FindingRouter.plan(receipt, [thread("thread-1")], [comment])
 
     assert :pass =
@@ -185,7 +216,7 @@ defmodule SymphonyElixir.FindingRouterTest do
       disposition("thread-1", "remove_out_of_scope_change")
       |> Map.put("removalStatus", "verified")
 
-    assert {:settle, [{:resolve, "thread-1"}]} =
+    assert {:settle, [{:resolve, ^verified}]} =
              FindingRouter.plan(receipt_for_plan([verified]), [thread("thread-1")], [])
   end
 
@@ -360,7 +391,8 @@ defmodule SymphonyElixir.FindingRouterTest do
       "status" => "completed",
       "path" => FindingRouter.workflow_path(),
       "event" => "pull_request_target",
-      "head_sha" => @base,
+      "head_sha" => @head,
+      "check_suite_id" => 77,
       "repository" => %{"full_name" => "aroakpm-svg/aroak-central-brain"}
     }
   end
@@ -376,6 +408,7 @@ defmodule SymphonyElixir.FindingRouterTest do
       "head_sha" => @head,
       "completed_at" => "2026-08-01T00:00:00Z",
       "app" => %{"id" => FindingRouter.publisher_app_id()},
+      "check_suite" => %{"id" => 77},
       "output" => %{
         "text" => "<!-- aroak-readiness-receipt:#{marker}\n#{Jason.encode!(receipt)}\n-->"
       }

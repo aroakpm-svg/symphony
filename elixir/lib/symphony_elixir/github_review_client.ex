@@ -53,6 +53,20 @@ defmodule SymphonyElixir.GitHubReviewClient do
   }
   """
 
+  @review_thread_binding_graphql """
+  query SymphonyReviewThreadBinding($threadId: ID!) {
+    node(id: $threadId) {
+      ... on PullRequestReviewThread {
+        id
+        isResolved
+        comments(last: 100) {
+          nodes { id body }
+        }
+      }
+    }
+  }
+  """
+
   @trusted_reviewers [
     %{login: "chatgpt-codex-connector", type: "Organization", database_id: 261_883_814},
     %{login: "chatgpt-codex-connector", type: "Bot", database_id: 199_175_422},
@@ -107,9 +121,15 @@ defmodule SymphonyElixir.GitHubReviewClient do
          {:ok, pages} when is_list(pages) <- Jason.decode(output),
          {:ok, %{"check_runs" => check_runs}} <- merge_check_run_pages(pages),
          {:ok, check_run} <- FindingRouter.select_latest_check_run(check_runs, head_sha),
-         {:ok, run_id} <- workflow_run_id(check_run, repository),
-         {:ok, workflow_output} <- run(["api", "repos/#{repository}/actions/runs/#{run_id}"]),
-         {:ok, workflow_run} when is_map(workflow_run) <- Jason.decode(workflow_output),
+         {:ok, workflow_output} <-
+           run([
+             "api",
+             "--paginate",
+             "--slurp",
+             "repos/#{repository}/actions/runs?head_sha=#{head_sha}&per_page=100"
+           ]),
+         {:ok, workflow_pages} when is_list(workflow_pages) <- Jason.decode(workflow_output),
+         {:ok, workflow_run} <- select_bound_workflow_run(workflow_pages, check_run),
          {:ok, receipt} <-
            FindingRouter.verify_receipt(check_run, workflow_run, %{
              repository: repository,
@@ -152,9 +172,10 @@ defmodule SymphonyElixir.GitHubReviewClient do
   def create_follow_up_comment(_repository, _number, _body),
     do: {:error, :invalid_follow_up_comment}
 
-  @spec resolve_review_thread(String.t(), String.t()) :: :ok | {:error, term()}
-  def resolve_review_thread(repository, thread_id)
-      when is_binary(repository) and is_binary(thread_id) and thread_id != "" do
+  @spec resolve_review_thread(String.t(), String.t(), String.t()) :: :ok | {:error, term()}
+  def resolve_review_thread(repository, thread_id, finding_comment_id)
+      when is_binary(repository) and repository != "" and is_binary(thread_id) and thread_id != "" and
+             is_binary(finding_comment_id) and finding_comment_id != "" do
     mutation = """
     mutation SymphonyResolveReviewThread($threadId: ID!) {
       resolveReviewThread(input: {threadId: $threadId}) {
@@ -163,7 +184,8 @@ defmodule SymphonyElixir.GitHubReviewClient do
     }
     """
 
-    with {:ok, output} <-
+    with :ok <- verify_current_thread_binding(thread_id, finding_comment_id),
+         {:ok, output} <-
            run([
              "api",
              "graphql",
@@ -187,7 +209,7 @@ defmodule SymphonyElixir.GitHubReviewClient do
     end
   end
 
-  def resolve_review_thread(_repository, _thread_id),
+  def resolve_review_thread(_repository, _thread_id, _finding_comment_id),
     do: {:error, :invalid_review_thread_identity}
 
   @spec review_request_exists?(String.t(), pos_integer(), String.t()) :: {:ok, boolean()} | {:error, term()}
@@ -267,6 +289,11 @@ defmodule SymphonyElixir.GitHubReviewClient do
   @doc false
   @spec merge_check_run_pages_for_test([map()]) :: {:ok, map()} | {:error, term()}
   def merge_check_run_pages_for_test(pages), do: merge_check_run_pages(pages)
+
+  @doc false
+  @spec select_bound_workflow_run_for_test([map()], map()) :: {:ok, map()} | {:error, term()}
+  def select_bound_workflow_run_for_test(pages, check_run),
+    do: select_bound_workflow_run(pages, check_run)
 
   @doc false
   @spec normalize_required_contexts_for_test([map()], map() | nil) :: {:ok, [map()]} | {:error, term()}
@@ -731,22 +758,69 @@ defmodule SymphonyElixir.GitHubReviewClient do
 
   defp validate_pull_request_page(page), do: {:error, {:invalid_pull_request_page, page}}
 
-  defp workflow_run_id(%{"details_url" => details_url}, repository)
-       when is_binary(details_url) and is_binary(repository) do
-    with %URI{scheme: "https", host: "github.com", query: nil, fragment: nil, userinfo: nil, path: path} <-
-           URI.parse(details_url),
-         [owner, name] <- String.split(repository, "/", parts: 2),
-         ["", ^owner, ^name, "actions", "runs", run_id | rest] <- String.split(path, "/"),
-         true <- rest == [] or match?(["job", _job_id], rest),
-         {number, ""} when number > 0 <- Integer.parse(run_id) do
-      {:ok, number}
-    else
-      _ -> {:error, :readiness_workflow_run_identity_invalid}
+  defp select_bound_workflow_run(pages, check_run) when is_list(pages) and is_map(check_run) do
+    suite_id = get_in(check_run, ["check_suite", "id"])
+
+    candidates =
+      pages
+      |> Enum.flat_map(fn
+        %{"workflow_runs" => runs} when is_list(runs) -> runs
+        _ -> []
+      end)
+      |> Enum.filter(&(&1["check_suite_id"] == suite_id))
+
+    case {suite_id, candidates} do
+      {id, [workflow_run]} when is_integer(id) -> {:ok, workflow_run}
+      {id, []} when is_integer(id) -> {:error, :readiness_workflow_run_missing}
+      {id, [_ | _]} when is_integer(id) -> {:error, :readiness_workflow_run_ambiguous}
+      _ -> {:error, :readiness_check_suite_identity_missing}
     end
   end
 
-  defp workflow_run_id(_check_run, _repository),
-    do: {:error, :readiness_workflow_run_identity_missing}
+  defp select_bound_workflow_run(_pages, _check_run),
+    do: {:error, :readiness_workflow_run_evidence_invalid}
+
+  defp verify_current_thread_binding(thread_id, finding_comment_id) do
+    with {:ok, output} <-
+           run([
+             "api",
+             "graphql",
+             "-f",
+             "query=#{@review_thread_binding_graphql}",
+             "-F",
+             "threadId=#{thread_id}"
+           ]),
+         {:ok,
+          %{
+            "data" => %{
+              "node" => %{
+                "id" => ^thread_id,
+                "isResolved" => false,
+                "comments" => %{"nodes" => comments}
+              }
+            }
+          }}
+         when is_list(comments) <- Jason.decode(output),
+         ^finding_comment_id <- latest_priority_comment_id(comments) do
+      :ok
+    else
+      {:ok, unexpected} -> {:error, {:review_thread_binding_unverified, unexpected}}
+      {:error, reason} -> {:error, reason}
+      _ -> {:error, :review_thread_binding_changed}
+    end
+  end
+
+  defp latest_priority_comment_id(comments) do
+    comments
+    |> Enum.reverse()
+    |> Enum.find_value(fn
+      %{"id" => id, "body" => body} when is_binary(id) and is_binary(body) ->
+        if priority(body), do: id
+
+      _ ->
+        nil
+    end)
+  end
 
   defp encode_path_segment(value) do
     URI.encode(value, &URI.char_unreserved?/1)

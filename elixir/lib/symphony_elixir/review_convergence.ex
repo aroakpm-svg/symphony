@@ -44,6 +44,15 @@ defmodule SymphonyElixir.ReviewConvergence do
 
   def actionable_thread?(_thread), do: false
 
+  @spec escalation_required?(map(), non_neg_integer(), pos_integer()) :: boolean()
+  def escalation_required?(snapshot, fix_rounds, max_fix_rounds)
+      when is_map(snapshot) and is_integer(fix_rounds) and fix_rounds >= 0 and
+             is_integer(max_fix_rounds) and max_fix_rounds > 0 do
+    fix_rounds >= max_fix_rounds or snapshot[:structural_risk] == true
+  end
+
+  def escalation_required?(_snapshot, _fix_rounds, _max_fix_rounds), do: true
+
   defp waiting_gate(%{waiting_reason: reason}, evidence) when not is_nil(reason),
     do: {:wait, Map.put(evidence, :reason, reason)}
 
@@ -96,10 +105,6 @@ defmodule SymphonyElixir.ReviewConvergence do
 
   defp base_verification_failed?(snapshot) do
     snapshot[:base_verification_required] == true and snapshot[:base_verification] != :verified
-  end
-
-  defp escalation_required?(snapshot, fix_rounds, max_fix_rounds) do
-    fix_rounds >= max_fix_rounds or snapshot[:structural_risk] == true
   end
 
   defp evidence(snapshot, actionable) do

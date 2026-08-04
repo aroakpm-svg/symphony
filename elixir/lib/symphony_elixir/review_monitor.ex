@@ -137,12 +137,12 @@ defmodule SymphonyElixir.ReviewMonitor do
          {:ok, snapshot} <- review_client.snapshot(settings.repository, branch) do
       entry = invalidate_old_head(entry, snapshot.current_head_sha)
 
-      case finding_router_plan(settings, review_client, snapshot) do
+      case finding_router_plan(settings, review_client, snapshot, issue) do
         {:ok, :legacy} ->
           apply_legacy_decision(issue, entry, state, settings, review_client, tracker, snapshot)
 
         {:ok, {:shadow, plan}} ->
-          Logger.info("Finding Router shadow decision for PR ##{snapshot.pull_request_number}: #{inspect(plan)}")
+          Logger.info("Finding Router shadow decision for issue_id=#{issue.id} issue_identifier=#{issue.identifier} PR ##{snapshot.pull_request_number}: #{inspect(plan)}")
 
           apply_legacy_decision(issue, entry, state, settings, review_client, tracker, snapshot)
 
@@ -175,26 +175,26 @@ defmodule SymphonyElixir.ReviewMonitor do
     Map.put(state, issue.id, updated_entry)
   end
 
-  defp finding_router_plan(settings, review_client, snapshot) do
+  defp finding_router_plan(settings, review_client, snapshot, issue) do
     case Map.get(settings, :finding_router_mode, "disabled") do
       "disabled" ->
         {:ok, :legacy}
 
       "shadow" ->
-        shadow_finding_router_plan(settings, review_client, snapshot)
+        shadow_finding_router_plan(settings, review_client, snapshot, issue)
 
       "enforce" ->
         enforce_finding_router_plan(settings, review_client, snapshot)
     end
   end
 
-  defp shadow_finding_router_plan(settings, review_client, snapshot) do
+  defp shadow_finding_router_plan(settings, review_client, snapshot, issue) do
     case review_client.finding_router_receipt(settings.repository, snapshot) do
       {:ok, receipt} ->
         {:ok, {:shadow, route_receipt(receipt, snapshot)}}
 
       {:error, reason} ->
-        Logger.warning("Finding Router shadow evidence unavailable: #{inspect(reason)}")
+        Logger.warning("Finding Router shadow evidence unavailable for issue_id=#{issue.id} issue_identifier=#{issue.identifier}: #{inspect(reason)}")
         {:ok, {:shadow, {:hold, :finding_router_evidence_unavailable}}}
     end
   end
@@ -226,9 +226,20 @@ defmodule SymphonyElixir.ReviewMonitor do
   end
 
   defp apply_finding_router_plan({:rework, findings}, _receipt, context) do
+    decision =
+      if ReviewConvergence.escalation_required?(
+           context.snapshot,
+           context.entry.fix_rounds,
+           context.settings.max_fix_rounds
+         ) do
+        {:escalate, %{reason: :review_not_converging, actionable_threads: findings}}
+      else
+        {:rework, %{actionable_threads: findings}}
+      end
+
     {updated, _outcome} =
       apply_decision(
-        {:rework, %{actionable_threads: findings}},
+        decision,
         context.issue,
         context.entry,
         context.settings,
@@ -316,14 +327,23 @@ defmodule SymphonyElixir.ReviewMonitor do
                  snapshot.pull_request_number,
                  body
                ),
-             :ok <- review_client.resolve_review_thread(settings.repository, disposition["findingId"]) do
+             :ok <-
+               review_client.resolve_review_thread(
+                 settings.repository,
+                 disposition["findingId"],
+                 disposition["findingCommentId"]
+               ) do
           {:cont, :ok}
         else
           {:error, reason} -> {:halt, {:error, reason}}
         end
 
-      {:resolve, finding_id}, :ok ->
-        case review_client.resolve_review_thread(settings.repository, finding_id) do
+      {:resolve, disposition}, :ok ->
+        case review_client.resolve_review_thread(
+               settings.repository,
+               disposition["findingId"],
+               disposition["findingCommentId"]
+             ) do
           :ok -> {:cont, :ok}
           {:error, reason} -> {:halt, {:error, reason}}
         end
