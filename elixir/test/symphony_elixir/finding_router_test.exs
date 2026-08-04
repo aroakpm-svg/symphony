@@ -105,6 +105,23 @@ defmodule SymphonyElixir.FindingRouterTest do
              FindingRouter.plan(receipt_for_plan([pending]), [thread], [])
   end
 
+  test "every unresolved P1-P4 thread requires a disposition bound to its selected comment" do
+    unresolved = thread("thread-1")
+
+    assert {:hold, :finding_router_evidence_invalid} =
+             FindingRouter.plan(receipt_for_plan([]), [unresolved], [])
+
+    mismatched =
+      disposition("thread-1", "fix_in_current_pr")
+      |> Map.put("findingCommentId", "another-comment")
+
+    assert {:hold, :finding_router_evidence_invalid} =
+             FindingRouter.plan(receipt_for_plan([mismatched]), [unresolved], [])
+
+    assert :pass =
+             FindingRouter.plan(receipt_for_plan([]), [%{unresolved | resolved: true}], [])
+  end
+
   test "follow-up marker authority uses only the fixed actor and three exact JSON fields" do
     disposition =
       disposition("thread-1", "suggest_follow_up")
@@ -202,6 +219,29 @@ defmodule SymphonyElixir.FindingRouterTest do
              )
   end
 
+  test "accepts Central V3 merge decisions without treating them as Symphony merge authority" do
+    v3 =
+      receipt([])
+      |> Map.put("schemaVersion", "aroak.work-routing-readiness.v3")
+      |> Map.put("mergeDecision", "blocked")
+
+    assert {:ok, %{"mergeDecision" => "blocked"}} =
+             FindingRouter.verify_receipt(
+               check_run(v3, :v3),
+               workflow_run(),
+               identity()
+             )
+
+    invalid = Map.put(v3, "mergeDecision", "auto_ready")
+
+    assert {:error, :readiness_receipt_shape_invalid} =
+             FindingRouter.verify_receipt(
+               check_run(invalid, :v3),
+               workflow_run(),
+               identity()
+             )
+  end
+
   test "all malformed public inputs and marker shapes fail closed" do
     assert {:error, :readiness_check_missing} =
              FindingRouter.select_latest_check_run([], @head)
@@ -224,8 +264,16 @@ defmodule SymphonyElixir.FindingRouterTest do
     assert {:error, :readiness_receipt_envelope_invalid} =
              FindingRouter.verify_receipt(:invalid, workflow_run(), identity())
 
+    missing_marker = put_in(check_run(receipt([])), ["output", "text"], "no receipt marker")
+
+    assert {:error, :readiness_receipt_marker_invalid} =
+             FindingRouter.verify_receipt(missing_marker, workflow_run(), identity())
+
     assert {:hold, :finding_router_evidence_invalid} =
              FindingRouter.plan(:invalid, [], [])
+
+    assert {:hold, :finding_router_evidence_invalid} =
+             FindingRouter.plan(receipt_for_plan([]), [:invalid], [])
 
     refute FindingRouter.trusted_follow_up_comment?(:invalid, "thread", @head, @digest)
     response = %{"body" => "expected", "user" => %{"node_id" => "U_kgDOEDjIhA"}}
@@ -257,6 +305,8 @@ defmodule SymphonyElixir.FindingRouterTest do
   test "malformed receipt field types and disposition details are rejected" do
     invalid_receipts = [
       Map.put(receipt([]), "blockers", "not-a-list"),
+      Map.put(receipt([]), "snapshotDigest", 42),
+      Map.put(receipt([]), "receiptDigest", %{}),
       Map.put(receipt([]), "findingDispositions", "not-a-list"),
       receipt([disposition("thread-1", "unknown")]),
       receipt([
@@ -287,6 +337,13 @@ defmodule SymphonyElixir.FindingRouterTest do
                [thread("other")],
                []
              )
+
+    assert {:hold, :finding_router_evidence_invalid} =
+             FindingRouter.plan(
+               receipt_for_plan([disposition("missing", "fix_in_current_pr")]),
+               [%{thread("other") | resolved: true}],
+               []
+             )
   end
 
   defp identity do
@@ -308,7 +365,9 @@ defmodule SymphonyElixir.FindingRouterTest do
     }
   end
 
-  defp check_run(receipt) do
+  defp check_run(receipt, version \\ :v2) do
+    marker = if version == :v3, do: "v3", else: "v2"
+
     %{
       "id" => 1,
       "name" => FindingRouter.check_name(),
@@ -318,7 +377,7 @@ defmodule SymphonyElixir.FindingRouterTest do
       "completed_at" => "2026-08-01T00:00:00Z",
       "app" => %{"id" => FindingRouter.publisher_app_id()},
       "output" => %{
-        "text" => "<!-- aroak-readiness-receipt:v2\n#{Jason.encode!(receipt)}\n-->"
+        "text" => "<!-- aroak-readiness-receipt:#{marker}\n#{Jason.encode!(receipt)}\n-->"
       }
     }
   end
@@ -364,6 +423,7 @@ defmodule SymphonyElixir.FindingRouterTest do
   defp thread(finding_id) do
     %{
       finding_id: finding_id,
+      finding_comment_id: "comment-#{finding_id}",
       resolved: false,
       priority: 2,
       body: "P2 finding",

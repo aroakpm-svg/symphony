@@ -460,6 +460,13 @@ PR, live base policy SHA, head SHA, receipt schema, and check outcome must agree
 another workflow is rejected. Missing, running, tied, stale, malformed, or mismatched evidence
 fails closed. Symphony verifies this envelope only and never recalculates the Central Brain digest,
 diff, scope, review, or disposition.
+Both the V2 classification receipt and V3 receipt are accepted. V3's `mergeDecision` remains
+Central Brain authority only and never gives Symphony merge permission.
+Every unresolved normalized P1-P4 thread must be covered by exactly one disposition bound to that
+thread's selected Codex review-comment ID. Missing coverage, a comment mismatch, or malformed digest
+types fail closed. Before any follow-up comment or Resolve mutation, Symphony publishes the current
+head's pending `Review Convergence Gate` and verifies the exact GitHub response; publication failure
+aborts all thread mutations.
 
 In enforce mode, unknown ownership keeps the issue in review for a human. A current-PR regression
 uses the existing rework transition. Pending out-of-scope work is returned only for removal, and the

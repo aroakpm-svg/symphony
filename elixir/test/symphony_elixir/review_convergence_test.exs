@@ -46,14 +46,14 @@ defmodule SymphonyElixir.ReviewConvergenceTest do
       {:ok, key in Application.get_env(:symphony_elixir, :existing_review_keys, [])}
     end
 
-    @spec publish_status(String.t(), String.t(), atom(), String.t(), String.t() | nil) :: :ok
+    @spec publish_status(String.t(), String.t(), atom(), String.t(), String.t() | nil) :: :ok | {:error, term()}
     def publish_status(repository, head_sha, state, description, _target_url) do
       send(
         Application.fetch_env!(:symphony_elixir, :review_recipient),
         {:status, repository, head_sha, state, description}
       )
 
-      :ok
+      Application.get_env(:symphony_elixir, :publish_status_result, :ok)
     end
   end
 
@@ -114,6 +114,7 @@ defmodule SymphonyElixir.ReviewConvergenceTest do
       Application.delete_env(:symphony_elixir, :finding_router_receipt)
       Application.delete_env(:symphony_elixir, :follow_up_comment_result)
       Application.delete_env(:symphony_elixir, :resolve_thread_result)
+      Application.delete_env(:symphony_elixir, :publish_status_result)
     end)
   end
 
@@ -735,17 +736,72 @@ defmodule SymphonyElixir.ReviewConvergenceTest do
 
   test "a current-head follow-up on an older thread remains actionable" do
     thread = %{
+      "id" => "thread-1",
       "isResolved" => false,
       "comments" => %{
         "nodes" => [
-          %{"body" => "P4 old", "commit" => %{"oid" => "old"}},
-          %{"body" => "P1 current follow-up", "path" => "lib/current.ex", "url" => "thread", "commit" => %{"oid" => "head"}}
+          %{"id" => "comment-old", "body" => "P4 old", "commit" => %{"oid" => "old"}},
+          %{
+            "id" => "comment-current",
+            "body" => "P1 current follow-up",
+            "path" => "lib/current.ex",
+            "url" => "thread",
+            "commit" => %{"oid" => "head"}
+          }
         ]
       }
     }
 
-    assert [%{body: "P1 current follow-up", priority: 1, commit_sha: "head"}] =
+    assert [
+             %{
+               finding_id: "thread-1",
+               finding_comment_id: "comment-current",
+               body: "P1 current follow-up",
+               priority: 1,
+               commit_sha: "head"
+             }
+           ] =
              GitHubReviewClient.normalize_threads_for_test([thread], "head")
+  end
+
+  test "published gate status is accepted only when GitHub echoes the exact pending envelope" do
+    payload =
+      Jason.encode!(%{
+        "sha" => "head",
+        "state" => "pending",
+        "context" => "Review Convergence Gate",
+        "description" => "pending before settlement",
+        "target_url" => nil
+      })
+
+    assert :ok =
+             GitHubReviewClient.verify_published_status_for_test(
+               payload,
+               "head",
+               "pending",
+               "pending before settlement",
+               nil
+             )
+
+    wrong_context = String.replace(payload, "Review Convergence Gate", "impostor")
+
+    assert {:error, :published_status_response_invalid} =
+             GitHubReviewClient.verify_published_status_for_test(
+               wrong_context,
+               "head",
+               "pending",
+               "pending before settlement",
+               nil
+             )
+
+    assert {:error, :published_status_response_invalid} =
+             GitHubReviewClient.verify_published_status_for_test(
+               "not-json",
+               "head",
+               "pending",
+               "pending before settlement",
+               nil
+             )
   end
 
   test "old-head base-missing claims do not contaminate current-head follow-ups" do
@@ -1117,6 +1173,7 @@ defmodule SymphonyElixir.ReviewConvergenceTest do
   test "finding router enforce holds the whole PR when Central evidence is unverified" do
     finding = %{
       finding_id: "thread-1",
+      finding_comment_id: "comment-thread-1",
       resolved: false,
       priority: 2,
       body: "P2 unclear ownership",
@@ -1153,6 +1210,7 @@ defmodule SymphonyElixir.ReviewConvergenceTest do
   test "finding router enforce returns only the routed current-PR finding for repair" do
     finding = %{
       finding_id: "thread-1",
+      finding_comment_id: "comment-thread-1",
       resolved: false,
       priority: 1,
       body: "P1 regression",
@@ -1189,6 +1247,7 @@ defmodule SymphonyElixir.ReviewConvergenceTest do
   test "finding router writes a follow-up before resolving and never moves Linear" do
     finding = %{
       finding_id: "thread-1",
+      finding_comment_id: "comment-thread-1",
       resolved: false,
       priority: 3,
       body: "P3 pre-existing issue",
@@ -1224,6 +1283,21 @@ defmodule SymphonyElixir.ReviewConvergenceTest do
         Tracker
       )
 
+    {:messages, routed_messages} = Process.info(self(), :messages)
+
+    pending_index =
+      Enum.find_index(routed_messages, fn
+        {:status, _, "head", :pending, "Finding routing actions pending; waiting for fresh evidence"} -> true
+        _ -> false
+      end)
+
+    comment_index = Enum.find_index(routed_messages, &match?({:pr_comment, _, 42, _}, &1))
+    resolve_index = Enum.find_index(routed_messages, &match?({:resolve_thread, _, "thread-1"}, &1))
+
+    assert is_integer(pending_index)
+    assert pending_index < comment_index
+    assert comment_index < resolve_index
+
     assert_receive {:pr_comment, _, 42, body}
     assert body =~ "建議另開票處理"
     assert body =~ "<!-- symphony-follow-up:v1"
@@ -1231,6 +1305,52 @@ defmodule SymphonyElixir.ReviewConvergenceTest do
     assert_receive {:status, _, "head", :pending, _}
     refute_receive {:state, _, _}
     refute_receive {:comment, "issue-160", _}
+  end
+
+  test "finding router never comments or resolves when the pending status cannot be published" do
+    finding = %{
+      finding_id: "thread-1",
+      finding_comment_id: "comment-thread-1",
+      resolved: false,
+      priority: 3,
+      body: "P3 pre-existing issue",
+      url: "thread"
+    }
+
+    disposition =
+      router_disposition("thread-1", "suggest_follow_up")
+      |> Map.put("followUp", %{
+        "whySeparate" => "問題原本就在 main，且本 PR 沒有惡化。",
+        "work" => "另開一張票修正共享驗證器。",
+        "risk" => "後續流程仍可能遇到同一問題。",
+        "benefit" => "目前 PR 可以維持原本範圍。"
+      })
+
+    Application.put_env(
+      :symphony_elixir,
+      :review_snapshot,
+      {:ok, snapshot(%{threads: [finding], issue_comments: []})}
+    )
+
+    Application.put_env(
+      :symphony_elixir,
+      :finding_router_receipt,
+      {:ok, router_receipt([disposition])}
+    )
+
+    Application.put_env(:symphony_elixir, :publish_status_result, {:error, :status_rejected})
+
+    _state =
+      ReviewMonitor.run_with(
+        %{},
+        Map.put(settings(), :finding_router_mode, "enforce"),
+        ReviewClient,
+        Tracker
+      )
+
+    assert_receive {:status, _, "head", :pending, _}
+    refute_receive {:pr_comment, _, _, _}
+    refute_receive {:resolve_thread, _, _}
   end
 
   test "an explicit human wait reason is preserved in the decision evidence" do

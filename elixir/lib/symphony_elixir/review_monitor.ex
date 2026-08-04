@@ -241,25 +241,39 @@ defmodule SymphonyElixir.ReviewMonitor do
   end
 
   defp apply_finding_router_plan({:settle, actions}, receipt, context) do
-    case execute_router_actions(
-           actions,
-           receipt,
-           context.settings,
+    description = "Finding routing actions pending; waiting for fresh evidence"
+
+    case publish_status(
            context.review_client,
-           context.snapshot
+           context.settings.repository,
+           context.snapshot,
+           :pending,
+           description
          ) do
       :ok ->
-        {updated, _result} =
-          ensure_published_status(
-            context.entry,
-            context.review_client,
-            context.settings.repository,
-            context.snapshot,
-            :pending,
-            "Finding routing actions applied; waiting for fresh evidence"
-          )
+        updated_entry = mark_published_status(context.entry, context.snapshot, :pending)
 
-        Map.put(context.state, context.issue.id, %{updated | waiting: true})
+        case execute_router_actions(
+               actions,
+               receipt,
+               context.settings,
+               context.review_client,
+               context.snapshot
+             ) do
+          :ok ->
+            Map.put(context.state, context.issue.id, %{updated_entry | waiting: true})
+
+          {:error, reason} ->
+            wait_for_human(
+              context.issue,
+              updated_entry,
+              context.settings,
+              context.review_client,
+              context.tracker,
+              reason,
+              context.state
+            )
+        end
 
       {:error, reason} ->
         wait_for_human(
@@ -268,7 +282,7 @@ defmodule SymphonyElixir.ReviewMonitor do
           context.settings,
           context.review_client,
           context.tracker,
-          reason,
+          {:finding_router_pending_status_failed, reason},
           context.state
         )
     end

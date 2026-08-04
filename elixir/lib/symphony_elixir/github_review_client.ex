@@ -216,20 +216,37 @@ defmodule SymphonyElixir.GitHubReviewClient do
   @spec publish_status(String.t(), String.t(), atom(), String.t(), String.t() | nil) :: :ok | {:error, term()}
   def publish_status(repository, head_sha, state, description, target_url \\ nil)
       when state in [:pending, :success, :failure, :error] do
+    expected_description = String.slice(description, 0, 140)
+
     fields = [
       "state=#{state}",
       "context=Review Convergence Gate",
-      "description=#{String.slice(description, 0, 140)}"
+      "description=#{expected_description}"
     ]
 
     fields = if is_binary(target_url), do: fields ++ ["target_url=#{target_url}"], else: fields
     args = ["api", "repos/#{repository}/statuses/#{head_sha}", "--method", "POST"] ++ Enum.flat_map(fields, &["-f", &1])
 
     case run(args) do
-      {:ok, _output} -> :ok
-      {:error, reason} -> {:error, reason}
+      {:ok, output} ->
+        verify_published_status(
+          output,
+          head_sha,
+          Atom.to_string(state),
+          expected_description,
+          target_url
+        )
+
+      {:error, reason} ->
+        {:error, reason}
     end
   end
+
+  @doc false
+  @spec verify_published_status_for_test(String.t(), String.t(), String.t(), String.t(), String.t() | nil) ::
+          :ok | {:error, term()}
+  def verify_published_status_for_test(output, head_sha, state, description, target_url),
+    do: verify_published_status(output, head_sha, state, description, target_url)
 
   @doc false
   @spec normalize_no_required_checks_for_test(String.t()) :: {:ok, []} | {:error, term()}
@@ -1047,6 +1064,7 @@ defmodule SymphonyElixir.GitHubReviewClient do
         [
           %{
             finding_id: thread["id"],
+            finding_comment_id: comment["id"],
             resolved: thread["isResolved"] == true,
             priority: priority(body),
             body: body,
@@ -1098,6 +1116,19 @@ defmodule SymphonyElixir.GitHubReviewClient do
   end
 
   defp normalize_check_state(_value), do: :failure
+
+  defp verify_published_status(output, head_sha, state, description, target_url) do
+    with {:ok, response} when is_map(response) <- Jason.decode(output),
+         true <- response["sha"] == head_sha,
+         true <- response["state"] == state,
+         true <- response["context"] == "Review Convergence Gate",
+         true <- response["description"] == description,
+         true <- is_nil(target_url) or response["target_url"] == target_url do
+      :ok
+    else
+      _ -> {:error, :published_status_response_invalid}
+    end
+  end
 
   defp run(args) do
     case run_with_status(args) do

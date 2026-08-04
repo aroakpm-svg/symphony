@@ -64,6 +64,12 @@ completed `Work Routing / Readiness` check on the current head, published by Git
 15368 from `.github/workflows/work-routing-readiness.yml` at the exact live base policy SHA.
 Missing, ambiguous, stale, wrong-workflow, or malformed evidence remains in review. Symphony never
 recomputes Central Brain diff, scope, digest, review, or classification policy.
+It accepts both the V2 classification receipt and the V3 receipt that adds Central's merge
+decision; Symphony never executes or recomputes that merge decision.
+Every unresolved normalized P1-P4 thread must have one disposition whose `findingCommentId`
+matches the selected GitHub review comment. Missing coverage, a mismatched comment, or a non-string
+digest fails closed. Before Symphony writes a follow-up or resolves a thread, GitHub must return the
+exact pending `Review Convergence Gate` status for the current head.
 
 In enforce mode, `blocked_unverified` holds the whole PR, `fix_in_current_pr` returns only that
 finding for repair, and pending `remove_out_of_scope_change` requires removal without resolving the

@@ -12,8 +12,10 @@ defmodule SymphonyElixir.FindingRouter do
   @workflow_path ".github/workflows/work-routing-readiness.yml"
   @publisher_app_id 15_368
   @trusted_follow_up_actor_node_id "U_kgDOEDjIhA"
-  @receipt_schema "aroak.work-routing-readiness.v2"
-  @receipt_marker_start "<!-- aroak-readiness-receipt:v2\n"
+  @receipt_schema_v2 "aroak.work-routing-readiness.v2"
+  @receipt_schema_v3 "aroak.work-routing-readiness.v3"
+  @receipt_marker_v2 "<!-- aroak-readiness-receipt:v2\n"
+  @receipt_marker_v3 "<!-- aroak-readiness-receipt:v3\n"
   @follow_up_marker_start "<!-- symphony-follow-up:v1\n"
   @marker_end "\n-->"
   @full_sha ~r/\A[0-9a-f]{40}\z/
@@ -86,7 +88,7 @@ defmodule SymphonyElixir.FindingRouter do
          true <- valid_dispositions?(dispositions),
          {:ok, indexed_threads} <- index_threads(threads),
          true <- unique_ids?(dispositions, "findingId"),
-         true <- Enum.all?(dispositions, &Map.has_key?(indexed_threads, &1["findingId"])) do
+         true <- complete_thread_bindings?(dispositions, indexed_threads) do
       rework = rework_items(dispositions, indexed_threads)
 
       cond do
@@ -201,16 +203,26 @@ defmodule SymphonyElixir.FindingRouter do
   end
 
   defp parse_receipt(body) do
-    with {:ok, receipt} <- parse_single_marker(body, @receipt_marker_start),
-         true <- is_map(receipt) do
-      {:ok, receipt}
-    else
+    candidates =
+      [
+        {@receipt_schema_v2, @receipt_marker_v2},
+        {@receipt_schema_v3, @receipt_marker_v3}
+      ]
+      |> Enum.flat_map(fn {schema, marker} ->
+        case parse_single_marker(body, marker) do
+          {:ok, %{"schemaVersion" => ^schema} = receipt} -> [receipt]
+          _ -> []
+        end
+      end)
+
+    case candidates do
+      [receipt] -> {:ok, receipt}
       _ -> {:error, :readiness_receipt_marker_invalid}
     end
   end
 
   defp verify_receipt_shape(receipt, identity) do
-    exact_top_level = [
+    common_top_level = [
       "baseSha",
       "blockers",
       "checkSet",
@@ -225,16 +237,19 @@ defmodule SymphonyElixir.FindingRouter do
       "snapshotDigest"
     ]
 
+    {exact_top_level, merge_decision_valid} = receipt_schema_contract(receipt, common_top_level)
+
     valid =
       Enum.all?([
         exact_keys?(receipt, exact_top_level),
-        receipt["schemaVersion"] == @receipt_schema,
+        receipt["schemaVersion"] in [@receipt_schema_v2, @receipt_schema_v3],
+        merge_decision_valid,
         receipt["repository"] == identity[:repository],
         receipt["pullRequestNumber"] == identity[:pull_request_number],
         receipt["baseSha"] == identity[:base_sha],
         receipt["headSha"] == identity[:head_sha],
-        Regex.match?(@sha256, receipt["snapshotDigest"] || ""),
-        Regex.match?(@sha256, receipt["receiptDigest"] || ""),
+        sha256?(receipt["snapshotDigest"]),
+        sha256?(receipt["receiptDigest"]),
         receipt["decision"] in ["blocked", "ready"],
         receipt["checkSet"] in ["full", "ui_fast"],
         string_list?(receipt["blockers"]),
@@ -246,6 +261,17 @@ defmodule SymphonyElixir.FindingRouter do
       ])
 
     if valid, do: :ok, else: {:error, :readiness_receipt_shape_invalid}
+  end
+
+  defp receipt_schema_contract(%{"schemaVersion" => @receipt_schema_v2}, common_top_level),
+    do: {common_top_level, true}
+
+  defp receipt_schema_contract(%{"schemaVersion" => @receipt_schema_v3} = receipt, common_top_level) do
+    valid =
+      receipt["mergeDecision"] in ["blocked", "human_required", "auto_ready"] and
+        receipt["decision"] == "blocked" == (receipt["mergeDecision"] == "blocked")
+
+    {common_top_level ++ ["mergeDecision"], valid}
   end
 
   defp verify_check_outcome(check_run, receipt) do
@@ -284,7 +310,7 @@ defmodule SymphonyElixir.FindingRouter do
       exact_keys?(value, keys),
       opaque_id?(value["findingId"]),
       is_nil(value["findingCommentId"]) or opaque_id?(value["findingCommentId"]),
-      Regex.match?(@sha256, value["evidenceDigest"] || ""),
+      sha256?(value["evidenceDigest"]),
       not Map.has_key?(value, "followUp") or valid_follow_up?(value["followUp"])
     ])
   end
@@ -300,12 +326,35 @@ defmodule SymphonyElixir.FindingRouter do
   defp valid_follow_up?(_value), do: false
 
   defp index_threads(threads) do
-    if Enum.all?(threads, &(is_map(&1) and opaque_id?(&1[:finding_id]))) and
+    if Enum.all?(threads, fn thread ->
+         is_map(thread) and
+           opaque_id?(thread[:finding_id]) and
+           opaque_id?(thread[:finding_comment_id]) and
+           is_boolean(thread[:resolved])
+       end) and
          unique_ids?(threads, :finding_id) do
       {:ok, Map.new(threads, &{&1.finding_id, &1})}
     else
       {:error, :review_thread_identity_invalid}
     end
+  end
+
+  defp complete_thread_bindings?(dispositions, indexed_threads) do
+    disposition_ids = MapSet.new(dispositions, & &1["findingId"])
+
+    unresolved_ids =
+      indexed_threads
+      |> Map.values()
+      |> Enum.reject(& &1.resolved)
+      |> MapSet.new(& &1.finding_id)
+
+    MapSet.subset?(unresolved_ids, disposition_ids) and
+      Enum.all?(dispositions, fn disposition ->
+        case indexed_threads[disposition["findingId"]] do
+          nil -> false
+          thread -> disposition["findingCommentId"] == thread.finding_comment_id
+        end
+      end)
   end
 
   defp rework_items(dispositions, indexed_threads) do
@@ -419,6 +468,9 @@ defmodule SymphonyElixir.FindingRouter do
   defp string_list?(_values), do: false
 
   defp opaque_id?(value), do: substantive_text?(value)
+
+  defp sha256?(value) when is_binary(value), do: Regex.match?(@sha256, value)
+  defp sha256?(_value), do: false
 
   defp substantive_text?(value) when is_binary(value),
     do: value == String.trim(value) and value != "" and not String.match?(value, ~r/[\x00-\x1f\x7f]/)
