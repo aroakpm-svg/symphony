@@ -44,23 +44,11 @@ defmodule SymphonyElixir.GitHubReviewClient do
   query SymphonyReviewThreadComments($threadId: ID!, $endCursor: String) {
     node(id: $threadId) {
       ... on PullRequestReviewThread {
+        id
+        isResolved
         comments(first: 100, after: $endCursor) {
           nodes { id body path url commit { oid } }
           pageInfo { hasNextPage endCursor }
-        }
-      }
-    }
-  }
-  """
-
-  @review_thread_binding_graphql """
-  query SymphonyReviewThreadBinding($threadId: ID!) {
-    node(id: $threadId) {
-      ... on PullRequestReviewThread {
-        id
-        isResolved
-        comments(last: 100) {
-          nodes { id body }
         }
       }
     }
@@ -199,10 +187,12 @@ defmodule SymphonyElixir.GitHubReviewClient do
   def create_follow_up_comment(_repository, _number, _body),
     do: {:error, :invalid_follow_up_comment}
 
-  @spec resolve_review_thread(String.t(), String.t(), String.t()) :: :ok | {:error, term()}
-  def resolve_review_thread(repository, thread_id, finding_comment_id)
+  @spec resolve_review_thread(String.t(), String.t(), String.t(), String.t()) ::
+          :ok | {:error, term()}
+  def resolve_review_thread(repository, thread_id, finding_comment_id, finding_comment_digest)
       when is_binary(repository) and repository != "" and is_binary(thread_id) and thread_id != "" and
-             is_binary(finding_comment_id) and finding_comment_id != "" do
+             is_binary(finding_comment_id) and finding_comment_id != "" and
+             is_binary(finding_comment_digest) and finding_comment_digest != "" do
     mutation = """
     mutation SymphonyResolveReviewThread($threadId: ID!) {
       resolveReviewThread(input: {threadId: $threadId}) {
@@ -211,7 +201,12 @@ defmodule SymphonyElixir.GitHubReviewClient do
     }
     """
 
-    with :ok <- verify_current_thread_binding(thread_id, finding_comment_id),
+    with :ok <-
+           verify_current_thread_binding(
+             thread_id,
+             finding_comment_id,
+             finding_comment_digest
+           ),
          {:ok, output} <-
            run([
              "api",
@@ -236,7 +231,7 @@ defmodule SymphonyElixir.GitHubReviewClient do
     end
   end
 
-  def resolve_review_thread(_repository, _thread_id, _finding_comment_id),
+  def resolve_review_thread(_repository, _thread_id, _finding_comment_id, _finding_comment_digest),
     do: {:error, :invalid_review_thread_identity}
 
   @spec review_request_exists?(String.t(), pos_integer(), String.t()) :: {:ok, boolean()} | {:error, term()}
@@ -358,6 +353,15 @@ defmodule SymphonyElixir.GitHubReviewClient do
   @doc false
   @spec merge_thread_comment_pages_for_test([map()]) :: {:ok, [map()]} | {:error, term()}
   def merge_thread_comment_pages_for_test(pages), do: merge_thread_comment_pages(pages)
+
+  @doc false
+  @spec current_thread_binding_for_test([map()], String.t()) ::
+          {:ok, {String.t(), String.t()} | nil} | {:error, term()}
+  def current_thread_binding_for_test(pages, thread_id) do
+    with {:ok, comments} <- merge_current_thread_binding_pages(pages, thread_id) do
+      {:ok, latest_priority_comment_binding(comments)}
+    end
+  end
 
   @doc false
   @spec normalize_threads_for_test([map()], String.t()) :: [map()]
@@ -825,28 +829,23 @@ defmodule SymphonyElixir.GitHubReviewClient do
     end
   end
 
-  defp verify_current_thread_binding(thread_id, finding_comment_id) do
+  defp verify_current_thread_binding(thread_id, finding_comment_id, finding_comment_digest) do
+    expected = {finding_comment_id, finding_comment_digest}
+
     with {:ok, output} <-
            run([
              "api",
              "graphql",
              "-f",
-             "query=#{@review_thread_binding_graphql}",
+             "query=#{@thread_comments_graphql}",
              "-F",
-             "threadId=#{thread_id}"
+             "threadId=#{thread_id}",
+             "--paginate",
+             "--slurp"
            ]),
-         {:ok,
-          %{
-            "data" => %{
-              "node" => %{
-                "id" => ^thread_id,
-                "isResolved" => false,
-                "comments" => %{"nodes" => comments}
-              }
-            }
-          }}
-         when is_list(comments) <- Jason.decode(output),
-         ^finding_comment_id <- latest_priority_comment_id(comments) do
+         {:ok, pages} when is_list(pages) <- Jason.decode(output),
+         {:ok, comments} <- merge_current_thread_binding_pages(pages, thread_id),
+         ^expected <- latest_priority_comment_binding(comments) do
       :ok
     else
       {:ok, unexpected} -> {:error, {:review_thread_binding_unverified, unexpected}}
@@ -855,17 +854,48 @@ defmodule SymphonyElixir.GitHubReviewClient do
     end
   end
 
-  defp latest_priority_comment_id(comments) do
+  defp merge_current_thread_binding_pages(pages, thread_id) do
+    Enum.reduce_while(pages, {:ok, []}, fn
+      %{
+        "data" => %{
+          "node" => %{
+            "id" => ^thread_id,
+            "isResolved" => false,
+            "comments" => %{"nodes" => comments}
+          }
+        }
+      },
+      {:ok, acc}
+      when is_list(comments) ->
+        if Enum.all?(comments, &is_map/1) do
+          {:cont, {:ok, [comments | acc]}}
+        else
+          {:halt, {:error, :review_thread_binding_evidence_invalid}}
+        end
+
+      _page, _acc ->
+        {:halt, {:error, :review_thread_binding_evidence_invalid}}
+    end)
+    |> case do
+      {:ok, reversed} -> {:ok, reversed |> Enum.reverse() |> List.flatten()}
+      error -> error
+    end
+  end
+
+  defp latest_priority_comment_binding(comments) do
     comments
     |> Enum.reverse()
     |> Enum.find_value(fn
       %{"id" => id, "body" => body} when is_binary(id) and is_binary(body) ->
-        if priority(body), do: id
+        if priority(body), do: {id, body_digest(body)}
 
       _ ->
         nil
     end)
   end
+
+  defp body_digest(body),
+    do: :crypto.hash(:sha256, body) |> Base.encode16(case: :lower)
 
   defp encode_path_segment(value) do
     URI.encode(value, &URI.char_unreserved?/1)
@@ -1184,6 +1214,7 @@ defmodule SymphonyElixir.GitHubReviewClient do
           %{
             finding_id: thread["id"],
             finding_comment_id: comment["id"],
+            finding_comment_digest: body_digest(body),
             resolved: thread["isResolved"] == true,
             priority: priority(body),
             body: body,

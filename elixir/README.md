@@ -71,13 +71,14 @@ Missing, ambiguous, stale, wrong-workflow, or malformed evidence remains in revi
 recomputes Central Brain diff, scope, digest, review, or classification policy.
 It accepts both the V2 classification receipt and the V3 receipt that adds Central's merge
 decision; Symphony never executes or recomputes that merge decision.
-Every unresolved normalized P1-P4 thread must have one disposition whose `findingCommentId`
-matches the selected GitHub review comment. Missing coverage, a mismatched comment, or a non-string
-digest fails closed. Before Symphony writes a follow-up or resolves a thread, GitHub must return the
+Every unresolved normalized P1-P4 thread must have one disposition whose `findingCommentId` and
+`findingCommentDigest` match the selected GitHub review comment ID and exact body bytes. Missing
+coverage, an edited or mismatched comment, or a malformed digest fails closed. Before Symphony
+writes a follow-up or resolves a thread, GitHub must return the
 exact pending `Review Convergence Gate` status for the current head.
-Immediately before Resolve, Symphony refetches the thread and requires its latest P1-P4 comment to
-still match the receipt's `findingCommentId`. Routed rework still honors the existing retry ceiling
-and structural-risk escalation gate.
+Immediately before Resolve, Symphony refetches every page of the thread and requires its latest
+P1-P4 comment to still match both receipt fields. Routed rework still honors the existing retry
+ceiling and structural-risk escalation gate.
 Immediately before each follow-up comment or Resolve mutation, Symphony refetches the latest
 Central receipt and requires the same routing identity, then re-reads the open PR and requires its
 current base and head to remain the receipt's exact `baseSha` and `headSha`.

@@ -53,7 +53,7 @@ defmodule SymphonyElixir.FindingRouter do
          {:ok, latest} <- unique_latest(candidates),
          true <- latest["status"] == "completed",
          true <- latest["head_sha"] == head_sha,
-         true <- get_in(latest, ["app", "id"]) == @publisher_app_id do
+         true <- nested_value(latest, "app", "id") == @publisher_app_id do
       {:ok, latest}
     else
       false -> {:error, :readiness_check_envelope_invalid}
@@ -69,7 +69,7 @@ defmodule SymphonyElixir.FindingRouter do
   def verify_receipt(check_run, workflow_run, identity)
       when is_map(check_run) and is_map(workflow_run) and is_map(identity) do
     with :ok <- verify_check_and_workflow(check_run, workflow_run, identity),
-         {:ok, receipt} <- parse_receipt(get_in(check_run, ["output", "text"])),
+         {:ok, receipt} <- parse_receipt(nested_value(check_run, "output", "text")),
          :ok <- verify_receipt_shape(receipt, identity),
          :ok <- verify_check_outcome(check_run, receipt) do
       {:ok, receipt}
@@ -136,7 +136,7 @@ defmodule SymphonyElixir.FindingRouter do
   @spec trusted_follow_up_comment?(map(), String.t(), String.t(), String.t()) :: boolean()
   def trusted_follow_up_comment?(comment, finding_id, source_head_sha, receipt_digest)
       when is_map(comment) do
-    with true <- get_in(comment, ["user", "node_id"]) == @trusted_follow_up_actor_node_id,
+    with true <- nested_value(comment, "user", "node_id") == @trusted_follow_up_actor_node_id,
          {:ok, marker} <- parse_single_marker(comment["body"], @follow_up_marker_start),
          true <- exact_keys?(marker, ["findingId", "sourceHeadSha", "receiptDigest"]) do
       marker == %{
@@ -156,7 +156,7 @@ defmodule SymphonyElixir.FindingRouter do
   def trusted_follow_up_response?(response, expected_body)
       when is_map(response) and is_binary(expected_body),
       do:
-        get_in(response, ["user", "node_id"]) == @trusted_follow_up_actor_node_id and
+        nested_value(response, "user", "node_id") == @trusted_follow_up_actor_node_id and
           response["body"] == expected_body
 
   def trusted_follow_up_response?(_response, _expected_body), do: false
@@ -178,20 +178,21 @@ defmodule SymphonyElixir.FindingRouter do
     expected_repository = identity[:repository]
     expected_head = identity[:head_sha]
     expected_base = identity[:base_sha]
+    check_suite_id = nested_value(check_run, "check_suite", "id")
 
     valid =
       Enum.all?([
         check_run["name"] == @check_name,
         check_run["status"] == "completed",
         check_run["head_sha"] == expected_head,
-        get_in(check_run, ["app", "id"]) == @publisher_app_id,
-        is_integer(get_in(check_run, ["check_suite", "id"])),
+        nested_value(check_run, "app", "id") == @publisher_app_id,
+        is_integer(check_suite_id),
         workflow_run["status"] == "completed",
         workflow_run["path"] == @workflow_path,
         workflow_run["event"] == "pull_request_target",
         workflow_run["head_sha"] == expected_base,
-        workflow_run["check_suite_id"] == get_in(check_run, ["check_suite", "id"]),
-        get_in(workflow_run, ["repository", "full_name"]) == expected_repository
+        workflow_run["check_suite_id"] == check_suite_id,
+        nested_value(workflow_run, "repository", "full_name") == expected_repository
       ])
 
     if valid, do: :ok, else: {:error, :readiness_workflow_envelope_invalid}
@@ -233,27 +234,28 @@ defmodule SymphonyElixir.FindingRouter do
     ]
 
     {exact_top_level, merge_decision_valid} = receipt_schema_contract(receipt, common_top_level)
+    evidence = receipt["evidence"]
 
     valid =
-      Enum.all?([
-        exact_keys?(receipt, exact_top_level),
-        receipt["schemaVersion"] in [@receipt_schema_v2, @receipt_schema_v3],
-        merge_decision_valid,
-        receipt["repository"] == identity[:repository],
-        receipt["pullRequestNumber"] == identity[:pull_request_number],
-        receipt["baseSha"] == identity[:base_sha],
-        receipt["headSha"] == identity[:head_sha],
-        sha256?(receipt["snapshotDigest"]),
-        sha256?(receipt["receiptDigest"]),
-        receipt["decision"] in ["blocked", "ready"],
-        receipt["checkSet"] in ["full", "ui_fast"],
-        string_list?(receipt["blockers"]),
-        is_map(receipt["evidence"]),
-        receipt["evidence"]["policySha"] == identity[:base_sha],
-        receipt["evidence"]["baseSha"] == identity[:base_sha],
-        receipt["evidence"]["headSha"] == identity[:head_sha],
-        valid_dispositions?(receipt["findingDispositions"])
-      ])
+      is_map(evidence) and
+        Enum.all?([
+          exact_keys?(receipt, exact_top_level),
+          receipt["schemaVersion"] in [@receipt_schema_v2, @receipt_schema_v3],
+          merge_decision_valid,
+          receipt["repository"] == identity[:repository],
+          receipt["pullRequestNumber"] == identity[:pull_request_number],
+          receipt["baseSha"] == identity[:base_sha],
+          receipt["headSha"] == identity[:head_sha],
+          sha256?(receipt["snapshotDigest"]),
+          sha256?(receipt["receiptDigest"]),
+          receipt["decision"] in ["blocked", "ready"],
+          receipt["checkSet"] in ["full", "ui_fast"],
+          string_list?(receipt["blockers"]),
+          evidence["policySha"] == identity[:base_sha],
+          evidence["baseSha"] == identity[:base_sha],
+          evidence["headSha"] == identity[:head_sha],
+          valid_dispositions?(receipt["findingDispositions"])
+        ])
 
     if valid, do: :ok, else: {:error, :readiness_receipt_shape_invalid}
   end
@@ -305,13 +307,14 @@ defmodule SymphonyElixir.FindingRouter do
       exact_keys?(value, keys),
       opaque_id?(value["findingId"]),
       is_nil(value["findingCommentId"]) or opaque_id?(value["findingCommentId"]),
+      is_nil(value["findingCommentDigest"]) or sha256?(value["findingCommentDigest"]),
       sha256?(value["evidenceDigest"]),
       not Map.has_key?(value, "followUp") or valid_follow_up?(value["followUp"])
     ])
   end
 
   defp common_disposition_keys,
-    do: ["disposition", "evidenceDigest", "findingCommentId", "findingId"]
+    do: ["disposition", "evidenceDigest", "findingCommentDigest", "findingCommentId", "findingId"]
 
   defp valid_follow_up?(value) when is_map(value) do
     exact_keys?(value, ["benefit", "risk", "whySeparate", "work"]) and
@@ -325,6 +328,7 @@ defmodule SymphonyElixir.FindingRouter do
          is_map(thread) and
            opaque_id?(thread[:finding_id]) and
            opaque_id?(thread[:finding_comment_id]) and
+           sha256?(thread[:finding_comment_digest]) and
            is_boolean(thread[:resolved])
        end) and
          unique_ids?(threads, :finding_id) do
@@ -346,8 +350,12 @@ defmodule SymphonyElixir.FindingRouter do
     MapSet.subset?(unresolved_ids, disposition_ids) and
       Enum.all?(dispositions, fn disposition ->
         case indexed_threads[disposition["findingId"]] do
-          nil -> false
-          thread -> disposition["findingCommentId"] == thread.finding_comment_id
+          nil ->
+            false
+
+          thread ->
+            disposition["findingCommentId"] == thread.finding_comment_id and
+              disposition["findingCommentDigest"] == thread.finding_comment_digest
         end
       end)
   end
@@ -365,6 +373,9 @@ defmodule SymphonyElixir.FindingRouter do
         _ ->
           []
       end
+    end)
+    |> Enum.sort_by(fn item ->
+      {item.finding_id, item.finding_comment_id, item.router_action}
     end)
   end
 
@@ -471,4 +482,11 @@ defmodule SymphonyElixir.FindingRouter do
     do: value == String.trim(value) and value != "" and not String.match?(value, ~r/[\x00-\x1f\x7f]/)
 
   defp substantive_text?(_value), do: false
+
+  defp nested_value(value, parent, child) when is_map(value) do
+    case value[parent] do
+      nested when is_map(nested) -> nested[child]
+      _ -> nil
+    end
+  end
 end

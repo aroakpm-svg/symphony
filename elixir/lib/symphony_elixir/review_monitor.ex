@@ -365,7 +365,8 @@ defmodule SymphonyElixir.ReviewMonitor do
                review_client.resolve_review_thread(
                  settings.repository,
                  disposition["findingId"],
-                 disposition["findingCommentId"]
+                 disposition["findingCommentId"],
+                 disposition["findingCommentDigest"]
                ) do
           {:cont, :ok}
         else
@@ -385,7 +386,8 @@ defmodule SymphonyElixir.ReviewMonitor do
                review_client.resolve_review_thread(
                  settings.repository,
                  disposition["findingId"],
-                 disposition["findingCommentId"]
+                 disposition["findingCommentId"],
+                 disposition["findingCommentDigest"]
                ) do
           {:cont, :ok}
         else
@@ -742,7 +744,8 @@ defmodule SymphonyElixir.ReviewMonitor do
   end
 
   defp finding_fingerprint(findings) do
-    Enum.map(findings, fn finding ->
+    findings
+    |> Enum.map(fn finding ->
       case finding[:router_action] do
         nil ->
           {finding[:priority], finding[:path], finding[:body]}
@@ -758,6 +761,7 @@ defmodule SymphonyElixir.ReviewMonitor do
           }
       end
     end)
+    |> Enum.sort()
   end
 
   defp publish_status(_review_client, _repository, %{current_head_sha: head}, _state, _description)

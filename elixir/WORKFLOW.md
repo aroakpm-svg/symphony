@@ -463,8 +463,10 @@ diff, scope, review, or disposition.
 Both the V2 classification receipt and V3 receipt are accepted. V3's `mergeDecision` remains
 Central Brain authority only and never gives Symphony merge permission.
 Every unresolved normalized P1-P4 thread must be covered by exactly one disposition bound to that
-thread's selected Codex review-comment ID. Missing coverage, a comment mismatch, or malformed digest
-types fail closed. Before any follow-up comment or Resolve mutation, Symphony publishes the current
+thread's selected Codex review-comment ID and exact body digest. Missing coverage, an edited or
+mismatched comment, or malformed digest types fail closed. Immediately before Resolve, Symphony
+refetches all comment pages and requires the same ID and digest. Before any follow-up comment or
+Resolve mutation, Symphony publishes the current
 head's pending `Review Convergence Gate` and verifies the exact GitHub response; publication failure
 aborts all thread mutations.
 

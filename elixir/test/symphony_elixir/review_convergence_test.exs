@@ -8,6 +8,8 @@ defmodule SymphonyElixir.ReviewConvergenceTest do
   alias SymphonyElixir.ReviewConvergence
   alias SymphonyElixir.ReviewMonitor
 
+  @finding_comment_digest String.duplicate("d", 64)
+
   defmodule ReviewClient do
     @spec snapshot(String.t(), String.t()) :: {:ok, map()} | {:error, term()}
     def snapshot(_repository, _branch), do: Application.fetch_env!(:symphony_elixir, :review_snapshot)
@@ -59,13 +61,19 @@ defmodule SymphonyElixir.ReviewConvergenceTest do
       Application.get_env(:symphony_elixir, :follow_up_comment_result, :ok)
     end
 
-    @spec resolve_review_thread(String.t(), String.t(), String.t()) :: :ok | {:error, term()}
-    def resolve_review_thread(repository, finding_id, finding_comment_id) do
+    @spec resolve_review_thread(String.t(), String.t(), String.t(), String.t()) ::
+            :ok | {:error, term()}
+    def resolve_review_thread(
+          repository,
+          finding_id,
+          finding_comment_id,
+          finding_comment_digest
+        ) do
       case Application.get_env(:symphony_elixir, :resolve_thread_result, :ok) do
         :ok ->
           send(
             Application.fetch_env!(:symphony_elixir, :review_recipient),
-            {:resolve_thread, repository, finding_id, finding_comment_id}
+            {:resolve_thread, repository, finding_id, finding_comment_id, finding_comment_digest}
           )
 
           :ok
@@ -73,7 +81,7 @@ defmodule SymphonyElixir.ReviewConvergenceTest do
         {:error, reason} ->
           send(
             Application.fetch_env!(:symphony_elixir, :review_recipient),
-            {:resolve_thread_rejected, repository, finding_id, finding_comment_id}
+            {:resolve_thread_rejected, repository, finding_id, finding_comment_id, finding_comment_digest}
           )
 
           {:error, reason}
@@ -798,10 +806,14 @@ defmodule SymphonyElixir.ReviewConvergenceTest do
       }
     }
 
+    current_follow_up_digest =
+      :crypto.hash(:sha256, "P1 current follow-up") |> Base.encode16(case: :lower)
+
     assert [
              %{
                finding_id: "thread-1",
                finding_comment_id: "comment-current",
+               finding_comment_digest: ^current_follow_up_digest,
                body: "P1 current follow-up",
                priority: 1,
                commit_sha: "head"
@@ -1220,6 +1232,7 @@ defmodule SymphonyElixir.ReviewConvergenceTest do
     finding = %{
       finding_id: "thread-1",
       finding_comment_id: "comment-thread-1",
+      finding_comment_digest: @finding_comment_digest,
       resolved: false,
       priority: 2,
       body: "P2 unclear ownership",
@@ -1250,13 +1263,14 @@ defmodule SymphonyElixir.ReviewConvergenceTest do
     assert_receive {:comment, "issue-160", body}
     assert body =~ "finding_ownership_unverified"
     refute_receive {:state, _, _}
-    refute_receive {:resolve_thread, _, _, _}
+    refute_receive {:resolve_thread, _, _, _, _}
   end
 
   test "finding router enforce returns only the routed current-PR finding for repair" do
     finding = %{
       finding_id: "thread-1",
       finding_comment_id: "comment-thread-1",
+      finding_comment_digest: @finding_comment_digest,
       resolved: false,
       priority: 1,
       body: "P1 regression",
@@ -1287,7 +1301,7 @@ defmodule SymphonyElixir.ReviewConvergenceTest do
     assert_receive {:comment, "issue-160", body}
     assert body =~ "留在目前 PR 治本修正"
     assert_receive {:state, "issue-160", "In Progress"}
-    refute_receive {:resolve_thread, _, _, _}
+    refute_receive {:resolve_thread, _, _, _, _}
 
     assert state["issue-160"].last_finding_fingerprint == [
              {"thread-1", "comment-thread-1", 1, nil, "P1 regression", :fix_in_current_pr}
@@ -1298,6 +1312,7 @@ defmodule SymphonyElixir.ReviewConvergenceTest do
     finding = %{
       finding_id: "thread-1",
       finding_comment_id: "comment-thread-1",
+      finding_comment_digest: @finding_comment_digest,
       resolved: false,
       priority: 1,
       body: "P1 regression",
@@ -1331,13 +1346,14 @@ defmodule SymphonyElixir.ReviewConvergenceTest do
     assert_receive {:comment, "issue-160", body}
     assert body =~ "finding_router_receipt_changed_before_rework"
     refute_receive {:state, _, _}
-    refute_receive {:resolve_thread, _, _, _}
+    refute_receive {:resolve_thread, _, _, _, _}
   end
 
   test "finding router writes a follow-up before resolving and never moves Linear" do
     finding = %{
       finding_id: "thread-1",
       finding_comment_id: "comment-thread-1",
+      finding_comment_digest: @finding_comment_digest,
       resolved: false,
       priority: 3,
       body: "P3 pre-existing issue",
@@ -1386,7 +1402,7 @@ defmodule SymphonyElixir.ReviewConvergenceTest do
     resolve_index =
       Enum.find_index(
         routed_messages,
-        &match?({:resolve_thread, _, "thread-1", "comment-thread-1"}, &1)
+        &match?({:resolve_thread, _, "thread-1", "comment-thread-1", _}, &1)
       )
 
     assert is_integer(pending_index)
@@ -1396,7 +1412,7 @@ defmodule SymphonyElixir.ReviewConvergenceTest do
     assert_receive {:pr_comment, _, 42, body}
     assert body =~ "建議另開票處理"
     assert body =~ "<!-- symphony-follow-up:v1"
-    assert_receive {:resolve_thread, _, "thread-1", "comment-thread-1"}
+    assert_receive {:resolve_thread, _, "thread-1", "comment-thread-1", _}
     assert_receive {:status, _, "head", :pending, _}
     refute_receive {:state, _, _}
     refute_receive {:comment, "issue-160", _}
@@ -1406,6 +1422,7 @@ defmodule SymphonyElixir.ReviewConvergenceTest do
     finding = %{
       finding_id: "thread-1",
       finding_comment_id: "comment-thread-1",
+      finding_comment_digest: @finding_comment_digest,
       resolved: false,
       priority: 3,
       body: "P3 pre-existing issue",
@@ -1449,8 +1466,8 @@ defmodule SymphonyElixir.ReviewConvergenceTest do
 
     assert_receive {:pr_comment, _, 42, _}
 
-    assert_receive {:resolve_thread_rejected, _, "thread-1", "comment-thread-1"}
-    refute_receive {:resolve_thread, _, _, _}
+    assert_receive {:resolve_thread_rejected, _, "thread-1", "comment-thread-1", _}
+    refute_receive {:resolve_thread, _, _, _, _}
     refute_receive {:state, _, _}
   end
 
@@ -1458,6 +1475,7 @@ defmodule SymphonyElixir.ReviewConvergenceTest do
     finding = %{
       finding_id: "thread-1",
       finding_comment_id: "comment-thread-1",
+      finding_comment_digest: @finding_comment_digest,
       resolved: false,
       priority: 3,
       body: "P3 pre-existing issue",
@@ -1507,7 +1525,7 @@ defmodule SymphonyElixir.ReviewConvergenceTest do
 
     assert_receive {:identity_check, _, 42, {:ok, %{base_sha: "changed-base", head_sha: "head"}}}
 
-    refute_receive {:resolve_thread, _, _, _}
+    refute_receive {:resolve_thread, _, _, _, _}
     refute_receive {:state, _, _}
   end
 
@@ -1515,6 +1533,7 @@ defmodule SymphonyElixir.ReviewConvergenceTest do
     finding = %{
       finding_id: "thread-1",
       finding_comment_id: "comment-thread-1",
+      finding_comment_digest: @finding_comment_digest,
       resolved: false,
       priority: 3,
       body: "P3 pre-existing issue",
@@ -1555,7 +1574,7 @@ defmodule SymphonyElixir.ReviewConvergenceTest do
 
     assert_receive {:status, _, "head", :pending, _}
     refute_receive {:pr_comment, _, _, _}
-    refute_receive {:resolve_thread, _, _, _}
+    refute_receive {:resolve_thread, _, _, _, _}
     refute_receive {:state, _, _}
   end
 
@@ -1563,6 +1582,7 @@ defmodule SymphonyElixir.ReviewConvergenceTest do
     finding = %{
       finding_id: "thread-1",
       finding_comment_id: "comment-thread-1",
+      finding_comment_digest: @finding_comment_digest,
       resolved: false,
       priority: 1,
       body: "P1 recurring regression",
@@ -1639,6 +1659,7 @@ defmodule SymphonyElixir.ReviewConvergenceTest do
     finding = %{
       finding_id: "thread-1",
       finding_comment_id: "comment-thread-1",
+      finding_comment_digest: @finding_comment_digest,
       resolved: false,
       priority: 3,
       body: "P3 pre-existing issue",
@@ -1678,7 +1699,7 @@ defmodule SymphonyElixir.ReviewConvergenceTest do
 
     assert_receive {:status, _, "head", :pending, _}
     refute_receive {:pr_comment, _, _, _}
-    refute_receive {:resolve_thread, _, _, _}
+    refute_receive {:resolve_thread, _, _, _, _}
   end
 
   test "an explicit human wait reason is preserved in the decision evidence" do
@@ -2041,6 +2062,7 @@ defmodule SymphonyElixir.ReviewConvergenceTest do
     %{
       "findingId" => finding_id,
       "findingCommentId" => "comment-#{finding_id}",
+      "findingCommentDigest" => @finding_comment_digest,
       "disposition" => disposition,
       "evidenceDigest" => String.duplicate("b", 64)
     }

@@ -74,6 +74,11 @@ defmodule SymphonyElixir.FindingRouterTest do
 
     assert {:error, :readiness_check_envelope_invalid} =
              FindingRouter.select_latest_check_run([older, pending], @head)
+
+    malformed_app = Map.put(latest, "app", "not-an-object")
+
+    assert {:error, :readiness_check_envelope_invalid} =
+             FindingRouter.select_latest_check_run([malformed_app], @head)
   end
 
   test "selects the workflow run by immutable check-suite identity, not details_url" do
@@ -126,6 +131,25 @@ defmodule SymphonyElixir.FindingRouterTest do
                workflow_run(),
                identity()
              )
+
+    malformed_envelopes = [
+      {put_in(check_run(receipt([])), ["output"], "not-an-object"), workflow_run()},
+      {put_in(check_run(receipt([])), ["check_suite"], "not-an-object"), workflow_run()},
+      {check_run(receipt([])), Map.put(workflow_run(), "repository", "not-an-object")}
+    ]
+
+    Enum.each(malformed_envelopes, fn {check, workflow} ->
+      assert {:error, _reason} = FindingRouter.verify_receipt(check, workflow, identity())
+    end)
+
+    malformed_evidence = Map.put(receipt([]), "evidence", "not-an-object")
+
+    assert {:error, :readiness_receipt_shape_invalid} =
+             FindingRouter.verify_receipt(
+               check_run(malformed_evidence),
+               workflow_run(),
+               identity()
+             )
   end
 
   test "routes blocked evidence, current-PR fixes, and pending removals without guessing" do
@@ -166,8 +190,53 @@ defmodule SymphonyElixir.FindingRouterTest do
     assert {:hold, :finding_router_evidence_invalid} =
              FindingRouter.plan(receipt_for_plan([mismatched]), [unresolved], [])
 
+    changed_body =
+      disposition("thread-1", "fix_in_current_pr")
+      |> Map.put("findingCommentDigest", String.duplicate("0", 64))
+
+    assert {:hold, :finding_router_evidence_invalid} =
+             FindingRouter.plan(receipt_for_plan([changed_body]), [unresolved], [])
+
     assert :pass =
              FindingRouter.plan(receipt_for_plan([]), [%{unresolved | resolved: true}], [])
+  end
+
+  test "rework order is canonical regardless of receipt disposition order" do
+    dispositions = [
+      disposition("thread-b", "fix_in_current_pr"),
+      disposition("thread-a", "fix_in_current_pr")
+    ]
+
+    threads = [thread("thread-a"), thread("thread-b")]
+
+    assert {:rework, canonical} =
+             FindingRouter.plan(receipt_for_plan(dispositions), threads, [])
+
+    assert {:rework, ^canonical} =
+             FindingRouter.plan(receipt_for_plan(Enum.reverse(dispositions)), threads, [])
+
+    assert Enum.map(canonical, & &1.finding_id) == ["thread-a", "thread-b"]
+  end
+
+  test "paginated thread binding uses the latest priority comment body digest" do
+    old_body = "P2 old finding"
+    edited_body = "P2 edited finding"
+
+    pages = [
+      thread_binding_page("thread-1", [%{"id" => "comment-old", "body" => old_body}]),
+      thread_binding_page("thread-1", [%{"id" => "comment-current", "body" => edited_body}])
+    ]
+
+    edited_digest = digest(edited_body)
+
+    assert {:ok, {"comment-current", ^edited_digest}} =
+             GitHubReviewClient.current_thread_binding_for_test(pages, "thread-1")
+
+    assert {:error, :review_thread_binding_evidence_invalid} =
+             GitHubReviewClient.current_thread_binding_for_test(
+               [%{"data" => %{"node" => %{"id" => "thread-1", "isResolved" => true}}}],
+               "thread-1"
+             )
   end
 
   test "follow-up marker authority uses only the fixed actor and three exact JSON fields" do
@@ -459,6 +528,7 @@ defmodule SymphonyElixir.FindingRouterTest do
     %{
       "findingId" => finding_id,
       "findingCommentId" => "comment-#{finding_id}",
+      "findingCommentDigest" => digest("P2 finding"),
       "disposition" => disposition,
       "evidenceDigest" => String.duplicate("f", 64)
     }
@@ -477,6 +547,7 @@ defmodule SymphonyElixir.FindingRouterTest do
     %{
       finding_id: finding_id,
       finding_comment_id: "comment-#{finding_id}",
+      finding_comment_digest: digest("P2 finding"),
       resolved: false,
       priority: 2,
       body: "P2 finding",
@@ -484,4 +555,19 @@ defmodule SymphonyElixir.FindingRouterTest do
       url: "https://example.test/thread"
     }
   end
+
+  defp thread_binding_page(thread_id, comments) do
+    %{
+      "data" => %{
+        "node" => %{
+          "id" => thread_id,
+          "isResolved" => false,
+          "comments" => %{"nodes" => comments}
+        }
+      }
+    }
+  end
+
+  defp digest(body),
+    do: :crypto.hash(:sha256, body) |> Base.encode16(case: :lower)
 end
