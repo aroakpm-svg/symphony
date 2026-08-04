@@ -45,4 +45,10 @@ defmodule SymphonyElixir.ClaimServiceTest do
     assert_receive {:claim_lost, "issue-1", {:connection_lost, :closed}}
     assert_receive {:claim_lost, "issue-2", {:connection_lost, :closed}}
   end
+
+  test "core supervisor couples orchestrator and worker lifecycles" do
+    supervisor_state = :sys.get_state(SymphonyElixir.Supervisor)
+
+    assert elem(supervisor_state, 2) == :one_for_all
+  end
 end

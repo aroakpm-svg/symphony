@@ -35,7 +35,7 @@ defmodule SymphonyElixir.Application do
 
     Supervisor.start_link(
       children,
-      strategy: :one_for_one,
+      strategy: :one_for_all,
       name: SymphonyElixir.Supervisor
     )
   end

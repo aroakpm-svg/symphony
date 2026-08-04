@@ -97,7 +97,7 @@ defmodule SymphonyElixir.ClaimService do
 
         case terminal_query(state, function, claim) do
           :ok -> {:reply, :ok, %{state | claims: Map.delete(state.claims, issue_id)}}
-          {:error, reason} -> {:reply, {:error, reason}, state}
+          {:error, reason} -> {:reply, {:error, reason}, %{state | claims: Map.delete(state.claims, issue_id)}}
         end
     end
   end
