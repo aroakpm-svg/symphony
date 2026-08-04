@@ -277,7 +277,9 @@ defmodule SymphonyElixir.FindingRouter do
   end
 
   defp valid_dispositions?(dispositions) when is_list(dispositions) do
-    unique_ids?(dispositions, "findingId") and Enum.all?(dispositions, &valid_disposition?/1)
+    Enum.all?(dispositions, &is_map/1) and
+      unique_ids?(dispositions, "findingId") and
+      Enum.all?(dispositions, &valid_disposition?/1)
   end
 
   defp valid_dispositions?(_dispositions), do: false

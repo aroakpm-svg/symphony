@@ -435,6 +435,7 @@ defmodule SymphonyElixir.FindingRouterTest do
       Map.put(receipt([]), "snapshotDigest", 42),
       Map.put(receipt([]), "receiptDigest", %{}),
       Map.put(receipt([]), "findingDispositions", "not-a-list"),
+      Map.put(receipt([]), "findingDispositions", [42]),
       receipt([disposition("thread-1", "unknown")]),
       receipt([
         disposition("thread-1", "remove_out_of_scope_change")
@@ -457,6 +458,9 @@ defmodule SymphonyElixir.FindingRouterTest do
 
     assert {:hold, :finding_router_evidence_invalid} =
              FindingRouter.plan(%{"findingDispositions" => "invalid"}, [], [])
+
+    assert {:hold, :finding_router_evidence_invalid} =
+             FindingRouter.plan(%{"findingDispositions" => [42]}, [], [])
 
     assert {:hold, :finding_router_evidence_invalid} =
              FindingRouter.plan(
