@@ -268,6 +268,7 @@ defmodule SymphonyElixir.FindingRouterTest do
     body = FindingRouter.follow_up_comment(disposition, @head, @digest)
     assert String.starts_with?(body, "<!-- symphony-follow-up:v1\n")
     assert String.contains?(body, "\n\n## 建議另開票處理")
+    assert FindingRouter.valid_follow_up_body?(body)
 
     trusted = %{
       "body" => body,
@@ -458,6 +459,8 @@ defmodule SymphonyElixir.FindingRouterTest do
       disposition
       |> put_in(["followUp", "work"], "Copy <!-- symphony-follow-up:v1 as visible prose")
       |> FindingRouter.follow_up_comment(@head, @digest)
+
+    refute FindingRouter.valid_follow_up_body?(injected)
 
     refute FindingRouter.trusted_follow_up_response?(
              %{"body" => injected, "user" => %{"node_id" => "U_kgDOEDjIhA"}},

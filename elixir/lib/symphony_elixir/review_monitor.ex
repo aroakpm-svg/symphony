@@ -342,7 +342,8 @@ defmodule SymphonyElixir.ReviewMonitor do
             receipt["receiptDigest"]
           )
 
-        with :ok <-
+        with true <- FindingRouter.valid_follow_up_body?(body),
+             :ok <-
                verify_current_settlement_receipt(
                  review_client,
                  settings.repository,
@@ -380,6 +381,7 @@ defmodule SymphonyElixir.ReviewMonitor do
                ) do
           {:cont, :ok}
         else
+          false -> {:halt, {:error, :follow_up_comment_body_invalid}}
           {:error, reason} -> {:halt, {:error, reason}}
         end
 

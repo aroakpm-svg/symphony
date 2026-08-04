@@ -172,6 +172,14 @@ defmodule SymphonyElixir.FindingRouter do
 
   def trusted_follow_up_response?(_response, _expected_body), do: false
 
+  @spec valid_follow_up_body?(term()) :: boolean()
+  def valid_follow_up_body?(body) do
+    case parse_follow_up_marker(body) do
+      {:ok, marker} -> exact_keys?(marker, ["findingId", "sourceHeadSha", "receiptDigest"])
+      _ -> false
+    end
+  end
+
   defp unique_latest(candidates) do
     case parse_candidate_times(candidates) do
       {:ok, timestamped} -> select_unique_latest(timestamped)

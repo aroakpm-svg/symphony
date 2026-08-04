@@ -1542,6 +1542,51 @@ defmodule SymphonyElixir.ReviewConvergenceTest do
     refute_receive {:state, _, _}
   end
 
+  test "finding router rejects an ambiguous follow-up body before posting" do
+    finding = %{
+      finding_id: "thread-1",
+      finding_comment_id: "comment-thread-1",
+      finding_comment_digest: @finding_comment_digest,
+      resolved: false,
+      priority: 3,
+      body: "P3 pre-existing issue",
+      url: "thread"
+    }
+
+    disposition =
+      router_disposition("thread-1", "suggest_follow_up")
+      |> Map.put("followUp", %{
+        "whySeparate" => "問題原本就在 main，且本 PR 沒有惡化。",
+        "work" => "Do not copy <!-- symphony-follow-up:v1 into visible prose.",
+        "risk" => "後續流程仍可能遇到同一問題。",
+        "benefit" => "目前 PR 可以維持原本範圍。"
+      })
+
+    Application.put_env(
+      :symphony_elixir,
+      :review_snapshot,
+      {:ok, snapshot(%{threads: [finding], issue_comments: []})}
+    )
+
+    Application.put_env(
+      :symphony_elixir,
+      :finding_router_receipt,
+      {:ok, router_receipt([disposition])}
+    )
+
+    _state =
+      ReviewMonitor.run_with(
+        %{},
+        Map.put(settings(), :finding_router_mode, "enforce"),
+        ReviewClient,
+        Tracker
+      )
+
+    refute_receive {:pr_comment, _, _, _}
+    refute_receive {:resolve_thread, _, _, _, _}
+    refute_receive {:state, _, _}
+  end
+
   test "finding router revalidates the finding immediately before a follow-up comment" do
     finding = %{
       finding_id: "thread-1",
