@@ -47,14 +47,14 @@ defmodule SymphonyElixir.FindingRouterTest do
   end
 
   test "selects one unique latest completed check and never falls back to an older trusted run" do
-    older = check_run(receipt([])) |> Map.put("completed_at", "2026-08-01T00:00:00Z")
-    latest = check_run(receipt([])) |> Map.put("completed_at", "2026-08-02T00:00:00Z")
+    older = check_run(receipt([])) |> Map.put("created_at", "2026-08-01T00:00:00Z")
+    latest = check_run(receipt([])) |> Map.put("created_at", "2026-08-02T00:00:00Z")
 
     assert {:ok, ^latest} = FindingRouter.select_latest_check_run([older, latest], @head)
 
     impostor =
       latest
-      |> Map.put("completed_at", "2026-08-03T00:00:00Z")
+      |> Map.put("created_at", "2026-08-03T00:00:00Z")
       |> put_in(["app", "id"], 999)
 
     assert {:error, :readiness_check_envelope_invalid} =
@@ -69,6 +69,7 @@ defmodule SymphonyElixir.FindingRouterTest do
       latest
       |> Map.put("completed_at", nil)
       |> Map.put("started_at", "2026-08-04T00:00:00Z")
+      |> Map.put("created_at", "2026-08-04T00:00:00Z")
       |> Map.put("status", "in_progress")
 
     assert {:error, :readiness_check_envelope_invalid} =
@@ -97,6 +98,15 @@ defmodule SymphonyElixir.FindingRouterTest do
                [%{"workflow_runs" => [canonical, Map.put(canonical, "id", 2)]}],
                check
              )
+
+    assert {:error, :readiness_workflow_run_evidence_invalid} =
+             GitHubReviewClient.select_bound_workflow_run_for_test(
+               [%{"workflow_runs" => [canonical, "malformed"]}],
+               check
+             )
+
+    assert {:error, :readiness_workflow_run_evidence_invalid} =
+             GitHubReviewClient.select_bound_workflow_run_for_test([%{}], check)
   end
 
   test "fails closed on malformed, mismatched, or outcome-inconsistent receipts" do
@@ -295,9 +305,8 @@ defmodule SymphonyElixir.FindingRouterTest do
 
     no_time =
       check_run(receipt([]))
-      |> Map.drop(["completed_at"])
+      |> Map.drop(["created_at"])
       |> Map.put("started_at", nil)
-      |> Map.put("created_at", nil)
 
     assert {:error, :readiness_check_time_missing} =
              FindingRouter.select_latest_check_run([no_time], @head)
@@ -401,7 +410,7 @@ defmodule SymphonyElixir.FindingRouterTest do
       "status" => "completed",
       "path" => FindingRouter.workflow_path(),
       "event" => "pull_request_target",
-      "head_sha" => @head,
+      "head_sha" => @base,
       "check_suite_id" => 77,
       "repository" => %{"full_name" => "aroakpm-svg/aroak-central-brain"}
     }
@@ -417,6 +426,7 @@ defmodule SymphonyElixir.FindingRouterTest do
       "conclusion" => "failure",
       "head_sha" => @head,
       "completed_at" => "2026-08-01T00:00:00Z",
+      "created_at" => "2026-08-01T00:00:00Z",
       "app" => %{"id" => FindingRouter.publisher_app_id()},
       "check_suite" => %{"id" => 77},
       "output" => %{

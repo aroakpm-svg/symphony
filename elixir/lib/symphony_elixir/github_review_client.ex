@@ -108,6 +108,7 @@ defmodule SymphonyElixir.GitHubReviewClient do
   def finding_router_receipt(repository, snapshot)
       when is_binary(repository) and is_map(snapshot) do
     head_sha = snapshot[:current_head_sha]
+    base_sha = snapshot[:base_ref_oid]
 
     with {:ok, output} <-
            run([
@@ -126,7 +127,7 @@ defmodule SymphonyElixir.GitHubReviewClient do
              "api",
              "--paginate",
              "--slurp",
-             "repos/#{repository}/actions/runs?head_sha=#{head_sha}&per_page=100"
+             "repos/#{repository}/actions/runs?head_sha=#{base_sha}&per_page=100"
            ]),
          {:ok, workflow_pages} when is_list(workflow_pages) <- Jason.decode(workflow_output),
          {:ok, workflow_run} <- select_bound_workflow_run(workflow_pages, check_run),
@@ -787,24 +788,42 @@ defmodule SymphonyElixir.GitHubReviewClient do
   defp select_bound_workflow_run(pages, check_run) when is_list(pages) and is_map(check_run) do
     suite_id = get_in(check_run, ["check_suite", "id"])
 
-    candidates =
-      pages
-      |> Enum.flat_map(fn
-        %{"workflow_runs" => runs} when is_list(runs) -> runs
-        _ -> []
-      end)
-      |> Enum.filter(&(&1["check_suite_id"] == suite_id))
+    with true <- is_integer(suite_id),
+         {:ok, runs} <- merge_workflow_run_pages(pages) do
+      candidates = Enum.filter(runs, &(&1["check_suite_id"] == suite_id))
 
-    case {suite_id, candidates} do
-      {id, [workflow_run]} when is_integer(id) -> {:ok, workflow_run}
-      {id, []} when is_integer(id) -> {:error, :readiness_workflow_run_missing}
-      {id, [_ | _]} when is_integer(id) -> {:error, :readiness_workflow_run_ambiguous}
-      _ -> {:error, :readiness_check_suite_identity_missing}
+      case candidates do
+        [workflow_run] -> {:ok, workflow_run}
+        [] -> {:error, :readiness_workflow_run_missing}
+        [_ | _] -> {:error, :readiness_workflow_run_ambiguous}
+      end
+    else
+      false -> {:error, :readiness_check_suite_identity_missing}
+      {:error, reason} -> {:error, reason}
     end
   end
 
   defp select_bound_workflow_run(_pages, _check_run),
     do: {:error, :readiness_workflow_run_evidence_invalid}
+
+  defp merge_workflow_run_pages(pages) do
+    Enum.reduce_while(pages, {:ok, []}, fn
+      %{"workflow_runs" => runs}, {:ok, acc}
+      when is_list(runs) ->
+        if Enum.all?(runs, &is_map/1) do
+          {:cont, {:ok, [runs | acc]}}
+        else
+          {:halt, {:error, :readiness_workflow_run_evidence_invalid}}
+        end
+
+      _page, _acc ->
+        {:halt, {:error, :readiness_workflow_run_evidence_invalid}}
+    end)
+    |> case do
+      {:ok, reversed} -> {:ok, reversed |> Enum.reverse() |> List.flatten()}
+      error -> error
+    end
+  end
 
   defp verify_current_thread_binding(thread_id, finding_comment_id) do
     with {:ok, output} <-

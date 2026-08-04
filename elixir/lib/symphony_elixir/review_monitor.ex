@@ -340,11 +340,12 @@ defmodule SymphonyElixir.ReviewMonitor do
           )
 
         with :ok <-
-               verify_settlement_identity(
+               verify_current_settlement_receipt(
                  review_client,
                  settings.repository,
                  snapshot.pull_request_number,
-                 receipt
+                 receipt,
+                 snapshot
                ),
              :ok <-
                review_client.create_follow_up_comment(
@@ -353,11 +354,12 @@ defmodule SymphonyElixir.ReviewMonitor do
                  body
                ),
              :ok <-
-               verify_settlement_identity(
+               verify_current_settlement_receipt(
                  review_client,
                  settings.repository,
                  snapshot.pull_request_number,
-                 receipt
+                 receipt,
+                 snapshot
                ),
              :ok <-
                review_client.resolve_review_thread(
@@ -372,11 +374,12 @@ defmodule SymphonyElixir.ReviewMonitor do
 
       {:resolve, disposition}, :ok ->
         with :ok <-
-               verify_settlement_identity(
+               verify_current_settlement_receipt(
                  review_client,
                  settings.repository,
                  snapshot.pull_request_number,
-                 receipt
+                 receipt,
+                 snapshot
                ),
              :ok <-
                review_client.resolve_review_thread(
@@ -398,6 +401,17 @@ defmodule SymphonyElixir.ReviewMonitor do
       {:ok, ^expected} -> :ok
       {:ok, _changed_identity} -> {:error, :finding_router_pr_changed_before_settlement}
       {:error, reason} -> {:error, {:finding_router_pr_unverified_before_settlement, reason}}
+    end
+  end
+
+  defp verify_current_settlement_receipt(review_client, repository, number, receipt, snapshot) do
+    with {:ok, current} <- review_client.finding_router_receipt(repository, snapshot),
+         true <- routing_receipt_identity(current) == routing_receipt_identity(receipt),
+         :ok <- verify_settlement_identity(review_client, repository, number, receipt) do
+      :ok
+    else
+      false -> {:error, :finding_router_receipt_changed_before_settlement}
+      {:error, _reason} -> {:error, :finding_router_receipt_unverified_before_settlement}
     end
   end
 

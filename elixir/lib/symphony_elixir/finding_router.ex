@@ -162,28 +162,22 @@ defmodule SymphonyElixir.FindingRouter do
   def trusted_follow_up_response?(_response, _expected_body), do: false
 
   defp unique_latest(candidates) do
-    ranked =
-      Enum.map(candidates, fn candidate ->
-        {candidate["completed_at"] || candidate["started_at"] || candidate["created_at"], candidate}
-      end)
+    if Enum.all?(candidates, &is_binary(&1["created_at"])) do
+      latest_time = candidates |> Enum.map(& &1["created_at"]) |> Enum.max()
 
-    case Enum.reject(ranked, &(not is_binary(elem(&1, 0)))) do
-      [] ->
-        {:error, :readiness_check_time_missing}
-
-      valid ->
-        latest_time = valid |> Enum.map(&elem(&1, 0)) |> Enum.max()
-
-        case Enum.filter(valid, &(elem(&1, 0) == latest_time)) do
-          [{_time, latest}] -> {:ok, latest}
-          _ -> {:error, :readiness_check_latest_ambiguous}
-        end
+      case Enum.filter(candidates, &(&1["created_at"] == latest_time)) do
+        [latest] -> {:ok, latest}
+        _ -> {:error, :readiness_check_latest_ambiguous}
+      end
+    else
+      {:error, :readiness_check_time_missing}
     end
   end
 
   defp verify_check_and_workflow(check_run, workflow_run, identity) do
     expected_repository = identity[:repository]
     expected_head = identity[:head_sha]
+    expected_base = identity[:base_sha]
 
     valid =
       Enum.all?([
@@ -195,7 +189,7 @@ defmodule SymphonyElixir.FindingRouter do
         workflow_run["status"] == "completed",
         workflow_run["path"] == @workflow_path,
         workflow_run["event"] == "pull_request_target",
-        workflow_run["head_sha"] == expected_head,
+        workflow_run["head_sha"] == expected_base,
         workflow_run["check_suite_id"] == get_in(check_run, ["check_suite", "id"]),
         get_in(workflow_run, ["repository", "full_name"]) == expected_repository
       ])
