@@ -33,8 +33,8 @@ defmodule SymphonyElixir.ClaimServiceTest do
     state = %ClaimService{
       connection: connection,
       claims: %{
-        "issue-1" => %{owner: self()},
-        "issue-2" => %{owner: self()}
+        "issue-1" => %{owner: self(), lease_deadline_ms: 1},
+        "issue-2" => %{owner: self(), lease_deadline_ms: 1}
       }
     }
 

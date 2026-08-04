@@ -12,12 +12,15 @@ defmodule SymphonyElixir.ClaimService do
   alias SymphonyElixir.Config
   alias SymphonyElixir.Linear.Issue
 
+  @call_timeout_ms 15_000
+
   defstruct [:connection, :settings, :timer_ref, claims: %{}]
 
   @type claim :: %{
           issue_id: String.t(),
           claim_id: String.t(),
           generation: pos_integer(),
+          lease_deadline_ms: integer(),
           owner: pid()
         }
 
@@ -83,7 +86,11 @@ defmodule SymphonyElixir.ClaimService do
   def handle_call({:claim, issue, owner}, _from, state) do
     case claim_query(state, issue) do
       {:ok, claim} ->
-        claim = Map.put(claim, :owner, owner)
+        claim =
+          claim
+          |> Map.put(:owner, owner)
+          |> refresh_lease_deadline(state.settings.lease_ms)
+
         {:reply, {:ok, claim}, %{state | claims: Map.put(state.claims, issue.id, claim)}}
 
       {:error, reason} ->
@@ -136,9 +143,13 @@ defmodule SymphonyElixir.ClaimService do
   defp renew_claims(state) do
     claims =
       Enum.reduce(state.claims, state.claims, fn {issue_id, claim}, acc ->
-        case renew_query(state, claim) do
+        case renewal_safe?(claim) && renew_query(state, claim) do
           :ok ->
-            acc
+            Map.put(acc, issue_id, refresh_lease_deadline(claim, state.settings.lease_ms))
+
+          false ->
+            send(claim.owner, {:claim_lost, issue_id, :renewal_deadline_uncertain})
+            Map.delete(acc, issue_id)
 
           {:error, reason} ->
             send(claim.owner, {:claim_lost, issue_id, reason})
@@ -215,8 +226,16 @@ defmodule SymphonyElixir.ClaimService do
 
   defp schedule_heartbeat(state) do
     if is_reference(state.timer_ref), do: Process.cancel_timer(state.timer_ref)
-    %{state | timer_ref: Process.send_after(self(), :heartbeat, state.settings.heartbeat_ms)}
+    %{state | timer_ref: Process.send_after(self(), :heartbeat, heartbeat_delay(state))}
   end
+
+  defp heartbeat_delay(%{claims: claims, settings: settings}) when map_size(claims) > 0 do
+    earliest_deadline_ms = claims |> Map.values() |> Enum.map(& &1.lease_deadline_ms) |> Enum.min()
+    safe_remaining_ms = earliest_deadline_ms - System.monotonic_time(:millisecond) - @call_timeout_ms
+    min(settings.heartbeat_ms, max(safe_remaining_ms, 0))
+  end
+
+  defp heartbeat_delay(%{settings: settings}), do: settings.heartbeat_ms
 
   defp issue_updated_at(%Issue{updated_at: %DateTime{} = updated_at}), do: DateTime.to_iso8601(updated_at)
   defp issue_updated_at(_issue), do: nil
@@ -237,7 +256,7 @@ defmodule SymphonyElixir.ClaimService do
 
       _pid ->
         try do
-          GenServer.call(__MODULE__, request, 15_000)
+          GenServer.call(__MODULE__, request, @call_timeout_ms)
         catch
           :exit, reason -> {:error, {:claim_service_unavailable, reason}}
         end
@@ -245,6 +264,16 @@ defmodule SymphonyElixir.ClaimService do
   end
 
   defp coordinator_running?, do: Process.whereis(__MODULE__) != nil
+
+  defp renewal_safe?(%{lease_deadline_ms: deadline_ms}) do
+    deadline_ms - System.monotonic_time(:millisecond) > @call_timeout_ms
+  end
+
+  defp renewal_safe?(_claim), do: false
+
+  defp refresh_lease_deadline(claim, lease_ms) do
+    Map.put(claim, :lease_deadline_ms, System.monotonic_time(:millisecond) + lease_ms)
+  end
 
   defp notify_claim_lost(claims, reason) do
     Enum.each(claims, fn {issue_id, claim} ->

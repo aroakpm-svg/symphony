@@ -995,10 +995,23 @@ defmodule SymphonyElixir.Orchestrator do
 
           {:error, reason} ->
             Logger.warning("Skipping dispatch; database claim rejected for #{issue_context(issue)}: #{inspect(reason)}")
-            state
+            handle_claim_rejection(state, issue, attempt, worker_host, reason)
         end
     end
   end
+
+  defp handle_claim_rejection(state, issue, attempt, worker_host, reason) when is_integer(attempt) do
+    state
+    |> release_issue_claim(issue.id)
+    |> schedule_issue_retry(issue.id, attempt + 1, %{
+      identifier: issue.identifier,
+      issue_url: issue.url,
+      error: "database claim rejected: #{inspect(reason)}",
+      worker_host: worker_host
+    })
+  end
+
+  defp handle_claim_rejection(state, _issue, _attempt, _worker_host, _reason), do: state
 
   defp spawn_issue_on_worker_host(%State{} = state, issue, attempt, recipient, worker_host, distributed_claim) do
     case Task.Supervisor.start_child(SymphonyElixir.TaskSupervisor, fn ->
