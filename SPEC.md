@@ -359,6 +359,18 @@ operations MUST remain recoverable after restart and after the issue leaves the 
 round MUST be counted only once the target state is observed and completion is durable.
 Technical convergence MUST NOT authorize merge, deployment, or terminal tracker transitions.
 
+The implementation extension MAY expose `finding_router_mode` with exact values `disabled`,
+`shadow`, and `enforce`. Enforce mode MUST treat Central Brain as the sole disposition authority and
+MUST NOT reimplement its digest, diff, scope, review, or classification rules. It MUST bind one
+unique latest completed receipt to the exact repository, PR, live base policy SHA, head SHA, check
+name, immutable publisher App ID, and canonical workflow path. Missing, running, ambiguous, stale,
+or mismatched evidence MUST fail closed. A missing finding in a later review MUST NOT prove that an
+out-of-scope change was removed; exact-head receipt evidence MUST explicitly mark removal verified.
+A required follow-up comment MUST be durably written by the configured immutable actor identity and
+must contain exact finding, head, and receipt marker fields before the related thread is resolved.
+Visible prose, labels, display names, natural-language comparison, or a second marker store MUST NOT
+be treated as runtime authority. Finding routing MUST NOT authorize merge.
+
 Note:
 
 - The workflow front matter is extensible. Extensions MAY define additional top-level keys without

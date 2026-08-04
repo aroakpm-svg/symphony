@@ -36,6 +36,7 @@ review_convergence:
   in_progress_state: "In Progress"
   max_fix_rounds: 3
   human_owner: "PM AROAK"
+  finding_router_mode: "shadow"
 codex:
   command: |
     ENV_FILE="C:/Users/aroak/Desktop/codex/symphony/elixir/.env.local"
@@ -449,6 +450,27 @@ Actionable P1-P4 findings move the issue back to In Progress once per head/findi
 reuse the same branch and PR. Waiting for staging, permissions, or human product/safety decisions
 keeps the issue In Review and pauses retries without repeating a full review. Technical convergence
 never authorizes merge, deployment, production changes, permission changes, or Done.
+
+`finding_router_mode` has three finite values. `disabled` preserves the legacy convergence policy.
+`shadow` reads the Central Brain receipt and logs the planned ownership action, but keeps all legacy
+effects unchanged. `enforce` accepts only the unique latest completed `Work Routing / Readiness`
+check for the current head. The publisher must be GitHub Actions App ID `15368`; the workflow must
+be exact `.github/workflows/work-routing-readiness.yml` on `pull_request_target`; and repository,
+PR, live base policy SHA, head SHA, receipt schema, and check outcome must agree. The same App ID on
+another workflow is rejected. Missing, running, tied, stale, malformed, or mismatched evidence
+fails closed. Symphony verifies this envelope only and never recalculates the Central Brain digest,
+diff, scope, review, or disposition.
+
+In enforce mode, unknown ownership keeps the issue in review for a human. A current-PR regression
+uses the existing rework transition. Pending out-of-scope work is returned only for removal, and the
+original thread remains unresolved until Central Brain explicitly publishes `removalStatus:
+verified` for the exact current head. A main-old finding is not repaired in the current PR. If it
+needs follow-up, Symphony first writes the visible four-part recommendation template plus the exact
+hidden marker, verifies that GitHub reports actor node ID `U_kgDOEDjIhA`, and only then resolves the
+thread. The marker authority is only `findingId`, `sourceHeadSha`, and `receiptDigest`; natural
+language, regex interpretation, display login, label, or another durable marker is never accepted.
+The configured owner account may represent either an authorized human or Symphony. Symphony does
+not merge in any mode.
 
 The state move is a recoverable transition, not two best-effort writes. Review Monitor first
 persists a stable operation intent in Linear, then moves the issue, then persists a completion

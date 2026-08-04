@@ -3,7 +3,7 @@ defmodule SymphonyElixir.ReviewMonitor do
 
   require Logger
 
-  alias SymphonyElixir.{Config, GitHubReviewClient, ReviewConvergence, Tracker}
+  alias SymphonyElixir.{Config, FindingRouter, GitHubReviewClient, ReviewConvergence, Tracker}
   alias SymphonyElixir.Linear.Issue
 
   @type state :: %{optional(String.t()) => map()}
@@ -136,14 +136,184 @@ defmodule SymphonyElixir.ReviewMonitor do
     with branch when is_binary(branch) and branch != "" <- issue.branch_name,
          {:ok, snapshot} <- review_client.snapshot(settings.repository, branch) do
       entry = invalidate_old_head(entry, snapshot.current_head_sha)
-      decision = ReviewConvergence.evaluate(snapshot, entry.fix_rounds, settings.max_fix_rounds)
-      {updated_entry, _outcome} = apply_decision(decision, issue, entry, settings, review_client, tracker, snapshot)
-      Map.put(state, issue.id, updated_entry)
+
+      case finding_router_plan(settings, review_client, snapshot) do
+        {:ok, :legacy} ->
+          apply_legacy_decision(issue, entry, state, settings, review_client, tracker, snapshot)
+
+        {:ok, {:shadow, plan}} ->
+          Logger.info("Finding Router shadow decision for PR ##{snapshot.pull_request_number}: #{inspect(plan)}")
+
+          apply_legacy_decision(issue, entry, state, settings, review_client, tracker, snapshot)
+
+        {:ok, {:enforce, plan, receipt}} ->
+          context = %{
+            issue: issue,
+            entry: entry,
+            state: state,
+            settings: settings,
+            review_client: review_client,
+            tracker: tracker,
+            snapshot: snapshot
+          }
+
+          apply_finding_router_plan(plan, receipt, context)
+
+        {:error, reason} ->
+          wait_for_human(issue, entry, settings, review_client, tracker, reason, state)
+      end
     else
       nil -> wait_for_human(issue, entry, settings, review_client, tracker, :missing_branch_name, state)
       "" -> wait_for_human(issue, entry, settings, review_client, tracker, :missing_branch_name, state)
       {:error, reason} -> wait_for_human(issue, entry, settings, review_client, tracker, inspect(reason), state)
     end
+  end
+
+  defp apply_legacy_decision(issue, entry, state, settings, review_client, tracker, snapshot) do
+    decision = ReviewConvergence.evaluate(snapshot, entry.fix_rounds, settings.max_fix_rounds)
+    {updated_entry, _outcome} = apply_decision(decision, issue, entry, settings, review_client, tracker, snapshot)
+    Map.put(state, issue.id, updated_entry)
+  end
+
+  defp finding_router_plan(settings, review_client, snapshot) do
+    case Map.get(settings, :finding_router_mode, "disabled") do
+      "disabled" ->
+        {:ok, :legacy}
+
+      "shadow" ->
+        shadow_finding_router_plan(settings, review_client, snapshot)
+
+      "enforce" ->
+        enforce_finding_router_plan(settings, review_client, snapshot)
+    end
+  end
+
+  defp shadow_finding_router_plan(settings, review_client, snapshot) do
+    case review_client.finding_router_receipt(settings.repository, snapshot) do
+      {:ok, receipt} ->
+        {:ok, {:shadow, route_receipt(receipt, snapshot)}}
+
+      {:error, reason} ->
+        Logger.warning("Finding Router shadow evidence unavailable: #{inspect(reason)}")
+        {:ok, {:shadow, {:hold, :finding_router_evidence_unavailable}}}
+    end
+  end
+
+  defp enforce_finding_router_plan(settings, review_client, snapshot) do
+    case review_client.finding_router_receipt(settings.repository, snapshot) do
+      {:ok, receipt} -> {:ok, {:enforce, route_receipt(receipt, snapshot), receipt}}
+      {:error, reason} -> {:error, {:finding_router_evidence_unavailable, reason}}
+    end
+  end
+
+  defp route_receipt(receipt, snapshot) do
+    FindingRouter.plan(receipt, snapshot[:threads] || [], snapshot[:issue_comments] || [])
+  end
+
+  defp apply_finding_router_plan({:hold, reason}, _receipt, context) do
+    {updated, _outcome} =
+      apply_decision(
+        {:wait, %{reason: reason}},
+        context.issue,
+        context.entry,
+        context.settings,
+        context.review_client,
+        context.tracker,
+        context.snapshot
+      )
+
+    Map.put(context.state, context.issue.id, updated)
+  end
+
+  defp apply_finding_router_plan({:rework, findings}, _receipt, context) do
+    {updated, _outcome} =
+      apply_decision(
+        {:rework, %{actionable_threads: findings}},
+        context.issue,
+        context.entry,
+        context.settings,
+        context.review_client,
+        context.tracker,
+        context.snapshot
+      )
+
+    Map.put(context.state, context.issue.id, updated)
+  end
+
+  defp apply_finding_router_plan({:settle, actions}, receipt, context) do
+    case execute_router_actions(
+           actions,
+           receipt,
+           context.settings,
+           context.review_client,
+           context.snapshot
+         ) do
+      :ok ->
+        {updated, _result} =
+          ensure_published_status(
+            context.entry,
+            context.review_client,
+            context.settings.repository,
+            context.snapshot,
+            :pending,
+            "Finding routing actions applied; waiting for fresh evidence"
+          )
+
+        Map.put(context.state, context.issue.id, %{updated | waiting: true})
+
+      {:error, reason} ->
+        wait_for_human(
+          context.issue,
+          context.entry,
+          context.settings,
+          context.review_client,
+          context.tracker,
+          reason,
+          context.state
+        )
+    end
+  end
+
+  defp apply_finding_router_plan(:pass, _receipt, context) do
+    apply_legacy_decision(
+      context.issue,
+      context.entry,
+      context.state,
+      context.settings,
+      context.review_client,
+      context.tracker,
+      context.snapshot
+    )
+  end
+
+  defp execute_router_actions(actions, receipt, settings, review_client, snapshot) do
+    Enum.reduce_while(actions, :ok, fn
+      {:comment_then_resolve, disposition}, :ok ->
+        body =
+          FindingRouter.follow_up_comment(
+            disposition,
+            receipt["headSha"],
+            receipt["receiptDigest"]
+          )
+
+        with :ok <-
+               review_client.create_follow_up_comment(
+                 settings.repository,
+                 snapshot.pull_request_number,
+                 body
+               ),
+             :ok <- review_client.resolve_review_thread(settings.repository, disposition["findingId"]) do
+          {:cont, :ok}
+        else
+          {:error, reason} -> {:halt, {:error, reason}}
+        end
+
+      {:resolve, finding_id}, :ok ->
+        case review_client.resolve_review_thread(settings.repository, finding_id) do
+          :ok -> {:cont, :ok}
+          {:error, reason} -> {:halt, {:error, reason}}
+        end
+    end)
   end
 
   defp wait_for_history_error(issue, entry, state, settings, review_client, tracker, reason) do
@@ -441,7 +611,12 @@ defmodule SymphonyElixir.ReviewMonitor do
   end
 
   defp finding_fingerprint(findings) do
-    Enum.map(findings, &{&1[:priority], &1[:path], &1[:body]})
+    Enum.map(findings, fn finding ->
+      case finding[:router_action] do
+        nil -> {finding[:priority], finding[:path], finding[:body]}
+        action -> {finding[:priority], finding[:path], finding[:body], action}
+      end
+    end)
   end
 
   defp publish_status(_review_client, _repository, %{current_head_sha: head}, _state, _description)
@@ -468,7 +643,9 @@ defmodule SymphonyElixir.ReviewMonitor do
   end
 
   defp rework_comment(snapshot, findings, key) do
-    details = Enum.map_join(findings, "\n", fn finding -> "- P#{finding.priority}: #{finding.url || finding.path || finding.body}" end)
+    routed? = Enum.any?(findings, &(&1[:router_action] != nil))
+    details = Enum.map_join(findings, "\n", &rework_detail/1)
+    instruction = rework_instruction(routed?)
 
     """
     Review Convergence Gate found actionable latest-head findings.
@@ -477,10 +654,31 @@ defmodule SymphonyElixir.ReviewMonitor do
     - currentHeadSha: `#{snapshot.current_head_sha}`
     #{details}
 
-    Symphony should reuse the same branch/PR and fix only these scoped findings.
+    #{instruction}
     dedup-key: `#{key}`
     """
   end
+
+  defp rework_detail(finding) do
+    summary = "- P#{finding.priority}: #{finding.url || finding.path || finding.body}"
+
+    case finding[:router_action] do
+      :remove_out_of_scope_change ->
+        "#{summary}\n  - 移除越界實作；不要擴大本票範圍。原 thread 會等 exact-head 移除證明後再 Resolve。"
+
+      :fix_in_current_pr ->
+        "#{summary}\n  - 留在目前 PR 治本修正。"
+
+      _ ->
+        summary
+    end
+  end
+
+  defp rework_instruction(true),
+    do: "Symphony should reuse the same branch/PR and perform only the routed action shown above."
+
+  defp rework_instruction(false),
+    do: "Symphony should reuse the same branch/PR and fix only these scoped findings."
 
   defp state_transition_comment(snapshot, key) do
     """

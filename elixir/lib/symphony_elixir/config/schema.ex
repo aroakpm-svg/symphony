@@ -169,6 +169,7 @@ defmodule SymphonyElixir.Config.Schema do
       field(:in_progress_state, :string, default: "In Progress")
       field(:max_fix_rounds, :integer, default: 3)
       field(:human_owner, :string)
+      field(:finding_router_mode, :string, default: "disabled")
     end
 
     @spec changeset(%__MODULE__{}, map()) :: Ecto.Changeset.t()
@@ -176,10 +177,19 @@ defmodule SymphonyElixir.Config.Schema do
       schema
       |> cast(
         attrs,
-        [:enabled, :repository, :review_state, :in_progress_state, :max_fix_rounds, :human_owner],
+        [
+          :enabled,
+          :repository,
+          :review_state,
+          :in_progress_state,
+          :max_fix_rounds,
+          :human_owner,
+          :finding_router_mode
+        ],
         empty_values: []
       )
       |> validate_number(:max_fix_rounds, greater_than: 0)
+      |> validate_inclusion(:finding_router_mode, ["disabled", "shadow", "enforce"])
       |> validate_format(:repository, ~r/\A[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+\z/, message: "must use owner/name format")
       |> validate_required_if_enabled()
     end

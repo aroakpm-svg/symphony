@@ -1,6 +1,8 @@
 defmodule SymphonyElixir.GitHubReviewClient do
   @moduledoc "Reads latest-head review evidence and requests Codex reviews through `gh`."
 
+  alias SymphonyElixir.FindingRouter
+
   @graphql """
   query SymphonyReviewConvergence($owner: String!, $name: String!, $number: Int!, $endCursor: String) {
     repository(owner: $owner, name: $name) {
@@ -28,7 +30,7 @@ defmodule SymphonyElixir.GitHubReviewClient do
             isResolved
             id
             comments(first: 100) {
-              nodes { body path url commit { oid } }
+              nodes { id body path url commit { oid } }
             }
           }
           pageInfo { hasNextPage endCursor }
@@ -43,7 +45,7 @@ defmodule SymphonyElixir.GitHubReviewClient do
     node(id: $threadId) {
       ... on PullRequestReviewThread {
         comments(first: 100, after: $endCursor) {
-          nodes { body path url commit { oid } }
+          nodes { id body path url commit { oid } }
           pageInfo { hasNextPage endCursor }
         }
       }
@@ -87,6 +89,106 @@ defmodule SymphonyElixir.GitHubReviewClient do
       {:error, reason} -> {:error, reason}
     end
   end
+
+  @spec finding_router_receipt(String.t(), map()) :: {:ok, map()} | {:error, term()}
+  def finding_router_receipt(repository, snapshot)
+      when is_binary(repository) and is_map(snapshot) do
+    head_sha = snapshot[:current_head_sha]
+
+    with {:ok, output} <-
+           run([
+             "api",
+             "--paginate",
+             "--slurp",
+             "repos/#{repository}/commits/#{head_sha}/check-runs?per_page=100",
+             "-H",
+             "Accept: application/vnd.github+json"
+           ]),
+         {:ok, pages} when is_list(pages) <- Jason.decode(output),
+         {:ok, %{"check_runs" => check_runs}} <- merge_check_run_pages(pages),
+         {:ok, check_run} <- FindingRouter.select_latest_check_run(check_runs, head_sha),
+         {:ok, run_id} <- workflow_run_id(check_run, repository),
+         {:ok, workflow_output} <- run(["api", "repos/#{repository}/actions/runs/#{run_id}"]),
+         {:ok, workflow_run} when is_map(workflow_run) <- Jason.decode(workflow_output),
+         {:ok, receipt} <-
+           FindingRouter.verify_receipt(check_run, workflow_run, %{
+             repository: repository,
+             pull_request_number: snapshot[:pull_request_number],
+             base_sha: snapshot[:base_ref_oid],
+             head_sha: head_sha
+           }) do
+      {:ok, receipt}
+    else
+      {:ok, unexpected} -> {:error, {:invalid_finding_router_evidence, unexpected}}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  def finding_router_receipt(_repository, _snapshot),
+    do: {:error, :invalid_finding_router_identity}
+
+  @spec create_follow_up_comment(String.t(), pos_integer(), String.t()) :: :ok | {:error, term()}
+  def create_follow_up_comment(repository, number, body)
+      when is_binary(repository) and is_integer(number) and number > 0 and is_binary(body) do
+    with {:ok, output} <-
+           run([
+             "api",
+             "repos/#{repository}/issues/#{number}/comments",
+             "--method",
+             "POST",
+             "-f",
+             "body=#{body}"
+           ]),
+         {:ok, response} when is_map(response) <- Jason.decode(output),
+         true <- FindingRouter.trusted_follow_up_response?(response, body) do
+      :ok
+    else
+      false -> {:error, :follow_up_comment_response_untrusted}
+      {:ok, unexpected} -> {:error, {:invalid_follow_up_comment_response, unexpected}}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  def create_follow_up_comment(_repository, _number, _body),
+    do: {:error, :invalid_follow_up_comment}
+
+  @spec resolve_review_thread(String.t(), String.t()) :: :ok | {:error, term()}
+  def resolve_review_thread(repository, thread_id)
+      when is_binary(repository) and is_binary(thread_id) and thread_id != "" do
+    mutation = """
+    mutation SymphonyResolveReviewThread($threadId: ID!) {
+      resolveReviewThread(input: {threadId: $threadId}) {
+        thread { id isResolved }
+      }
+    }
+    """
+
+    with {:ok, output} <-
+           run([
+             "api",
+             "graphql",
+             "-f",
+             "query=#{mutation}",
+             "-F",
+             "threadId=#{thread_id}"
+           ]),
+         {:ok,
+          %{
+            "data" => %{
+              "resolveReviewThread" => %{
+                "thread" => %{"id" => ^thread_id, "isResolved" => true}
+              }
+            }
+          }} <- Jason.decode(output) do
+      :ok
+    else
+      {:ok, unexpected} -> {:error, {:review_thread_resolution_unverified, unexpected}}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  def resolve_review_thread(_repository, _thread_id),
+    do: {:error, :invalid_review_thread_identity}
 
   @spec review_request_exists?(String.t(), pos_integer(), String.t()) :: {:ok, boolean()} | {:error, term()}
   def review_request_exists?(repository, number, key) do
@@ -612,6 +714,23 @@ defmodule SymphonyElixir.GitHubReviewClient do
 
   defp validate_pull_request_page(page), do: {:error, {:invalid_pull_request_page, page}}
 
+  defp workflow_run_id(%{"details_url" => details_url}, repository)
+       when is_binary(details_url) and is_binary(repository) do
+    with %URI{scheme: "https", host: "github.com", query: nil, fragment: nil, userinfo: nil, path: path} <-
+           URI.parse(details_url),
+         [owner, name] <- String.split(repository, "/", parts: 2),
+         ["", ^owner, ^name, "actions", "runs", run_id | rest] <- String.split(path, "/"),
+         true <- rest == [] or match?(["job", _job_id], rest),
+         {number, ""} when number > 0 <- Integer.parse(run_id) do
+      {:ok, number}
+    else
+      _ -> {:error, :readiness_workflow_run_identity_invalid}
+    end
+  end
+
+  defp workflow_run_id(_check_run, _repository),
+    do: {:error, :readiness_workflow_run_identity_missing}
+
   defp encode_path_segment(value) do
     URI.encode(value, &URI.char_unreserved?/1)
   end
@@ -809,6 +928,7 @@ defmodule SymphonyElixir.GitHubReviewClient do
       base_verification: base_verification.result,
       required_checks: checks,
       threads: normalize_threads(threads, head_sha),
+      issue_comments: issue_comments,
       structural_risk: structural_risk?(current_threads, head_sha)
     }
   end
@@ -926,6 +1046,7 @@ defmodule SymphonyElixir.GitHubReviewClient do
 
         [
           %{
+            finding_id: thread["id"],
             resolved: thread["isResolved"] == true,
             priority: priority(body),
             body: body,

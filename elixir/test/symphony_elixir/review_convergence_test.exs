@@ -11,6 +11,30 @@ defmodule SymphonyElixir.ReviewConvergenceTest do
     @spec snapshot(String.t(), String.t()) :: {:ok, map()} | {:error, term()}
     def snapshot(_repository, _branch), do: Application.fetch_env!(:symphony_elixir, :review_snapshot)
 
+    @spec finding_router_receipt(String.t(), map()) :: {:ok, map()} | {:error, term()}
+    def finding_router_receipt(_repository, _snapshot),
+      do: Application.fetch_env!(:symphony_elixir, :finding_router_receipt)
+
+    @spec create_follow_up_comment(String.t(), pos_integer(), String.t()) :: :ok
+    def create_follow_up_comment(repository, number, body) do
+      send(
+        Application.fetch_env!(:symphony_elixir, :review_recipient),
+        {:pr_comment, repository, number, body}
+      )
+
+      Application.get_env(:symphony_elixir, :follow_up_comment_result, :ok)
+    end
+
+    @spec resolve_review_thread(String.t(), String.t()) :: :ok
+    def resolve_review_thread(repository, finding_id) do
+      send(
+        Application.fetch_env!(:symphony_elixir, :review_recipient),
+        {:resolve_thread, repository, finding_id}
+      )
+
+      Application.get_env(:symphony_elixir, :resolve_thread_result, :ok)
+    end
+
     @spec request_review(String.t(), pos_integer(), String.t()) :: :ok
     def request_review(repository, number, key) do
       send(Application.fetch_env!(:symphony_elixir, :review_recipient), {:review_requested, repository, number, key})
@@ -87,12 +111,38 @@ defmodule SymphonyElixir.ReviewConvergenceTest do
       Application.delete_env(:symphony_elixir, :linear_client_module)
       Application.delete_env(:symphony_elixir, :review_state_result)
       Application.delete_env(:symphony_elixir, :verified_issue_state)
+      Application.delete_env(:symphony_elixir, :finding_router_receipt)
+      Application.delete_env(:symphony_elixir, :follow_up_comment_result)
+      Application.delete_env(:symphony_elixir, :resolve_thread_result)
     end)
   end
 
   test "review convergence config is disabled by default and fail-closed when enabled without a repository" do
     assert {:ok, config} = Schema.parse(%{})
     refute config.review_convergence.enabled
+    assert config.review_convergence.finding_router_mode == "disabled"
+
+    assert {:ok, shadow_config} =
+             Schema.parse(%{
+               "review_convergence" => %{
+                 "enabled" => true,
+                 "repository" => "owner/repo",
+                 "finding_router_mode" => "shadow"
+               }
+             })
+
+    assert shadow_config.review_convergence.finding_router_mode == "shadow"
+
+    assert {:error, {:invalid_workflow_config, mode_message}} =
+             Schema.parse(%{
+               "review_convergence" => %{
+                 "enabled" => true,
+                 "repository" => "owner/repo",
+                 "finding_router_mode" => "guess"
+               }
+             })
+
+    assert mode_message =~ "finding_router_mode"
 
     assert {:error, {:invalid_workflow_config, message}} =
              Schema.parse(%{"review_convergence" => %{"enabled" => true}})
@@ -1064,6 +1114,125 @@ defmodule SymphonyElixir.ReviewConvergenceTest do
              |> ReviewConvergence.evaluate(0, 3)
   end
 
+  test "finding router enforce holds the whole PR when Central evidence is unverified" do
+    finding = %{
+      finding_id: "thread-1",
+      resolved: false,
+      priority: 2,
+      body: "P2 unclear ownership",
+      url: "thread"
+    }
+
+    Application.put_env(
+      :symphony_elixir,
+      :review_snapshot,
+      {:ok, snapshot(%{threads: [finding], issue_comments: []})}
+    )
+
+    Application.put_env(
+      :symphony_elixir,
+      :finding_router_receipt,
+      {:ok, router_receipt([router_disposition("thread-1", "blocked_unverified")])}
+    )
+
+    _state =
+      ReviewMonitor.run_with(
+        %{},
+        Map.put(settings(), :finding_router_mode, "enforce"),
+        ReviewClient,
+        Tracker
+      )
+
+    assert_receive {:status, _, "head", :pending, _}
+    assert_receive {:comment, "issue-160", body}
+    assert body =~ "finding_ownership_unverified"
+    refute_receive {:state, _, _}
+    refute_receive {:resolve_thread, _, _}
+  end
+
+  test "finding router enforce returns only the routed current-PR finding for repair" do
+    finding = %{
+      finding_id: "thread-1",
+      resolved: false,
+      priority: 1,
+      body: "P1 regression",
+      url: "thread"
+    }
+
+    Application.put_env(
+      :symphony_elixir,
+      :review_snapshot,
+      {:ok, snapshot(%{threads: [finding], issue_comments: []})}
+    )
+
+    Application.put_env(
+      :symphony_elixir,
+      :finding_router_receipt,
+      {:ok, router_receipt([router_disposition("thread-1", "fix_in_current_pr")])}
+    )
+
+    _state =
+      ReviewMonitor.run_with(
+        %{},
+        Map.put(settings(), :finding_router_mode, "enforce"),
+        ReviewClient,
+        Tracker
+      )
+
+    assert_receive {:status, _, "head", :failure, _}
+    assert_receive {:comment, "issue-160", body}
+    assert body =~ "留在目前 PR 治本修正"
+    assert_receive {:state, "issue-160", "In Progress"}
+    refute_receive {:resolve_thread, _, _}
+  end
+
+  test "finding router writes a follow-up before resolving and never moves Linear" do
+    finding = %{
+      finding_id: "thread-1",
+      resolved: false,
+      priority: 3,
+      body: "P3 pre-existing issue",
+      url: "thread"
+    }
+
+    disposition =
+      router_disposition("thread-1", "suggest_follow_up")
+      |> Map.put("followUp", %{
+        "whySeparate" => "問題原本就在 main，且本 PR 沒有惡化。",
+        "work" => "另開一張票修正共享驗證器。",
+        "risk" => "後續流程仍可能遇到同一問題。",
+        "benefit" => "目前 PR 可以維持原本範圍。"
+      })
+
+    Application.put_env(
+      :symphony_elixir,
+      :review_snapshot,
+      {:ok, snapshot(%{threads: [finding], issue_comments: []})}
+    )
+
+    Application.put_env(
+      :symphony_elixir,
+      :finding_router_receipt,
+      {:ok, router_receipt([disposition])}
+    )
+
+    _state =
+      ReviewMonitor.run_with(
+        %{},
+        Map.put(settings(), :finding_router_mode, "enforce"),
+        ReviewClient,
+        Tracker
+      )
+
+    assert_receive {:pr_comment, _, 42, body}
+    assert body =~ "建議另開票處理"
+    assert body =~ "<!-- symphony-follow-up:v1"
+    assert_receive {:resolve_thread, _, "thread-1"}
+    assert_receive {:status, _, "head", :pending, _}
+    refute_receive {:state, _, _}
+    refute_receive {:comment, "issue-160", _}
+  end
+
   test "an explicit human wait reason is preserved in the decision evidence" do
     assert {:wait, %{reason: :staging}} =
              snapshot(%{waiting_reason: :staging}) |> ReviewConvergence.evaluate(0, 3)
@@ -1404,6 +1573,23 @@ defmodule SymphonyElixir.ReviewConvergenceTest do
     assert_receive {:comment, "issue-160", body}
     assert body =~ "linear_unavailable"
     refute_receive {:state, _, _}
+  end
+
+  defp router_receipt(dispositions) do
+    %{
+      "headSha" => "head",
+      "receiptDigest" => String.duplicate("a", 64),
+      "findingDispositions" => dispositions
+    }
+  end
+
+  defp router_disposition(finding_id, disposition) do
+    %{
+      "findingId" => finding_id,
+      "findingCommentId" => "comment-#{finding_id}",
+      "disposition" => disposition,
+      "evidenceDigest" => String.duplicate("b", 64)
+    }
   end
 
   defp settings do

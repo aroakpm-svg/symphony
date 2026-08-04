@@ -57,6 +57,20 @@ compatibility path also verifies the unique request, time ordering, immutable Ap
 and reviewed commit. Actionable findings return the issue to the
 configured in-progress state; unverifiable evidence and repeated non-convergence remain in review
 for a deduplicated human decision. The monitor never merges or moves an issue to Done.
+`review_convergence.finding_router_mode` adds an opt-in ownership step: `disabled` preserves the
+legacy behavior, `shadow` verifies and logs the Central Brain plan without changing effects, and
+`enforce` performs only the exact routed action. The receipt must come from the unique latest
+completed `Work Routing / Readiness` check on the current head, published by GitHub Actions App ID
+15368 from `.github/workflows/work-routing-readiness.yml` at the exact live base policy SHA.
+Missing, ambiguous, stale, wrong-workflow, or malformed evidence remains in review. Symphony never
+recomputes Central Brain diff, scope, digest, review, or classification policy.
+
+In enforce mode, `blocked_unverified` holds the whole PR, `fix_in_current_pr` returns only that
+finding for repair, and pending `remove_out_of_scope_change` requires removal without resolving the
+thread. A verified removal or `suggest_follow_up` may resolve only after any required follow-up
+comment is durable. Runtime authority comes solely from actor node ID `U_kgDOEDjIhA` plus the exact
+`findingId`, `sourceHeadSha`, and `receiptDigest` hidden marker fields; visible prose and labels are
+not authority. Symphony still never merges.
 Rework uses Linear comment history as a scoped durable transition log: an operation intent is
 persisted before the state change, each step is retry-safe, and an incomplete operation is resumed
 even after the issue has entered In Progress or the runtime has restarted. A fix round is counted
@@ -188,6 +202,9 @@ Notes:
 - `review_convergence.enabled` defaults to `false`. When enabled, `repository` is required in
   `owner/name` form. `review_state`, `in_progress_state`, `max_fix_rounds`, and `human_owner`
   configure monitoring, rework, and escalation without changing merge authorization.
+- `review_convergence.finding_router_mode` accepts `disabled` (default), `shadow`, or `enforce`.
+  Start with `shadow`; change to `enforce` only after the exact receipt and planned actions are
+  observed on a non-merged test PR. There is no fallback from missing trusted evidence.
 - If the Markdown body is blank, Symphony uses a default prompt template that includes the issue
   identifier, title, and body.
 - Use `hooks.after_create` to bootstrap a fresh workspace. For a Git-backed repo, you can run
