@@ -264,7 +264,7 @@ defmodule SymphonyElixir.ReviewMonitor do
                receipt,
                context.settings,
                context.review_client,
-               context.snapshot
+               context.issue.branch_name
              ) do
           :ok ->
             Map.put(context.state, context.issue.id, %{updated_entry | waiting: true})
@@ -332,80 +332,77 @@ defmodule SymphonyElixir.ReviewMonitor do
     Map.put(context.state, context.issue.id, updated)
   end
 
-  defp execute_router_actions(actions, receipt, settings, review_client, snapshot) do
-    Enum.reduce_while(actions, :ok, fn
-      {:comment_then_resolve, disposition}, :ok ->
-        body =
-          FindingRouter.follow_up_comment(
-            disposition,
-            receipt["headSha"],
-            receipt["receiptDigest"]
-          )
+  defp execute_router_actions(actions, receipt, settings, review_client, branch),
+    do: execute_router_actions(actions, receipt, settings, review_client, branch, actions)
 
-        with true <- FindingRouter.valid_follow_up_body?(body),
-             :ok <-
-               verify_current_settlement_receipt(
-                 review_client,
-                 settings.repository,
-                 snapshot.pull_request_number,
-                 receipt,
-                 snapshot
-               ),
-             :ok <-
-               review_client.verify_review_thread_binding(
-                 settings.repository,
-                 disposition["findingId"],
-                 disposition["findingCommentId"],
-                 disposition["findingCommentDigest"]
-               ),
-             :ok <-
-               review_client.create_follow_up_comment(
-                 settings.repository,
-                 snapshot.pull_request_number,
-                 body
-               ),
-             :ok <-
-               verify_current_settlement_receipt(
-                 review_client,
-                 settings.repository,
-                 snapshot.pull_request_number,
-                 receipt,
-                 snapshot
-               ),
-             :ok <-
-               review_client.resolve_review_thread(
-                 settings.repository,
-                 disposition["findingId"],
-                 disposition["findingCommentId"],
-                 disposition["findingCommentDigest"]
-               ) do
-          {:cont, :ok}
-        else
-          false -> {:halt, {:error, :follow_up_comment_body_invalid}}
-          {:error, reason} -> {:halt, {:error, reason}}
-        end
+  defp execute_router_actions([], _receipt, _settings, _review_client, _branch, _expected),
+    do: :ok
 
-      {:resolve, disposition}, :ok ->
-        with :ok <-
-               verify_current_settlement_receipt(
-                 review_client,
-                 settings.repository,
-                 snapshot.pull_request_number,
-                 receipt,
-                 snapshot
-               ),
-             :ok <-
-               review_client.resolve_review_thread(
-                 settings.repository,
-                 disposition["findingId"],
-                 disposition["findingCommentId"],
-                 disposition["findingCommentDigest"]
-               ) do
-          {:cont, :ok}
-        else
-          {:error, reason} -> {:halt, {:error, reason}}
-        end
-    end)
+  defp execute_router_actions(
+         [{:comment_then_resolve, disposition} | rest],
+         receipt,
+         settings,
+         review_client,
+         branch,
+         expected
+       ) do
+    body =
+      FindingRouter.follow_up_comment(
+        disposition,
+        receipt["headSha"],
+        receipt["receiptDigest"]
+      )
+
+    with true <- FindingRouter.valid_follow_up_body?(body),
+         :ok <- verify_current_settlement_plan(expected, receipt, settings, review_client, branch),
+         :ok <- verify_settlement_thread(review_client, settings.repository, disposition),
+         :ok <-
+           review_client.create_follow_up_comment(
+             settings.repository,
+             receipt["pullRequestNumber"],
+             body
+           ),
+         :ok <- verify_current_settlement_plan(expected, receipt, settings, review_client, branch),
+         :ok <- verify_settlement_thread(review_client, settings.repository, disposition),
+         :ok <- resolve_settlement_thread(review_client, settings.repository, disposition) do
+      execute_router_actions(rest, receipt, settings, review_client, branch, rest)
+    else
+      false -> {:error, :follow_up_comment_body_invalid}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp execute_router_actions(
+         [{:resolve, disposition} | rest],
+         receipt,
+         settings,
+         review_client,
+         branch,
+         expected
+       ) do
+    with :ok <- verify_current_settlement_plan(expected, receipt, settings, review_client, branch),
+         :ok <- verify_settlement_thread(review_client, settings.repository, disposition),
+         :ok <- resolve_settlement_thread(review_client, settings.repository, disposition) do
+      execute_router_actions(rest, receipt, settings, review_client, branch, rest)
+    end
+  end
+
+  defp verify_settlement_thread(review_client, repository, disposition) do
+    review_client.verify_review_thread_binding(
+      repository,
+      disposition["findingId"],
+      disposition["findingCommentId"],
+      disposition["findingCommentDigest"]
+    )
+  end
+
+  defp resolve_settlement_thread(review_client, repository, disposition) do
+    review_client.resolve_review_thread(
+      repository,
+      disposition["findingId"],
+      disposition["findingCommentId"],
+      disposition["findingCommentDigest"]
+    )
   end
 
   defp verify_settlement_identity(review_client, repository, number, receipt) do
@@ -418,15 +415,39 @@ defmodule SymphonyElixir.ReviewMonitor do
     end
   end
 
-  defp verify_current_settlement_receipt(review_client, repository, number, receipt, snapshot) do
-    with {:ok, current} <- review_client.finding_router_receipt(repository, snapshot),
+  defp verify_current_settlement_plan(expected, receipt, settings, review_client, branch) do
+    with {:ok, snapshot} <- review_client.snapshot(settings.repository, branch),
+         {:ok, current} <- review_client.finding_router_receipt(settings.repository, snapshot),
          true <- routing_receipt_identity(current) == routing_receipt_identity(receipt),
-         :ok <- verify_settlement_identity(review_client, repository, number, receipt) do
+         :ok <-
+           verify_settlement_identity(
+             review_client,
+             settings.repository,
+             receipt["pullRequestNumber"],
+             receipt
+           ),
+         {:settle, current_actions} <- route_receipt(current, snapshot),
+         true <- settlement_bindings(current_actions) == settlement_bindings(expected) do
       :ok
     else
-      false -> {:error, :finding_router_receipt_changed_before_settlement}
-      {:error, _reason} -> {:error, :finding_router_receipt_unverified_before_settlement}
+      false -> {:error, :finding_router_settlement_plan_changed}
+      {:hold, _reason} -> {:error, :finding_router_settlement_plan_changed}
+      {:rework, _findings} -> {:error, :finding_router_settlement_plan_changed}
+      :pass -> {:error, :finding_router_settlement_plan_changed}
+      {:error, _reason} -> {:error, :finding_router_settlement_evidence_unverified}
     end
+  end
+
+  defp settlement_bindings(actions) do
+    actions
+    |> Enum.map(fn {_action, disposition} ->
+      {
+        disposition["findingId"],
+        disposition["findingCommentId"],
+        disposition["findingCommentDigest"]
+      }
+    end)
+    |> Enum.sort()
   end
 
   defp verify_current_router_rework(receipt, findings, context) do

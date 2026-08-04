@@ -165,7 +165,9 @@ defmodule SymphonyElixir.GitHubReviewClient do
   @spec create_follow_up_comment(String.t(), pos_integer(), String.t()) :: :ok | {:error, term()}
   def create_follow_up_comment(repository, number, body)
       when is_binary(repository) and is_integer(number) and number > 0 and is_binary(body) do
-    with {:ok, output} <-
+    with :ok <- validate_follow_up_body(body),
+         :ok <- verify_authenticated_follow_up_actor(),
+         {:ok, output} <-
            run([
              "api",
              "repos/#{repository}/issues/#{number}/comments",
@@ -175,10 +177,9 @@ defmodule SymphonyElixir.GitHubReviewClient do
              "body=#{body}"
            ]),
          {:ok, response} when is_map(response) <- Jason.decode(output),
-         true <- FindingRouter.trusted_follow_up_response?(response, body) do
+         :ok <- verify_follow_up_response(response, body) do
       :ok
     else
-      false -> {:error, :follow_up_comment_response_untrusted}
       {:ok, unexpected} -> {:error, {:invalid_follow_up_comment_response, unexpected}}
       {:error, reason} -> {:error, reason}
     end
@@ -186,6 +187,30 @@ defmodule SymphonyElixir.GitHubReviewClient do
 
   def create_follow_up_comment(_repository, _number, _body),
     do: {:error, :invalid_follow_up_comment}
+
+  defp validate_follow_up_body(body) do
+    if FindingRouter.valid_follow_up_body?(body),
+      do: :ok,
+      else: {:error, :follow_up_comment_body_invalid}
+  end
+
+  defp verify_follow_up_response(response, body) do
+    if FindingRouter.trusted_follow_up_response?(response, body),
+      do: :ok,
+      else: {:error, :follow_up_comment_response_untrusted}
+  end
+
+  defp verify_authenticated_follow_up_actor do
+    with {:ok, output} <- run(["api", "user"]),
+         {:ok, %{"node_id" => actor_node_id}} <- Jason.decode(output),
+         true <- actor_node_id == FindingRouter.trusted_follow_up_actor_node_id() do
+      :ok
+    else
+      false -> {:error, :follow_up_actor_untrusted}
+      {:ok, _unexpected} -> {:error, :follow_up_actor_unverified}
+      {:error, reason} -> {:error, {:follow_up_actor_unverified, reason}}
+    end
+  end
 
   @spec verify_review_thread_binding(String.t(), String.t(), String.t(), String.t()) ::
           :ok | {:error, term()}

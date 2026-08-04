@@ -89,6 +89,12 @@ identity, then reroutes the current threads. The exact unresolved finding bindin
 must remain unchanged. Routed rework fingerprints include the bound thread and finding comment IDs,
 so two textually identical findings cannot share one durable transition key.
 
+Settlement uses the same guarded-operation boundary before every comment or Resolve write: refetch
+the complete snapshot, verify the exact receipt and PR identity, reroute every actionable thread,
+and require the same complete settlement binding set. The GitHub comment gateway independently
+validates the marker body and authenticated actor node ID before POST, so direct callers cannot
+bypass the guard.
+
 In enforce mode, `blocked_unverified` holds the whole PR, `fix_in_current_pr` returns only that
 finding for repair, and pending `remove_out_of_scope_change` requires removal without resolving the
 thread. A verified removal or `suggest_follow_up` may resolve only after any required follow-up

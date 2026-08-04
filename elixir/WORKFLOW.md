@@ -485,6 +485,12 @@ fixed protocol position cannot be nested in Markdown code or a raw HTML block.
 The configured owner account may represent either an authorized human or Symphony. Symphony does
 not merge in any mode.
 
+Every settlement mutation crosses one guarded-operation boundary. Symphony refetches the complete
+snapshot, revalidates the exact receipt and PR identity, reroutes every actionable thread, and
+requires the same full settlement binding set before comment or Resolve. The GitHub comment gateway
+also validates the marker body and authenticated actor node ID before POST; callers cannot bypass
+these checks by invoking the shared client directly.
+
 The state move is a recoverable transition, not two best-effort writes. Review Monitor first
 persists a stable operation intent in Linear, then moves the issue, then persists a completion
 marker. It resumes incomplete operations while the issue is in either In Review or In Progress,

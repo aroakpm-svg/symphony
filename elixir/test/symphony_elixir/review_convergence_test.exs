@@ -1640,6 +1640,65 @@ defmodule SymphonyElixir.ReviewConvergenceTest do
     refute_receive {:state, _, _}
   end
 
+  test "finding router reroutes complete thread coverage before a settlement write" do
+    finding = %{
+      finding_id: "thread-1",
+      finding_comment_id: "comment-thread-1",
+      finding_comment_digest: @finding_comment_digest,
+      resolved: false,
+      priority: 3,
+      body: "P3 pre-existing issue",
+      url: "thread"
+    }
+
+    added_finding = %{
+      finding_id: "thread-2",
+      finding_comment_id: "comment-thread-2",
+      finding_comment_digest: String.duplicate("e", 64),
+      resolved: false,
+      priority: 2,
+      body: "P2 added after the receipt",
+      url: "thread-2"
+    }
+
+    disposition =
+      router_disposition("thread-1", "suggest_follow_up")
+      |> Map.put("followUp", %{
+        "whySeparate" => "問題原本就在 main，且本 PR 沒有惡化。",
+        "work" => "另開一張票修正共享驗證器。",
+        "risk" => "後續流程仍可能遇到同一問題。",
+        "benefit" => "目前 PR 可以維持原本範圍。"
+      })
+
+    initial = snapshot(%{threads: [finding], issue_comments: []})
+    changed = snapshot(%{threads: [finding, added_finding], issue_comments: []})
+    receipt = router_receipt([disposition])
+
+    Application.put_env(
+      :symphony_elixir,
+      :review_snapshot,
+      [{:ok, initial}, {:ok, changed}]
+    )
+
+    Application.put_env(
+      :symphony_elixir,
+      :finding_router_receipt,
+      [{:ok, receipt}, {:ok, receipt}]
+    )
+
+    _state =
+      ReviewMonitor.run_with(
+        %{},
+        Map.put(settings(), :finding_router_mode, "enforce"),
+        ReviewClient,
+        Tracker
+      )
+
+    refute_receive {:pr_comment, _, _, _}
+    refute_receive {:resolve_thread, _, _, _, _}
+    refute_receive {:state, _, _}
+  end
+
   test "finding router revalidates the exact PR base and head before every settlement mutation" do
     finding = %{
       finding_id: "thread-1",

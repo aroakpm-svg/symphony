@@ -445,6 +445,9 @@ defmodule SymphonyElixir.FindingRouterTest do
 
     refute FindingRouter.trusted_follow_up_comment?(:invalid, "thread", @head, @digest)
 
+    assert {:error, :follow_up_comment_body_invalid} =
+             GitHubReviewClient.create_follow_up_comment("aroakpm-svg/repo", 42, "no marker")
+
     disposition =
       disposition("thread-1", "suggest_follow_up")
       |> Map.put("followUp", follow_up())
