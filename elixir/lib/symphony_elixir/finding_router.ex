@@ -121,6 +121,8 @@ defmodule SymphonyElixir.FindingRouter do
     }
 
     """
+    #{@follow_up_marker_start}#{Jason.encode!(marker)}#{@marker_end}
+
     ## 建議另開票處理
 
     - 為什麼要另開票：#{follow_up["whySeparate"]}
@@ -129,8 +131,6 @@ defmodule SymphonyElixir.FindingRouter do
     - 處理完成的好處：#{follow_up["benefit"]}
 
     這則留言只留下後續去向，不授權在目前 PR 擴大實作範圍。
-
-    #{@follow_up_marker_start}#{Jason.encode!(marker)}#{@marker_end}
     """
   end
 
@@ -502,7 +502,7 @@ defmodule SymphonyElixir.FindingRouter do
 
   defp parse_follow_up_marker(body) when is_binary(body) do
     with 2 <- body |> String.split(@follow_up_marker_token) |> length(),
-         true <- canonical_follow_up_boundary?(body),
+         true <- String.starts_with?(body, @follow_up_marker_start),
          {:ok, marker} <- parse_single_marker(body, @follow_up_marker_start) do
       {:ok, marker}
     else
@@ -511,14 +511,6 @@ defmodule SymphonyElixir.FindingRouter do
   end
 
   defp parse_follow_up_marker(_body), do: {:error, :marker_missing}
-
-  defp canonical_follow_up_boundary?(body) do
-    case :binary.match(body, @follow_up_marker_token) do
-      {0, _length} -> true
-      {index, _length} when index >= 2 -> binary_part(body, index - 2, 2) == "\n\n"
-      _ -> false
-    end
-  end
 
   defp exact_keys?(map, expected) when is_map(map),
     do: map |> Map.keys() |> Enum.sort() == Enum.sort(expected)

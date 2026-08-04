@@ -480,8 +480,8 @@ needs follow-up, Symphony first writes the visible four-part recommendation temp
 hidden marker, verifies that GitHub reports actor node ID `U_kgDOEDjIhA`, and only then resolves the
 thread. The marker authority is only `findingId`, `sourceHeadSha`, and `receiptDigest`; natural
 language, regex interpretation, display login, label, or another durable marker is never accepted.
-The dedicated token appears exactly once, and the marker either starts the comment or follows one
-blank line; the generated four-part template always uses the blank-line form.
+The dedicated token appears exactly once at byte zero, before the visible four-part template. This
+fixed protocol position cannot be nested in Markdown code or a raw HTML block.
 The configured owner account may represent either an authorized human or Symphony. Symphony does
 not merge in any mode.
 

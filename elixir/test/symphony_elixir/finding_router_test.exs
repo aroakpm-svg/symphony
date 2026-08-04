@@ -266,6 +266,8 @@ defmodule SymphonyElixir.FindingRouterTest do
       |> Map.put("followUp", follow_up())
 
     body = FindingRouter.follow_up_comment(disposition, @head, @digest)
+    assert String.starts_with?(body, "<!-- symphony-follow-up:v1\n")
+    assert String.contains?(body, "\n\n## 建議另開票處理")
 
     trusted = %{
       "body" => body,
@@ -292,15 +294,14 @@ defmodule SymphonyElixir.FindingRouterTest do
              @digest
            )
 
-    single_newline =
-      String.replace(body, "\n\n<!-- symphony-follow-up:v1", "\n<!-- symphony-follow-up:v1", global: false)
-
-    refute FindingRouter.trusted_follow_up_comment?(
-             Map.put(trusted, "body", single_newline),
-             "thread-1",
-             @head,
-             @digest
-           )
+    for prefix <- ["visible prose\n\n", "<textarea>\n\n", "<script>\n\n", "<!-- outer\n\n"] do
+      refute FindingRouter.trusted_follow_up_comment?(
+               Map.put(trusted, "body", prefix <> body),
+               "thread-1",
+               @head,
+               @digest
+             )
+    end
 
     refute FindingRouter.trusted_follow_up_comment?(
              Map.put(trusted, "body", body <> "\n<!-- symphony-follow-up:v1 -->"),
