@@ -288,6 +288,9 @@ defmodule SymphonyElixir.FindingRouterTest do
              FindingRouter.select_latest_check_run(:invalid, @head)
 
     assert {:error, :readiness_check_envelope_invalid} =
+             FindingRouter.select_latest_check_run([check_run(receipt([])), "malformed"], @head)
+
+    assert {:error, :readiness_check_envelope_invalid} =
              FindingRouter.select_latest_check_run([check_run(receipt([]))], "short")
 
     no_time =

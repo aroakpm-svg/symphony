@@ -13,15 +13,28 @@ defmodule SymphonyElixir.ReviewConvergenceTest do
     def snapshot(_repository, _branch), do: Application.fetch_env!(:symphony_elixir, :review_snapshot)
 
     @spec finding_router_receipt(String.t(), map()) :: {:ok, map()} | {:error, term()}
-    def finding_router_receipt(_repository, _snapshot),
-      do: Application.fetch_env!(:symphony_elixir, :finding_router_receipt)
+    def finding_router_receipt(_repository, _snapshot) do
+      case Application.fetch_env!(:symphony_elixir, :finding_router_receipt) do
+        [next | rest] ->
+          Application.put_env(:symphony_elixir, :finding_router_receipt, rest)
+          next
 
-    @spec current_pull_request_head(String.t(), pos_integer()) :: {:ok, String.t()} | {:error, term()}
-    def current_pull_request_head(repository, number) do
+        value ->
+          value
+      end
+    end
+
+    @spec current_pull_request_identity(String.t(), pos_integer()) ::
+            {:ok, %{base_sha: String.t(), head_sha: String.t()}} | {:error, term()}
+    def current_pull_request_identity(repository, number) do
       result =
-        case Application.get_env(:symphony_elixir, :current_pull_request_head_result, {:ok, "head"}) do
+        case Application.get_env(
+               :symphony_elixir,
+               :current_pull_request_identity_result,
+               {:ok, %{base_sha: "base", head_sha: "head"}}
+             ) do
           [next | rest] ->
-            Application.put_env(:symphony_elixir, :current_pull_request_head_result, rest)
+            Application.put_env(:symphony_elixir, :current_pull_request_identity_result, rest)
             next
 
           value ->
@@ -30,7 +43,7 @@ defmodule SymphonyElixir.ReviewConvergenceTest do
 
       send(
         Application.fetch_env!(:symphony_elixir, :review_recipient),
-        {:head_check, repository, number, result}
+        {:identity_check, repository, number, result}
       )
 
       result
@@ -144,7 +157,7 @@ defmodule SymphonyElixir.ReviewConvergenceTest do
       Application.delete_env(:symphony_elixir, :review_state_result)
       Application.delete_env(:symphony_elixir, :verified_issue_state)
       Application.delete_env(:symphony_elixir, :finding_router_receipt)
-      Application.delete_env(:symphony_elixir, :current_pull_request_head_result)
+      Application.delete_env(:symphony_elixir, :current_pull_request_identity_result)
       Application.delete_env(:symphony_elixir, :follow_up_comment_result)
       Application.delete_env(:symphony_elixir, :resolve_thread_result)
       Application.delete_env(:symphony_elixir, :publish_status_result)
@@ -1262,7 +1275,7 @@ defmodule SymphonyElixir.ReviewConvergenceTest do
       {:ok, router_receipt([router_disposition("thread-1", "fix_in_current_pr")])}
     )
 
-    _state =
+    state =
       ReviewMonitor.run_with(
         %{},
         Map.put(settings(), :finding_router_mode, "enforce"),
@@ -1274,6 +1287,50 @@ defmodule SymphonyElixir.ReviewConvergenceTest do
     assert_receive {:comment, "issue-160", body}
     assert body =~ "留在目前 PR 治本修正"
     assert_receive {:state, "issue-160", "In Progress"}
+    refute_receive {:resolve_thread, _, _, _}
+
+    assert state["issue-160"].last_finding_fingerprint == [
+             {"thread-1", "comment-thread-1", 1, nil, "P1 regression", :fix_in_current_pr}
+           ]
+  end
+
+  test "finding router revalidates the receipt before routed rework" do
+    finding = %{
+      finding_id: "thread-1",
+      finding_comment_id: "comment-thread-1",
+      resolved: false,
+      priority: 1,
+      body: "P1 regression",
+      url: "thread"
+    }
+
+    original = router_receipt([router_disposition("thread-1", "fix_in_current_pr")])
+    changed = Map.put(original, "receiptDigest", String.duplicate("c", 64))
+
+    Application.put_env(
+      :symphony_elixir,
+      :review_snapshot,
+      {:ok, snapshot(%{threads: [finding], issue_comments: []})}
+    )
+
+    Application.put_env(
+      :symphony_elixir,
+      :finding_router_receipt,
+      [{:ok, original}, {:ok, changed}]
+    )
+
+    _state =
+      ReviewMonitor.run_with(
+        %{},
+        Map.put(settings(), :finding_router_mode, "enforce"),
+        ReviewClient,
+        Tracker
+      )
+
+    assert_receive {:status, _, "head", :error, _}
+    assert_receive {:comment, "issue-160", body}
+    assert body =~ "finding_router_receipt_changed_before_rework"
+    refute_receive {:state, _, _}
     refute_receive {:resolve_thread, _, _, _}
   end
 
@@ -1397,7 +1454,7 @@ defmodule SymphonyElixir.ReviewConvergenceTest do
     refute_receive {:state, _, _}
   end
 
-  test "finding router revalidates the exact PR head before every settlement mutation" do
+  test "finding router revalidates the exact PR base and head before every settlement mutation" do
     finding = %{
       finding_id: "thread-1",
       finding_comment_id: "comment-thread-1",
@@ -1430,8 +1487,11 @@ defmodule SymphonyElixir.ReviewConvergenceTest do
 
     Application.put_env(
       :symphony_elixir,
-      :current_pull_request_head_result,
-      [{:ok, "head"}, {:ok, "changed-head"}]
+      :current_pull_request_identity_result,
+      [
+        {:ok, %{base_sha: "base", head_sha: "head"}},
+        {:ok, %{base_sha: "changed-base", head_sha: "head"}}
+      ]
     )
 
     _state =
@@ -1442,9 +1502,11 @@ defmodule SymphonyElixir.ReviewConvergenceTest do
         Tracker
       )
 
-    assert_receive {:head_check, _, 42, {:ok, "head"}}
+    assert_receive {:identity_check, _, 42, {:ok, %{base_sha: "base", head_sha: "head"}}}
     assert_receive {:pr_comment, _, 42, _}
-    assert_receive {:head_check, _, 42, {:ok, "changed-head"}}
+
+    assert_receive {:identity_check, _, 42, {:ok, %{base_sha: "changed-base", head_sha: "head"}}}
+
     refute_receive {:resolve_thread, _, _, _}
     refute_receive {:state, _, _}
   end
@@ -1917,6 +1979,10 @@ defmodule SymphonyElixir.ReviewConvergenceTest do
 
   defp router_receipt(dispositions) do
     %{
+      "schemaVersion" => "aroak.work-routing-readiness.v2",
+      "repository" => "aroakpm-svg/repo",
+      "pullRequestNumber" => 42,
+      "baseSha" => "base",
       "headSha" => "head",
       "receiptDigest" => String.duplicate("a", 64),
       "findingDispositions" => dispositions

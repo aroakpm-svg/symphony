@@ -46,9 +46,9 @@ defmodule SymphonyElixir.FindingRouter do
   @spec select_latest_check_run([map()], String.t()) :: {:ok, map()} | {:error, term()}
   def select_latest_check_run(check_runs, head_sha)
       when is_list(check_runs) and is_binary(head_sha) do
-    candidates = Enum.filter(check_runs, &(&1["name"] == @check_name))
-
-    with true <- Regex.match?(@full_sha, head_sha),
+    with true <- Enum.all?(check_runs, &is_map/1),
+         candidates <- Enum.filter(check_runs, &(&1["name"] == @check_name)),
+         true <- Regex.match?(@full_sha, head_sha),
          [_ | _] <- candidates,
          {:ok, latest} <- unique_latest(candidates),
          true <- latest["status"] == "completed",

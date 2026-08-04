@@ -225,30 +225,22 @@ defmodule SymphonyElixir.ReviewMonitor do
     Map.put(context.state, context.issue.id, updated)
   end
 
-  defp apply_finding_router_plan({:rework, findings}, _receipt, context) do
-    decision =
-      if ReviewConvergence.escalation_required?(
-           context.snapshot,
-           context.entry.fix_rounds,
-           context.settings.max_fix_rounds
-         ) do
-        {:escalate, %{reason: :review_not_converging, actionable_threads: findings}}
-      else
-        {:rework, %{actionable_threads: findings}}
-      end
+  defp apply_finding_router_plan({:rework, findings}, receipt, context) do
+    case verify_current_router_receipt(receipt, context) do
+      :ok ->
+        apply_verified_router_rework(findings, context)
 
-    {updated, _outcome} =
-      apply_decision(
-        decision,
-        context.issue,
-        context.entry,
-        context.settings,
-        context.review_client,
-        context.tracker,
-        context.snapshot
-      )
-
-    Map.put(context.state, context.issue.id, updated)
+      {:error, reason} ->
+        wait_for_human(
+          context.issue,
+          context.entry,
+          context.settings,
+          context.review_client,
+          context.tracker,
+          reason,
+          context.state
+        )
+    end
   end
 
   defp apply_finding_router_plan({:settle, actions}, receipt, context) do
@@ -311,6 +303,32 @@ defmodule SymphonyElixir.ReviewMonitor do
     )
   end
 
+  defp apply_verified_router_rework(findings, context) do
+    decision =
+      if ReviewConvergence.escalation_required?(
+           context.snapshot,
+           context.entry.fix_rounds,
+           context.settings.max_fix_rounds
+         ) do
+        {:escalate, %{reason: :review_not_converging, actionable_threads: findings}}
+      else
+        {:rework, %{actionable_threads: findings}}
+      end
+
+    {updated, _outcome} =
+      apply_decision(
+        decision,
+        context.issue,
+        context.entry,
+        context.settings,
+        context.review_client,
+        context.tracker,
+        context.snapshot
+      )
+
+    Map.put(context.state, context.issue.id, updated)
+  end
+
   defp execute_router_actions(actions, receipt, settings, review_client, snapshot) do
     Enum.reduce_while(actions, :ok, fn
       {:comment_then_resolve, disposition}, :ok ->
@@ -322,11 +340,11 @@ defmodule SymphonyElixir.ReviewMonitor do
           )
 
         with :ok <-
-               verify_settlement_head(
+               verify_settlement_identity(
                  review_client,
                  settings.repository,
                  snapshot.pull_request_number,
-                 receipt["headSha"]
+                 receipt
                ),
              :ok <-
                review_client.create_follow_up_comment(
@@ -335,11 +353,11 @@ defmodule SymphonyElixir.ReviewMonitor do
                  body
                ),
              :ok <-
-               verify_settlement_head(
+               verify_settlement_identity(
                  review_client,
                  settings.repository,
                  snapshot.pull_request_number,
-                 receipt["headSha"]
+                 receipt
                ),
              :ok <-
                review_client.resolve_review_thread(
@@ -354,11 +372,11 @@ defmodule SymphonyElixir.ReviewMonitor do
 
       {:resolve, disposition}, :ok ->
         with :ok <-
-               verify_settlement_head(
+               verify_settlement_identity(
                  review_client,
                  settings.repository,
                  snapshot.pull_request_number,
-                 receipt["headSha"]
+                 receipt
                ),
              :ok <-
                review_client.resolve_review_thread(
@@ -373,12 +391,46 @@ defmodule SymphonyElixir.ReviewMonitor do
     end)
   end
 
-  defp verify_settlement_head(review_client, repository, number, expected_head_sha) do
-    case review_client.current_pull_request_head(repository, number) do
-      {:ok, ^expected_head_sha} -> :ok
-      {:ok, _changed_head} -> {:error, :finding_router_head_changed_before_settlement}
-      {:error, reason} -> {:error, {:finding_router_head_unverified_before_settlement, reason}}
+  defp verify_settlement_identity(review_client, repository, number, receipt) do
+    expected = %{base_sha: receipt["baseSha"], head_sha: receipt["headSha"]}
+
+    case review_client.current_pull_request_identity(repository, number) do
+      {:ok, ^expected} -> :ok
+      {:ok, _changed_identity} -> {:error, :finding_router_pr_changed_before_settlement}
+      {:error, reason} -> {:error, {:finding_router_pr_unverified_before_settlement, reason}}
     end
+  end
+
+  defp verify_current_router_receipt(receipt, context) do
+    with {:ok, current} <-
+           context.review_client.finding_router_receipt(
+             context.settings.repository,
+             context.snapshot
+           ),
+         true <- routing_receipt_identity(current) == routing_receipt_identity(receipt),
+         :ok <-
+           verify_settlement_identity(
+             context.review_client,
+             context.settings.repository,
+             context.snapshot.pull_request_number,
+             receipt
+           ) do
+      :ok
+    else
+      false -> {:error, :finding_router_receipt_changed_before_rework}
+      {:error, reason} -> {:error, {:finding_router_receipt_unverified_before_rework, reason}}
+    end
+  end
+
+  defp routing_receipt_identity(receipt) do
+    Map.take(receipt, [
+      "schemaVersion",
+      "repository",
+      "pullRequestNumber",
+      "baseSha",
+      "headSha",
+      "receiptDigest"
+    ])
   end
 
   defp wait_for_history_error(issue, entry, state, settings, review_client, tracker, reason) do
@@ -678,8 +730,18 @@ defmodule SymphonyElixir.ReviewMonitor do
   defp finding_fingerprint(findings) do
     Enum.map(findings, fn finding ->
       case finding[:router_action] do
-        nil -> {finding[:priority], finding[:path], finding[:body]}
-        action -> {finding[:priority], finding[:path], finding[:body], action}
+        nil ->
+          {finding[:priority], finding[:path], finding[:body]}
+
+        action ->
+          {
+            finding[:finding_id],
+            finding[:finding_comment_id],
+            finding[:priority],
+            finding[:path],
+            finding[:body],
+            action
+          }
       end
     end)
   end

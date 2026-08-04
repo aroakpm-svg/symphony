@@ -76,7 +76,10 @@ Immediately before Resolve, Symphony refetches the thread and requires its lates
 still match the receipt's `findingCommentId`. Routed rework still honors the existing retry ceiling
 and structural-risk escalation gate.
 Immediately before each follow-up comment or Resolve mutation, Symphony also re-reads the open PR
-and requires its current head to remain the receipt's exact `headSha`.
+and requires its current base and head to remain the receipt's exact `baseSha` and `headSha`.
+Before routed rework, it refetches the Central receipt, requires the same routing identity, and then
+rechecks that live PR identity. Routed rework fingerprints include the bound thread and finding
+comment IDs, so two textually identical findings cannot share one durable transition key.
 
 In enforce mode, `blocked_unverified` holds the whole PR, `fix_in_current_pr` returns only that
 finding for repair, and pending `remove_out_of_scope_change` requires removal without resolving the
