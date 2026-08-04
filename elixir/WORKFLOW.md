@@ -487,7 +487,7 @@ not merge in any mode.
 
 Every settlement mutation crosses one guarded-operation boundary. Symphony refetches the complete
 snapshot, revalidates the exact receipt and PR identity, reroutes every actionable thread, and
-requires the same full settlement binding set before comment or Resolve. The GitHub comment gateway
+requires the same full settlement action-and-binding set before comment or Resolve. The GitHub comment gateway
 also validates the marker body and authenticated actor node ID before POST; callers cannot bypass
 these checks by invoking the shared client directly.
 

@@ -3,6 +3,7 @@ defmodule SymphonyElixir.ReviewConvergenceTest do
   import ExUnit.CaptureLog
 
   alias SymphonyElixir.Config.Schema
+  alias SymphonyElixir.FindingRouter
   alias SymphonyElixir.GitHubReviewClient
   alias SymphonyElixir.Linear.{Adapter, Issue}
   alias SymphonyElixir.ReviewConvergence
@@ -1678,6 +1679,66 @@ defmodule SymphonyElixir.ReviewConvergenceTest do
       :symphony_elixir,
       :review_snapshot,
       [{:ok, initial}, {:ok, changed}]
+    )
+
+    Application.put_env(
+      :symphony_elixir,
+      :finding_router_receipt,
+      [{:ok, receipt}, {:ok, receipt}]
+    )
+
+    _state =
+      ReviewMonitor.run_with(
+        %{},
+        Map.put(settings(), :finding_router_mode, "enforce"),
+        ReviewClient,
+        Tracker
+      )
+
+    refute_receive {:pr_comment, _, _, _}
+    refute_receive {:resolve_thread, _, _, _, _}
+    refute_receive {:state, _, _}
+  end
+
+  test "finding router rejects a changed settlement action before writing" do
+    finding = %{
+      finding_id: "thread-1",
+      finding_comment_id: "comment-thread-1",
+      finding_comment_digest: @finding_comment_digest,
+      resolved: false,
+      priority: 3,
+      body: "P3 pre-existing issue",
+      url: "thread"
+    }
+
+    disposition =
+      router_disposition("thread-1", "suggest_follow_up")
+      |> Map.put("followUp", %{
+        "whySeparate" => "問題原本就在 main，且本 PR 沒有惡化。",
+        "work" => "另開一張票修正共享驗證器。",
+        "risk" => "後續流程仍可能遇到同一問題。",
+        "benefit" => "目前 PR 可以維持原本範圍。"
+      })
+
+    receipt = router_receipt([disposition])
+
+    trusted_marker = %{
+      "body" =>
+        FindingRouter.follow_up_comment(
+          disposition,
+          receipt["headSha"],
+          receipt["receiptDigest"]
+        ),
+      "user" => %{"node_id" => FindingRouter.trusted_follow_up_actor_node_id()}
+    }
+
+    initial = snapshot(%{threads: [finding], issue_comments: [trusted_marker]})
+    marker_deleted = snapshot(%{threads: [finding], issue_comments: []})
+
+    Application.put_env(
+      :symphony_elixir,
+      :review_snapshot,
+      [{:ok, initial}, {:ok, marker_deleted}]
     )
 
     Application.put_env(

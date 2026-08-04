@@ -91,7 +91,7 @@ so two textually identical findings cannot share one durable transition key.
 
 Settlement uses the same guarded-operation boundary before every comment or Resolve write: refetch
 the complete snapshot, verify the exact receipt and PR identity, reroute every actionable thread,
-and require the same complete settlement binding set. The GitHub comment gateway independently
+and require the same complete settlement action-and-binding set. The GitHub comment gateway independently
 validates the marker body and authenticated actor node ID before POST, so direct callers cannot
 bypass the guard.
 

@@ -440,8 +440,9 @@ defmodule SymphonyElixir.ReviewMonitor do
 
   defp settlement_bindings(actions) do
     actions
-    |> Enum.map(fn {_action, disposition} ->
+    |> Enum.map(fn {action, disposition} ->
       {
+        action,
         disposition["findingId"],
         disposition["findingCommentId"],
         disposition["findingCommentDigest"]
