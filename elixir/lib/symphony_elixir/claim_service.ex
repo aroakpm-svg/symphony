@@ -146,6 +146,7 @@ defmodule SymphonyElixir.ClaimService do
 
   defp renew_query(state, claim) do
     sql = "select symphony_staging.renew_claim($1::uuid, $2, $3::uuid, $4::uuid, $5)"
+
     params = [
       claim.claim_id,
       claim.generation,
@@ -153,6 +154,7 @@ defmodule SymphonyElixir.ClaimService do
       state.settings.node_instance_id,
       state.settings.lease_ms
     ]
+
     query_ok(state.connection, sql, params)
   end
 

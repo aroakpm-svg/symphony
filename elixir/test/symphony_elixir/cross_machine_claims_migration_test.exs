@@ -40,7 +40,7 @@ defmodule SymphonyElixir.CrossMachineClaimsMigrationTest do
     assert sql =~ "active_count >= node_capacity"
     assert sql =~ "next_generation := last_generation + 1"
     assert sql =~ "claims.generation = requested_generation"
-    assert sql =~ "claims.lease_expires_at > current_time"
+    assert sql =~ "claims.lease_expires_at > db_now"
     assert sql =~ "clock_timestamp()"
     refute sql =~ "current_timestamp"
   end

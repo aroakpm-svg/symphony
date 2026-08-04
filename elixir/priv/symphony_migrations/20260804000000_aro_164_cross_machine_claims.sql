@@ -79,7 +79,7 @@ security definer
 set search_path = pg_catalog, pg_temp
 as $$
 declare
-  current_time timestamptz := clock_timestamp();
+  db_now timestamptz := clock_timestamp();
   route symphony_staging.routing_assignments%rowtype;
   current_claim symphony_staging.issue_claims%rowtype;
   last_generation bigint;
@@ -147,12 +147,12 @@ begin
   if current_claim.issue_id is not null
      and current_claim.completed_at is null
      and current_claim.released_at is null
-     and current_claim.lease_expires_at > current_time then
+     and current_claim.lease_expires_at > db_now then
     if current_claim.node_id = requested_node_id
        and current_claim.node_instance_id = requested_node_instance_id then
       update symphony_staging.issue_claims claims
-      set heartbeat_at = current_time,
-          lease_expires_at = current_time + make_interval(secs => requested_lease_ms / 1000.0)
+      set heartbeat_at = db_now,
+          lease_expires_at = db_now + make_interval(secs => requested_lease_ms / 1000.0)
       where claims.issue_id = requested_issue_id;
 
       return query select current_claim.claim_id, current_claim.generation;
@@ -173,10 +173,10 @@ begin
   if route.routing_policy = 'preferred-with-fallback'
      and route.target_node_id <> requested_node_id then
     if current_claim.issue_id is null then
-      if current_time < route.updated_at + make_interval(secs => requested_fallback_grace_ms / 1000.0) then
+      if db_now < route.updated_at + make_interval(secs => requested_fallback_grace_ms / 1000.0) then
         raise exception using errcode = '55P03', message = 'preferred target grace has not elapsed';
       end if;
-    elsif current_time < current_claim.lease_expires_at then
+    elsif db_now < current_claim.lease_expires_at then
       raise exception using errcode = '55P03', message = 'preferred owner lease has not expired';
     end if;
   end if;
@@ -187,7 +187,7 @@ begin
     and claims.issue_id <> requested_issue_id
     and claims.completed_at is null
     and claims.released_at is null
-    and claims.lease_expires_at > current_time;
+    and claims.lease_expires_at > db_now;
 
   if active_count >= node_capacity then
     raise exception using errcode = '53300', message = 'node claim capacity exhausted';
@@ -208,8 +208,8 @@ begin
   ) values (
     requested_issue_id, next_claim_id, next_generation, requested_node_id,
     requested_node_instance_id, requested_linear_updated_at, route.routing_policy,
-    route.target_node_id, route.routing_revision, current_time, current_time,
-    current_time + make_interval(secs => requested_lease_ms / 1000.0), null, null
+    route.target_node_id, route.routing_revision, db_now, db_now,
+    db_now + make_interval(secs => requested_lease_ms / 1000.0), null, null
   )
   on conflict (issue_id) do update set
     claim_id = excluded.claim_id,
@@ -252,7 +252,7 @@ security definer
 set search_path = pg_catalog, pg_temp
 as $$
 declare
-  current_time timestamptz := clock_timestamp();
+  db_now timestamptz := clock_timestamp();
   changed integer;
 begin
   if requested_lease_ms <= 0 then return false; end if;
@@ -272,15 +272,15 @@ begin
   if not found then return false; end if;
 
   update symphony_staging.issue_claims claims
-  set heartbeat_at = current_time,
-      lease_expires_at = current_time + make_interval(secs => requested_lease_ms / 1000.0)
+  set heartbeat_at = db_now,
+      lease_expires_at = db_now + make_interval(secs => requested_lease_ms / 1000.0)
   where claims.claim_id = requested_claim_id
     and claims.generation = requested_generation
     and claims.node_id = requested_node_id
     and claims.node_instance_id = requested_node_instance_id
     and claims.completed_at is null
     and claims.released_at is null
-    and claims.lease_expires_at > current_time;
+    and claims.lease_expires_at > db_now;
   get diagnostics changed = row_count;
 
   if changed = 1 then
