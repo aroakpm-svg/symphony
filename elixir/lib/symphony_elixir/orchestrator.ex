@@ -7,7 +7,7 @@ defmodule SymphonyElixir.Orchestrator do
   require Logger
   import Bitwise, only: [<<<: 2]
 
-  alias SymphonyElixir.{AgentRunner, Config, ReviewMonitor, StatusDashboard, Tracker, Workspace}
+  alias SymphonyElixir.{AgentRunner, ClaimService, Config, ReviewMonitor, StatusDashboard, Tracker, Workspace}
   alias SymphonyElixir.Linear.Issue
 
   @continuation_retry_delay_ms 1_000
@@ -179,6 +179,19 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   def handle_info({:codex_worker_update, _issue_id, _update}, state), do: {:noreply, state}
+
+  def handle_info({:claim_lost, issue_id, reason}, state) when is_binary(issue_id) do
+    Logger.error("Database claim lost; stopping worker: issue_id=#{issue_id} reason=#{inspect(reason)}")
+
+    state =
+      case Map.get(state.running, issue_id) do
+        nil -> release_issue_claim(state, issue_id)
+        running_entry -> stop_and_block_issue(state, issue_id, running_entry, "database claim lost: #{inspect(reason)}")
+      end
+
+    notify_dashboard()
+    {:noreply, state}
+  end
 
   def handle_info({:agent_hard_blocker, issue_id, blocker_info}, %{running: running} = state)
       when is_binary(issue_id) and is_map(blocker_info) do
@@ -970,11 +983,18 @@ defmodule SymphonyElixir.Orchestrator do
         state
 
       worker_host ->
-        spawn_issue_on_worker_host(state, issue, attempt, recipient, worker_host)
+        case ClaimService.claim(issue, recipient) do
+          {:ok, distributed_claim} ->
+            spawn_issue_on_worker_host(state, issue, attempt, recipient, worker_host, distributed_claim)
+
+          {:error, reason} ->
+            Logger.warning("Skipping dispatch; database claim rejected for #{issue_context(issue)}: #{inspect(reason)}")
+            state
+        end
     end
   end
 
-  defp spawn_issue_on_worker_host(%State{} = state, issue, attempt, recipient, worker_host) do
+  defp spawn_issue_on_worker_host(%State{} = state, issue, attempt, recipient, worker_host, distributed_claim) do
     case Task.Supervisor.start_child(SymphonyElixir.TaskSupervisor, fn ->
            AgentRunner.run(issue, recipient, attempt: attempt, worker_host: worker_host)
          end) do
@@ -1004,7 +1024,8 @@ defmodule SymphonyElixir.Orchestrator do
             codex_last_reported_total_tokens: 0,
             turn_count: 0,
             retry_attempt: normalize_retry_attempt(attempt),
-            started_at: DateTime.utc_now()
+            started_at: DateTime.utc_now(),
+            distributed_claim: distributed_claim
           })
 
         %{
@@ -1015,6 +1036,7 @@ defmodule SymphonyElixir.Orchestrator do
         }
 
       {:error, reason} ->
+        :ok = release_distributed_claim(issue.id)
         Logger.error("Unable to spawn agent for #{issue_context(issue)}: #{inspect(reason)}")
         next_attempt = if is_integer(attempt), do: attempt + 1, else: nil
 
@@ -1216,12 +1238,24 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   defp release_issue_claim(%State{} = state, issue_id) do
+    case ClaimService.release(issue_id) do
+      :ok -> :ok
+      {:error, reason} -> Logger.warning("Unable to release database claim issue_id=#{issue_id}: #{inspect(reason)}")
+    end
+
     %{
       state
       | claimed: MapSet.delete(state.claimed, issue_id),
         blocked: Map.delete(state.blocked, issue_id),
         retry_attempts: Map.delete(state.retry_attempts, issue_id)
     }
+  end
+
+  defp release_distributed_claim(issue_id) do
+    case ClaimService.release(issue_id) do
+      :ok -> :ok
+      {:error, _reason} -> :ok
+    end
   end
 
   defp retry_delay(attempt, metadata) when is_integer(attempt) and attempt > 0 and is_map(metadata) do

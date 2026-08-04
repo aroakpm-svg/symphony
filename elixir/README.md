@@ -141,6 +141,26 @@ Optional flags:
 The `WORKFLOW.md` file uses YAML front matter for configuration, plus a Markdown body used as the
 Codex session prompt.
 
+For multiple Symphony machines polling the same Linear project, enable the staging-backed claim
+coordinator only after the ARO-164 migration and ARO-169 node enrollment are complete:
+
+```yaml
+claim:
+  enabled: true
+  database_url: "$SYMPHONY_CLAIM_DATABASE_URL"
+  node_id: "$SYMPHONY_NODE_ID"
+  node_instance_id: "$SYMPHONY_NODE_INSTANCE_ID"
+  lease_ms: 60000
+  heartbeat_ms: 20000
+  fallback_grace_ms: 30000
+```
+
+Keep the database URL and node identity values outside the repository. The enrolled node login may
+call the claim functions but cannot directly read or mutate claim tables. Symphony obtains a claim
+before starting a worker, renews it using the database clock, and stops the worker if renewal can no
+longer prove ownership. Leave `claim.enabled: false` for single-machine operation or until shared
+staging has been migrated; opening or merging this PR does not apply the migration to staging.
+
 Minimal example:
 
 ```md
