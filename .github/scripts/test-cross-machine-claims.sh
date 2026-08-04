@@ -75,11 +75,12 @@ SQL
 
 tmp_dir="$(mktemp -d)"
 trap 'rm -rf "$tmp_dir"' EXIT
-claim claim_node_a RACE "$node_a" "$instance_a" >"$tmp_dir/a" 2>/dev/null & pid_a=$!
-claim claim_node_b RACE "$node_b" "$instance_b" >"$tmp_dir/b" 2>/dev/null & pid_b=$!
-claim claim_node_c RACE "$node_c" "$instance_c" >"$tmp_dir/c" 2>/dev/null & pid_c=$!
+claim claim_node_a RACE "$node_a" "$instance_a" >"$tmp_dir/a" & pid_a=$!
+claim claim_node_b RACE "$node_b" "$instance_b" >"$tmp_dir/b" & pid_b=$!
+claim claim_node_c RACE "$node_c" "$instance_c" >"$tmp_dir/c" & pid_c=$!
 successes=0
 for pid in "$pid_a" "$pid_b" "$pid_c"; do if wait "$pid"; then successes=$((successes + 1)); fi; done
+echo "race successful contenders: $successes"
 test "$successes" = 1
 psql_admin -c "update symphony_staging.issue_claims set released_at = clock_timestamp() where issue_id = 'RACE';"
 
