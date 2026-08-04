@@ -322,10 +322,24 @@ defmodule SymphonyElixir.ReviewMonitor do
           )
 
         with :ok <-
+               verify_settlement_head(
+                 review_client,
+                 settings.repository,
+                 snapshot.pull_request_number,
+                 receipt["headSha"]
+               ),
+             :ok <-
                review_client.create_follow_up_comment(
                  settings.repository,
                  snapshot.pull_request_number,
                  body
+               ),
+             :ok <-
+               verify_settlement_head(
+                 review_client,
+                 settings.repository,
+                 snapshot.pull_request_number,
+                 receipt["headSha"]
                ),
              :ok <-
                review_client.resolve_review_thread(
@@ -339,15 +353,32 @@ defmodule SymphonyElixir.ReviewMonitor do
         end
 
       {:resolve, disposition}, :ok ->
-        case review_client.resolve_review_thread(
-               settings.repository,
-               disposition["findingId"],
-               disposition["findingCommentId"]
-             ) do
-          :ok -> {:cont, :ok}
+        with :ok <-
+               verify_settlement_head(
+                 review_client,
+                 settings.repository,
+                 snapshot.pull_request_number,
+                 receipt["headSha"]
+               ),
+             :ok <-
+               review_client.resolve_review_thread(
+                 settings.repository,
+                 disposition["findingId"],
+                 disposition["findingCommentId"]
+               ) do
+          {:cont, :ok}
+        else
           {:error, reason} -> {:halt, {:error, reason}}
         end
     end)
+  end
+
+  defp verify_settlement_head(review_client, repository, number, expected_head_sha) do
+    case review_client.current_pull_request_head(repository, number) do
+      {:ok, ^expected_head_sha} -> :ok
+      {:ok, _changed_head} -> {:error, :finding_router_head_changed_before_settlement}
+      {:error, reason} -> {:error, {:finding_router_head_unverified_before_settlement, reason}}
+    end
   end
 
   defp wait_for_history_error(issue, entry, state, settings, review_client, tracker, reason) do

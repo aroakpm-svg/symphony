@@ -194,6 +194,7 @@ defmodule SymphonyElixir.FindingRouter do
         is_integer(get_in(check_run, ["check_suite", "id"])),
         workflow_run["status"] == "completed",
         workflow_run["path"] == @workflow_path,
+        workflow_run["event"] == "pull_request_target",
         workflow_run["head_sha"] == expected_head,
         workflow_run["check_suite_id"] == get_in(check_run, ["check_suite", "id"]),
         get_in(workflow_run, ["repository", "full_name"]) == expected_repository

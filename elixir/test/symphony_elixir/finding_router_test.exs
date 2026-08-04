@@ -37,6 +37,13 @@ defmodule SymphonyElixir.FindingRouterTest do
                Map.put(workflow_run(), "check_suite_id", 999),
                identity
              )
+
+    assert {:error, :readiness_workflow_envelope_invalid} =
+             FindingRouter.verify_receipt(
+               check_run,
+               Map.put(workflow_run(), "event", "workflow_dispatch"),
+               identity
+             )
   end
 
   test "selects one unique latest completed check and never falls back to an older trusted run" do

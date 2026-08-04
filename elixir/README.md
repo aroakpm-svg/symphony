@@ -63,7 +63,7 @@ legacy behavior, `shadow` verifies and logs the Central Brain plan without chang
 completed `Work Routing / Readiness` check on the current head, published by GitHub Actions App ID
 15368 from `.github/workflows/work-routing-readiness.yml` at the exact live base policy SHA. The
 check run and workflow run must share the same immutable check-suite ID; `details_url` alone is not
-trusted.
+trusted, and the workflow event must be exactly `pull_request_target`.
 Missing, ambiguous, stale, wrong-workflow, or malformed evidence remains in review. Symphony never
 recomputes Central Brain diff, scope, digest, review, or classification policy.
 It accepts both the V2 classification receipt and the V3 receipt that adds Central's merge
@@ -75,6 +75,8 @@ exact pending `Review Convergence Gate` status for the current head.
 Immediately before Resolve, Symphony refetches the thread and requires its latest P1-P4 comment to
 still match the receipt's `findingCommentId`. Routed rework still honors the existing retry ceiling
 and structural-risk escalation gate.
+Immediately before each follow-up comment or Resolve mutation, Symphony also re-reads the open PR
+and requires its current head to remain the receipt's exact `headSha`.
 
 In enforce mode, `blocked_unverified` holds the whole PR, `fix_in_current_pr` returns only that
 finding for repair, and pending `remove_out_of_scope_change` requires removal without resolving the

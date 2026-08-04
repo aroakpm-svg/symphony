@@ -147,6 +147,29 @@ defmodule SymphonyElixir.GitHubReviewClient do
   def finding_router_receipt(_repository, _snapshot),
     do: {:error, :invalid_finding_router_identity}
 
+  @spec current_pull_request_head(String.t(), pos_integer()) ::
+          {:ok, String.t()} | {:error, term()}
+  def current_pull_request_head(repository, number)
+      when is_binary(repository) and repository != "" and is_integer(number) and number > 0 do
+    with {:ok, output} <- run(["api", "repos/#{repository}/pulls/#{number}"]),
+         {:ok,
+          %{
+            "number" => ^number,
+            "state" => "open",
+            "head" => %{"sha" => head_sha}
+          }} <- Jason.decode(output),
+         true <- is_binary(head_sha) and Regex.match?(~r/\A[0-9a-f]{40}\z/, head_sha) do
+      {:ok, head_sha}
+    else
+      false -> {:error, :pull_request_head_invalid}
+      {:ok, unexpected} -> {:error, {:pull_request_head_unverified, unexpected}}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  def current_pull_request_head(_repository, _number),
+    do: {:error, :invalid_pull_request_identity}
+
   @spec create_follow_up_comment(String.t(), pos_integer(), String.t()) :: :ok | {:error, term()}
   def create_follow_up_comment(repository, number, body)
       when is_binary(repository) and is_integer(number) and number > 0 and is_binary(body) do
