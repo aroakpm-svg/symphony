@@ -187,6 +187,28 @@ defmodule SymphonyElixir.GitHubReviewClient do
   def create_follow_up_comment(_repository, _number, _body),
     do: {:error, :invalid_follow_up_comment}
 
+  @spec verify_review_thread_binding(String.t(), String.t(), String.t(), String.t()) ::
+          :ok | {:error, term()}
+  def verify_review_thread_binding(
+        repository,
+        thread_id,
+        finding_comment_id,
+        finding_comment_digest
+      )
+      when is_binary(repository) and repository != "" and is_binary(thread_id) and thread_id != "" and
+             is_binary(finding_comment_id) and finding_comment_id != "" and
+             is_binary(finding_comment_digest) and finding_comment_digest != "" do
+    verify_current_thread_binding(thread_id, finding_comment_id, finding_comment_digest)
+  end
+
+  def verify_review_thread_binding(
+        _repository,
+        _thread_id,
+        _finding_comment_id,
+        _finding_comment_digest
+      ),
+      do: {:error, :invalid_review_thread_identity}
+
   @spec resolve_review_thread(String.t(), String.t(), String.t(), String.t()) ::
           :ok | {:error, term()}
   def resolve_review_thread(repository, thread_id, finding_comment_id, finding_comment_digest)
@@ -790,7 +812,11 @@ defmodule SymphonyElixir.GitHubReviewClient do
   defp validate_pull_request_page(page), do: {:error, {:invalid_pull_request_page, page}}
 
   defp select_bound_workflow_run(pages, check_run) when is_list(pages) and is_map(check_run) do
-    suite_id = get_in(check_run, ["check_suite", "id"])
+    suite_id =
+      case check_run do
+        %{"check_suite" => %{"id" => id}} when is_integer(id) -> id
+        _ -> nil
+      end
 
     with true <- is_integer(suite_id),
          {:ok, runs} <- merge_workflow_run_pages(pages) do

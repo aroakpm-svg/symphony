@@ -81,10 +81,13 @@ P1-P4 comment to still match both receipt fields. Routed rework still honors the
 ceiling and structural-risk escalation gate.
 Immediately before each follow-up comment or Resolve mutation, Symphony refetches the latest
 Central receipt and requires the same routing identity, then re-reads the open PR and requires its
-current base and head to remain the receipt's exact `baseSha` and `headSha`.
-Before routed rework, it refetches the Central receipt, requires the same routing identity, and then
-rechecks that live PR identity. Routed rework fingerprints include the bound thread and finding
-comment IDs, so two textually identical findings cannot share one durable transition key.
+current base and head to remain the receipt's exact `baseSha` and `headSha`. Before posting a
+follow-up, it also refetches every page of that thread and requires the selected P1-P4 comment to
+remain unresolved with the same ID and body digest.
+Before routed rework, it refetches the full PR snapshot, the Central receipt, and the live PR
+identity, then reroutes the current threads. The exact unresolved finding bindings and action set
+must remain unchanged. Routed rework fingerprints include the bound thread and finding comment IDs,
+so two textually identical findings cannot share one durable transition key.
 
 In enforce mode, `blocked_unverified` holds the whole PR, `fix_in_current_pr` returns only that
 finding for repair, and pending `remove_out_of_scope_change` requires removal without resolving the

@@ -465,13 +465,15 @@ Central Brain authority only and never gives Symphony merge permission.
 Every unresolved normalized P1-P4 thread must be covered by exactly one disposition bound to that
 thread's selected Codex review-comment ID and exact body digest. Missing coverage, an edited or
 mismatched comment, or malformed digest types fail closed. Immediately before Resolve, Symphony
-refetches all comment pages and requires the same ID and digest. Before any follow-up comment or
-Resolve mutation, Symphony publishes the current
+refetches all comment pages and requires the same ID and digest. Immediately before a follow-up
+comment it performs the same unresolved-thread binding check, so an edited or resolved finding
+cannot create a durable recommendation. Before any follow-up comment or Resolve mutation, Symphony publishes the current
 head's pending `Review Convergence Gate` and verifies the exact GitHub response; publication failure
 aborts all thread mutations.
 
 In enforce mode, unknown ownership keeps the issue in review for a human. A current-PR regression
-uses the existing rework transition. Pending out-of-scope work is returned only for removal, and the
+uses the existing rework transition only after a fresh full snapshot reroutes to the same unresolved
+finding bindings and action set. Pending out-of-scope work is returned only for removal, and the
 original thread remains unresolved until Central Brain explicitly publishes `removalStatus:
 verified` for the exact current head. A main-old finding is not repaired in the current PR. If it
 needs follow-up, Symphony first writes the visible four-part recommendation template plus the exact

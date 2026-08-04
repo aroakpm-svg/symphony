@@ -226,9 +226,12 @@ defmodule SymphonyElixir.ReviewMonitor do
   end
 
   defp apply_finding_router_plan({:rework, findings}, receipt, context) do
-    case verify_current_router_receipt(receipt, context) do
-      :ok ->
-        apply_verified_router_rework(findings, context)
+    case verify_current_router_rework(receipt, findings, context) do
+      {:ok, fresh_findings, fresh_snapshot} ->
+        apply_verified_router_rework(
+          fresh_findings,
+          %{context | snapshot: fresh_snapshot}
+        )
 
       {:error, reason} ->
         wait_for_human(
@@ -348,6 +351,13 @@ defmodule SymphonyElixir.ReviewMonitor do
                  snapshot
                ),
              :ok <-
+               review_client.verify_review_thread_binding(
+                 settings.repository,
+                 disposition["findingId"],
+                 disposition["findingCommentId"],
+                 disposition["findingCommentDigest"]
+               ),
+             :ok <-
                review_client.create_follow_up_comment(
                  settings.repository,
                  snapshot.pull_request_number,
@@ -417,26 +427,72 @@ defmodule SymphonyElixir.ReviewMonitor do
     end
   end
 
-  defp verify_current_router_receipt(receipt, context) do
-    with {:ok, current} <-
+  defp verify_current_router_rework(receipt, findings, context) do
+    with {:ok, fresh_snapshot} <-
+           context.review_client.snapshot(
+             context.settings.repository,
+             context.issue.branch_name
+           ),
+         {:ok, current} <-
            context.review_client.finding_router_receipt(
              context.settings.repository,
-             context.snapshot
+             fresh_snapshot
            ),
          true <- routing_receipt_identity(current) == routing_receipt_identity(receipt),
          :ok <-
            verify_settlement_identity(
              context.review_client,
              context.settings.repository,
-             context.snapshot.pull_request_number,
+             fresh_snapshot.pull_request_number,
              receipt
-           ) do
-      :ok
+           ),
+         {:rework, fresh_findings} <- route_receipt(current, fresh_snapshot),
+         :ok <- verify_current_rework_bindings(findings, fresh_findings) do
+      {:ok, fresh_findings, fresh_snapshot}
     else
-      false -> {:error, :finding_router_receipt_changed_before_rework}
-      {:error, reason} -> {:error, {:finding_router_receipt_unverified_before_rework, reason}}
+      false ->
+        {:error, :finding_router_receipt_changed_before_rework}
+
+      {:hold, reason} ->
+        {:error, {:finding_router_rework_plan_changed, reason}}
+
+      {:settle, _actions} ->
+        {:error, :finding_router_rework_plan_changed}
+
+      :pass ->
+        {:error, :finding_router_rework_plan_changed}
+
+      {:error, :finding_router_rework_binding_changed} ->
+        {:error, :finding_router_rework_binding_changed}
+
+      {:error, reason} ->
+        {:error, {:finding_router_receipt_unverified_before_rework, reason}}
     end
   end
+
+  defp verify_current_rework_bindings(expected, current)
+       when is_list(expected) and is_list(current) do
+    bindings = fn findings ->
+      Enum.map(findings, fn finding ->
+        {
+          finding[:finding_id],
+          finding[:finding_comment_id],
+          finding[:finding_comment_digest],
+          finding[:router_action]
+        }
+      end)
+    end
+
+    if Enum.all?(current, &(&1[:resolved] == false)) and
+         bindings.(current) == bindings.(expected) do
+      :ok
+    else
+      {:error, :finding_router_rework_binding_changed}
+    end
+  end
+
+  defp verify_current_rework_bindings(_expected, _current),
+    do: {:error, :finding_router_rework_binding_changed}
 
   defp routing_receipt_identity(receipt) do
     Map.take(receipt, [

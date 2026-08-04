@@ -112,6 +112,14 @@ defmodule SymphonyElixir.FindingRouterTest do
 
     assert {:error, :readiness_workflow_run_evidence_invalid} =
              GitHubReviewClient.select_bound_workflow_run_for_test([%{}], check)
+
+    malformed_suite = Map.put(check, "check_suite", "not-an-object")
+
+    assert {:error, :readiness_check_suite_identity_missing} =
+             GitHubReviewClient.select_bound_workflow_run_for_test(
+               [%{"workflow_runs" => [canonical]}],
+               malformed_suite
+             )
   end
 
   test "fails closed on malformed, mismatched, or outcome-inconsistent receipts" do

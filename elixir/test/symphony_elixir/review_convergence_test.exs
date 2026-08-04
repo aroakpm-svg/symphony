@@ -12,7 +12,16 @@ defmodule SymphonyElixir.ReviewConvergenceTest do
 
   defmodule ReviewClient do
     @spec snapshot(String.t(), String.t()) :: {:ok, map()} | {:error, term()}
-    def snapshot(_repository, _branch), do: Application.fetch_env!(:symphony_elixir, :review_snapshot)
+    def snapshot(_repository, _branch) do
+      case Application.fetch_env!(:symphony_elixir, :review_snapshot) do
+        [next | rest] ->
+          Application.put_env(:symphony_elixir, :review_snapshot, rest)
+          next
+
+        value ->
+          value
+      end
+    end
 
     @spec finding_router_receipt(String.t(), map()) :: {:ok, map()} | {:error, term()}
     def finding_router_receipt(_repository, _snapshot) do
@@ -59,6 +68,24 @@ defmodule SymphonyElixir.ReviewConvergenceTest do
       )
 
       Application.get_env(:symphony_elixir, :follow_up_comment_result, :ok)
+    end
+
+    @spec verify_review_thread_binding(String.t(), String.t(), String.t(), String.t()) ::
+            :ok | {:error, term()}
+    def verify_review_thread_binding(
+          repository,
+          finding_id,
+          finding_comment_id,
+          finding_comment_digest
+        ) do
+      result = Application.get_env(:symphony_elixir, :verify_thread_binding_result, :ok)
+
+      send(
+        Application.fetch_env!(:symphony_elixir, :review_recipient),
+        {:verify_thread_binding, repository, finding_id, finding_comment_id, finding_comment_digest, result}
+      )
+
+      result
     end
 
     @spec resolve_review_thread(String.t(), String.t(), String.t(), String.t()) ::
@@ -167,6 +194,7 @@ defmodule SymphonyElixir.ReviewConvergenceTest do
       Application.delete_env(:symphony_elixir, :finding_router_receipt)
       Application.delete_env(:symphony_elixir, :current_pull_request_identity_result)
       Application.delete_env(:symphony_elixir, :follow_up_comment_result)
+      Application.delete_env(:symphony_elixir, :verify_thread_binding_result)
       Application.delete_env(:symphony_elixir, :resolve_thread_result)
       Application.delete_env(:symphony_elixir, :publish_status_result)
     end)
@@ -1349,6 +1377,49 @@ defmodule SymphonyElixir.ReviewConvergenceTest do
     refute_receive {:resolve_thread, _, _, _, _}
   end
 
+  test "finding router refetches routed threads before starting rework" do
+    finding = %{
+      finding_id: "thread-1",
+      finding_comment_id: "comment-thread-1",
+      finding_comment_digest: @finding_comment_digest,
+      resolved: false,
+      priority: 1,
+      body: "P1 regression",
+      url: "thread"
+    }
+
+    receipt = router_receipt([router_disposition("thread-1", "fix_in_current_pr")])
+
+    Application.put_env(
+      :symphony_elixir,
+      :review_snapshot,
+      [
+        {:ok, snapshot(%{threads: [finding], issue_comments: []})},
+        {:ok, snapshot(%{threads: [%{finding | resolved: true}], issue_comments: []})}
+      ]
+    )
+
+    Application.put_env(
+      :symphony_elixir,
+      :finding_router_receipt,
+      [{:ok, receipt}, {:ok, receipt}]
+    )
+
+    _state =
+      ReviewMonitor.run_with(
+        %{},
+        Map.put(settings(), :finding_router_mode, "enforce"),
+        ReviewClient,
+        Tracker
+      )
+
+    assert_receive {:status, _, "head", :error, _}
+    assert_receive {:comment, "issue-160", body}
+    assert body =~ "finding_router_rework_binding_changed"
+    refute_receive {:state, _, _}
+    refute_receive {:resolve_thread, _, _, _, _}
+  end
+
   test "finding router writes a follow-up before resolving and never moves Linear" do
     finding = %{
       finding_id: "thread-1",
@@ -1467,6 +1538,59 @@ defmodule SymphonyElixir.ReviewConvergenceTest do
     assert_receive {:pr_comment, _, 42, _}
 
     assert_receive {:resolve_thread_rejected, _, "thread-1", "comment-thread-1", _}
+    refute_receive {:resolve_thread, _, _, _, _}
+    refute_receive {:state, _, _}
+  end
+
+  test "finding router revalidates the finding immediately before a follow-up comment" do
+    finding = %{
+      finding_id: "thread-1",
+      finding_comment_id: "comment-thread-1",
+      finding_comment_digest: @finding_comment_digest,
+      resolved: false,
+      priority: 3,
+      body: "P3 pre-existing issue",
+      url: "thread"
+    }
+
+    disposition =
+      router_disposition("thread-1", "suggest_follow_up")
+      |> Map.put("followUp", %{
+        "whySeparate" => "問題原本就在 main，且本 PR 沒有惡化。",
+        "work" => "另開一張票修正共享驗證器。",
+        "risk" => "後續流程仍可能遇到同一問題。",
+        "benefit" => "目前 PR 可以維持原本範圍。"
+      })
+
+    Application.put_env(
+      :symphony_elixir,
+      :review_snapshot,
+      {:ok, snapshot(%{threads: [finding], issue_comments: []})}
+    )
+
+    Application.put_env(
+      :symphony_elixir,
+      :finding_router_receipt,
+      {:ok, router_receipt([disposition])}
+    )
+
+    Application.put_env(
+      :symphony_elixir,
+      :verify_thread_binding_result,
+      {:error, :review_thread_binding_changed}
+    )
+
+    _state =
+      ReviewMonitor.run_with(
+        %{},
+        Map.put(settings(), :finding_router_mode, "enforce"),
+        ReviewClient,
+        Tracker
+      )
+
+    assert_receive {:verify_thread_binding, _, "thread-1", "comment-thread-1", _, {:error, :review_thread_binding_changed}}
+
+    refute_receive {:pr_comment, _, _, _}
     refute_receive {:resolve_thread, _, _, _, _}
     refute_receive {:state, _, _}
   end
