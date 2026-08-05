@@ -192,8 +192,7 @@ defmodule SymphonyElixir.Codex.DynamicTool do
   defp tool_error_payload(:managed_linear_mutation_requires_effect_wrapper) do
     %{
       "error" => %{
-        "message" =>
-          "Managed Symphony sessions cannot execute raw Linear mutations. Use the ARO-165 effect wrapper for comments and state changes."
+        "message" => "Managed Symphony sessions cannot execute raw Linear mutations. Use the ARO-165 effect wrapper for comments and state changes."
       }
     }
   end
