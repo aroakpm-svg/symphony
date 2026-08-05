@@ -62,7 +62,7 @@ defmodule SymphonyElixir.ClaimServiceTest do
     }
 
     assert {:stop, :normal, %{claims: %{}}} = ClaimService.handle_info(:heartbeat, state)
-    assert_receive {:DOWN, ^worker_ref, :process, ^worker, {:claim_lost, "issue-1", :claim_service_disabled}}
+    assert_receive {:DOWN, ^worker_ref, :process, ^worker, :killed}
     assert_receive {:claim_lost, "issue-1", :claim_service_disabled}
   end
 
@@ -94,7 +94,7 @@ defmodule SymphonyElixir.ClaimServiceTest do
              ClaimService.handle_call({:bind_worker, "running", running_worker}, self(), running_state)
 
     assert {:stop, :normal, %{claims: %{}}} = ClaimService.handle_info(:heartbeat, bound_state)
-    assert_receive {:DOWN, ^running_ref, :process, ^running_worker, {:claim_lost, "running", :claim_service_disabled}}
+    assert_receive {:DOWN, ^running_ref, :process, ^running_worker, :killed}
     assert_receive {:claim_lost, "running", :claim_service_disabled}
 
     assert Enum.find(lifecycle, &(&1.event == :worker_blocked)).retained_claims == 0

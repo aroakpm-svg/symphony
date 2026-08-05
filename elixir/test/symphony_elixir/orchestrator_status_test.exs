@@ -20,6 +20,7 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
       ref: ref,
       identifier: issue.identifier,
       issue: issue,
+      distributed_claim: %{generation: 1},
       session_id: "claim-loss-session",
       started_at: DateTime.utc_now()
     }
@@ -28,7 +29,7 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
       %{state | running: %{issue_id => running_entry}, claimed: MapSet.put(state.claimed, issue_id)}
     end)
 
-    send(pid, {:DOWN, ref, :process, self(), {:claim_lost, issue_id, :renewal_uncertain}})
+    send(pid, {:DOWN, ref, :process, self(), :killed})
     send(pid, {:claim_lost, issue_id, :renewal_uncertain})
 
     final_state = :sys.get_state(pid)

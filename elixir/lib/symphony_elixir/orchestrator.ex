@@ -241,6 +241,11 @@ defmodule SymphonyElixir.Orchestrator do
     block_issue_from_entry(state, issue_id, running_entry, "database claim lost: #{inspect(reason)}")
   end
 
+  defp handle_agent_down(:killed, state, issue_id, %{distributed_claim: claim} = running_entry, _session_id)
+       when not is_nil(claim) do
+    block_issue_from_entry(state, issue_id, running_entry, "database claim lost: worker fenced")
+  end
+
   defp handle_agent_down(:normal, state, issue_id, running_entry, session_id) do
     if input_required_blocker?(running_entry) do
       block_input_required_agent_down(state, issue_id, running_entry, session_id, :normal)

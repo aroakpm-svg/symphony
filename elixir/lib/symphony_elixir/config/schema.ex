@@ -187,16 +187,7 @@ defmodule SymphonyElixir.Config.Schema do
       |> validate_number(:lease_ms, greater_than: 0)
       |> validate_number(:heartbeat_ms, greater_than: 0)
       |> validate_number(:fallback_grace_ms, greater_than_or_equal_to: 0)
-      |> validate_required_if_enabled()
       |> validate_heartbeat_before_lease()
-    end
-
-    defp validate_required_if_enabled(changeset) do
-      if get_field(changeset, :enabled) do
-        validate_required(changeset, [:database_url, :node_id, :node_instance_id])
-      else
-        changeset
-      end
     end
 
     defp validate_heartbeat_before_lease(changeset) do
@@ -382,7 +373,9 @@ defmodule SymphonyElixir.Config.Schema do
     |> apply_action(:validate)
     |> case do
       {:ok, settings} ->
-        {:ok, finalize_settings(settings)}
+        settings
+        |> finalize_settings()
+        |> validate_resolved_claim_settings()
 
       {:error, changeset} ->
         {:error, {:invalid_workflow_config, format_errors(changeset)}}
@@ -493,6 +486,25 @@ defmodule SymphonyElixir.Config.Schema do
     }
 
     %{settings | tracker: tracker, workspace: workspace, codex: codex, claim: claim}
+  end
+
+  defp validate_resolved_claim_settings(%{claim: %{enabled: false}} = settings), do: {:ok, settings}
+
+  defp validate_resolved_claim_settings(%{claim: claim} = settings) do
+    missing =
+      Enum.filter([:database_url, :node_id, :node_instance_id], fn field ->
+        value = Map.get(claim, field)
+        not is_binary(value) or String.trim(value) == ""
+      end)
+
+    case missing do
+      [] ->
+        {:ok, settings}
+
+      fields ->
+        message = Enum.map_join(fields, ", ", &"claim.#{&1} can't be blank")
+        {:error, {:invalid_workflow_config, message}}
+    end
   end
 
   defp normalize_keys(value) when is_map(value) do

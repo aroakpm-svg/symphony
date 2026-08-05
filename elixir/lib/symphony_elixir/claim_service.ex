@@ -315,7 +315,7 @@ defmodule SymphonyElixir.ClaimService do
 
   defp notify_claim_lost(issue_id, claim, reason) do
     case Map.get(claim, :worker) do
-      worker when is_pid(worker) -> Process.exit(worker, {:claim_lost, issue_id, reason})
+      worker when is_pid(worker) -> Process.exit(worker, :kill)
       _other -> :ok
     end
 
