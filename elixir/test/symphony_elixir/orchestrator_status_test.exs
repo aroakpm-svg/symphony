@@ -38,6 +38,17 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
     assert final_state.retry_attempts == %{}
   end
 
+  test "initial claim rejection queues finalization and clears the local claim" do
+    issue = %Issue{id: "late-claim", identifier: "ARO-LATE", title: "Late claim"}
+    {:ok, state} = Orchestrator.init(name: Module.concat(__MODULE__, :LateClaimOrchestrator))
+    state = %{state | claimed: MapSet.put(state.claimed, issue.id)}
+
+    final_state = Orchestrator.handle_claim_rejection_for_test(state, issue, nil)
+
+    refute MapSet.member?(final_state.claimed, issue.id)
+    assert final_state.retry_attempts == %{}
+  end
+
   test "snapshot returns :timeout when snapshot server is unresponsive" do
     server_name = Module.concat(__MODULE__, :UnresponsiveSnapshotServer)
     parent = self()

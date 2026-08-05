@@ -453,6 +453,12 @@ defmodule SymphonyElixir.Orchestrator do
     select_worker_host(state, preferred_worker_host)
   end
 
+  @doc false
+  @spec handle_claim_rejection_for_test(term(), Issue.t(), term()) :: term()
+  def handle_claim_rejection_for_test(%State{} = state, %Issue{} = issue, attempt) do
+    handle_claim_rejection(state, issue, attempt, nil, :claim_timeout)
+  end
+
   defp reconcile_running_issue_states([], state, _active_states, _terminal_states), do: state
 
   defp reconcile_running_issue_states([issue | rest], state, active_states, terminal_states) do
@@ -1017,7 +1023,9 @@ defmodule SymphonyElixir.Orchestrator do
     })
   end
 
-  defp handle_claim_rejection(state, _issue, _attempt, _worker_host, _reason), do: state
+  defp handle_claim_rejection(state, issue, _attempt, _worker_host, _reason) do
+    release_issue_claim(state, issue.id)
+  end
 
   defp spawn_issue_on_worker_host(%State{} = state, issue, attempt, recipient, worker_host, distributed_claim) do
     case Task.Supervisor.start_child(SymphonyElixir.TaskSupervisor, fn ->
