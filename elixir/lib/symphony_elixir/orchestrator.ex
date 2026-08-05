@@ -185,7 +185,7 @@ defmodule SymphonyElixir.Orchestrator do
 
     state =
       case Map.get(state.running, issue_id) do
-        nil -> release_issue_claim(state, issue_id)
+        nil -> retire_lost_claim(state, issue_id)
         running_entry -> stop_and_block_issue(state, issue_id, running_entry, "database claim lost: #{inspect(reason)}")
       end
 
@@ -235,6 +235,10 @@ defmodule SymphonyElixir.Orchestrator do
   def handle_info(msg, state) do
     Logger.debug("Orchestrator ignored message: #{inspect(msg)}")
     {:noreply, state}
+  end
+
+  defp handle_agent_down({:claim_lost, issue_id, reason}, state, issue_id, running_entry, _session_id) do
+    block_issue_from_entry(state, issue_id, running_entry, "database claim lost: #{inspect(reason)}")
   end
 
   defp handle_agent_down(:normal, state, issue_id, running_entry, session_id) do
@@ -1289,6 +1293,11 @@ defmodule SymphonyElixir.Orchestrator do
         blocked: Map.delete(state.blocked, issue_id),
         retry_attempts: Map.delete(state.retry_attempts, issue_id)
     }
+  end
+
+  defp retire_lost_claim(%State{} = state, issue_id) do
+    :ok = finalize_distributed_claim(issue_id, :release)
+    %{state | claimed: MapSet.delete(state.claimed, issue_id)}
   end
 
   defp finalize_distributed_claim(issue_id, action) when action in [:release, :complete] do
