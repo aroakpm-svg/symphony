@@ -3,6 +3,63 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
 
   alias SymphonyElixir.Codex.DynamicTool
 
+  test "managed sessions allow raw Linear queries" do
+    client = fn query, variables, _opts ->
+      send(self(), {:linear_request, query, variables})
+      {:ok, %{"data" => %{"viewer" => %{"id" => "viewer-1"}}}}
+    end
+
+    response =
+      DynamicTool.execute(
+        "linear_graphql",
+        %{"query" => "# safe read\nquery Viewer { viewer { id } }"},
+        managed_session: true,
+        linear_client: client
+      )
+
+    assert response["success"]
+    assert_received {:linear_request, "# safe read\nquery Viewer { viewer { id } }", %{}}
+  end
+
+  test "managed sessions reject raw Linear mutations before calling the client" do
+    client = fn _query, _variables, _opts ->
+      flunk("managed mutation must fail before a Linear request")
+    end
+
+    for document <- [
+          "mutation UpdateIssue { issueUpdate(id: \"1\", input: {}) { success } }",
+          "# comment\n  mutation($id: String!) { issueUpdate(id: $id, input: {}) { success } }"
+        ] do
+      response =
+        DynamicTool.execute(
+          "linear_graphql",
+          %{"query" => document},
+          managed_session: true,
+          linear_client: client
+        )
+
+      refute response["success"]
+      assert response["output"] =~ "cannot execute raw Linear mutations"
+    end
+  end
+
+  test "manual sessions preserve the raw Linear mutation path" do
+    client = fn query, _variables, _opts ->
+      send(self(), {:linear_mutation, query})
+      {:ok, %{"data" => %{"issueUpdate" => %{"success" => true}}}}
+    end
+
+    response =
+      DynamicTool.execute(
+        "linear_graphql",
+        %{"query" => "mutation { issueUpdate(id: \"1\", input: {}) { success } }"},
+        linear_client: client
+      )
+
+    assert response["success"]
+    assert_received {:linear_mutation, _query}
+  end
+
   test "tool_specs advertises the linear_graphql input contract" do
     assert [
              %{

@@ -57,6 +57,7 @@ defmodule SymphonyElixir.Codex.DynamicTool do
     linear_client = Keyword.get(opts, :linear_client, &Client.graphql/3)
 
     with {:ok, query, variables} <- normalize_linear_graphql_arguments(arguments),
+         :ok <- authorize_linear_document(query, opts),
          {:ok, response} <- linear_client.(query, variables, []) do
       graphql_response(response)
     else
@@ -89,6 +90,26 @@ defmodule SymphonyElixir.Codex.DynamicTool do
   end
 
   defp normalize_linear_graphql_arguments(_arguments), do: {:error, :invalid_arguments}
+
+  defp authorize_linear_document(query, opts) do
+    if Keyword.get(opts, :managed_session, false) and graphql_mutation?(query) do
+      {:error, :managed_linear_mutation_requires_effect_wrapper}
+    else
+      :ok
+    end
+  end
+
+  defp graphql_mutation?(query) do
+    query
+    |> strip_graphql_comments()
+    |> then(&Regex.match?(~r/(?:^|\s)mutation(?:\s|\{|\()/i, &1))
+  end
+
+  defp strip_graphql_comments(query) do
+    query
+    |> String.split("\n")
+    |> Enum.map_join("\n", fn line -> Regex.replace(~r/#.*$/, line, "") end)
+  end
 
   defp normalize_query(arguments) do
     case Map.get(arguments, "query") || Map.get(arguments, :query) do
@@ -164,6 +185,15 @@ defmodule SymphonyElixir.Codex.DynamicTool do
     %{
       "error" => %{
         "message" => "`linear_graphql.variables` must be a JSON object when provided."
+      }
+    }
+  end
+
+  defp tool_error_payload(:managed_linear_mutation_requires_effect_wrapper) do
+    %{
+      "error" => %{
+        "message" =>
+          "Managed Symphony sessions cannot execute raw Linear mutations. Use the ARO-165 effect wrapper for comments and state changes."
       }
     }
   end

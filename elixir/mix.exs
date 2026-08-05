@@ -22,6 +22,7 @@ defmodule SymphonyElixir.MixProject do
           SymphonyElixir.Orchestrator,
           SymphonyElixir.Orchestrator.State,
           SymphonyElixir.ClaimService,
+          SymphonyElixir.EffectLedger,
           SymphonyElixir.ReviewMonitor,
           SymphonyElixir.AgentRunner,
           SymphonyElixir.CLI,
