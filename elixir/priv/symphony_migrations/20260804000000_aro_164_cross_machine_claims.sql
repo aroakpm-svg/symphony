@@ -192,10 +192,6 @@ begin
     raise exception using errcode = '55P03', message = 'issue already has an active claim';
   end if;
 
-  if requested_issue_state = 'in progress' and current_claim.issue_id is null then
-    raise exception using errcode = '55000', message = 'In Progress requires an expired claim takeover';
-  end if;
-
   if not symphony_staging.routing_authorizes_node(
     route.routing_policy, route.target_node_id, requested_node_id
   ) then

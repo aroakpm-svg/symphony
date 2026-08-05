@@ -74,7 +74,7 @@ defmodule SymphonyElixir.CrossMachineClaimsMigrationTest do
     assert sql =~ "route.updated_at + make_interval"
     assert sql =~ "current_claim.lease_expires_at"
     assert sql =~ "requested_policy = 'exclusive'"
-    assert sql =~ "In Progress requires an expired claim takeover"
+    refute sql =~ "In Progress requires an expired claim takeover"
   end
 
   test "rollback removes only ARO-164 objects" do

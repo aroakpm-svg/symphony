@@ -109,6 +109,15 @@ defmodule SymphonyElixir.ClaimServiceTest do
     assert_receive {:claim_lost, "issue-1", :claim_service_disabled}
   end
 
+  test "supervisor shutdown drains claims and stops immediately" do
+    state = %ClaimService{connection: make_ref(), claims: %{"issue-1" => %{owner: self()}}}
+
+    assert {:stop, :shutdown, %{claims: %{}}} =
+             ClaimService.handle_info({:EXIT, self(), :shutdown}, state)
+
+    assert_receive {:claim_lost, "issue-1", {:coordinator_stopping, :shutdown}}
+  end
+
   test "core supervisor couples orchestrator and worker lifecycles" do
     supervisor_state = :sys.get_state(SymphonyElixir.Supervisor)
 

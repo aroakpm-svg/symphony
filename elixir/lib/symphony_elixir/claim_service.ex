@@ -158,6 +158,16 @@ defmodule SymphonyElixir.ClaimService do
     {:stop, {:connection_lost, reason}, %{state | claims: %{}}}
   end
 
+  def handle_info({:EXIT, _pid, reason}, state) when reason in [:normal, :shutdown] do
+    notify_claim_lost(state.claims, {:coordinator_stopping, reason})
+    {:stop, reason, %{state | claims: %{}}}
+  end
+
+  def handle_info({:EXIT, _pid, {:shutdown, _detail} = reason}, state) do
+    notify_claim_lost(state.claims, {:coordinator_stopping, reason})
+    {:stop, reason, %{state | claims: %{}}}
+  end
+
   def handle_info({:EXIT, _pid, _reason}, state), do: {:noreply, state}
 
   defp renew_claims(state) do
