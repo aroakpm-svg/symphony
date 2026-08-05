@@ -119,8 +119,10 @@ defmodule SymphonyElixir.ClaimServiceTest do
   end
 
   test "core supervisor couples orchestrator and worker lifecycles" do
-    supervisor_state = :sys.get_state(SymphonyElixir.Supervisor)
+    application_supervisor_state = :sys.get_state(SymphonyElixir.Supervisor)
+    supervisor_state = :sys.get_state(SymphonyElixir.CoreSupervisor)
 
+    assert elem(application_supervisor_state, 2) == :one_for_one
     assert elem(supervisor_state, 2) == :one_for_all
   end
 end

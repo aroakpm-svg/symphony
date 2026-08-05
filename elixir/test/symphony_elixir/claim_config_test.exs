@@ -55,6 +55,18 @@ defmodule SymphonyElixir.ClaimConfigTest do
     assert message =~ "claim.heartbeat_ms must be less than lease_ms"
   end
 
+  test "heartbeat leaves enough time for a bounded renewal call" do
+    config = %{
+      "claim" => %{
+        "lease_ms" => 30_000,
+        "heartbeat_ms" => 20_000
+      }
+    }
+
+    assert {:error, {:invalid_workflow_config, message}} = Schema.parse(config)
+    assert message =~ "claim.heartbeat_ms must leave more than 15000ms before lease expiry"
+  end
+
   defp restore_env(key, nil), do: System.delete_env(key)
   defp restore_env(key, value), do: System.put_env(key, value)
 end

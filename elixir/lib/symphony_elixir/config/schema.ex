@@ -161,6 +161,8 @@ defmodule SymphonyElixir.Config.Schema do
     use Ecto.Schema
     import Ecto.Changeset
 
+    @claim_call_timeout_ms 15_000
+
     @primary_key false
     embedded_schema do
       field(:enabled, :boolean, default: false)
@@ -188,6 +190,7 @@ defmodule SymphonyElixir.Config.Schema do
       |> validate_number(:heartbeat_ms, greater_than: 0)
       |> validate_number(:fallback_grace_ms, greater_than_or_equal_to: 0)
       |> validate_heartbeat_before_lease()
+      |> validate_renewal_window()
     end
 
     defp validate_heartbeat_before_lease(changeset) do
@@ -196,6 +199,18 @@ defmodule SymphonyElixir.Config.Schema do
 
       if is_integer(heartbeat_ms) and is_integer(lease_ms) and heartbeat_ms >= lease_ms do
         add_error(changeset, :heartbeat_ms, "must be less than lease_ms")
+      else
+        changeset
+      end
+    end
+
+    defp validate_renewal_window(changeset) do
+      heartbeat_ms = get_field(changeset, :heartbeat_ms)
+      lease_ms = get_field(changeset, :lease_ms)
+
+      if is_integer(heartbeat_ms) and is_integer(lease_ms) and
+           lease_ms - heartbeat_ms <= @claim_call_timeout_ms do
+        add_error(changeset, :heartbeat_ms, "must leave more than #{@claim_call_timeout_ms}ms before lease expiry")
       else
         changeset
       end

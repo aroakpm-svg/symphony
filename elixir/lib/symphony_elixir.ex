@@ -12,6 +12,28 @@ defmodule SymphonyElixir do
   end
 end
 
+defmodule SymphonyElixir.CoreSupervisor do
+  @moduledoc false
+
+  use Supervisor
+
+  @spec start_link(keyword()) :: Supervisor.on_start()
+  def start_link(opts \\ []) do
+    Supervisor.start_link(__MODULE__, opts, name: __MODULE__)
+  end
+
+  @impl true
+  def init(_opts) do
+    children = [
+      {Task.Supervisor, name: SymphonyElixir.TaskSupervisor},
+      SymphonyElixir.ClaimService,
+      SymphonyElixir.Orchestrator
+    ]
+
+    Supervisor.init(children, strategy: :one_for_all)
+  end
+end
+
 defmodule SymphonyElixir.Application do
   @moduledoc """
   OTP application entrypoint that starts core supervisors and workers.
@@ -25,17 +47,15 @@ defmodule SymphonyElixir.Application do
 
     children = [
       {Phoenix.PubSub, name: SymphonyElixir.PubSub},
-      {Task.Supervisor, name: SymphonyElixir.TaskSupervisor},
       SymphonyElixir.WorkflowStore,
-      SymphonyElixir.ClaimService,
-      SymphonyElixir.Orchestrator,
+      SymphonyElixir.CoreSupervisor,
       SymphonyElixir.HttpServer,
       SymphonyElixir.StatusDashboard
     ]
 
     Supervisor.start_link(
       children,
-      strategy: :one_for_all,
+      strategy: :one_for_one,
       name: SymphonyElixir.Supervisor
     )
   end
