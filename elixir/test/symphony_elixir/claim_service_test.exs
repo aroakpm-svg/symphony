@@ -10,6 +10,16 @@ defmodule SymphonyElixir.ClaimServiceTest do
     refute source =~ "DateTime.to_iso8601(updated_at)"
   end
 
+  test "lease deadlines remain anchored before a slow database grant returns" do
+    grant_started_ms = System.monotonic_time(:millisecond)
+    Process.sleep(5)
+
+    deadline_ms = ClaimService.lease_deadline_for_test(grant_started_ms, 60_000)
+
+    assert deadline_ms == grant_started_ms + 60_000
+    assert deadline_ms < System.monotonic_time(:millisecond) + 60_000
+  end
+
   test "claim calls fail closed when the coordinator is absent or exits" do
     assert ClaimService.call_for_test(:claim) == {:error, :claim_service_unavailable}
 

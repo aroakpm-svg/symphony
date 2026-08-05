@@ -82,6 +82,10 @@ defmodule SymphonyElixir.ClaimService do
   @spec call_for_test(term()) :: term()
   def call_for_test(request), do: safe_call(request)
 
+  @doc false
+  @spec lease_deadline_for_test(integer(), pos_integer()) :: integer()
+  def lease_deadline_for_test(grant_started_ms, lease_ms), do: grant_started_ms + lease_ms
+
   @impl true
   def init(settings) do
     Process.flag(:trap_exit, true)
@@ -93,12 +97,14 @@ defmodule SymphonyElixir.ClaimService do
 
   @impl true
   def handle_call({:claim, issue, owner}, _from, state) do
+    grant_started_ms = System.monotonic_time(:millisecond)
+
     case claim_query(state, issue) do
       {:ok, claim} ->
         claim =
           claim
           |> Map.put(:owner, owner)
-          |> refresh_lease_deadline(state.settings.lease_ms)
+          |> refresh_lease_deadline(state.settings.lease_ms, grant_started_ms)
 
         {:reply, {:ok, claim}, %{state | claims: Map.put(state.claims, issue.id, claim)}}
 
@@ -173,9 +179,15 @@ defmodule SymphonyElixir.ClaimService do
   defp renew_claims(state) do
     claims =
       Enum.reduce(state.claims, state.claims, fn {issue_id, claim}, acc ->
+        grant_started_ms = System.monotonic_time(:millisecond)
+
         case renewal_safe?(claim) && renew_query(state, claim) do
           :ok ->
-            Map.put(acc, issue_id, refresh_lease_deadline(claim, state.settings.lease_ms))
+            Map.put(
+              acc,
+              issue_id,
+              refresh_lease_deadline(claim, state.settings.lease_ms, grant_started_ms)
+            )
 
           false ->
             notify_claim_lost(issue_id, claim, :renewal_deadline_uncertain)
@@ -303,8 +315,8 @@ defmodule SymphonyElixir.ClaimService do
 
   defp renewal_safe?(_claim), do: false
 
-  defp refresh_lease_deadline(claim, lease_ms) do
-    Map.put(claim, :lease_deadline_ms, System.monotonic_time(:millisecond) + lease_ms)
+  defp refresh_lease_deadline(claim, lease_ms, grant_started_ms) do
+    Map.put(claim, :lease_deadline_ms, lease_deadline_for_test(grant_started_ms, lease_ms))
   end
 
   defp notify_claim_lost(claims, reason) do
