@@ -3,6 +3,13 @@ defmodule SymphonyElixir.ClaimServiceTest do
 
   alias SymphonyElixir.ClaimService
 
+  test "database calls bind textual UUIDs through text before UUID casts" do
+    source = File.read!(Path.expand("../../lib/symphony_elixir/claim_service.ex", __DIR__))
+
+    assert length(Regex.scan(~r/::text::uuid/, source)) == 11
+    refute source =~ "DateTime.to_iso8601(updated_at)"
+  end
+
   test "claim calls fail closed when the coordinator is absent or exits" do
     assert ClaimService.call_for_test(:claim) == {:error, :claim_service_unavailable}
 

@@ -194,7 +194,7 @@ defmodule SymphonyElixir.ClaimService do
 
     sql = """
     select claim_id::text, generation
-    from symphony_staging.claim_issue($1, $2::uuid, $3::uuid, $4::timestamptz, $5, $6::text[], $7, $8)
+    from symphony_staging.claim_issue($1, $2::text::uuid, $3::text::uuid, $4, $5, $6::text[], $7, $8)
     """
 
     case Postgrex.query(state.connection, sql, params) do
@@ -210,7 +210,7 @@ defmodule SymphonyElixir.ClaimService do
   end
 
   defp renew_query(state, claim) do
-    sql = "select symphony_staging.renew_claim($1::uuid, $2, $3::uuid, $4::uuid, $5)"
+    sql = "select symphony_staging.renew_claim($1::text::uuid, $2, $3::text::uuid, $4::text::uuid, $5)"
 
     params = [
       claim.claim_id,
@@ -224,13 +224,15 @@ defmodule SymphonyElixir.ClaimService do
   end
 
   defp terminal_query(state, function, claim) do
-    sql = "select symphony_staging.#{function}($1::uuid, $2, $3::uuid, $4::uuid)"
+    sql = "select symphony_staging.#{function}($1::text::uuid, $2, $3::text::uuid, $4::text::uuid)"
     params = [claim.claim_id, claim.generation, state.settings.node_id, state.settings.node_instance_id]
     query_ok(state.connection, sql, params)
   end
 
   defp active_query(state, claim) do
-    sql = "select symphony_staging.validate_active_claim($1::uuid, $2, $3::uuid, $4::uuid)"
+    sql =
+      "select symphony_staging.validate_active_claim($1::text::uuid, $2, $3::text::uuid, $4::text::uuid)"
+
     params = [claim.claim_id, claim.generation, state.settings.node_id, state.settings.node_instance_id]
 
     match?({:ok, %Postgrex.Result{rows: [[true]]}}, Postgrex.query(state.connection, sql, params))
@@ -257,7 +259,7 @@ defmodule SymphonyElixir.ClaimService do
 
   defp heartbeat_delay(%{settings: settings}), do: settings.heartbeat_ms
 
-  defp issue_updated_at(%Issue{updated_at: %DateTime{} = updated_at}), do: DateTime.to_iso8601(updated_at)
+  defp issue_updated_at(%Issue{updated_at: %DateTime{} = updated_at}), do: updated_at
   defp issue_updated_at(_issue), do: nil
 
   defp normalize_state(state) when is_binary(state), do: state |> String.trim() |> String.downcase()
