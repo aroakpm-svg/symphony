@@ -51,6 +51,8 @@ Important boundary:
 - Stop active runs when issue state changes make them ineligible.
 - Recover from transient failures with exponential backoff.
 - Load runtime behavior from a repository-owned `WORKFLOW.md` contract.
+- Optionally coordinate dispatch across machines with database-backed claims, expiring leases, and
+  monotonically increasing generations.
 - Expose operator-visible observability (at minimum structured logs).
 - Support tracker/filesystem-driven restart recovery without requiring a persistent database; exact
   in-memory scheduler state is not restored.

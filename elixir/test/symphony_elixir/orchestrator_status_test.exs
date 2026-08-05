@@ -1,6 +1,55 @@
 defmodule SymphonyElixir.OrchestratorStatusTest do
   use SymphonyElixir.TestSupport
 
+  test "claim-loss DOWN followed by notification preserves blocked state" do
+    issue_id = "issue-claim-loss-race"
+    ref = make_ref()
+    orchestrator_name = Module.concat(__MODULE__, :ClaimLossRaceOrchestrator)
+    {:ok, pid} = Orchestrator.start_link(name: orchestrator_name)
+
+    issue = %Issue{
+      id: issue_id,
+      identifier: "ARO-RACE",
+      title: "Claim loss race",
+      state: "In Progress",
+      url: "https://example.org/issues/ARO-RACE"
+    }
+
+    running_entry = %{
+      pid: self(),
+      ref: ref,
+      identifier: issue.identifier,
+      issue: issue,
+      distributed_claim: %{generation: 1},
+      session_id: "claim-loss-session",
+      started_at: DateTime.utc_now()
+    }
+
+    :sys.replace_state(pid, fn state ->
+      %{state | running: %{issue_id => running_entry}, claimed: MapSet.put(state.claimed, issue_id)}
+    end)
+
+    send(pid, {:DOWN, ref, :process, self(), :killed})
+    send(pid, {:claim_lost, issue_id, :renewal_uncertain})
+
+    final_state = :sys.get_state(pid)
+    assert final_state.running == %{}
+    assert Map.has_key?(final_state.blocked, issue_id)
+    refute MapSet.member?(final_state.claimed, issue_id)
+    assert final_state.retry_attempts == %{}
+  end
+
+  test "initial claim rejection queues finalization and clears the local claim" do
+    issue = %Issue{id: "late-claim", identifier: "ARO-LATE", title: "Late claim"}
+    {:ok, state} = Orchestrator.init(name: Module.concat(__MODULE__, :LateClaimOrchestrator))
+    state = %{state | claimed: MapSet.put(state.claimed, issue.id)}
+
+    final_state = Orchestrator.handle_claim_rejection_for_test(state, issue, nil)
+
+    refute MapSet.member?(final_state.claimed, issue.id)
+    assert final_state.retry_attempts == %{}
+  end
+
   test "snapshot returns :timeout when snapshot server is unresponsive" do
     server_name = Module.concat(__MODULE__, :UnresponsiveSnapshotServer)
     parent = self()
@@ -1355,7 +1404,7 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
 
     on_exit(fn ->
       if is_nil(Process.whereis(SymphonyElixir.Orchestrator)) do
-        case Supervisor.restart_child(SymphonyElixir.Supervisor, SymphonyElixir.Orchestrator) do
+        case Supervisor.restart_child(SymphonyElixir.CoreSupervisor, SymphonyElixir.Orchestrator) do
           {:ok, _pid} -> :ok
           {:error, {:already_started, _pid}} -> :ok
         end
@@ -1363,7 +1412,7 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
     end)
 
     if is_pid(orchestrator_pid) do
-      assert :ok = Supervisor.terminate_child(SymphonyElixir.Supervisor, SymphonyElixir.Orchestrator)
+      assert :ok = Supervisor.terminate_child(SymphonyElixir.CoreSupervisor, SymphonyElixir.Orchestrator)
     end
 
     {:ok, pid} =

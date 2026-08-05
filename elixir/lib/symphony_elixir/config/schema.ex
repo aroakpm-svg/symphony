@@ -156,6 +156,67 @@ defmodule SymphonyElixir.Config.Schema do
     end
   end
 
+  defmodule Claim do
+    @moduledoc false
+    use Ecto.Schema
+    import Ecto.Changeset
+
+    @claim_call_timeout_ms 15_000
+
+    @primary_key false
+    embedded_schema do
+      field(:enabled, :boolean, default: false)
+      field(:database_url, :string)
+      field(:node_id, :string)
+      field(:node_instance_id, :string)
+      field(:lease_ms, :integer, default: 60_000)
+      field(:heartbeat_ms, :integer, default: 20_000)
+      field(:fallback_grace_ms, :integer, default: 30_000)
+    end
+
+    @spec changeset(%__MODULE__{}, map()) :: Ecto.Changeset.t()
+    def changeset(schema, attrs) do
+      schema
+      |> cast(attrs, [
+        :enabled,
+        :database_url,
+        :node_id,
+        :node_instance_id,
+        :lease_ms,
+        :heartbeat_ms,
+        :fallback_grace_ms
+      ])
+      |> validate_number(:lease_ms, greater_than: 0)
+      |> validate_number(:heartbeat_ms, greater_than: 0)
+      |> validate_number(:fallback_grace_ms, greater_than_or_equal_to: 0)
+      |> validate_heartbeat_before_lease()
+      |> validate_renewal_window()
+    end
+
+    defp validate_heartbeat_before_lease(changeset) do
+      heartbeat_ms = get_field(changeset, :heartbeat_ms)
+      lease_ms = get_field(changeset, :lease_ms)
+
+      if is_integer(heartbeat_ms) and is_integer(lease_ms) and heartbeat_ms >= lease_ms do
+        add_error(changeset, :heartbeat_ms, "must be less than lease_ms")
+      else
+        changeset
+      end
+    end
+
+    defp validate_renewal_window(changeset) do
+      heartbeat_ms = get_field(changeset, :heartbeat_ms)
+      lease_ms = get_field(changeset, :lease_ms)
+
+      if is_integer(heartbeat_ms) and is_integer(lease_ms) and
+           lease_ms - heartbeat_ms <= @claim_call_timeout_ms do
+        add_error(changeset, :heartbeat_ms, "must leave more than #{@claim_call_timeout_ms}ms before lease expiry")
+      else
+        changeset
+      end
+    end
+  end
+
   defmodule ReviewConvergence do
     @moduledoc false
     use Ecto.Schema
@@ -310,6 +371,7 @@ defmodule SymphonyElixir.Config.Schema do
     embeds_one(:workspace, Workspace, on_replace: :update, defaults_to_struct: true)
     embeds_one(:worker, Worker, on_replace: :update, defaults_to_struct: true)
     embeds_one(:agent, Agent, on_replace: :update, defaults_to_struct: true)
+    embeds_one(:claim, Claim, on_replace: :update, defaults_to_struct: true)
     embeds_one(:review_convergence, ReviewConvergence, on_replace: :update, defaults_to_struct: true)
     embeds_one(:codex, Codex, on_replace: :update, defaults_to_struct: true)
     embeds_one(:hooks, Hooks, on_replace: :update, defaults_to_struct: true)
@@ -326,7 +388,9 @@ defmodule SymphonyElixir.Config.Schema do
     |> apply_action(:validate)
     |> case do
       {:ok, settings} ->
-        {:ok, finalize_settings(settings)}
+        settings
+        |> finalize_settings()
+        |> validate_resolved_claim_settings()
 
       {:error, changeset} ->
         {:error, {:invalid_workflow_config, format_errors(changeset)}}
@@ -403,6 +467,7 @@ defmodule SymphonyElixir.Config.Schema do
     |> cast_embed(:workspace, with: &Workspace.changeset/2)
     |> cast_embed(:worker, with: &Worker.changeset/2)
     |> cast_embed(:agent, with: &Agent.changeset/2)
+    |> cast_embed(:claim, with: &Claim.changeset/2)
     |> cast_embed(:review_convergence, with: &ReviewConvergence.changeset/2)
     |> cast_embed(:codex, with: &Codex.changeset/2)
     |> cast_embed(:hooks, with: &Hooks.changeset/2)
@@ -428,7 +493,33 @@ defmodule SymphonyElixir.Config.Schema do
         turn_sandbox_policy: normalize_optional_map(settings.codex.turn_sandbox_policy)
     }
 
-    %{settings | tracker: tracker, workspace: workspace, codex: codex}
+    claim = %{
+      settings.claim
+      | database_url: resolve_secret_setting(settings.claim.database_url, System.get_env("SYMPHONY_CLAIM_DATABASE_URL")),
+        node_id: resolve_secret_setting(settings.claim.node_id, System.get_env("SYMPHONY_NODE_ID")),
+        node_instance_id: resolve_secret_setting(settings.claim.node_instance_id, System.get_env("SYMPHONY_NODE_INSTANCE_ID"))
+    }
+
+    %{settings | tracker: tracker, workspace: workspace, codex: codex, claim: claim}
+  end
+
+  defp validate_resolved_claim_settings(%{claim: %{enabled: false}} = settings), do: {:ok, settings}
+
+  defp validate_resolved_claim_settings(%{claim: claim} = settings) do
+    missing =
+      Enum.filter([:database_url, :node_id, :node_instance_id], fn field ->
+        value = Map.get(claim, field)
+        not is_binary(value) or String.trim(value) == ""
+      end)
+
+    case missing do
+      [] ->
+        {:ok, settings}
+
+      fields ->
+        message = Enum.map_join(fields, ", ", &"claim.#{&1} can't be blank")
+        {:error, {:invalid_workflow_config, message}}
+    end
   end
 
   defp normalize_keys(value) when is_map(value) do

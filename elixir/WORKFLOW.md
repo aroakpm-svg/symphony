@@ -29,6 +29,13 @@ hooks:
 agent:
   max_concurrent_agents: 2
   max_turns: 5
+claim:
+  # Enable only after the ARO-164 migration is applied to shared staging and
+  # this node has completed ARO-169 enrollment/authentication.
+  enabled: false
+  lease_ms: 60000
+  heartbeat_ms: 20000
+  fallback_grace_ms: 30000
 review_convergence:
   enabled: true
   repository: "aroakpm-svg/aroak-central-brain"

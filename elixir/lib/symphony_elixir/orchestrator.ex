@@ -7,7 +7,7 @@ defmodule SymphonyElixir.Orchestrator do
   require Logger
   import Bitwise, only: [<<<: 2]
 
-  alias SymphonyElixir.{AgentRunner, Config, ReviewMonitor, StatusDashboard, Tracker, Workspace}
+  alias SymphonyElixir.{AgentRunner, ClaimService, Config, ReviewMonitor, StatusDashboard, Tracker, Workspace}
   alias SymphonyElixir.Linear.Issue
 
   @continuation_retry_delay_ms 1_000
@@ -180,6 +180,19 @@ defmodule SymphonyElixir.Orchestrator do
 
   def handle_info({:codex_worker_update, _issue_id, _update}, state), do: {:noreply, state}
 
+  def handle_info({:claim_lost, issue_id, reason}, state) when is_binary(issue_id) do
+    Logger.error("Database claim lost; stopping worker: issue_id=#{issue_id} reason=#{inspect(reason)}")
+
+    state =
+      case Map.get(state.running, issue_id) do
+        nil -> retire_lost_claim(state, issue_id)
+        running_entry -> stop_and_block_issue(state, issue_id, running_entry, "database claim lost: #{inspect(reason)}")
+      end
+
+    notify_dashboard()
+    {:noreply, state}
+  end
+
   def handle_info({:agent_hard_blocker, issue_id, blocker_info}, %{running: running} = state)
       when is_binary(issue_id) and is_map(blocker_info) do
     case Map.get(running, issue_id) do
@@ -222,6 +235,15 @@ defmodule SymphonyElixir.Orchestrator do
   def handle_info(msg, state) do
     Logger.debug("Orchestrator ignored message: #{inspect(msg)}")
     {:noreply, state}
+  end
+
+  defp handle_agent_down({:claim_lost, issue_id, reason}, state, issue_id, running_entry, _session_id) do
+    block_issue_from_entry(state, issue_id, running_entry, "database claim lost: #{inspect(reason)}")
+  end
+
+  defp handle_agent_down(:killed, state, issue_id, %{distributed_claim: claim} = running_entry, _session_id)
+       when not is_nil(claim) do
+    block_issue_from_entry(state, issue_id, running_entry, "database claim lost: worker fenced")
   end
 
   defp handle_agent_down(:normal, state, issue_id, running_entry, session_id) do
@@ -436,6 +458,12 @@ defmodule SymphonyElixir.Orchestrator do
     select_worker_host(state, preferred_worker_host)
   end
 
+  @doc false
+  @spec handle_claim_rejection_for_test(term(), Issue.t(), term()) :: term()
+  def handle_claim_rejection_for_test(%State{} = state, %Issue{} = issue, attempt) do
+    handle_claim_rejection(state, issue, attempt, nil, :claim_timeout)
+  end
+
   defp reconcile_running_issue_states([], state, _active_states, _terminal_states), do: state
 
   defp reconcile_running_issue_states([issue | rest], state, active_states, terminal_states) do
@@ -594,6 +622,12 @@ defmodule SymphonyElixir.Orchestrator do
         end
 
         stop_running_task(pid, ref)
+
+        if cleanup_workspace do
+          finalize_distributed_claim(issue_id, :complete)
+        else
+          finalize_distributed_claim(issue_id, :release)
+        end
 
         %{
           state
@@ -778,6 +812,8 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   defp block_issue_from_entry(%State{} = state, issue_id, running_entry, error) do
+    :ok = finalize_distributed_claim(issue_id, :release)
+
     blocked_entry = %{
       issue_id: issue_id,
       identifier: Map.get(running_entry, :identifier, issue_id),
@@ -970,51 +1006,56 @@ defmodule SymphonyElixir.Orchestrator do
         state
 
       worker_host ->
-        spawn_issue_on_worker_host(state, issue, attempt, recipient, worker_host)
+        case ClaimService.claim(issue, recipient) do
+          {:ok, distributed_claim} ->
+            spawn_issue_on_worker_host(state, issue, attempt, recipient, worker_host, distributed_claim)
+
+          {:error, reason} ->
+            Logger.warning("Skipping dispatch; database claim rejected for #{issue_context(issue)}: #{inspect(reason)}")
+            handle_claim_rejection(state, issue, attempt, worker_host, reason)
+        end
     end
   end
 
-  defp spawn_issue_on_worker_host(%State{} = state, issue, attempt, recipient, worker_host) do
+  defp handle_claim_rejection(state, issue, attempt, worker_host, reason) when is_integer(attempt) do
+    state
+    |> release_issue_claim(issue.id)
+    |> schedule_issue_retry(issue.id, attempt + 1, %{
+      identifier: issue.identifier,
+      issue_url: issue.url,
+      error: "database claim rejected: #{inspect(reason)}",
+      worker_host: worker_host
+    })
+  end
+
+  defp handle_claim_rejection(state, issue, _attempt, _worker_host, _reason) do
+    release_issue_claim(state, issue.id)
+  end
+
+  defp spawn_issue_on_worker_host(%State{} = state, issue, attempt, recipient, worker_host, distributed_claim) do
     case Task.Supervisor.start_child(SymphonyElixir.TaskSupervisor, fn ->
            AgentRunner.run(issue, recipient, attempt: attempt, worker_host: worker_host)
          end) do
       {:ok, pid} ->
-        ref = Process.monitor(pid)
+        case ClaimService.bind_worker(issue.id, pid) do
+          :ok ->
+            track_spawned_issue(state, issue, attempt, worker_host, distributed_claim, pid)
 
-        Logger.info("Dispatching issue to agent: #{issue_context(issue)} pid=#{inspect(pid)} attempt=#{inspect(attempt)} worker_host=#{worker_host || "local"}")
+          {:error, reason} ->
+            terminate_task(pid)
+            :ok = finalize_distributed_claim(issue.id, :release)
+            Logger.error("Unable to bind database claim to agent for #{issue_context(issue)}: #{inspect(reason)}")
 
-        running =
-          Map.put(state.running, issue.id, %{
-            pid: pid,
-            ref: ref,
-            identifier: issue.identifier,
-            issue: issue,
-            worker_host: worker_host,
-            workspace_path: nil,
-            session_id: nil,
-            last_codex_message: nil,
-            last_codex_timestamp: nil,
-            last_codex_event: nil,
-            codex_app_server_pid: nil,
-            codex_input_tokens: 0,
-            codex_output_tokens: 0,
-            codex_total_tokens: 0,
-            codex_last_reported_input_tokens: 0,
-            codex_last_reported_output_tokens: 0,
-            codex_last_reported_total_tokens: 0,
-            turn_count: 0,
-            retry_attempt: normalize_retry_attempt(attempt),
-            started_at: DateTime.utc_now()
-          })
-
-        %{
-          state
-          | running: running,
-            claimed: MapSet.put(state.claimed, issue.id),
-            retry_attempts: Map.delete(state.retry_attempts, issue.id)
-        }
+            schedule_issue_retry(state, issue.id, normalize_retry_attempt(attempt) + 1, %{
+              identifier: issue.identifier,
+              issue_url: issue.url,
+              error: "failed to bind database claim: #{inspect(reason)}",
+              worker_host: worker_host
+            })
+        end
 
       {:error, reason} ->
+        :ok = finalize_distributed_claim(issue.id, :release)
         Logger.error("Unable to spawn agent for #{issue_context(issue)}: #{inspect(reason)}")
         next_attempt = if is_integer(attempt), do: attempt + 1, else: nil
 
@@ -1025,6 +1066,44 @@ defmodule SymphonyElixir.Orchestrator do
           worker_host: worker_host
         })
     end
+  end
+
+  defp track_spawned_issue(state, issue, attempt, worker_host, distributed_claim, pid) do
+    ref = Process.monitor(pid)
+
+    Logger.info("Dispatching issue to agent: #{issue_context(issue)} pid=#{inspect(pid)} attempt=#{inspect(attempt)} worker_host=#{worker_host || "local"}")
+
+    running =
+      Map.put(state.running, issue.id, %{
+        pid: pid,
+        ref: ref,
+        identifier: issue.identifier,
+        issue: issue,
+        worker_host: worker_host,
+        workspace_path: nil,
+        session_id: nil,
+        last_codex_message: nil,
+        last_codex_timestamp: nil,
+        last_codex_event: nil,
+        codex_app_server_pid: nil,
+        codex_input_tokens: 0,
+        codex_output_tokens: 0,
+        codex_total_tokens: 0,
+        codex_last_reported_input_tokens: 0,
+        codex_last_reported_output_tokens: 0,
+        codex_last_reported_total_tokens: 0,
+        turn_count: 0,
+        retry_attempt: normalize_retry_attempt(attempt),
+        started_at: DateTime.utc_now(),
+        distributed_claim: distributed_claim
+      })
+
+    %{
+      state
+      | running: running,
+        claimed: MapSet.put(state.claimed, issue.id),
+        retry_attempts: Map.delete(state.retry_attempts, issue.id)
+    }
   end
 
   defp revalidate_issue_for_dispatch(%Issue{id: issue_id}, issue_fetcher, terminal_states)
@@ -1216,12 +1295,35 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   defp release_issue_claim(%State{} = state, issue_id) do
+    case ClaimService.release(issue_id) do
+      :ok -> :ok
+      {:error, reason} -> Logger.warning("Unable to release database claim issue_id=#{issue_id}: #{inspect(reason)}")
+    end
+
     %{
       state
       | claimed: MapSet.delete(state.claimed, issue_id),
         blocked: Map.delete(state.blocked, issue_id),
         retry_attempts: Map.delete(state.retry_attempts, issue_id)
     }
+  end
+
+  defp retire_lost_claim(%State{} = state, issue_id) do
+    :ok = finalize_distributed_claim(issue_id, :release)
+    %{state | claimed: MapSet.delete(state.claimed, issue_id)}
+  end
+
+  defp finalize_distributed_claim(issue_id, action) when action in [:release, :complete] do
+    result =
+      case action do
+        :release -> ClaimService.release(issue_id)
+        :complete -> ClaimService.complete(issue_id)
+      end
+
+    case result do
+      :ok -> :ok
+      {:error, _reason} -> :ok
+    end
   end
 
   defp retry_delay(attempt, metadata) when is_integer(attempt) and attempt > 0 and is_map(metadata) do
