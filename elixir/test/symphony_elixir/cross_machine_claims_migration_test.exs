@@ -54,6 +54,7 @@ defmodule SymphonyElixir.CrossMachineClaimsMigrationTest do
     assert sql =~ "assignments.routing_policy = claims.routing_policy"
     assert sql =~ "assignments.target_node_id is not distinct from claims.target_node_id"
     assert sql =~ "assignments.routing_revision = claims.routing_revision"
+    assert length(Regex.scan(~r/routing_authorizes_node\(/, sql)) >= 4
   end
 
   test "historical claims do not block active instance retirement and reclaims fence stale snapshots" do
@@ -72,7 +73,7 @@ defmodule SymphonyElixir.CrossMachineClaimsMigrationTest do
     assert sql =~ "current_claim.issue_id is null"
     assert sql =~ "route.updated_at + make_interval"
     assert sql =~ "current_claim.lease_expires_at"
-    assert sql =~ "route.routing_policy = 'exclusive'"
+    assert sql =~ "requested_policy = 'exclusive'"
     assert sql =~ "In Progress requires an expired claim takeover"
   end
 

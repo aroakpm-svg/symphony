@@ -35,6 +35,7 @@ drop function if exists symphony_staging.finish_claim(uuid, bigint, uuid, uuid, 
 drop function if exists symphony_staging.validate_active_claim(uuid, bigint, uuid, uuid);
 drop function if exists symphony_staging.renew_claim(uuid, bigint, uuid, uuid, integer);
 drop function if exists symphony_staging.claim_issue(text, uuid, uuid, timestamptz, text, text[], integer, integer);
+drop function if exists symphony_staging.routing_authorizes_node(text, uuid, uuid);
 
 drop table if exists symphony_staging.claim_audit_events;
 drop table if exists symphony_staging.issue_claims;

@@ -57,6 +57,15 @@ defmodule SymphonyElixir.ClaimService do
     if coordinator_running?(), do: safe_call({:complete, issue_id}), else: :ok
   end
 
+  @spec bind_worker(String.t(), pid()) :: :ok | {:error, term()}
+  def bind_worker(issue_id, worker) when is_binary(issue_id) and is_pid(worker) do
+    cond do
+      coordinator_running?() -> safe_call({:bind_worker, issue_id, worker})
+      enabled?() -> {:error, :claim_service_unavailable}
+      true -> :ok
+    end
+  end
+
   @spec active?(String.t()) :: boolean()
   def active?(issue_id) when is_binary(issue_id) do
     if coordinator_running?() do
@@ -123,6 +132,17 @@ defmodule SymphonyElixir.ClaimService do
     {:reply, active, state}
   end
 
+  def handle_call({:bind_worker, issue_id, worker}, _from, state) do
+    case Map.fetch(state.claims, issue_id) do
+      {:ok, claim} ->
+        claims = Map.put(state.claims, issue_id, Map.put(claim, :worker, worker))
+        {:reply, :ok, %{state | claims: claims}}
+
+      :error ->
+        {:reply, {:error, :claim_not_owned}, state}
+    end
+  end
+
   @impl true
   def handle_info(:heartbeat, state) do
     if enabled?() do
@@ -148,11 +168,11 @@ defmodule SymphonyElixir.ClaimService do
             Map.put(acc, issue_id, refresh_lease_deadline(claim, state.settings.lease_ms))
 
           false ->
-            send(claim.owner, {:claim_lost, issue_id, :renewal_deadline_uncertain})
+            notify_claim_lost(issue_id, claim, :renewal_deadline_uncertain)
             Map.delete(acc, issue_id)
 
           {:error, reason} ->
-            send(claim.owner, {:claim_lost, issue_id, reason})
+            notify_claim_lost(issue_id, claim, reason)
             Map.delete(acc, issue_id)
         end
       end)
@@ -277,7 +297,16 @@ defmodule SymphonyElixir.ClaimService do
 
   defp notify_claim_lost(claims, reason) do
     Enum.each(claims, fn {issue_id, claim} ->
-      send(claim.owner, {:claim_lost, issue_id, reason})
+      notify_claim_lost(issue_id, claim, reason)
     end)
+  end
+
+  defp notify_claim_lost(issue_id, claim, reason) do
+    case Map.get(claim, :worker) do
+      worker when is_pid(worker) -> Process.exit(worker, :kill)
+      _other -> :ok
+    end
+
+    send(claim.owner, {:claim_lost, issue_id, reason})
   end
 end

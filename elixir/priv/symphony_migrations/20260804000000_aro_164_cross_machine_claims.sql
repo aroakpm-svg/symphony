@@ -61,6 +61,26 @@ revoke all on sequence symphony_staging.claim_audit_events_audit_id_seq
   from public, anon, authenticated, service_role,
        symphony_staging_runtime, symphony_staging_provisioner;
 
+create or replace function symphony_staging.routing_authorizes_node(
+  requested_policy text,
+  requested_target_node_id uuid,
+  requested_node_id uuid
+)
+returns boolean
+language sql
+immutable
+security invoker
+set search_path = pg_catalog, pg_temp
+as $$
+  select requested_policy = 'unassigned'
+      or requested_policy = 'preferred-with-fallback'
+      or (requested_policy = 'exclusive' and requested_target_node_id = requested_node_id)
+$$;
+
+revoke all on function symphony_staging.routing_authorizes_node(text, uuid, uuid)
+  from public, anon, authenticated, service_role,
+       symphony_staging_runtime, symphony_staging_provisioner;
+
 create or replace function symphony_staging.claim_issue(
   requested_issue_id text,
   requested_node_id uuid,
@@ -154,7 +174,9 @@ begin
          or route.target_node_id is distinct from current_claim.target_node_id
          or route.routing_revision is distinct from current_claim.routing_revision
          or requested_linear_updated_at is distinct from current_claim.linear_updated_at
-         or (route.routing_policy = 'exclusive' and route.target_node_id <> requested_node_id) then
+         or not symphony_staging.routing_authorizes_node(
+           route.routing_policy, route.target_node_id, requested_node_id
+         ) then
         raise exception using errcode = '55000', message = 'existing claim routing or Linear revision is stale';
       end if;
 
@@ -174,7 +196,9 @@ begin
     raise exception using errcode = '55000', message = 'In Progress requires an expired claim takeover';
   end if;
 
-  if route.routing_policy = 'exclusive' and route.target_node_id <> requested_node_id then
+  if not symphony_staging.routing_authorizes_node(
+    route.routing_policy, route.target_node_id, requested_node_id
+  ) then
     raise exception using errcode = '42501', message = 'exclusive route rejects this node';
   end if;
 
@@ -293,10 +317,8 @@ begin
         and assignments.routing_policy = claims.routing_policy
         and assignments.target_node_id is not distinct from claims.target_node_id
         and assignments.routing_revision = claims.routing_revision
-        and (
-          assignments.routing_policy = 'unassigned'
-          or assignments.target_node_id = requested_node_id
-          or assignments.routing_policy = 'preferred-with-fallback'
+        and symphony_staging.routing_authorizes_node(
+          assignments.routing_policy, assignments.target_node_id, requested_node_id
         )
     )
     and claims.completed_at is null
