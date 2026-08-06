@@ -110,6 +110,8 @@ new_generation="${new#*:}"
 test "$new_generation" = 2
 
 psql_admin -f "$effect_migration"
+test "$(PGPASSWORD=disposable psql -X -q -A -t -v ON_ERROR_STOP=1 -d "$(node_url claim_node_c)" -c \
+  "select symphony_staging.effect_ledger_ready();")" = "t"
 
 effect_claim="$(claim claim_node_c EFFECTS "$node_c" "$instance_c")"
 effect_claim_id="${effect_claim%:*}"

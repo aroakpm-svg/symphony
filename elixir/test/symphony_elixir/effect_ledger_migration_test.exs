@@ -89,8 +89,8 @@ defmodule SymphonyElixir.EffectLedgerMigrationTest do
 
     assert runner =~ "effect_ledger_contract_unavailable"
     assert runner =~ "ClaimService.effect_ledger_ready?"
-    assert claims =~ "contract_name = 'effect-ledger'"
-    assert claims =~ "contract_version >= 1"
+    assert claims =~ "select symphony_staging.effect_ledger_ready()"
+    assert File.read!(@migration) =~ "create or replace function symphony_staging.effect_ledger_ready()"
   end
 
   test "runtime selects granted attempts and namespaces operation IDs by issue" do
@@ -117,6 +117,7 @@ defmodule SymphonyElixir.EffectLedgerMigrationTest do
     assert rollback =~ "drop table if exists symphony_staging.effect_operations"
     assert rollback =~ "finish_effect(text, text, uuid, text, jsonb, text)"
     assert rollback =~ "relinquish_effect(text, text, uuid)"
+    assert rollback =~ "effect_ledger_ready()"
     refute rollback =~ "drop schema"
     refute rollback =~ "symphony_production"
   end

@@ -149,7 +149,7 @@ defmodule SymphonyElixir.ClaimService do
   end
 
   def handle_call(:effect_ledger_ready?, _from, state) do
-    sql = "select exists(select 1 from symphony_staging.contract_versions where contract_name = 'effect-ledger' and contract_version >= 1)"
+    sql = "select symphony_staging.effect_ledger_ready()"
     ready = match?({:ok, %Postgrex.Result{rows: [[true]]}}, Postgrex.query(state.connection, sql, []))
     {:reply, ready, state}
   end

@@ -299,18 +299,35 @@ begin
 end
 $$;
 
+create or replace function symphony_staging.effect_ledger_ready()
+returns boolean
+language sql
+stable
+security definer
+set search_path = pg_catalog, pg_temp
+as $$
+  select exists (
+    select 1
+    from symphony_staging.contract_versions
+    where contract_name = 'effect-ledger'
+      and contract_version >= 1
+  )
+$$;
+
 revoke all on function
   symphony_staging.begin_effect(text, text, text, text, uuid, bigint, uuid, uuid, uuid, integer),
   symphony_staging.finish_effect(text, text, uuid, text, jsonb, text),
   symphony_staging.reconcile_effect(text, text, uuid, text, uuid, bigint, uuid, uuid, text, jsonb),
-  symphony_staging.relinquish_effect(text, text, uuid)
+  symphony_staging.relinquish_effect(text, text, uuid),
+  symphony_staging.effect_ledger_ready()
   from public, anon, authenticated, service_role, symphony_staging_provisioner;
 
 grant execute on function
   symphony_staging.begin_effect(text, text, text, text, uuid, bigint, uuid, uuid, uuid, integer),
   symphony_staging.finish_effect(text, text, uuid, text, jsonb, text),
   symphony_staging.reconcile_effect(text, text, uuid, text, uuid, bigint, uuid, uuid, text, jsonb),
-  symphony_staging.relinquish_effect(text, text, uuid)
+  symphony_staging.relinquish_effect(text, text, uuid),
+  symphony_staging.effect_ledger_ready()
   to symphony_staging_runtime;
 
 create or replace function symphony_staging.grant_effect_api_to_node_login()
@@ -325,7 +342,8 @@ begin
     'symphony_staging.begin_effect(text, text, text, text, uuid, bigint, uuid, uuid, uuid, integer), '
     'symphony_staging.finish_effect(text, text, uuid, text, jsonb, text), '
     'symphony_staging.reconcile_effect(text, text, uuid, text, uuid, bigint, uuid, uuid, text, jsonb), '
-    'symphony_staging.relinquish_effect(text, text, uuid) to %I',
+    'symphony_staging.relinquish_effect(text, text, uuid), '
+    'symphony_staging.effect_ledger_ready() to %I',
     new.login_role
   );
   return new;
@@ -353,7 +371,8 @@ begin
       'symphony_staging.begin_effect(text, text, text, text, uuid, bigint, uuid, uuid, uuid, integer), '
       'symphony_staging.finish_effect(text, text, uuid, text, jsonb, text), '
       'symphony_staging.reconcile_effect(text, text, uuid, text, uuid, bigint, uuid, uuid, text, jsonb), '
-      'symphony_staging.relinquish_effect(text, text, uuid) to %I',
+      'symphony_staging.relinquish_effect(text, text, uuid), '
+      'symphony_staging.effect_ledger_ready() to %I',
       principal.login_role
     );
   end loop;
