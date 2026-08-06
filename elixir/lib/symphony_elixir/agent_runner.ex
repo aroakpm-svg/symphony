@@ -4,7 +4,8 @@ defmodule SymphonyElixir.AgentRunner do
   """
 
   require Logger
-  alias SymphonyElixir.{ClaimService, Codex.AppServer, Config, Linear.Issue, PromptBuilder, ReadinessGate, Tracker, Workspace}
+  alias SymphonyElixir.{ClaimService, Codex.AppServer, Config, Linear.Issue}
+  alias SymphonyElixir.{PromptBuilder, ReadinessGate, Tracker, Workspace}
 
   @type worker_host :: String.t() | nil
 

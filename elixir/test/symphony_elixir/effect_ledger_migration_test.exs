@@ -96,7 +96,7 @@ defmodule SymphonyElixir.EffectLedgerMigrationTest do
   test "runtime selects granted attempts and namespaces operation IDs by issue" do
     source = File.read!(@effect_ledger)
 
-    assert source =~ "select status, native_resource, attempt_id"
+    assert source =~ "select status, native_resource, attempt_id::text"
     assert source =~ ~s(context.issue_id <> ":" <> context.operation_id)
   end
 

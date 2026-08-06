@@ -116,7 +116,7 @@ defmodule SymphonyElixir.EffectLedger do
 
   defp begin_effect(connection, effect_type, context, attempt_id) do
     sql = """
-    select status, native_resource, attempt_id
+    select status, native_resource, attempt_id::text
     from symphony_staging.begin_effect(
       $1, $2, $3, $4, $5::text::uuid, $6, $7::text::uuid, $8::text::uuid,
       $9::text::uuid, $10
