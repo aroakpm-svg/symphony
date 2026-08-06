@@ -49,7 +49,9 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
           ",\uFEFF # ignored tokens\r\n, mutation { issueUpdate(id: \"1\", input: {}) { success } }",
           "mutation,# ignored tokens\n UpdateIssue { issueUpdate(id: \"1\", input: {}) { success } }",
           "fragment F on IssuePayload { success } mutation Update { issueUpdate(id: \"1\", input: {}) { ...F } }",
-          "query Viewer { viewer { id } } mutation Update { issueUpdate(id: \"1\", input: {}) { success } }"
+          "query Viewer { viewer { id } } mutation Update { issueUpdate(id: \"1\", input: {}) { success } }",
+          ~S|fragment F on Mutation { field(arg: """first \""" still first""") }
+          mutation Update { issueUpdate(id: "1", input: {description: """second \""" still second"""}) { success } }|
         ] do
       response =
         DynamicTool.execute(

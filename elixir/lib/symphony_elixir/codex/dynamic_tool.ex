@@ -342,16 +342,52 @@ defmodule SymphonyElixir.Codex.DynamicTool do
   end
 
   defp strip_graphql_non_syntax(query) do
-    document = Regex.replace(~r/"""(?:(?!""").)*"""/su, query, " ")
-    document = Regex.replace(~r/"(?:\\.|[^"\\])*"/su, document, " ")
-    document = Regex.replace(~r/#[^\r\n]*/u, document, " ")
-
-    if String.contains?(document, "\"") do
-      {:error, :unterminated_graphql_string}
-    else
-      {:ok, document}
-    end
+    scan_graphql_document(query, :normal, [])
   end
+
+  defp scan_graphql_document(<<>>, state, acc) when state in [:normal, :comment],
+    do: {:ok, acc |> Enum.reverse() |> IO.iodata_to_binary()}
+
+  defp scan_graphql_document(<<>>, _state, _acc), do: {:error, :unterminated_graphql_string}
+
+  defp scan_graphql_document(<<"\"\"\"", rest::binary>>, :normal, acc),
+    do: scan_graphql_document(rest, :block_string, [" " | acc])
+
+  defp scan_graphql_document(<<"\"", rest::binary>>, :normal, acc),
+    do: scan_graphql_document(rest, :string, [" " | acc])
+
+  defp scan_graphql_document(<<"#", rest::binary>>, :normal, acc),
+    do: scan_graphql_document(rest, :comment, [" " | acc])
+
+  defp scan_graphql_document(<<codepoint::utf8, rest::binary>>, :normal, acc),
+    do: scan_graphql_document(rest, :normal, [<<codepoint::utf8>> | acc])
+
+  defp scan_graphql_document(<<"\\\"\"\"", rest::binary>>, :block_string, acc),
+    do: scan_graphql_document(rest, :block_string, [" " | acc])
+
+  defp scan_graphql_document(<<"\"\"\"", rest::binary>>, :block_string, acc),
+    do: scan_graphql_document(rest, :normal, [" " | acc])
+
+  defp scan_graphql_document(<<_codepoint::utf8, rest::binary>>, :block_string, acc),
+    do: scan_graphql_document(rest, :block_string, [" " | acc])
+
+  defp scan_graphql_document(<<"\\", _escaped::utf8, rest::binary>>, :string, acc),
+    do: scan_graphql_document(rest, :string, [" " | acc])
+
+  defp scan_graphql_document(<<"\"", rest::binary>>, :string, acc),
+    do: scan_graphql_document(rest, :normal, [" " | acc])
+
+  defp scan_graphql_document(<<_codepoint::utf8, rest::binary>>, :string, acc),
+    do: scan_graphql_document(rest, :string, [" " | acc])
+
+  defp scan_graphql_document(<<"\r\n", rest::binary>>, :comment, acc),
+    do: scan_graphql_document(rest, :normal, ["\n" | acc])
+
+  defp scan_graphql_document(<<newline, rest::binary>>, :comment, acc) when newline in [?\r, ?\n],
+    do: scan_graphql_document(rest, :normal, ["\n" | acc])
+
+  defp scan_graphql_document(<<_codepoint::utf8, rest::binary>>, :comment, acc),
+    do: scan_graphql_document(rest, :comment, [" " | acc])
 
   defp graphql_tokens(document) do
     tokens =
