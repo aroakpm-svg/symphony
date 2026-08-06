@@ -248,15 +248,30 @@ defmodule SymphonyElixir.Codex.DynamicTool do
     do: comment["body"] == expected_body and get_in(comment, ["user", "id"]) == viewer_id
 
   defp update_linear_state(client, issue_id, state) do
+    case lookup_linear_state(client, issue_id, state) do
+      {:ok, state_id} -> apply_linear_state(client, issue_id, state, state_id)
+      {:error, reason} -> {:error, :no_effect, reason}
+    end
+  end
+
+  defp lookup_linear_state(client, issue_id, state) do
     with {:ok, lookup} <- client.(@state_lookup_query, %{issueId: issue_id, stateName: state}, []),
          state_id when is_binary(state_id) <-
-           get_in(lookup, ["data", "issue", "team", "states", "nodes", Access.at(0), "id"]),
-         {:ok, response} <- client.(@state_update_mutation, %{issueId: issue_id, stateId: state_id}, []),
+           get_in(lookup, ["data", "issue", "team", "states", "nodes", Access.at(0), "id"]) do
+      {:ok, state_id}
+    else
+      {:error, reason} -> {:error, reason}
+      _ -> {:error, :state_not_found}
+    end
+  end
+
+  defp apply_linear_state(client, issue_id, state, state_id) do
+    with {:ok, response} <- client.(@state_update_mutation, %{issueId: issue_id, stateId: state_id}, []),
          true <- get_in(response, ["data", "issueUpdate", "success"]) == true do
       {:ok, %{"state" => state, "stateId" => state_id}}
     else
       {:error, reason} -> {:error, :unknown, reason}
-      _ -> {:error, :no_effect, :state_not_found_or_update_rejected}
+      _ -> {:error, :unknown, :state_update_rejected}
     end
   end
 

@@ -167,6 +167,7 @@ PGPASSWORD=disposable psql -X -q -A -t -v ON_ERROR_STOP=1 -d "$(node_url claim_n
   "select symphony_staging.finish_effect('effect-handoff','fp-handoff','$handoff_attempt_id','unknown',null,'timeout');" \
   >/dev/null
 psql_admin -c "update symphony_staging.issue_claims set released_at = clock_timestamp() where issue_id = 'EFFECTS';"
+psql_admin -c "update symphony_staging.issue_claims set released_at = clock_timestamp() where issue_id = 'TAKEOVER';"
 handoff_claim="$(claim claim_node_b EFFECTS "$node_b" "$instance_b")"
 handoff_claim_id="${handoff_claim%:*}"
 handoff_generation="${handoff_claim#*:}"

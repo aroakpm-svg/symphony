@@ -71,6 +71,14 @@ defmodule SymphonyElixir.EffectLedgerMigrationTest do
     assert source =~ ~S|get_in(comment, ["user", "id"]) == viewer_id|
   end
 
+  test "state lookup failures remain in the definite no-effect retry path" do
+    source = File.read!(@dynamic_tool)
+
+    assert source =~ "lookup_linear_state"
+    assert source =~ "{:error, reason} -> {:error, :no_effect, reason}"
+    assert source =~ "{:error, reason} -> {:error, :unknown, reason}"
+  end
+
   test "runtime selects granted attempts and namespaces operation IDs by issue" do
     source = File.read!(@effect_ledger)
 
