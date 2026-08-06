@@ -9,6 +9,7 @@ defmodule SymphonyElixir.EffectLedgerMigrationTest do
               "../../priv/symphony_migrations/20260805000000_aro_165_effect_ledger.down.sql",
               __DIR__
             )
+  @effect_ledger Path.expand("../../lib/symphony_elixir/effect_ledger.ex", __DIR__)
 
   test "migration is staging-only and fixes the allowed effect set" do
     sql = File.read!(@migration)
@@ -52,8 +53,18 @@ defmodule SymphonyElixir.EffectLedgerMigrationTest do
     assert sql =~ "operations.status = 'pending'"
     assert sql =~ "operations.status in ('pending', 'unknown')"
     assert sql =~ "existing.status = 'failed-no-effect'"
+    assert sql =~ "existing.status = 'unknown'"
+    assert sql =~ "principals.login_role = session_user"
+    assert sql =~ "operations.attempt_id = requested_attempt_id"
     assert sql =~ "reconciliation must produce a definite result"
     refute sql =~ "exactly-once"
+  end
+
+  test "runtime selects granted attempts and namespaces operation IDs by issue" do
+    source = File.read!(@effect_ledger)
+
+    assert source =~ "select status, native_resource, attempt_id"
+    assert source =~ ~s(context.issue_id <> ":" <> context.operation_id)
   end
 
   test "runtime access is function-only and existing node logins receive it" do

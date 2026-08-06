@@ -135,6 +135,17 @@ begin
       return;
     end if;
 
+    if existing.status = 'unknown' then
+      update symphony_staging.effect_operations operations
+      set attempt_id = requested_attempt_id,
+          attempt_expires_at = clock_timestamp() + make_interval(secs => requested_attempt_lease_ms / 1000.0),
+          updated_at = clock_timestamp()
+      where operations.operation_id = requested_operation_id;
+
+      return query select 'unknown'::text, existing.native_resource, requested_attempt_id;
+      return;
+    end if;
+
     return query select existing.status, existing.native_resource, null::uuid;
     return;
   end if;
@@ -194,6 +205,12 @@ $$;
 create or replace function symphony_staging.reconcile_effect(
   requested_operation_id text,
   requested_fingerprint text,
+  requested_attempt_id uuid,
+  requested_issue_id text,
+  requested_claim_id uuid,
+  requested_generation bigint,
+  requested_node_id uuid,
+  requested_node_instance_id uuid,
   requested_status text,
   requested_native_resource jsonb
 )
@@ -219,7 +236,33 @@ begin
       updated_at = clock_timestamp()
   where operations.operation_id = requested_operation_id
     and operations.request_fingerprint = requested_fingerprint
-    and operations.status in ('pending', 'unknown');
+    and operations.status in ('pending', 'unknown')
+    and operations.attempt_id = requested_attempt_id
+    and operations.attempt_expires_at > clock_timestamp()
+    and operations.issue_id = requested_issue_id
+    and operations.claim_id = requested_claim_id
+    and operations.generation = requested_generation
+    and exists (
+      select 1
+      from symphony_staging.issue_claims claims
+      join symphony_staging.nodes nodes on nodes.node_id = claims.node_id
+      join symphony_staging.node_login_principals principals
+        on principals.node_id = nodes.node_id
+       and principals.login_role = session_user
+       and principals.revoked_at is null
+      join symphony_staging.active_node_instances instances
+        on instances.node_id = claims.node_id
+       and instances.node_instance_id = claims.node_instance_id
+      where claims.issue_id = requested_issue_id
+        and claims.claim_id = requested_claim_id
+        and claims.generation = requested_generation
+        and claims.node_id = requested_node_id
+        and claims.node_instance_id = requested_node_instance_id
+        and nodes.status = 'active'
+        and claims.completed_at is null
+        and claims.released_at is null
+        and claims.lease_expires_at > clock_timestamp()
+    );
   get diagnostics changed = row_count;
 
   return changed = 1;
@@ -229,13 +272,13 @@ $$;
 revoke all on function
   symphony_staging.begin_effect(text, text, text, text, uuid, bigint, uuid, uuid, uuid, integer),
   symphony_staging.finish_effect(text, text, uuid, text, jsonb, text),
-  symphony_staging.reconcile_effect(text, text, text, jsonb)
+  symphony_staging.reconcile_effect(text, text, uuid, text, uuid, bigint, uuid, uuid, text, jsonb)
   from public, anon, authenticated, service_role, symphony_staging_provisioner;
 
 grant execute on function
   symphony_staging.begin_effect(text, text, text, text, uuid, bigint, uuid, uuid, uuid, integer),
   symphony_staging.finish_effect(text, text, uuid, text, jsonb, text),
-  symphony_staging.reconcile_effect(text, text, text, jsonb)
+  symphony_staging.reconcile_effect(text, text, uuid, text, uuid, bigint, uuid, uuid, text, jsonb)
   to symphony_staging_runtime;
 
 create or replace function symphony_staging.grant_effect_api_to_node_login()
@@ -249,7 +292,7 @@ begin
     'grant execute on function '
     'symphony_staging.begin_effect(text, text, text, text, uuid, bigint, uuid, uuid, uuid, integer), '
     'symphony_staging.finish_effect(text, text, uuid, text, jsonb, text), '
-    'symphony_staging.reconcile_effect(text, text, text, jsonb) to %I',
+    'symphony_staging.reconcile_effect(text, text, uuid, text, uuid, bigint, uuid, uuid, text, jsonb) to %I',
     new.login_role
   );
   return new;
@@ -276,7 +319,7 @@ begin
       'grant execute on function '
       'symphony_staging.begin_effect(text, text, text, text, uuid, bigint, uuid, uuid, uuid, integer), '
       'symphony_staging.finish_effect(text, text, uuid, text, jsonb, text), '
-      'symphony_staging.reconcile_effect(text, text, text, jsonb) to %I',
+      'symphony_staging.reconcile_effect(text, text, uuid, text, uuid, bigint, uuid, uuid, text, jsonb) to %I',
       principal.login_role
     );
   end loop;

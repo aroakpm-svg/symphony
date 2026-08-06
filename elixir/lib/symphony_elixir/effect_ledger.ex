@@ -51,6 +51,7 @@ defmodule SymphonyElixir.EffectLedger do
       when effect_type in @effect_types and is_map(context) and is_function(adapter, 0) and
              is_function(reconciler, 0) do
     attempt_id = Ecto.UUID.generate()
+    context = namespace_operation(context)
 
     with {:ok, status, resource, granted_attempt_id} <-
            begin_effect(connection, effect_type, context, attempt_id) do
@@ -71,7 +72,8 @@ defmodule SymphonyElixir.EffectLedger do
        when status in ["pending", "unknown"] do
     case reconciler.() do
       {:found, resource} ->
-        with :ok <- reconcile_effect(connection, context, "succeeded", resource), do: {:ok, resource}
+        with :ok <- reconcile_effect(connection, context, attempt_id, "succeeded", resource),
+             do: {:ok, resource}
 
       :not_found when status == "pending" ->
         perform(connection, context, attempt_id, adapter)
@@ -112,7 +114,7 @@ defmodule SymphonyElixir.EffectLedger do
 
   defp begin_effect(connection, effect_type, context, attempt_id) do
     sql = """
-    select status, native_resource
+    select status, native_resource, attempt_id
     from symphony_staging.begin_effect(
       $1, $2, $3, $4, $5::text::uuid, $6, $7::text::uuid, $8::text::uuid,
       $9::text::uuid, $10
@@ -159,10 +161,33 @@ defmodule SymphonyElixir.EffectLedger do
     boolean_result(Postgrex.query(connection, sql, params), :effect_finish_rejected)
   end
 
-  defp reconcile_effect(connection, context, status, resource) do
-    sql = "select symphony_staging.reconcile_effect($1, $2, $3, $4::jsonb)"
-    params = [context.operation_id, context.request_fingerprint, status, encode_resource(resource)]
+  defp reconcile_effect(connection, context, attempt_id, status, resource) do
+    sql = """
+    select symphony_staging.reconcile_effect(
+      $1, $2, $3::text::uuid, $4, $5::text::uuid, $6, $7::text::uuid,
+      $8::text::uuid, $9, $10::jsonb
+    )
+    """
+
+    params = [
+      context.operation_id,
+      context.request_fingerprint,
+      attempt_id,
+      context.issue_id,
+      context.claim_id,
+      context.generation,
+      context.node_id,
+      context.node_instance_id,
+      status,
+      encode_resource(resource)
+    ]
+
     boolean_result(Postgrex.query(connection, sql, params), :effect_reconciliation_rejected)
+  end
+
+  defp namespace_operation(context) do
+    namespaced_id = context.issue_id <> ":" <> context.operation_id
+    %{context | operation_id: namespaced_id}
   end
 
   defp boolean_result({:ok, %Postgrex.Result{rows: [[true]]}}, _rejected), do: :ok
