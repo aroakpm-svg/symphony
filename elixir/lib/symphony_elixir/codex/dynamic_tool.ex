@@ -176,16 +176,7 @@ defmodule SymphonyElixir.Codex.DynamicTool do
     marked_body = body <> "\n\n" <> marker
 
     adapter = fn ->
-      case client.(@comment_create_mutation, %{issueId: context.issue_id, body: marked_body}, []) do
-        {:ok, response} ->
-          case get_in(response, ["data", "commentCreate"]) do
-            %{"success" => true, "comment" => %{"id" => id}} -> {:ok, %{"id" => id}}
-            _ -> {:error, :unknown, :comment_create_unconfirmed}
-          end
-
-        {:error, reason} ->
-          {:error, :unknown, reason}
-      end
+      create_linear_comment(client, context.issue_id, marked_body)
     end
 
     reconciler = fn -> reconcile_comment(client, context.issue_id, marker, nil) end
@@ -200,36 +191,58 @@ defmodule SymphonyElixir.Codex.DynamicTool do
     EffectLedger.execute(connection, :linear_state, context, adapter, reconciler)
   end
 
+  defp create_linear_comment(client, issue_id, body) do
+    case client.(@comment_create_mutation, %{issueId: issue_id, body: body}, []) do
+      {:ok, response} -> parse_comment_create(response)
+      {:error, reason} -> {:error, :unknown, reason}
+    end
+  end
+
+  defp parse_comment_create(response) do
+    case get_in(response, ["data", "commentCreate"]) do
+      %{"success" => true, "comment" => %{"id" => id}} -> {:ok, %{"id" => id}}
+      _ -> {:error, :unknown, :comment_create_unconfirmed}
+    end
+  end
+
   defp reconcile_comment(client, issue_id, marker, after_cursor) do
     variables = %{issueId: issue_id, first: 100, after: after_cursor}
 
     case client.(@comment_reconcile_query, variables, []) do
       {:ok, response} ->
         comments = get_in(response, ["data", "issue", "comments"])
-        nodes = if is_map(comments), do: comments["nodes"], else: nil
-
-        case Enum.find(nodes || [], &(is_binary(&1["body"]) and String.contains?(&1["body"], marker))) do
-          %{"id" => id} ->
-            {:found, %{"id" => id}}
-
-          nil ->
-            case comments do
-              %{"pageInfo" => %{"hasNextPage" => true, "endCursor" => cursor}}
-              when is_binary(cursor) ->
-                reconcile_comment(client, issue_id, marker, cursor)
-
-              %{"pageInfo" => %{"hasNextPage" => false}} ->
-                :not_found
-
-              _ ->
-                {:unknown, :invalid_comment_reconciliation_response}
-            end
-        end
+        reconcile_comment_page(client, issue_id, marker, comments)
 
       {:error, reason} ->
         {:unknown, reason}
     end
   end
+
+  defp reconcile_comment_page(client, issue_id, marker, comments) when is_map(comments) do
+    case Enum.find(comments["nodes"] || [], &comment_has_marker?(&1, marker)) do
+      %{"id" => id} -> {:found, %{"id" => id}}
+      nil -> reconcile_next_comment_page(client, issue_id, marker, comments["pageInfo"])
+    end
+  end
+
+  defp reconcile_comment_page(_client, _issue_id, _marker, _comments),
+    do: {:unknown, :invalid_comment_reconciliation_response}
+
+  defp reconcile_next_comment_page(client, issue_id, marker, %{
+         "hasNextPage" => true,
+         "endCursor" => cursor
+       })
+       when is_binary(cursor),
+       do: reconcile_comment(client, issue_id, marker, cursor)
+
+  defp reconcile_next_comment_page(_client, _issue_id, _marker, %{"hasNextPage" => false}),
+    do: :not_found
+
+  defp reconcile_next_comment_page(_client, _issue_id, _marker, _page_info),
+    do: {:unknown, :invalid_comment_reconciliation_response}
+
+  defp comment_has_marker?(comment, marker),
+    do: is_binary(comment["body"]) and String.contains?(comment["body"], marker)
 
   defp update_linear_state(client, issue_id, state) do
     with {:ok, lookup} <- client.(@state_lookup_query, %{issueId: issue_id, stateName: state}, []),
