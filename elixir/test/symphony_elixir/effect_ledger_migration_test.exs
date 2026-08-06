@@ -11,6 +11,8 @@ defmodule SymphonyElixir.EffectLedgerMigrationTest do
             )
   @effect_ledger Path.expand("../../lib/symphony_elixir/effect_ledger.ex", __DIR__)
   @dynamic_tool Path.expand("../../lib/symphony_elixir/codex/dynamic_tool.ex", __DIR__)
+  @agent_runner Path.expand("../../lib/symphony_elixir/agent_runner.ex", __DIR__)
+  @claim_service Path.expand("../../lib/symphony_elixir/claim_service.ex", __DIR__)
 
   test "migration is staging-only and fixes the allowed effect set" do
     sql = File.read!(@migration)
@@ -59,6 +61,8 @@ defmodule SymphonyElixir.EffectLedgerMigrationTest do
     assert sql =~ "principals.login_role = session_user"
     assert sql =~ "operations.attempt_id = requested_attempt_id"
     assert sql =~ "reconciliation must produce a definite result"
+    assert sql =~ "relinquish_effect"
+    assert sql =~ "set attempt_id = null"
     refute sql =~ "exactly-once"
   end
 
@@ -77,6 +81,16 @@ defmodule SymphonyElixir.EffectLedgerMigrationTest do
     assert source =~ "lookup_linear_state"
     assert source =~ "{:error, reason} -> {:error, :no_effect, reason}"
     assert source =~ "{:error, reason} -> {:error, :unknown, reason}"
+  end
+
+  test "managed sessions require the installed effect ledger contract" do
+    runner = File.read!(@agent_runner)
+    claims = File.read!(@claim_service)
+
+    assert runner =~ "effect_ledger_contract_unavailable"
+    assert runner =~ "ClaimService.effect_ledger_ready?"
+    assert claims =~ "contract_name = 'effect-ledger'"
+    assert claims =~ "contract_version >= 1"
   end
 
   test "runtime selects granted attempts and namespaces operation IDs by issue" do
@@ -102,6 +116,7 @@ defmodule SymphonyElixir.EffectLedgerMigrationTest do
     assert rollback =~ "where contract_name = 'effect-ledger'"
     assert rollback =~ "drop table if exists symphony_staging.effect_operations"
     assert rollback =~ "finish_effect(text, text, uuid, text, jsonb, text)"
+    assert rollback =~ "relinquish_effect(text, text, uuid)"
     refute rollback =~ "drop schema"
     refute rollback =~ "symphony_production"
   end

@@ -1131,7 +1131,7 @@ Unsupported dynamic tool calls:
 Optional client-side tool extension:
 
 - An implementation MAY expose a limited set of client-side tools to the app-server session.
-- Current standardized optional tool: `linear_graphql`.
+- Current standardized optional tools: `linear_graphql`, `linear_comment`, and `linear_state`.
 - If implemented, supported tools SHOULD be advertised to the app-server session during startup
   using the protocol mechanism supported by the targeted Codex app-server version.
 - Unsupported tool names SHOULD still return a failure result using the targeted protocol and
@@ -1139,8 +1139,13 @@ Optional client-side tool extension:
 
 `linear_graphql` extension contract:
 
-- Purpose: execute a raw GraphQL query or mutation against Linear using Symphony's configured
-  tracker auth for the current session.
+- Purpose: execute raw GraphQL against Linear using Symphony's configured tracker auth for the
+  current session.
+- In an orchestrator-managed distributed-claim session, `linear_graphql` MUST allow read-only
+  queries and MUST reject any document containing a mutation or subscription. Managed writes MUST
+  use the fixed `linear_comment` or `linear_state` wrapper so the effect ledger can fence retries.
+- Managed mode MUST NOT start unless the `effect-ledger` contract is installed at a supported
+  version. A missing or unverifiable contract MUST fail the agent session closed.
 - Availability: only meaningful when `tracker.kind == "linear"` and valid Linear auth is configured.
 - Preferred input shape:
 
@@ -1169,6 +1174,19 @@ Optional client-side tool extension:
   - invalid input, missing auth, or transport failure -> `success=false` with an error payload
 - Return the GraphQL response or error payload as structured tool output that the model can inspect
   in-session.
+
+Managed Linear effect wrapper contract:
+
+- `linear_comment` accepts a stable `operationId` and non-empty `body` for the currently claimed
+  issue.
+- `linear_state` accepts a stable `operationId` and non-empty destination state name in `state` for
+  the currently claimed issue.
+- The runtime MUST derive the request fingerprint, issue identity, active claim generation, and
+  attempt capability; callers MUST NOT supply those authorization fields.
+- Reusing an `operationId` for the same intended effect MUST reconcile or return the durable result.
+  Reusing it with a different payload MUST fail closed.
+- A reconciliation-only failure MUST preserve the unresolved operation but relinquish its attempt
+  lease so another authenticated retry can reconcile immediately.
 
 User-input-required policy:
 

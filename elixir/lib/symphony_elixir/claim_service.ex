@@ -83,6 +83,11 @@ defmodule SymphonyElixir.ClaimService do
     if coordinator_running?(), do: safe_call({:effect_context, issue_id}), else: {:error, :claim_service_unavailable}
   end
 
+  @spec effect_ledger_ready?() :: boolean()
+  def effect_ledger_ready? do
+    coordinator_running?() and safe_call(:effect_ledger_ready?) == true
+  end
+
   @doc false
   @spec call_for_test(term()) :: term()
   def call_for_test(request), do: safe_call(request)
@@ -141,6 +146,12 @@ defmodule SymphonyElixir.ClaimService do
       end
 
     {:reply, active, state}
+  end
+
+  def handle_call(:effect_ledger_ready?, _from, state) do
+    sql = "select exists(select 1 from symphony_staging.contract_versions where contract_name = 'effect-ledger' and contract_version >= 1)"
+    ready = match?({:ok, %Postgrex.Result{rows: [[true]]}}, Postgrex.query(state.connection, sql, []))
+    {:reply, ready, state}
   end
 
   def handle_call({:effect_context, issue_id}, {caller, _tag}, state) do

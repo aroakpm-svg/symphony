@@ -138,6 +138,15 @@ test "$(PGPASSWORD=disposable psql -X -q -A -t -v ON_ERROR_STOP=1 -d "$(node_url
 test "$(PGPASSWORD=disposable psql -X -q -A -t -v ON_ERROR_STOP=1 -d "$(node_url claim_node_c)" -c \
   "select symphony_staging.finish_effect('effect-concurrent','fp-concurrent','$first_attempt_id','succeeded','{\"native_id\":\"effect-concurrent\"}'::jsonb,null);")" = "t"
 
+relinquish_first_attempt_id="$(cat /proc/sys/kernel/random/uuid)"
+relinquish_second_attempt_id="$(cat /proc/sys/kernel/random/uuid)"
+test "$(PGPASSWORD=disposable psql -X -q -A -t -v ON_ERROR_STOP=1 -d "$(node_url claim_node_c)" -c \
+  "select status from symphony_staging.begin_effect('effect-relinquish','linear_state','fp-relinquish','EFFECTS','$effect_claim_id',$effect_generation,'$node_c','$instance_c','$relinquish_first_attempt_id',300000);")" = "pending"
+test "$(PGPASSWORD=disposable psql -X -q -A -t -v ON_ERROR_STOP=1 -d "$(node_url claim_node_c)" -c \
+  "select symphony_staging.relinquish_effect('effect-relinquish','fp-relinquish','$relinquish_first_attempt_id');")" = "t"
+test "$(PGPASSWORD=disposable psql -X -q -A -t -v ON_ERROR_STOP=1 -d "$(node_url claim_node_c)" -c \
+  "select status from symphony_staging.begin_effect('effect-relinquish','linear_state','fp-relinquish','EFFECTS','$effect_claim_id',$effect_generation,'$node_c','$instance_c','$relinquish_second_attempt_id',300000);")" = "pending"
+
 if PGPASSWORD=disposable psql -X -q -A -t -v ON_ERROR_STOP=1 -d "$(node_url claim_node_c)" -c \
   "select status from symphony_staging.begin_effect('effect-linear_comment','linear_comment','different-fingerprint','EFFECTS','$effect_claim_id',$effect_generation,'$node_c','$instance_c','$(cat /proc/sys/kernel/random/uuid)',300000);" \
   >/dev/null 2>&1; then

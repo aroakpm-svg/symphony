@@ -25,6 +25,8 @@ skills can make raw Linear GraphQL calls. For orchestrator-managed claim session
 queries remain available, but raw mutations fail closed. Those sessions instead expose fixed
 `linear_comment` and `linear_state` tools, which record stable operation IDs in the effect ledger
 and use an attempt lease to prevent overlapping workers from applying the same effect twice.
+Managed mode starts only when the staging database reports the `effect-ledger` contract as installed;
+otherwise the claimed agent session fails closed until the ARO-165 migration is applied.
 
 If a claimed issue moves to a terminal state (`Done`, `Closed`, `Cancelled`, or `Duplicate`),
 Symphony stops the active agent for that issue and cleans up matching workspaces.
@@ -146,7 +148,8 @@ The `WORKFLOW.md` file uses YAML front matter for configuration, plus a Markdown
 Codex session prompt.
 
 For multiple Symphony machines polling the same Linear project, enable the staging-backed claim
-coordinator only after the ARO-164 migration and ARO-169 node enrollment are complete:
+coordinator only after the ARO-164 claim migration, ARO-165 effect-ledger migration, and ARO-169
+node enrollment are complete:
 
 ```yaml
 claim:

@@ -82,7 +82,9 @@ defmodule SymphonyElixir.EffectLedger do
         {:error, :unknown_requires_reconciliation}
 
       {:unknown, reason} ->
-        {:error, {:reconciliation_unknown, reason}}
+        with :ok <- relinquish_effect(connection, context, attempt_id) do
+          {:error, {:reconciliation_unknown, reason}}
+        end
     end
   end
 
@@ -183,6 +185,12 @@ defmodule SymphonyElixir.EffectLedger do
     ]
 
     boolean_result(Postgrex.query(connection, sql, params), :effect_reconciliation_rejected)
+  end
+
+  defp relinquish_effect(connection, context, attempt_id) do
+    sql = "select symphony_staging.relinquish_effect($1, $2, $3::text::uuid)"
+    params = [context.operation_id, context.request_fingerprint, attempt_id]
+    boolean_result(Postgrex.query(connection, sql, params), :effect_relinquish_rejected)
   end
 
   defp namespace_operation(context) do

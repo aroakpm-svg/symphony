@@ -273,16 +273,44 @@ begin
 end
 $$;
 
+create or replace function symphony_staging.relinquish_effect(
+  requested_operation_id text,
+  requested_fingerprint text,
+  requested_attempt_id uuid
+)
+returns boolean
+language plpgsql
+security definer
+set search_path = pg_catalog, pg_temp
+as $$
+declare
+  changed integer;
+begin
+  update symphony_staging.effect_operations operations
+  set attempt_id = null,
+      attempt_expires_at = null,
+      updated_at = clock_timestamp()
+  where operations.operation_id = requested_operation_id
+    and operations.request_fingerprint = requested_fingerprint
+    and operations.status in ('pending', 'unknown')
+    and operations.attempt_id = requested_attempt_id;
+  get diagnostics changed = row_count;
+  return changed = 1;
+end
+$$;
+
 revoke all on function
   symphony_staging.begin_effect(text, text, text, text, uuid, bigint, uuid, uuid, uuid, integer),
   symphony_staging.finish_effect(text, text, uuid, text, jsonb, text),
-  symphony_staging.reconcile_effect(text, text, uuid, text, uuid, bigint, uuid, uuid, text, jsonb)
+  symphony_staging.reconcile_effect(text, text, uuid, text, uuid, bigint, uuid, uuid, text, jsonb),
+  symphony_staging.relinquish_effect(text, text, uuid)
   from public, anon, authenticated, service_role, symphony_staging_provisioner;
 
 grant execute on function
   symphony_staging.begin_effect(text, text, text, text, uuid, bigint, uuid, uuid, uuid, integer),
   symphony_staging.finish_effect(text, text, uuid, text, jsonb, text),
-  symphony_staging.reconcile_effect(text, text, uuid, text, uuid, bigint, uuid, uuid, text, jsonb)
+  symphony_staging.reconcile_effect(text, text, uuid, text, uuid, bigint, uuid, uuid, text, jsonb),
+  symphony_staging.relinquish_effect(text, text, uuid)
   to symphony_staging_runtime;
 
 create or replace function symphony_staging.grant_effect_api_to_node_login()
@@ -296,7 +324,8 @@ begin
     'grant execute on function '
     'symphony_staging.begin_effect(text, text, text, text, uuid, bigint, uuid, uuid, uuid, integer), '
     'symphony_staging.finish_effect(text, text, uuid, text, jsonb, text), '
-    'symphony_staging.reconcile_effect(text, text, uuid, text, uuid, bigint, uuid, uuid, text, jsonb) to %I',
+    'symphony_staging.reconcile_effect(text, text, uuid, text, uuid, bigint, uuid, uuid, text, jsonb), '
+    'symphony_staging.relinquish_effect(text, text, uuid) to %I',
     new.login_role
   );
   return new;
@@ -323,7 +352,8 @@ begin
       'grant execute on function '
       'symphony_staging.begin_effect(text, text, text, text, uuid, bigint, uuid, uuid, uuid, integer), '
       'symphony_staging.finish_effect(text, text, uuid, text, jsonb, text), '
-      'symphony_staging.reconcile_effect(text, text, uuid, text, uuid, bigint, uuid, uuid, text, jsonb) to %I',
+      'symphony_staging.reconcile_effect(text, text, uuid, text, uuid, bigint, uuid, uuid, text, jsonb), '
+      'symphony_staging.relinquish_effect(text, text, uuid) to %I',
       principal.login_role
     );
   end loop;
