@@ -57,22 +57,29 @@ begin
     raise exception using errcode = '22023', message = 'unsupported effect type';
   end if;
 
-  if not symphony_staging.validate_active_claim(
-    requested_claim_id, requested_generation, requested_node_id, requested_node_instance_id
-  ) then
-    raise exception using errcode = '55000', message = 'effect requires an active claim generation';
-  end if;
-
-  if not exists (
-    select 1
+  perform 1
     from symphony_staging.issue_claims claims
+    join symphony_staging.nodes nodes on nodes.node_id = claims.node_id
+    join symphony_staging.node_login_principals principals
+      on principals.node_id = nodes.node_id
+     and principals.login_role = session_user
+     and principals.revoked_at is null
+    join symphony_staging.active_node_instances instances
+      on instances.node_id = claims.node_id
+     and instances.node_instance_id = claims.node_instance_id
     where claims.issue_id = requested_issue_id
       and claims.claim_id = requested_claim_id
       and claims.generation = requested_generation
       and claims.node_id = requested_node_id
       and claims.node_instance_id = requested_node_instance_id
-  ) then
-    raise exception using errcode = '55000', message = 'effect issue does not match the active claim';
+      and nodes.status = 'active'
+      and claims.completed_at is null
+      and claims.released_at is null
+      and claims.lease_expires_at > clock_timestamp()
+    for update of claims;
+
+  if not found then
+    raise exception using errcode = '55000', message = 'effect requires a matching active claim generation';
   end if;
 
   select operations.* into existing

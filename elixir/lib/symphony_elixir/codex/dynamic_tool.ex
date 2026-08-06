@@ -102,7 +102,7 @@ defmodule SymphonyElixir.Codex.DynamicTool do
   defp graphql_mutation?(query) do
     query
     |> strip_graphql_ignored_prefix()
-    |> then(&Regex.match?(~r/^mutation(?:\s|\{|\()/i, &1))
+    |> then(&Regex.match?(~r/^mutation(?=$|[\s,\x{FEFF}#\{\(])/iu, &1))
   end
 
   defp strip_graphql_ignored_prefix(query) do

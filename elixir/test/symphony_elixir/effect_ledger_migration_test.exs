@@ -29,12 +29,13 @@ defmodule SymphonyElixir.EffectLedgerMigrationTest do
   test "begin intent fences stale generations and fingerprint drift" do
     sql = File.read!(@migration)
 
-    assert sql =~ "validate_active_claim("
     assert sql =~ "requested_generation"
     assert sql =~ "claims.issue_id = requested_issue_id"
     assert sql =~ "claims.claim_id = requested_claim_id"
     assert sql =~ "claims.node_instance_id = requested_node_instance_id"
-    assert sql =~ "effect issue does not match the active claim"
+    assert sql =~ "claims.lease_expires_at > clock_timestamp()"
+    assert sql =~ "for update of claims"
+    assert sql =~ "effect requires a matching active claim generation"
     assert sql =~ "for update"
     assert sql =~ "request fingerprint mismatch"
     assert sql =~ "operation_id text primary key"
