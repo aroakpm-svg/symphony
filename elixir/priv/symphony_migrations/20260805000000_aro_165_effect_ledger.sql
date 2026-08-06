@@ -63,6 +63,18 @@ begin
     raise exception using errcode = '55000', message = 'effect requires an active claim generation';
   end if;
 
+  if not exists (
+    select 1
+    from symphony_staging.issue_claims claims
+    where claims.issue_id = requested_issue_id
+      and claims.claim_id = requested_claim_id
+      and claims.generation = requested_generation
+      and claims.node_id = requested_node_id
+      and claims.node_instance_id = requested_node_instance_id
+  ) then
+    raise exception using errcode = '55000', message = 'effect issue does not match the active claim';
+  end if;
+
   select operations.* into existing
   from symphony_staging.effect_operations operations
   where operations.operation_id = requested_operation_id

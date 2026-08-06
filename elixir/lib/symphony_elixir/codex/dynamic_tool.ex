@@ -101,14 +101,12 @@ defmodule SymphonyElixir.Codex.DynamicTool do
 
   defp graphql_mutation?(query) do
     query
-    |> strip_graphql_comments()
-    |> then(&Regex.match?(~r/(?:^|\s)mutation(?:\s|\{|\()/i, &1))
+    |> strip_graphql_ignored_prefix()
+    |> then(&Regex.match?(~r/^mutation(?:\s|\{|\()/i, &1))
   end
 
-  defp strip_graphql_comments(query) do
-    query
-    |> String.split("\n")
-    |> Enum.map_join("\n", fn line -> Regex.replace(~r/#.*$/, line, "") end)
+  defp strip_graphql_ignored_prefix(query) do
+    Regex.replace(~r/\A(?:[\s,\x{FEFF}]+|#[^\r\n]*(?:\r\n|\n|\r|$))*/u, query, "")
   end
 
   defp normalize_query(arguments) do

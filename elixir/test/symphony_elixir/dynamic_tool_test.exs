@@ -28,7 +28,8 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
 
     for document <- [
           "mutation UpdateIssue { issueUpdate(id: \"1\", input: {}) { success } }",
-          "# comment\n  mutation($id: String!) { issueUpdate(id: $id, input: {}) { success } }"
+          "# comment\n  mutation($id: String!) { issueUpdate(id: $id, input: {}) { success } }",
+          ",\uFEFF # ignored tokens\r\n, mutation { issueUpdate(id: \"1\", input: {}) { success } }"
         ] do
       response =
         DynamicTool.execute(
