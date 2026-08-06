@@ -239,7 +239,15 @@ defmodule SymphonyElixir.AgentRunner do
     max_turns = Keyword.get(opts, :max_turns, Config.settings!().agent.max_turns)
     issue_state_fetcher = Keyword.get(opts, :issue_state_fetcher, &Tracker.fetch_issue_states_by_ids/1)
 
-    with {:ok, session} <- AppServer.start_session(workspace, worker_host: worker_host) do
+    distributed_claim = Keyword.get(opts, :distributed_claim)
+    managed_session = is_map(distributed_claim)
+
+    with {:ok, session} <-
+           AppServer.start_session(workspace,
+             worker_host: worker_host,
+             managed_session: managed_session,
+             managed_issue_id: if(managed_session, do: issue.id)
+           ) do
       try do
         do_run_codex_turns(session, workspace, issue, codex_update_recipient, opts, issue_state_fetcher, 1, max_turns)
       after

@@ -78,6 +78,11 @@ defmodule SymphonyElixir.ClaimService do
     end
   end
 
+  @spec effect_context(String.t()) :: {:ok, Postgrex.conn(), map()} | {:error, term()}
+  def effect_context(issue_id) when is_binary(issue_id) do
+    if coordinator_running?(), do: safe_call({:effect_context, issue_id}), else: {:error, :claim_service_unavailable}
+  end
+
   @doc false
   @spec call_for_test(term()) :: term()
   def call_for_test(request), do: safe_call(request)
@@ -136,6 +141,27 @@ defmodule SymphonyElixir.ClaimService do
       end
 
     {:reply, active, state}
+  end
+
+  def handle_call({:effect_context, issue_id}, {caller, _tag}, state) do
+    case Map.fetch(state.claims, issue_id) do
+      {:ok, %{worker: ^caller} = claim} ->
+        context = %{
+          issue_id: issue_id,
+          claim_id: claim.claim_id,
+          generation: claim.generation,
+          node_id: state.settings.node_id,
+          node_instance_id: state.settings.node_instance_id
+        }
+
+        {:reply, {:ok, state.connection, context}, state}
+
+      {:ok, _claim} ->
+        {:reply, {:error, :effect_context_not_owned_by_worker}, state}
+
+      :error ->
+        {:reply, {:error, :claim_not_owned}, state}
+    end
   end
 
   def handle_call({:bind_worker, issue_id, worker}, _from, state) do

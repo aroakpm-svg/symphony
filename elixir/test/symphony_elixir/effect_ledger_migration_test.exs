@@ -23,6 +23,8 @@ defmodule SymphonyElixir.EffectLedgerMigrationTest do
     end
 
     assert sql =~ "status in ('pending', 'succeeded', 'failed-no-effect', 'unknown')"
+    assert sql =~ "attempt_id uuid"
+    assert sql =~ "attempt_expires_at timestamptz"
     assert sql =~ "set search_path = pg_catalog, pg_temp"
   end
 
@@ -36,6 +38,9 @@ defmodule SymphonyElixir.EffectLedgerMigrationTest do
     assert sql =~ "claims.lease_expires_at > clock_timestamp()"
     assert sql =~ "for update of claims"
     assert sql =~ "effect requires a matching active claim generation"
+    assert sql =~ "existing.attempt_expires_at > clock_timestamp()"
+    assert sql =~ "'in-flight'::text"
+    assert sql =~ "operations.attempt_id = requested_attempt_id"
     assert sql =~ "for update"
     assert sql =~ "request fingerprint mismatch"
     assert sql =~ "operation_id text primary key"
@@ -66,6 +71,7 @@ defmodule SymphonyElixir.EffectLedgerMigrationTest do
 
     assert rollback =~ "where contract_name = 'effect-ledger'"
     assert rollback =~ "drop table if exists symphony_staging.effect_operations"
+    assert rollback =~ "finish_effect(text, text, uuid, text, jsonb, text)"
     refute rollback =~ "drop schema"
     refute rollback =~ "symphony_production"
   end

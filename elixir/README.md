@@ -21,7 +21,10 @@ This directory contains the current Elixir/OTP implementation of Symphony, based
 5. Keeps Codex working on the issue until the work is done
 
 During app-server sessions, Symphony also serves a client-side `linear_graphql` tool so that repo
-skills can make raw Linear GraphQL calls.
+skills can make raw Linear GraphQL calls. For orchestrator-managed claim sessions, raw GraphQL
+queries remain available, but raw mutations fail closed. Those sessions instead expose fixed
+`linear_comment` and `linear_state` tools, which record stable operation IDs in the effect ledger
+and use an attempt lease to prevent overlapping workers from applying the same effect twice.
 
 If a claimed issue moves to a terminal state (`Done`, `Closed`, `Cancelled`, or `Duplicate`),
 Symphony stops the active agent for that issue and cleans up matching workspaces.

@@ -14,6 +14,8 @@ create table symphony_staging.effect_operations (
     check (status in ('pending', 'succeeded', 'failed-no-effect', 'unknown')),
   native_resource jsonb,
   failure_reason text,
+  attempt_id uuid,
+  attempt_expires_at timestamptz,
   created_at timestamptz not null default clock_timestamp(),
   updated_at timestamptz not null default clock_timestamp(),
   reconciled_at timestamptz,
@@ -35,9 +37,11 @@ create or replace function symphony_staging.begin_effect(
   requested_claim_id uuid,
   requested_generation bigint,
   requested_node_id uuid,
-  requested_node_instance_id uuid
+  requested_node_instance_id uuid,
+  requested_attempt_id uuid,
+  requested_attempt_lease_ms integer
 )
-returns table (status text, native_resource jsonb)
+returns table (status text, native_resource jsonb, attempt_id uuid)
 language plpgsql
 security definer
 set search_path = pg_catalog, pg_temp
@@ -46,8 +50,10 @@ declare
   existing symphony_staging.effect_operations%rowtype;
 begin
   if requested_operation_id is null or btrim(requested_operation_id) = ''
-     or requested_fingerprint is null or btrim(requested_fingerprint) = '' then
-    raise exception using errcode = '22023', message = 'operation id and request fingerprint are required';
+     or requested_fingerprint is null or btrim(requested_fingerprint) = ''
+     or requested_attempt_id is null
+     or requested_attempt_lease_ms is null or requested_attempt_lease_ms <= 0 then
+    raise exception using errcode = '22023', message = 'operation, fingerprint, and attempt lease are required';
   end if;
 
   if requested_effect_type not in (
@@ -96,33 +102,61 @@ begin
       raise exception using errcode = '55000', message = 'operation identity or request fingerprint mismatch';
     end if;
 
-    if existing.status = 'failed-no-effect' then
-      update symphony_staging.effect_operations operations
-      set status = 'pending', failure_reason = null, updated_at = clock_timestamp()
-      where operations.operation_id = requested_operation_id;
-
-      return query select 'pending'::text, existing.native_resource;
+    if existing.status = 'pending'
+       and existing.attempt_id <> requested_attempt_id
+       and existing.attempt_expires_at > clock_timestamp() then
+      return query select 'in-flight'::text, existing.native_resource, null::uuid;
       return;
     end if;
 
-    return query select existing.status, existing.native_resource;
+    if existing.status = 'pending'
+       and (existing.attempt_id = requested_attempt_id
+            or existing.attempt_expires_at is null
+            or existing.attempt_expires_at <= clock_timestamp()) then
+      update symphony_staging.effect_operations operations
+      set attempt_id = requested_attempt_id,
+          attempt_expires_at = clock_timestamp() + make_interval(secs => requested_attempt_lease_ms / 1000.0),
+          updated_at = clock_timestamp()
+      where operations.operation_id = requested_operation_id;
+
+      return query select 'pending'::text, existing.native_resource, requested_attempt_id;
+      return;
+    end if;
+
+    if existing.status = 'failed-no-effect' then
+      update symphony_staging.effect_operations operations
+      set status = 'pending', failure_reason = null,
+          attempt_id = requested_attempt_id,
+          attempt_expires_at = clock_timestamp() + make_interval(secs => requested_attempt_lease_ms / 1000.0),
+          updated_at = clock_timestamp()
+      where operations.operation_id = requested_operation_id;
+
+      return query select 'pending'::text, existing.native_resource, requested_attempt_id;
+      return;
+    end if;
+
+    return query select existing.status, existing.native_resource, null::uuid;
     return;
   end if;
 
   insert into symphony_staging.effect_operations (
-    operation_id, effect_type, request_fingerprint, issue_id, claim_id, generation
+    operation_id, effect_type, request_fingerprint, issue_id, claim_id, generation,
+    attempt_id, attempt_expires_at
   ) values (
     requested_operation_id, requested_effect_type, requested_fingerprint,
-    requested_issue_id, requested_claim_id, requested_generation
+    requested_issue_id, requested_claim_id, requested_generation,
+    requested_attempt_id,
+    clock_timestamp() + make_interval(secs => requested_attempt_lease_ms / 1000.0)
   );
 
-  return query select 'pending'::text, null::jsonb;
+  return query select 'pending'::text, null::jsonb, requested_attempt_id;
 end
 $$;
 
 create or replace function symphony_staging.finish_effect(
   requested_operation_id text,
   requested_fingerprint text,
+  requested_attempt_id uuid,
   requested_status text,
   requested_native_resource jsonb,
   requested_failure_reason text
@@ -143,10 +177,14 @@ begin
   set status = requested_status,
       native_resource = requested_native_resource,
       failure_reason = requested_failure_reason,
+      attempt_id = null,
+      attempt_expires_at = null,
       updated_at = clock_timestamp()
   where operations.operation_id = requested_operation_id
     and operations.request_fingerprint = requested_fingerprint
-    and operations.status = 'pending';
+    and operations.status = 'pending'
+    and operations.attempt_id = requested_attempt_id
+    and operations.attempt_expires_at > clock_timestamp();
   get diagnostics changed = row_count;
 
   return changed = 1;
@@ -175,6 +213,8 @@ begin
   set status = requested_status,
       native_resource = requested_native_resource,
       failure_reason = null,
+      attempt_id = null,
+      attempt_expires_at = null,
       reconciled_at = clock_timestamp(),
       updated_at = clock_timestamp()
   where operations.operation_id = requested_operation_id
@@ -187,14 +227,14 @@ end
 $$;
 
 revoke all on function
-  symphony_staging.begin_effect(text, text, text, text, uuid, bigint, uuid, uuid),
-  symphony_staging.finish_effect(text, text, text, jsonb, text),
+  symphony_staging.begin_effect(text, text, text, text, uuid, bigint, uuid, uuid, uuid, integer),
+  symphony_staging.finish_effect(text, text, uuid, text, jsonb, text),
   symphony_staging.reconcile_effect(text, text, text, jsonb)
   from public, anon, authenticated, service_role, symphony_staging_provisioner;
 
 grant execute on function
-  symphony_staging.begin_effect(text, text, text, text, uuid, bigint, uuid, uuid),
-  symphony_staging.finish_effect(text, text, text, jsonb, text),
+  symphony_staging.begin_effect(text, text, text, text, uuid, bigint, uuid, uuid, uuid, integer),
+  symphony_staging.finish_effect(text, text, uuid, text, jsonb, text),
   symphony_staging.reconcile_effect(text, text, text, jsonb)
   to symphony_staging_runtime;
 
@@ -207,8 +247,8 @@ as $$
 begin
   execute format(
     'grant execute on function '
-    'symphony_staging.begin_effect(text, text, text, text, uuid, bigint, uuid, uuid), '
-    'symphony_staging.finish_effect(text, text, text, jsonb, text), '
+    'symphony_staging.begin_effect(text, text, text, text, uuid, bigint, uuid, uuid, uuid, integer), '
+    'symphony_staging.finish_effect(text, text, uuid, text, jsonb, text), '
     'symphony_staging.reconcile_effect(text, text, text, jsonb) to %I',
     new.login_role
   );
@@ -234,8 +274,8 @@ begin
   loop
     execute format(
       'grant execute on function '
-      'symphony_staging.begin_effect(text, text, text, text, uuid, bigint, uuid, uuid), '
-      'symphony_staging.finish_effect(text, text, text, jsonb, text), '
+      'symphony_staging.begin_effect(text, text, text, text, uuid, bigint, uuid, uuid, uuid, integer), '
+      'symphony_staging.finish_effect(text, text, uuid, text, jsonb, text), '
       'symphony_staging.reconcile_effect(text, text, text, jsonb) to %I',
       principal.login_role
     );

@@ -21,6 +21,23 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
     assert_received {:linear_request, "# safe read\nquery Viewer { viewer { id } }", %{}}
   end
 
+  test "managed sessions parse fragment-first query documents without treating fields as operations" do
+    query = "fragment mutation on Viewer { id } query Viewer { viewer { ...mutation } }"
+
+    response =
+      DynamicTool.execute(
+        "linear_graphql",
+        %{"query" => query},
+        managed_session: true,
+        linear_client: fn forwarded, %{}, [] ->
+          assert forwarded == query
+          {:ok, %{"data" => %{"viewer" => %{"id" => "viewer-1"}}}}
+        end
+      )
+
+    assert response["success"]
+  end
+
   test "managed sessions reject raw Linear mutations before calling the client" do
     client = fn _query, _variables, _opts ->
       flunk("managed mutation must fail before a Linear request")
@@ -30,7 +47,9 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
           "mutation UpdateIssue { issueUpdate(id: \"1\", input: {}) { success } }",
           "# comment\n  mutation($id: String!) { issueUpdate(id: $id, input: {}) { success } }",
           ",\uFEFF # ignored tokens\r\n, mutation { issueUpdate(id: \"1\", input: {}) { success } }",
-          "mutation,# ignored tokens\n UpdateIssue { issueUpdate(id: \"1\", input: {}) { success } }"
+          "mutation,# ignored tokens\n UpdateIssue { issueUpdate(id: \"1\", input: {}) { success } }",
+          "fragment F on IssuePayload { success } mutation Update { issueUpdate(id: \"1\", input: {}) { ...F } }",
+          "query Viewer { viewer { id } } mutation Update { issueUpdate(id: \"1\", input: {}) { success } }"
         ] do
       response =
         DynamicTool.execute(
@@ -79,6 +98,12 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
            ] = DynamicTool.tool_specs()
 
     assert description =~ "Linear"
+  end
+
+  test "managed tool specs expose only the fixed Linear effect wrappers" do
+    names = DynamicTool.tool_specs(managed_session: true) |> Enum.map(& &1["name"])
+
+    assert names == ["linear_graphql", "linear_comment", "linear_state"]
   end
 
   test "unsupported tools return a failure payload with the supported tool list" do

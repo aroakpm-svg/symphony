@@ -3,9 +3,12 @@ defmodule SymphonyElixir.Codex.DynamicTool do
   Executes client-side tool calls requested by Codex app-server turns.
   """
 
+  alias SymphonyElixir.{ClaimService, EffectLedger}
   alias SymphonyElixir.Linear.Client
 
   @linear_graphql_tool "linear_graphql"
+  @linear_comment_tool "linear_comment"
+  @linear_state_tool "linear_state"
   @linear_graphql_description """
   Execute a raw GraphQL query or mutation against Linear using Symphony's configured auth.
   """
@@ -25,12 +28,67 @@ defmodule SymphonyElixir.Codex.DynamicTool do
       }
     }
   }
+  @managed_effect_input_schemas %{
+    @linear_comment_tool => %{
+      "type" => "object",
+      "additionalProperties" => false,
+      "required" => ["operationId", "body"],
+      "properties" => %{
+        "operationId" => %{"type" => "string"},
+        "body" => %{"type" => "string"}
+      }
+    },
+    @linear_state_tool => %{
+      "type" => "object",
+      "additionalProperties" => false,
+      "required" => ["operationId", "state"],
+      "properties" => %{
+        "operationId" => %{"type" => "string"},
+        "state" => %{"type" => "string"}
+      }
+    }
+  }
+
+  @comment_create_mutation """
+  mutation SymphonyManagedComment($issueId: String!, $body: String!) {
+    commentCreate(input: {issueId: $issueId, body: $body}) { success comment { id } }
+  }
+  """
+  @comment_reconcile_query """
+  query SymphonyManagedCommentReconcile($issueId: String!, $first: Int!, $after: String) {
+    issue(id: $issueId) {
+      comments(first: $first, after: $after) {
+        nodes { id body }
+        pageInfo { hasNextPage endCursor }
+      }
+    }
+  }
+  """
+  @state_reconcile_query """
+  query SymphonyManagedState($issueId: String!) { issue(id: $issueId) { state { name } } }
+  """
+  @state_lookup_query """
+  query SymphonyManagedStateId($issueId: String!, $stateName: String!) {
+    issue(id: $issueId) { team { states(filter: {name: {eq: $stateName}}, first: 1) { nodes { id } } } }
+  }
+  """
+  @state_update_mutation """
+  mutation SymphonyManagedStateUpdate($issueId: String!, $stateId: String!) {
+    issueUpdate(id: $issueId, input: {stateId: $stateId}) { success }
+  }
+  """
 
   @spec execute(String.t() | nil, term(), keyword()) :: map()
   def execute(tool, arguments, opts \\ []) do
     case tool do
       @linear_graphql_tool ->
         execute_linear_graphql(arguments, opts)
+
+      @linear_comment_tool ->
+        execute_managed_effect(@linear_comment_tool, arguments, opts)
+
+      @linear_state_tool ->
+        execute_managed_effect(@linear_state_tool, arguments, opts)
 
       other ->
         failure_response(%{
@@ -42,15 +100,159 @@ defmodule SymphonyElixir.Codex.DynamicTool do
     end
   end
 
-  @spec tool_specs() :: [map()]
-  def tool_specs do
-    [
+  @spec tool_specs(keyword()) :: [map()]
+  def tool_specs(opts \\ []) do
+    base = [
       %{
         "name" => @linear_graphql_tool,
         "description" => @linear_graphql_description,
         "inputSchema" => @linear_graphql_input_schema
       }
     ]
+
+    if Keyword.get(opts, :managed_session, false) do
+      base ++
+        [
+          managed_tool_spec(@linear_comment_tool, "Create one idempotent Linear comment through the managed effect ledger."),
+          managed_tool_spec(@linear_state_tool, "Move the current Linear issue through the managed effect ledger.")
+        ]
+    else
+      base
+    end
+  end
+
+  defp managed_tool_spec(name, description) do
+    %{"name" => name, "description" => description, "inputSchema" => Map.fetch!(@managed_effect_input_schemas, name)}
+  end
+
+  defp execute_managed_effect(tool, arguments, opts) do
+    issue_id = Keyword.get(opts, :managed_issue_id)
+    context_fetcher = Keyword.get(opts, :effect_context_fetcher, &ClaimService.effect_context/1)
+
+    with true <- Keyword.get(opts, :managed_session, false),
+         true <- is_binary(issue_id),
+         {:ok, operation_id, value} <- normalize_managed_effect_arguments(tool, arguments),
+         {:ok, connection, claim_context} <- context_fetcher.(issue_id),
+         context <-
+           Map.merge(claim_context, %{
+             operation_id: operation_id,
+             request_fingerprint: effect_fingerprint(tool, value)
+           }),
+         {:ok, resource} <- run_managed_effect(tool, connection, context, value, opts) do
+      dynamic_tool_response(true, encode_payload(resource))
+    else
+      false -> failure_response(tool_error_payload(:managed_effect_context_required))
+      {:error, reason} -> failure_response(tool_error_payload(reason))
+    end
+  end
+
+  defp normalize_managed_effect_arguments(tool, arguments) when is_map(arguments) do
+    operation_id = Map.get(arguments, "operationId") || Map.get(arguments, :operationId)
+    value_key = if tool == @linear_comment_tool, do: "body", else: "state"
+    value = Map.get(arguments, value_key) || Map.get(arguments, String.to_atom(value_key))
+
+    if is_binary(operation_id) and
+         Regex.match?(~r/\A[A-Za-z0-9][A-Za-z0-9._:-]{0,127}\z/, operation_id) and
+         is_binary(value) and
+         String.trim(value) != "" do
+      {:ok, operation_id, value}
+    else
+      {:error, :invalid_managed_effect_arguments}
+    end
+  end
+
+  defp normalize_managed_effect_arguments(_tool, _arguments),
+    do: {:error, :invalid_managed_effect_arguments}
+
+  defp effect_fingerprint(tool, value) do
+    :sha256
+    |> :crypto.hash(Jason.encode!(%{"tool" => tool, "value" => value}))
+    |> Base.encode16(case: :lower)
+  end
+
+  defp run_managed_effect(@linear_comment_tool, connection, context, body, opts) do
+    client = Keyword.get(opts, :linear_client, &Client.graphql/3)
+    marker = "<!-- symphony-effect:#{context.operation_id} -->"
+    marked_body = body <> "\n\n" <> marker
+
+    adapter = fn ->
+      case client.(@comment_create_mutation, %{issueId: context.issue_id, body: marked_body}, []) do
+        {:ok, response} ->
+          case get_in(response, ["data", "commentCreate"]) do
+            %{"success" => true, "comment" => %{"id" => id}} -> {:ok, %{"id" => id}}
+            _ -> {:error, :unknown, :comment_create_unconfirmed}
+          end
+
+        {:error, reason} ->
+          {:error, :unknown, reason}
+      end
+    end
+
+    reconciler = fn -> reconcile_comment(client, context.issue_id, marker, nil) end
+    EffectLedger.execute(connection, :linear_comment, context, adapter, reconciler)
+  end
+
+  defp run_managed_effect(@linear_state_tool, connection, context, state, opts) do
+    client = Keyword.get(opts, :linear_client, &Client.graphql/3)
+
+    adapter = fn -> update_linear_state(client, context.issue_id, state) end
+    reconciler = fn -> reconcile_state(client, context.issue_id, state) end
+    EffectLedger.execute(connection, :linear_state, context, adapter, reconciler)
+  end
+
+  defp reconcile_comment(client, issue_id, marker, after_cursor) do
+    variables = %{issueId: issue_id, first: 100, after: after_cursor}
+
+    case client.(@comment_reconcile_query, variables, []) do
+      {:ok, response} ->
+        comments = get_in(response, ["data", "issue", "comments"])
+        nodes = if is_map(comments), do: comments["nodes"], else: nil
+
+        case Enum.find(nodes || [], &(is_binary(&1["body"]) and String.contains?(&1["body"], marker))) do
+          %{"id" => id} ->
+            {:found, %{"id" => id}}
+
+          nil ->
+            case comments do
+              %{"pageInfo" => %{"hasNextPage" => true, "endCursor" => cursor}}
+              when is_binary(cursor) ->
+                reconcile_comment(client, issue_id, marker, cursor)
+
+              %{"pageInfo" => %{"hasNextPage" => false}} ->
+                :not_found
+
+              _ ->
+                {:unknown, :invalid_comment_reconciliation_response}
+            end
+        end
+
+      {:error, reason} ->
+        {:unknown, reason}
+    end
+  end
+
+  defp update_linear_state(client, issue_id, state) do
+    with {:ok, lookup} <- client.(@state_lookup_query, %{issueId: issue_id, stateName: state}, []),
+         state_id when is_binary(state_id) <-
+           get_in(lookup, ["data", "issue", "team", "states", "nodes", Access.at(0), "id"]),
+         {:ok, response} <- client.(@state_update_mutation, %{issueId: issue_id, stateId: state_id}, []),
+         true <- get_in(response, ["data", "issueUpdate", "success"]) == true do
+      {:ok, %{"state" => state, "stateId" => state_id}}
+    else
+      {:error, reason} -> {:error, :unknown, reason}
+      _ -> {:error, :no_effect, :state_not_found_or_update_rejected}
+    end
+  end
+
+  defp reconcile_state(client, issue_id, state) do
+    case client.(@state_reconcile_query, %{issueId: issue_id}, []) do
+      {:ok, response} ->
+        current = get_in(response, ["data", "issue", "state", "name"])
+        if current == state, do: {:found, %{"state" => state}}, else: :not_found
+
+      {:error, reason} ->
+        {:unknown, reason}
+    end
   end
 
   defp execute_linear_graphql(arguments, opts) do
@@ -100,14 +302,69 @@ defmodule SymphonyElixir.Codex.DynamicTool do
   end
 
   defp graphql_mutation?(query) do
-    query
-    |> strip_graphql_ignored_prefix()
-    |> then(&Regex.match?(~r/^mutation(?=$|[\s,\x{FEFF}#\{\(])/iu, &1))
+    with {:ok, document} <- strip_graphql_non_syntax(query),
+         {:ok, tokens} <- graphql_tokens(document) do
+      unsafe_graphql_operation?(tokens)
+    else
+      _error -> true
+    end
   end
 
-  defp strip_graphql_ignored_prefix(query) do
-    Regex.replace(~r/\A(?:[\s,\x{FEFF}]+|#[^\r\n]*(?:\r\n|\n|\r|$))*/u, query, "")
+  defp strip_graphql_non_syntax(query) do
+    document = Regex.replace(~r/"""(?:(?!""").)*"""/su, query, " ")
+    document = Regex.replace(~r/"(?:\\.|[^"\\])*"/su, document, " ")
+    document = Regex.replace(~r/#[^\r\n]*/u, document, " ")
+
+    if String.contains?(document, "\"") do
+      {:error, :unterminated_graphql_string}
+    else
+      {:ok, document}
+    end
   end
+
+  defp graphql_tokens(document) do
+    tokens =
+      ~r/[A-Za-z_][A-Za-z0-9_]*|[{}()]/u
+      |> Regex.scan(document)
+      |> List.flatten()
+
+    if tokens == [], do: {:error, :empty_graphql_document}, else: {:ok, tokens}
+  end
+
+  defp unsafe_graphql_operation?(tokens) do
+    case Enum.reduce_while(tokens, {:definition, 0, 0}, &scan_graphql_token/2) do
+      :unsafe -> true
+      {:definition, 0, 0} -> false
+      _incomplete -> true
+    end
+  end
+
+  defp scan_graphql_token("mutation", {:definition, 0, 0}), do: {:halt, :unsafe}
+  defp scan_graphql_token("subscription", {:definition, 0, 0}), do: {:halt, :unsafe}
+
+  defp scan_graphql_token(token, {:definition, 0, 0}) when token in ["query", "fragment"],
+    do: {:cont, {:header, 0, 0}}
+
+  defp scan_graphql_token("{", {:definition, 0, 0}), do: {:cont, {:selection, 1, 0}}
+  defp scan_graphql_token(_token, {:definition, 0, 0}), do: {:halt, :unsafe}
+
+  defp scan_graphql_token("(", {phase, braces, parens}),
+    do: {:cont, {phase, braces, parens + 1}}
+
+  defp scan_graphql_token(")", {phase, braces, parens}) when parens > 0,
+    do: {:cont, {phase, braces, parens - 1}}
+
+  defp scan_graphql_token("{", {:header, 0, 0}), do: {:cont, {:selection, 1, 0}}
+
+  defp scan_graphql_token("{", {:selection, braces, parens}),
+    do: {:cont, {:selection, braces + 1, parens}}
+
+  defp scan_graphql_token("}", {:selection, 1, 0}), do: {:cont, {:definition, 0, 0}}
+
+  defp scan_graphql_token("}", {:selection, braces, parens}) when braces > 1,
+    do: {:cont, {:selection, braces - 1, parens}}
+
+  defp scan_graphql_token(_token, state), do: {:cont, state}
 
   defp normalize_query(arguments) do
     case Map.get(arguments, "query") || Map.get(arguments, :query) do
@@ -193,6 +450,18 @@ defmodule SymphonyElixir.Codex.DynamicTool do
         "message" => "Managed Symphony sessions cannot execute raw Linear mutations. Use the ARO-165 effect wrapper for comments and state changes."
       }
     }
+  end
+
+  defp tool_error_payload(:managed_effect_context_required) do
+    %{"error" => %{"message" => "Managed effect tools require an orchestrator-owned active claim context."}}
+  end
+
+  defp tool_error_payload(:invalid_managed_effect_arguments) do
+    %{"error" => %{"message" => "Managed effect tools require a stable operationId and a non-empty value."}}
+  end
+
+  defp tool_error_payload(:effect_attempt_in_flight) do
+    %{"error" => %{"message" => "This managed effect already has an active attempt; reconcile or retry after its lease."}}
   end
 
   defp tool_error_payload(:missing_linear_api_token) do
