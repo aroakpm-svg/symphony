@@ -203,5 +203,5 @@ defmodule SymphonyElixir.EffectLedger do
   defp boolean_result({:error, reason}, _rejected), do: {:error, reason}
 
   defp encode_resource(nil), do: nil
-  defp encode_resource(resource) when is_map(resource), do: Jason.encode!(resource)
+  defp encode_resource(resource) when is_map(resource), do: resource
 end

@@ -98,6 +98,8 @@ defmodule SymphonyElixir.EffectLedgerMigrationTest do
 
     assert source =~ "select status, native_resource, attempt_id::text"
     assert source =~ ~s(context.issue_id <> ":" <> context.operation_id)
+    assert source =~ "defp encode_resource(resource) when is_map(resource), do: resource"
+    refute source =~ "Jason.encode!(resource)"
   end
 
   test "runtime access is function-only and existing node logins receive it" do
