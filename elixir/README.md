@@ -76,8 +76,9 @@ human approval protection until then.
    set it as the `LINEAR_API_KEY` environment variable.
 3. Copy this directory's `WORKFLOW.md` to your repo.
 4. Optionally copy the `commit`, `push`, `pull`, `land`, and `linear` skills to your repo.
-   - The `linear` skill expects Symphony's `linear_graphql` app-server tool for raw Linear GraphQL
-     operations such as comment editing or upload flows.
+   - The `linear` skill uses `linear_comment` and `linear_state` for writes in managed claim
+     sessions, while `linear_graphql` remains query-only there. Raw mutation workflows such as
+     comment editing or uploads are available only in manual sessions.
 5. Customize the copied `WORKFLOW.md` file for your project.
    - To get your project's slug, right-click the project and copy its URL. The slug is part of the
      URL.
