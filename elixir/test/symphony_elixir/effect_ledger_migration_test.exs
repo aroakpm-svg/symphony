@@ -10,6 +10,7 @@ defmodule SymphonyElixir.EffectLedgerMigrationTest do
               __DIR__
             )
   @effect_ledger Path.expand("../../lib/symphony_elixir/effect_ledger.ex", __DIR__)
+  @dynamic_tool Path.expand("../../lib/symphony_elixir/codex/dynamic_tool.ex", __DIR__)
 
   test "migration is staging-only and fixes the allowed effect set" do
     sql = File.read!(@migration)
@@ -54,10 +55,20 @@ defmodule SymphonyElixir.EffectLedgerMigrationTest do
     assert sql =~ "operations.status in ('pending', 'unknown')"
     assert sql =~ "existing.status = 'failed-no-effect'"
     assert sql =~ "existing.status = 'unknown'"
+    assert sql =~ "set claim_id = requested_claim_id"
     assert sql =~ "principals.login_role = session_user"
     assert sql =~ "operations.attempt_id = requested_attempt_id"
     assert sql =~ "reconciliation must produce a definite result"
     refute sql =~ "exactly-once"
+  end
+
+  test "comment reconciliation binds exact payload to the authenticated Linear viewer" do
+    source = File.read!(@dynamic_tool)
+
+    assert source =~ "viewer { id }"
+    assert source =~ "nodes { id body user { id } }"
+    assert source =~ ~s(comment["body"] == expected_body)
+    assert source =~ ~S|get_in(comment, ["user", "id"]) == viewer_id|
   end
 
   test "runtime selects granted attempts and namespaces operation IDs by issue" do

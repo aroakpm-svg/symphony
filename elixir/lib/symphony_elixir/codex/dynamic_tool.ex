@@ -56,9 +56,10 @@ defmodule SymphonyElixir.Codex.DynamicTool do
   """
   @comment_reconcile_query """
   query SymphonyManagedCommentReconcile($issueId: String!, $first: Int!, $after: String) {
+    viewer { id }
     issue(id: $issueId) {
       comments(first: $first, after: $after) {
-        nodes { id body }
+        nodes { id body user { id } }
         pageInfo { hasNextPage endCursor }
       }
     }
@@ -179,7 +180,7 @@ defmodule SymphonyElixir.Codex.DynamicTool do
       create_linear_comment(client, context.issue_id, marked_body)
     end
 
-    reconciler = fn -> reconcile_comment(client, context.issue_id, marker, nil) end
+    reconciler = fn -> reconcile_comment(client, context.issue_id, marked_body, nil) end
     EffectLedger.execute(connection, :linear_comment, context, adapter, reconciler)
   end
 
@@ -205,35 +206,37 @@ defmodule SymphonyElixir.Codex.DynamicTool do
     end
   end
 
-  defp reconcile_comment(client, issue_id, marker, after_cursor) do
+  defp reconcile_comment(client, issue_id, expected_body, after_cursor) do
     variables = %{issueId: issue_id, first: 100, after: after_cursor}
 
     case client.(@comment_reconcile_query, variables, []) do
       {:ok, response} ->
         comments = get_in(response, ["data", "issue", "comments"])
-        reconcile_comment_page(client, issue_id, marker, comments)
+        viewer_id = get_in(response, ["data", "viewer", "id"])
+        reconcile_comment_page(client, issue_id, expected_body, viewer_id, comments)
 
       {:error, reason} ->
         {:unknown, reason}
     end
   end
 
-  defp reconcile_comment_page(client, issue_id, marker, comments) when is_map(comments) do
-    case Enum.find(comments["nodes"] || [], &comment_has_marker?(&1, marker)) do
+  defp reconcile_comment_page(client, issue_id, expected_body, viewer_id, comments)
+       when is_map(comments) and is_binary(viewer_id) do
+    case Enum.find(comments["nodes"] || [], &matching_managed_comment?(&1, expected_body, viewer_id)) do
       %{"id" => id} -> {:found, %{"id" => id}}
-      nil -> reconcile_next_comment_page(client, issue_id, marker, comments["pageInfo"])
+      nil -> reconcile_next_comment_page(client, issue_id, expected_body, comments["pageInfo"])
     end
   end
 
-  defp reconcile_comment_page(_client, _issue_id, _marker, _comments),
+  defp reconcile_comment_page(_client, _issue_id, _expected_body, _viewer_id, _comments),
     do: {:unknown, :invalid_comment_reconciliation_response}
 
-  defp reconcile_next_comment_page(client, issue_id, marker, %{
+  defp reconcile_next_comment_page(client, issue_id, expected_body, %{
          "hasNextPage" => true,
          "endCursor" => cursor
        })
        when is_binary(cursor),
-       do: reconcile_comment(client, issue_id, marker, cursor)
+       do: reconcile_comment(client, issue_id, expected_body, cursor)
 
   defp reconcile_next_comment_page(_client, _issue_id, _marker, %{"hasNextPage" => false}),
     do: :not_found
@@ -241,8 +244,8 @@ defmodule SymphonyElixir.Codex.DynamicTool do
   defp reconcile_next_comment_page(_client, _issue_id, _marker, _page_info),
     do: {:unknown, :invalid_comment_reconciliation_response}
 
-  defp comment_has_marker?(comment, marker),
-    do: is_binary(comment["body"]) and String.contains?(comment["body"], marker)
+  defp matching_managed_comment?(comment, expected_body, viewer_id),
+    do: comment["body"] == expected_body and get_in(comment, ["user", "id"]) == viewer_id
 
   defp update_linear_state(client, issue_id, state) do
     with {:ok, lookup} <- client.(@state_lookup_query, %{issueId: issue_id, stateName: state}, []),

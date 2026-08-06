@@ -159,6 +159,23 @@ test "$(PGPASSWORD=disposable psql -X -q -A -t -v ON_ERROR_STOP=1 -d "$(node_url
 test "$(PGPASSWORD=disposable psql -X -q -A -t -v ON_ERROR_STOP=1 -d "$(node_url claim_node_c)" -c \
   "select symphony_staging.reconcile_effect('effect-unknown','fp-unknown','$reconcile_attempt_id','EFFECTS','$effect_claim_id',$effect_generation,'$node_c','$instance_c','succeeded','{\"number\":18}'::jsonb);")" = "t"
 
+handoff_attempt_id="$(cat /proc/sys/kernel/random/uuid)"
+PGPASSWORD=disposable psql -X -q -A -t -v ON_ERROR_STOP=1 -d "$(node_url claim_node_c)" -c \
+  "select status from symphony_staging.begin_effect('effect-handoff','linear_comment','fp-handoff','EFFECTS','$effect_claim_id',$effect_generation,'$node_c','$instance_c','$handoff_attempt_id',300000);" \
+  >/dev/null
+PGPASSWORD=disposable psql -X -q -A -t -v ON_ERROR_STOP=1 -d "$(node_url claim_node_c)" -c \
+  "select symphony_staging.finish_effect('effect-handoff','fp-handoff','$handoff_attempt_id','unknown',null,'timeout');" \
+  >/dev/null
+psql_admin -c "update symphony_staging.issue_claims set released_at = clock_timestamp() where issue_id = 'EFFECTS';"
+handoff_claim="$(claim claim_node_b EFFECTS "$node_b" "$instance_b")"
+handoff_claim_id="${handoff_claim%:*}"
+handoff_generation="${handoff_claim#*:}"
+handoff_reconcile_attempt_id="$(cat /proc/sys/kernel/random/uuid)"
+test "$(PGPASSWORD=disposable psql -X -q -A -t -v ON_ERROR_STOP=1 -d "$(node_url claim_node_b)" -c \
+  "select status from symphony_staging.begin_effect('effect-handoff','linear_comment','fp-handoff','EFFECTS','$handoff_claim_id',$handoff_generation,'$node_b','$instance_b','$handoff_reconcile_attempt_id',300000);")" = "unknown"
+test "$(PGPASSWORD=disposable psql -X -q -A -t -v ON_ERROR_STOP=1 -d "$(node_url claim_node_b)" -c \
+  "select symphony_staging.reconcile_effect('effect-handoff','fp-handoff','$handoff_reconcile_attempt_id','EFFECTS','$handoff_claim_id',$handoff_generation,'$node_b','$instance_b','failed-no-effect',null);")" = "t"
+
 if PGPASSWORD=disposable psql -X -q -A -t -v ON_ERROR_STOP=1 -d "$(node_url claim_node_c)" -c \
   "select status from symphony_staging.begin_effect('effect-stale','git_push','fp-stale','TAKEOVER','$old_id',$old_generation,'$node_c','$instance_c','$(cat /proc/sys/kernel/random/uuid)',300000);" \
   >/dev/null 2>&1; then

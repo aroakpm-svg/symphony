@@ -96,9 +96,7 @@ begin
   if found then
     if existing.effect_type <> requested_effect_type
        or existing.request_fingerprint <> requested_fingerprint
-       or existing.issue_id <> requested_issue_id
-       or existing.claim_id <> requested_claim_id
-       or existing.generation <> requested_generation then
+       or existing.issue_id <> requested_issue_id then
       raise exception using errcode = '55000', message = 'operation identity or request fingerprint mismatch';
     end if;
 
@@ -114,7 +112,9 @@ begin
             or existing.attempt_expires_at is null
             or existing.attempt_expires_at <= clock_timestamp()) then
       update symphony_staging.effect_operations operations
-      set attempt_id = requested_attempt_id,
+      set claim_id = requested_claim_id,
+          generation = requested_generation,
+          attempt_id = requested_attempt_id,
           attempt_expires_at = clock_timestamp() + make_interval(secs => requested_attempt_lease_ms / 1000.0),
           updated_at = clock_timestamp()
       where operations.operation_id = requested_operation_id;
@@ -126,6 +126,8 @@ begin
     if existing.status = 'failed-no-effect' then
       update symphony_staging.effect_operations operations
       set status = 'pending', failure_reason = null,
+          claim_id = requested_claim_id,
+          generation = requested_generation,
           attempt_id = requested_attempt_id,
           attempt_expires_at = clock_timestamp() + make_interval(secs => requested_attempt_lease_ms / 1000.0),
           updated_at = clock_timestamp()
@@ -137,7 +139,9 @@ begin
 
     if existing.status = 'unknown' then
       update symphony_staging.effect_operations operations
-      set attempt_id = requested_attempt_id,
+      set claim_id = requested_claim_id,
+          generation = requested_generation,
+          attempt_id = requested_attempt_id,
           attempt_expires_at = clock_timestamp() + make_interval(secs => requested_attempt_lease_ms / 1000.0),
           updated_at = clock_timestamp()
       where operations.operation_id = requested_operation_id;
