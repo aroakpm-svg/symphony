@@ -560,8 +560,15 @@ defmodule SymphonyElixir.HandoffReceipt do
     |> Enum.map(&String.slice(&1, 3..-1//1))
     |> Enum.sort()
     |> Enum.reduce_while({:ok, []}, fn path, {:ok, hashes} ->
-      case Workspace.run_git_command(workspace, ["hash-object", "--", path], worker_host) do
-        {:ok, hash} -> {:cont, {:ok, [[path, String.trim(hash)] | hashes]}}
+      args = ["diff", "--no-index", "--binary", "--no-prefix", "--", "/dev/null", path]
+
+      case Workspace.run_git_command(workspace, args, worker_host) do
+        {:error, {:git_command_failed, _command, 1, evidence}} ->
+          {:cont, {:ok, [[path, evidence] | hashes]}}
+
+        {:ok, evidence} ->
+          {:cont, {:ok, [[path, evidence] | hashes]}}
+
         {:error, reason} -> {:halt, {:error, reason}}
       end
     end)
