@@ -387,6 +387,8 @@ defmodule SymphonyElixir.Codex.DynamicTool do
   end
 
   @doc false
+  @spec comment_bodies_for_test(String.t(), String.t(), String.t()) ::
+          {String.t(), String.t() | nil}
   def comment_bodies_for_test(issue_id, operation_id, body) do
     managed_comment_bodies(
       %{
@@ -398,6 +400,12 @@ defmodule SymphonyElixir.Codex.DynamicTool do
   end
 
   @doc false
+  @spec reconcile_comment_variants_for_test(
+          function(),
+          String.t(),
+          String.t(),
+          String.t() | nil
+        ) :: {:found, map()} | :not_found | {:unknown, term()}
   def reconcile_comment_variants_for_test(client, issue_id, canonical_body, legacy_body) do
     reconcile_comment_variants(client, issue_id, canonical_body, legacy_body)
   end
