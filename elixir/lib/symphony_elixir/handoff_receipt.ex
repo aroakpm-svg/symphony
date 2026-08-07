@@ -80,6 +80,7 @@ defmodule SymphonyElixir.HandoffReceipt do
   def workspace_evidence(workspace, branch, canonical_repository, worker_host)
       when is_binary(workspace) and is_binary(branch) and is_binary(canonical_repository) do
     with {:ok, checked_out_branch} <- checked_out_branch(workspace, branch, worker_host),
+         :ok <- reject_in_progress_git_operations(workspace, worker_host),
          {:ok, status} <-
            Workspace.run_git_command(
              workspace,
@@ -119,6 +120,33 @@ defmodule SymphonyElixir.HandoffReceipt do
        }}
     end
   end
+
+  defp reject_in_progress_git_operations(workspace, worker_host) do
+    reject_in_progress_git_operations(fn ref ->
+      Workspace.run_git_command_with_status(
+        workspace,
+        ["rev-parse", "--verify", "--quiet", ref],
+        worker_host
+      )
+    end)
+  end
+
+  defp reject_in_progress_git_operations(probe) do
+    Enum.reduce_while(~w(MERGE_HEAD REBASE_HEAD CHERRY_PICK_HEAD REVERT_HEAD), :ok, fn ref, :ok ->
+      case probe.(ref) do
+        {:ok, 0, _output} -> {:halt, {:error, {:handoff_git_operation_in_progress, ref}}}
+        {:ok, 1, _output} -> {:cont, :ok}
+        {:ok, status, _output} -> {:halt, {:error, {:handoff_git_operation_probe_failed, ref, status}}}
+        {:error, reason} -> {:halt, {:error, reason}}
+      end
+    end)
+  end
+
+  @doc false
+  @spec reject_in_progress_git_operations_for_test((String.t() -> {:ok, non_neg_integer(), binary()})) ::
+          :ok | {:error, term()}
+  def reject_in_progress_git_operations_for_test(probe),
+    do: reject_in_progress_git_operations(probe)
 
   defp reject_dirty_submodule_diff(diff) when is_binary(diff) do
     if Regex.match?(~r/^\+?Subproject commit [0-9a-f]{40}-dirty$/m, diff),

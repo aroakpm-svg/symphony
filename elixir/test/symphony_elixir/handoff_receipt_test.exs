@@ -88,6 +88,20 @@ defmodule SymphonyElixir.HandoffReceiptTest do
     assert HandoffReceipt.reject_dirty_submodule_diff_for_test(clean) == :ok
   end
 
+  test "in-progress Git operations fail closed before fingerprinting" do
+    clean_probe = fn _ref -> {:ok, 1, ""} end
+
+    merge_probe = fn
+      "MERGE_HEAD" -> {:ok, 0, String.duplicate("a", 40)}
+      _ref -> {:ok, 1, ""}
+    end
+
+    assert HandoffReceipt.reject_in_progress_git_operations_for_test(clean_probe) == :ok
+
+    assert HandoffReceipt.reject_in_progress_git_operations_for_test(merge_probe) ==
+             {:error, {:handoff_git_operation_in_progress, "MERGE_HEAD"}}
+  end
+
   test "canonical origin parsing accepts GitHub transports without accepting lookalike hosts" do
     assert HandoffReceipt.github_repository_from_remote_for_test("https://github.com/aroakpm-svg/symphony.git") == {:ok, "aroakpm-svg/symphony"}
 
