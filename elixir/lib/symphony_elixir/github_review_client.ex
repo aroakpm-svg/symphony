@@ -153,8 +153,15 @@ defmodule SymphonyElixir.GitHubReviewClient do
 
   @spec pr_comment_exists?(String.t(), pos_integer(), String.t()) :: {:ok, boolean()} | {:error, term()}
   def pr_comment_exists?(repository, number, key) do
-    issue_comment_exists?(repository, number, "dedup-key: `#{key}`")
+    with {:ok, comments} <- fetch_issue_comments(repository, number),
+         {:ok, actor} <- authenticated_user() do
+      {:ok, Enum.any?(comments, &follow_up_comment?(&1, key, actor))}
+    end
   end
+
+  @doc false
+  @spec follow_up_comment_for_test?(map(), String.t(), map()) :: boolean()
+  def follow_up_comment_for_test?(comment, key, actor), do: follow_up_comment?(comment, key, actor)
 
   @spec review_request_exists?(String.t(), pos_integer(), String.t()) :: {:ok, boolean()} | {:error, term()}
   def review_request_exists?(repository, number, key) do
@@ -391,6 +398,33 @@ defmodule SymphonyElixir.GitHubReviewClient do
         {:error, reason}
     end
   end
+
+  defp authenticated_user do
+    with {:ok, output} <- run(["api", "user"]),
+         {:ok, %{"login" => login, "id" => id, "type" => type}} <- Jason.decode(output),
+         true <- is_binary(login) and is_integer(id) and is_binary(type) do
+      {:ok, %{login: login, id: id, type: type}}
+    else
+      {:ok, unexpected} -> {:error, {:invalid_authenticated_user, unexpected}}
+      {:error, reason} -> {:error, reason}
+      false -> {:error, :invalid_authenticated_user}
+    end
+  end
+
+  defp follow_up_comment?(comment, key, actor) when is_map(comment) and is_map(actor) do
+    body = comment["body"]
+    user = comment["user"] || %{}
+
+    is_binary(body) and
+      user["login"] == actor.login and
+      user["id"] == actor.id and
+      user["type"] == actor.type and
+      String.contains?(body, "Finding Triage Gate requires human follow-up before any agent patch.") and
+      String.contains?(body, "triage-state: `follow_up_required`") and
+      String.contains?(body, "dedup-key: `#{key}`")
+  end
+
+  defp follow_up_comment?(_comment, _key, _actor), do: false
 
   defp required_checks(repository, pull_request) do
     head_sha = pull_request["headRefOid"]
@@ -1010,11 +1044,14 @@ defmodule SymphonyElixir.GitHubReviewClient do
 
   defp trusted_reviewer?(_author), do: false
 
-  defp normalize_threads(threads, _head_sha, triage_owner) do
+  defp normalize_threads(threads, head_sha, triage_owner) do
     Enum.flat_map(threads, fn thread ->
       comments = get_in(thread, ["comments", "nodes"]) || []
       comment = Enum.find(Enum.reverse(comments), &(not is_nil(priority(&1["body"] || ""))))
-      triage_comment = Enum.find(Enum.reverse(comments), &triage_attempt?(&1, triage_owner))
+      current_head_comment? = Enum.any?(comments, &(get_in(&1, ["commit", "oid"]) == head_sha))
+
+      triage_comment =
+        Enum.find(Enum.reverse(comments), &triage_attempt?(&1, triage_owner, head_sha, current_head_comment?))
 
       if comment do
         body = comment["body"] || ""
@@ -1065,11 +1102,15 @@ defmodule SymphonyElixir.GitHubReviewClient do
 
   defp parse_triage(_comment, _triage_owner), do: nil
 
-  defp triage_attempt?(comment, triage_owner) when is_map(comment) do
-    trusted_triage_author?(comment["author"], triage_owner) and triage_marker_text?(comment["body"] || "")
+  defp triage_attempt?(comment, triage_owner, head_sha, current_head_comment?) when is_map(comment) do
+    commit_sha = get_in(comment, ["commit", "oid"])
+
+    trusted_triage_author?(comment["author"], triage_owner) and
+      (commit_sha == head_sha or (is_nil(commit_sha) and current_head_comment?)) and
+      triage_marker_text?(comment["body"] || "")
   end
 
-  defp triage_attempt?(_comment, _triage_owner), do: false
+  defp triage_attempt?(_comment, _triage_owner, _head_sha, _current_head_comment?), do: false
 
   defp trusted_triage_author?(author, triage_owner) do
     trusted_reviewer?(author) or trusted_owner?(author, triage_owner)
@@ -1115,12 +1156,14 @@ defmodule SymphonyElixir.GitHubReviewClient do
     end
   end
 
-  defp marker_value(body, pattern) do
-    case Regex.run(pattern, body, capture: :all_but_first) do
-      [value] -> {:ok, value}
+  defp marker_value(body, pattern) when is_binary(body) do
+    case Regex.scan(pattern, body, capture: :all_but_first) do
+      [[value]] -> {:ok, value}
       _ -> :error
     end
   end
+
+  defp marker_value(_body, _pattern), do: :error
 
   defp triage_from_markers(body, :follow_up_required, :root_cause_out_of_scope) do
     case marker_value(body, ~r/^Triage-Reason:\s*(\S.*)$/im) do

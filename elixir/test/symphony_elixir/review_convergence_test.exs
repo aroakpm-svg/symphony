@@ -722,7 +722,6 @@ defmodule SymphonyElixir.ReviewConvergenceTest do
           },
           %{
             "body" => "Finding-Triage: follow_up_required\nTriage-Evidence: root_cause_out_of_scope\nTriage-Reason: shared contract",
-            "commit" => %{"oid" => "head"},
             "author" => %{"login" => "aroakpm-svg", "__typename" => "User"}
           }
         ]
@@ -755,6 +754,42 @@ defmodule SymphonyElixir.ReviewConvergenceTest do
     }
 
     assert [%{triage: nil}] = GitHubReviewClient.normalize_threads_for_test([thread], "head")
+  end
+
+  test "triage markers from an older head cannot authorize the current head" do
+    thread = %{
+      "isResolved" => false,
+      "comments" => %{
+        "nodes" => [
+          %{
+            "body" => "P1 regression",
+            "path" => "lib/example.ex",
+            "url" => "thread",
+            "commit" => %{"oid" => "new"},
+            "author" => %{"login" => "chatgpt-codex-connector[bot]", "__typename" => "Bot", "databaseId" => 199_175_422}
+          },
+          %{
+            "body" => "Finding-Triage: fix_in_current_pr\nTriage-Evidence: introduced_by_pr",
+            "commit" => %{"oid" => "old"},
+            "author" => %{"login" => "chatgpt-codex-connector[bot]", "__typename" => "Bot", "databaseId" => 199_175_422}
+          }
+        ]
+      }
+    }
+
+    assert [%{triage: nil}] = GitHubReviewClient.normalize_threads_for_test([thread], "new")
+  end
+
+  test "duplicate triage markers in one comment fail closed" do
+    body = "Finding-Triage: fix_in_current_pr\nTriage-Evidence: introduced_by_pr\nFinding-Triage: blocked_unverified\nTriage-Evidence: insufficient_evidence"
+
+    trusted = %{
+      "login" => "chatgpt-codex-connector[bot]",
+      "__typename" => "Bot",
+      "databaseId" => 199_175_422
+    }
+
+    assert GitHubReviewClient.parse_triage_for_test(body, trusted) == nil
   end
 
   test "organization repositories require an explicit human triage owner" do
@@ -1355,6 +1390,23 @@ defmodule SymphonyElixir.ReviewConvergenceTest do
     refute_receive {:pr_comment, _, _, _}
     refute_receive {:comment, _, _}
     refute_receive {:state, _, _}
+  end
+
+  test "follow-up dedup requires the authenticated Symphony comment shape" do
+    actor = %{login: "digitaltriumphs-tw", id: 123, type: "User"}
+    key = "follow-up-key"
+
+    body = """
+    Finding Triage Gate requires human follow-up before any agent patch.
+    - triage-state: `follow_up_required`
+    dedup-key: `#{key}`
+    """
+
+    comment = %{"body" => body, "user" => %{"login" => "digitaltriumphs-tw", "id" => 123, "type" => "User"}}
+
+    assert GitHubReviewClient.follow_up_comment_for_test?(comment, key, actor)
+    refute GitHubReviewClient.follow_up_comment_for_test?(comment, key, %{actor | id: 456})
+    refute GitHubReviewClient.follow_up_comment_for_test?(%{comment | "body" => "dedup-key: `#{key}`"}, key, actor)
   end
 
   test "an explicit human wait reason is preserved in the decision evidence" do
