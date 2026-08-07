@@ -672,6 +672,11 @@ defmodule SymphonyElixir.ReviewConvergenceTest do
              "Finding-Triage: FIX_IN_CURRENT_PR\nTriage-Evidence: unknown",
              trusted
            ) == nil
+
+    assert GitHubReviewClient.parse_triage_for_test(
+             "Finding-Triage: fix_in_current_pr\nTriage-Evidence: introduced_by_pr\nFinding-Triage: blocked_unverified\nTriage-Evidence: unsupported",
+             trusted
+           ) == nil
   end
 
   test "repository owner can add a typed triage decision while other users cannot" do
@@ -715,6 +720,7 @@ defmodule SymphonyElixir.ReviewConvergenceTest do
         "nodes" => [
           %{
             "body" => "P1 regression",
+            "createdAt" => "2026-08-07T20:00:00Z",
             "path" => "lib/example.ex",
             "url" => "thread",
             "commit" => %{"oid" => "head"},
@@ -722,6 +728,7 @@ defmodule SymphonyElixir.ReviewConvergenceTest do
           },
           %{
             "body" => "Finding-Triage: follow_up_required\nTriage-Evidence: root_cause_out_of_scope\nTriage-Reason: shared contract",
+            "createdAt" => "2026-08-07T20:01:00Z",
             "author" => %{"login" => "aroakpm-svg", "__typename" => "User"}
           }
         ]
@@ -790,6 +797,54 @@ defmodule SymphonyElixir.ReviewConvergenceTest do
     }
 
     assert GitHubReviewClient.parse_triage_for_test(body, trusted) == nil
+  end
+
+  test "an uncommitted triage reply must follow the current-head finding" do
+    author = %{"login" => "aroakpm-svg", "__typename" => "User"}
+
+    thread = fn finding_time, triage_time ->
+      %{
+        "isResolved" => false,
+        "comments" => %{
+          "nodes" => [
+            %{
+              "body" => "P1 regression",
+              "createdAt" => finding_time,
+              "commit" => %{"oid" => "head"},
+              "author" => %{"login" => "chatgpt-codex-connector[bot]", "__typename" => "Bot", "databaseId" => 199_175_422}
+            },
+            %{
+              "body" => "Finding-Triage: fix_in_current_pr\nTriage-Evidence: introduced_by_pr",
+              "createdAt" => triage_time,
+              "author" => author
+            }
+          ]
+        }
+      }
+    end
+
+    assert [%{triage: %{state: :fix_in_current_pr}}] =
+             GitHubReviewClient.normalize_threads_for_test(
+               [thread.("2026-08-07T20:00:00Z", "2026-08-07T20:01:00Z")],
+               "head",
+               "aroakpm-svg"
+             )
+
+    assert [%{triage: nil}] =
+             GitHubReviewClient.normalize_threads_for_test(
+               [thread.("2026-08-07T20:01:00Z", "2026-08-07T20:00:00Z")],
+               "head",
+               "aroakpm-svg"
+             )
+  end
+
+  test "pre-triage review requests do not satisfy the upgraded request schema" do
+    key = "review-request:v2:issue:head:digest"
+    legacy = %{"body" => "@codex review\n\ndedup-key: `#{key}`"}
+    current = %{"body" => "@codex review\n\ndedup-key: `#{key}`\ntriage-schema: `v2`"}
+
+    refute GitHubReviewClient.review_request_comment_for_test?(legacy, key)
+    assert GitHubReviewClient.review_request_comment_for_test?(current, key)
   end
 
   test "organization repositories require an explicit human triage owner" do
@@ -980,8 +1035,8 @@ defmodule SymphonyElixir.ReviewConvergenceTest do
 
   test "a persisted review-request key prevents a duplicate after monitor restart" do
     Application.put_env(:symphony_elixir, :review_snapshot, {:ok, snapshot(%{reviewed_head_sha: nil})})
-    digest = ReviewConvergence.dedup_key(:review_request, "issue-160", "head", :codex)
-    key = "review-request:issue-160:head:#{digest}"
+    digest = ReviewConvergence.dedup_key(:review_request, "issue-160", "head", :codex_triage_v2)
+    key = "review-request:v2:issue-160:head:#{digest}"
     Application.put_env(:symphony_elixir, :existing_review_keys, [key])
 
     _state = ReviewMonitor.run_with(%{}, settings(), ReviewClient, Tracker)

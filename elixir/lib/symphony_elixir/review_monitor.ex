@@ -177,8 +177,8 @@ defmodule SymphonyElixir.ReviewMonitor do
   end
 
   defp apply_decision({:request_review, _evidence}, issue, entry, settings, review_client, _tracker, snapshot) do
-    digest = ReviewConvergence.dedup_key(:review_request, issue.id, snapshot.current_head_sha, :codex)
-    key = "review-request:#{issue.id}:#{snapshot.current_head_sha}:#{digest}"
+    digest = ReviewConvergence.dedup_key(:review_request, issue.id, snapshot.current_head_sha, :codex_triage_v2)
+    key = "review-request:v2:#{issue.id}:#{snapshot.current_head_sha}:#{digest}"
 
     with {entry, :ok} <-
            ensure_published_status(

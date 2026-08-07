@@ -36,6 +36,7 @@ defmodule SymphonyElixir.GitHubReviewClient do
                 body
                 path
                 url
+                createdAt
                 commit { oid }
                 author {
                   login
@@ -62,6 +63,7 @@ defmodule SymphonyElixir.GitHubReviewClient do
             body
             path
             url
+            createdAt
             commit { oid }
             author {
               login
@@ -128,6 +130,7 @@ defmodule SymphonyElixir.GitHubReviewClient do
     @codex review
 
     dedup-key: `#{key}`
+    triage-schema: `v2`
 
     For every actionable P1-P4 finding, include these exact machine-readable lines in the same inline review comment:
     Finding-Triage: fix_in_current_pr | follow_up_required | blocked_unverified
@@ -163,9 +166,15 @@ defmodule SymphonyElixir.GitHubReviewClient do
   @spec follow_up_comment_for_test?(map(), String.t(), map()) :: boolean()
   def follow_up_comment_for_test?(comment, key, actor), do: follow_up_comment?(comment, key, actor)
 
+  @doc false
+  @spec review_request_comment_for_test?(map(), String.t()) :: boolean()
+  def review_request_comment_for_test?(comment, key), do: review_request_comment?(comment, key)
+
   @spec review_request_exists?(String.t(), pos_integer(), String.t()) :: {:ok, boolean()} | {:error, term()}
   def review_request_exists?(repository, number, key) do
-    issue_comment_exists?(repository, number, "dedup-key: `#{key}`")
+    with {:ok, comments} <- fetch_issue_comments(repository, number) do
+      {:ok, Enum.any?(comments, &review_request_comment?(&1, key))}
+    end
   end
 
   @spec publish_status(String.t(), String.t(), atom(), String.t(), String.t() | nil) :: :ok | {:error, term()}
@@ -377,28 +386,6 @@ defmodule SymphonyElixir.GitHubReviewClient do
     end
   end
 
-  defp issue_comment_exists?(repository, number, marker) do
-    case run(["api", "--paginate", "--slurp", "repos/#{repository}/issues/#{number}/comments"]) do
-      {:ok, output} ->
-        case Jason.decode(output) do
-          {:ok, pages} when is_list(pages) ->
-            {:ok,
-             pages
-             |> List.flatten()
-             |> Enum.any?(&String.contains?(&1["body"] || "", marker))}
-
-          {:ok, unexpected} ->
-            {:error, {:invalid_issue_comments, unexpected}}
-
-          {:error, reason} ->
-            {:error, reason}
-        end
-
-      {:error, reason} ->
-        {:error, reason}
-    end
-  end
-
   defp authenticated_user do
     with {:ok, output} <- run(["api", "user"]),
          {:ok, %{"login" => login, "id" => id, "type" => type}} <- Jason.decode(output),
@@ -425,6 +412,17 @@ defmodule SymphonyElixir.GitHubReviewClient do
   end
 
   defp follow_up_comment?(_comment, _key, _actor), do: false
+
+  defp review_request_comment?(comment, key) when is_map(comment) and is_binary(key) do
+    body = comment["body"] || ""
+
+    is_binary(body) and
+      Regex.match?(~r/^@codex review(?:\r?\n|$)/, body) and
+      String.contains?(body, "dedup-key: `#{key}`") and
+      String.contains?(body, "triage-schema: `v2`")
+  end
+
+  defp review_request_comment?(_comment, _key), do: false
 
   defp required_checks(repository, pull_request) do
     head_sha = pull_request["headRefOid"]
@@ -1048,10 +1046,15 @@ defmodule SymphonyElixir.GitHubReviewClient do
     Enum.flat_map(threads, fn thread ->
       comments = get_in(thread, ["comments", "nodes"]) || []
       comment = Enum.find(Enum.reverse(comments), &(not is_nil(priority(&1["body"] || ""))))
-      current_head_comment? = Enum.any?(comments, &(get_in(&1, ["commit", "oid"]) == head_sha))
+
+      current_head_finding =
+        Enum.find(Enum.reverse(comments), fn candidate ->
+          get_in(candidate, ["commit", "oid"]) == head_sha and
+            not is_nil(priority(candidate["body"] || ""))
+        end)
 
       triage_comment =
-        Enum.find(Enum.reverse(comments), &triage_attempt?(&1, triage_owner, head_sha, current_head_comment?))
+        Enum.find(Enum.reverse(comments), &triage_attempt?(&1, triage_owner, head_sha, current_head_finding))
 
       if comment do
         body = comment["body"] || ""
@@ -1102,15 +1105,29 @@ defmodule SymphonyElixir.GitHubReviewClient do
 
   defp parse_triage(_comment, _triage_owner), do: nil
 
-  defp triage_attempt?(comment, triage_owner, head_sha, current_head_comment?) when is_map(comment) do
+  defp triage_attempt?(comment, triage_owner, head_sha, current_head_finding) when is_map(comment) do
     commit_sha = get_in(comment, ["commit", "oid"])
 
     trusted_triage_author?(comment["author"], triage_owner) and
-      (commit_sha == head_sha or (is_nil(commit_sha) and current_head_comment?)) and
+      (commit_sha == head_sha or
+         (is_nil(commit_sha) and after_current_head_finding?(comment, current_head_finding))) and
       triage_marker_text?(comment["body"] || "")
   end
 
-  defp triage_attempt?(_comment, _triage_owner, _head_sha, _current_head_comment?), do: false
+  defp triage_attempt?(_comment, _triage_owner, _head_sha, _current_head_finding), do: false
+
+  defp after_current_head_finding?(comment, current_head_finding) when is_map(current_head_finding) do
+    with comment_time when is_binary(comment_time) <- comment["createdAt"],
+         finding_time when is_binary(finding_time) <- current_head_finding["createdAt"],
+         {:ok, comment_datetime, _} <- DateTime.from_iso8601(comment_time),
+         {:ok, finding_datetime, _} <- DateTime.from_iso8601(finding_time) do
+      DateTime.compare(comment_datetime, finding_datetime) == :gt
+    else
+      _ -> false
+    end
+  end
+
+  defp after_current_head_finding?(_comment, _current_head_finding), do: false
 
   defp trusted_triage_author?(author, triage_owner) do
     trusted_reviewer?(author) or trusted_owner?(author, triage_owner)
@@ -1140,17 +1157,18 @@ defmodule SymphonyElixir.GitHubReviewClient do
 
   defp parse_triage_body(body) do
     with {:ok, state_name} <-
-           marker_value(body, ~r/^Finding-Triage:\s*(fix_in_current_pr|follow_up_required|blocked_unverified)\s*$/im),
+           marker_value(body, ~r/^Finding-Triage:\s*([^\r\n]*)$/im),
          {:ok, evidence_name} <-
            marker_value(
              body,
-             ~r/^Triage-Evidence:\s*(introduced_by_pr|violates_invariant|violates_acceptance_criterion|root_cause_out_of_scope|insufficient_evidence)\s*$/im
+             ~r/^Triage-Evidence:\s*([^\r\n]*)$/im
            ) do
-      triage_from_markers(
-        body,
-        triage_state(String.downcase(state_name)),
-        triage_evidence(String.downcase(evidence_name))
-      )
+      with {:ok, state} <- triage_state(state_name),
+           {:ok, evidence} <- triage_evidence(evidence_name) do
+        triage_from_markers(body, state, evidence)
+      else
+        _ -> nil
+      end
     else
       _ -> nil
     end
@@ -1166,9 +1184,15 @@ defmodule SymphonyElixir.GitHubReviewClient do
   defp marker_value(_body, _pattern), do: :error
 
   defp triage_from_markers(body, :follow_up_required, :root_cause_out_of_scope) do
-    case marker_value(body, ~r/^Triage-Reason:\s*(\S.*)$/im) do
-      {:ok, reason} -> %{state: :follow_up_required, evidence: :root_cause_out_of_scope, reason: String.trim(reason)}
-      :error -> nil
+    case marker_value(body, ~r/^Triage-Reason:\s*([^\r\n]*)$/im) do
+      {:ok, reason} ->
+        case String.trim(reason) do
+          "" -> nil
+          reason -> %{state: :follow_up_required, evidence: :root_cause_out_of_scope, reason: reason}
+        end
+
+      :error ->
+        nil
     end
   end
 
@@ -1181,15 +1205,29 @@ defmodule SymphonyElixir.GitHubReviewClient do
 
   defp triage_from_markers(_body, _state, _evidence), do: nil
 
-  defp triage_state("fix_in_current_pr"), do: :fix_in_current_pr
-  defp triage_state("follow_up_required"), do: :follow_up_required
-  defp triage_state("blocked_unverified"), do: :blocked_unverified
+  defp triage_state(value) when is_binary(value) do
+    case String.downcase(String.trim(value)) do
+      "fix_in_current_pr" -> {:ok, :fix_in_current_pr}
+      "follow_up_required" -> {:ok, :follow_up_required}
+      "blocked_unverified" -> {:ok, :blocked_unverified}
+      _ -> :error
+    end
+  end
 
-  defp triage_evidence("introduced_by_pr"), do: :introduced_by_pr
-  defp triage_evidence("violates_invariant"), do: :violates_invariant
-  defp triage_evidence("violates_acceptance_criterion"), do: :violates_acceptance_criterion
-  defp triage_evidence("root_cause_out_of_scope"), do: :root_cause_out_of_scope
-  defp triage_evidence("insufficient_evidence"), do: :insufficient_evidence
+  defp triage_state(_value), do: :error
+
+  defp triage_evidence(value) when is_binary(value) do
+    case String.downcase(String.trim(value)) do
+      "introduced_by_pr" -> {:ok, :introduced_by_pr}
+      "violates_invariant" -> {:ok, :violates_invariant}
+      "violates_acceptance_criterion" -> {:ok, :violates_acceptance_criterion}
+      "root_cause_out_of_scope" -> {:ok, :root_cause_out_of_scope}
+      "insufficient_evidence" -> {:ok, :insufficient_evidence}
+      _ -> :error
+    end
+  end
+
+  defp triage_evidence(_value), do: :error
 
   defp structural_risk?(threads, head_sha) do
     threads
