@@ -205,7 +205,7 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
           handoff_evidence_fetcher: fn _workspace, _branch, _repository, _host ->
             flunk("malformed effect IDs must fail before external evidence collection")
           end
-      )
+        )
 
       refute response["success"]
 
