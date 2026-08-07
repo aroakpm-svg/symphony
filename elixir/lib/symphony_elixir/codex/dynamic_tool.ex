@@ -206,6 +206,8 @@ defmodule SymphonyElixir.Codex.DynamicTool do
       end)
 
     with [owner, name] <- is_binary(repository) && String.split(repository, "/", parts: 2),
+         branch <- value(arguments, "branch"),
+         true <- is_binary(branch) and String.trim(branch) != "",
          {:ok, phase} <- decode_handoff_atom(value(arguments, "currentPhase"), HandoffReceipt.phases()),
          {:ok, completed} <- decode_handoff_atoms(value(arguments, "completedSteps"), HandoffReceipt.step_ids()),
          {:ok, pending} <- decode_handoff_atoms(value(arguments, "pendingSteps"), HandoffReceipt.step_ids()),
@@ -216,7 +218,7 @@ defmodule SymphonyElixir.Codex.DynamicTool do
        %{
          canonical_owner: owner,
          canonical_repository: name,
-         branch: value(arguments, "branch"),
+         branch: branch,
          commit_sha: value(arguments, "commitSha"),
          pr_number: value(arguments, "prNumber"),
          current_phase: phase,
@@ -235,6 +237,7 @@ defmodule SymphonyElixir.Codex.DynamicTool do
 
   defp checkpoint_git_evidence(attrs, evidence) do
     remote_sha = if :push in attrs.completed_step_ids, do: evidence.remote_branch_sha, else: nil
+    tested_head_sha = if :tests in attrs.completed_step_ids, do: evidence.head_sha, else: nil
 
     if :commit in attrs.completed_step_ids and
          (not evidence.clean? or attrs.commit_sha != evidence.head_sha) do
@@ -243,7 +246,8 @@ defmodule SymphonyElixir.Codex.DynamicTool do
       {:ok,
        Map.merge(attrs, %{
          worktree_fingerprint: evidence.worktree_fingerprint,
-         remote_branch_sha: remote_sha
+         remote_branch_sha: remote_sha,
+         tested_head_sha: tested_head_sha
        })}
     end
   end

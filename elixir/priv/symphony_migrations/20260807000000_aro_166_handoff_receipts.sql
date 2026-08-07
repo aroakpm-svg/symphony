@@ -78,6 +78,7 @@ create table symphony_staging.handoff_receipts (
   branch text not null check (branch ~ '[^[:space:]]'),
   worktree_fingerprint text not null check (worktree_fingerprint ~ '^[0-9a-f]{64}$'),
   remote_branch_sha text check (remote_branch_sha is null or remote_branch_sha ~ '^[0-9a-f]{40}$'),
+  tested_head_sha text check (tested_head_sha is null or tested_head_sha ~ '^[0-9a-f]{40}$'),
   commit_sha text check (commit_sha is null or commit_sha ~ '^[0-9a-f]{40}$'),
   pr_number integer check (pr_number is null or pr_number > 0),
   current_phase text not null check (current_phase in (
@@ -161,6 +162,7 @@ create or replace function symphony_staging.append_handoff_receipt(
   requested_branch text,
   requested_worktree_fingerprint text,
   requested_remote_branch_sha text,
+  requested_tested_head_sha text,
   requested_commit_sha text,
   requested_pr_number integer,
   requested_phase text,
@@ -182,6 +184,7 @@ returns table (
   branch text,
   worktree_fingerprint text,
   remote_branch_sha text,
+  tested_head_sha text,
   commit_sha text,
   pr_number integer,
   current_phase text,
@@ -252,6 +255,7 @@ begin
      or requested_worktree_fingerprint is null
      or requested_worktree_fingerprint !~ '^[0-9a-f]{64}$'
      or (requested_remote_branch_sha is not null and requested_remote_branch_sha !~ '^[0-9a-f]{40}$')
+     or (requested_tested_head_sha is not null and requested_tested_head_sha !~ '^[0-9a-f]{40}$')
      or requested_phase not in (
        'preflight', 'implementation', 'verification', 'delivery', 'review', 'complete'
      )
@@ -261,6 +265,7 @@ begin
        'commit', 'push', 'pull_request', 'review'
      ]::text[]
      or (('commit' = any(requested_completed)) <> (requested_commit_sha is not null))
+     or (('tests' = any(requested_completed)) <> (requested_tested_head_sha is not null))
      or (('pull_request' = any(requested_completed)) <> (requested_pr_number is not null))
      or ('push' = any(requested_completed) and requested_remote_branch_sha is distinct from requested_commit_sha)
      or (
@@ -302,12 +307,12 @@ begin
   insert into symphony_staging.handoff_receipts (
     receipt_schema_version, issue_id, canonical_owner, canonical_repository,
     claim_id, generation, linear_updated_at, branch, worktree_fingerprint,
-    remote_branch_sha, commit_sha, pr_number, current_phase,
+    remote_branch_sha, tested_head_sha, commit_sha, pr_number, current_phase,
     completed_step_ids, pending_step_ids, test_results, effect_operation_ids
   ) values (
     requested_schema_version, requested_issue_id, requested_owner, requested_repository,
     requested_claim_id, requested_generation, active_linear_updated_at, requested_branch,
-    requested_worktree_fingerprint, requested_remote_branch_sha, requested_commit_sha,
+    requested_worktree_fingerprint, requested_remote_branch_sha, requested_tested_head_sha, requested_commit_sha,
     requested_pr_number, requested_phase, requested_completed, requested_pending,
     requested_test_results, requested_effect_operation_ids
   ) returning * into inserted;
@@ -325,6 +330,7 @@ begin
     inserted.branch,
     inserted.worktree_fingerprint,
     inserted.remote_branch_sha,
+    inserted.tested_head_sha,
     inserted.commit_sha,
     inserted.pr_number,
     inserted.current_phase,
@@ -355,6 +361,7 @@ returns table (
   branch text,
   worktree_fingerprint text,
   remote_branch_sha text,
+  tested_head_sha text,
   commit_sha text,
   pr_number integer,
   current_phase text,
@@ -397,6 +404,7 @@ begin
     receipts.branch,
     receipts.worktree_fingerprint,
     receipts.remote_branch_sha,
+    receipts.tested_head_sha,
     receipts.commit_sha,
     receipts.pr_number,
     receipts.current_phase,
@@ -527,7 +535,7 @@ $$;
 revoke all on function
   symphony_staging.validate_handoff_steps(text[], text[]),
   symphony_staging.validate_handoff_tests(jsonb),
-  symphony_staging.append_handoff_receipt(text, uuid, bigint, uuid, uuid, integer, text, text, text, text, text, text, integer, text, text[], text[], jsonb, text[]),
+  symphony_staging.append_handoff_receipt(text, uuid, bigint, uuid, uuid, integer, text, text, text, text, text, text, text, integer, text, text[], text[], jsonb, text[]),
   symphony_staging.latest_handoff_receipt(text, uuid, bigint, uuid, uuid),
   symphony_staging.handoff_effect_statuses(text, uuid, bigint, uuid, uuid, text[]),
   symphony_staging.handoff_legacy_effect_operation_id(text, text, uuid, bigint, uuid, uuid),
@@ -535,7 +543,7 @@ revoke all on function
   from public, anon, authenticated, service_role, symphony_staging_provisioner;
 
 grant execute on function
-  symphony_staging.append_handoff_receipt(text, uuid, bigint, uuid, uuid, integer, text, text, text, text, text, text, integer, text, text[], text[], jsonb, text[]),
+  symphony_staging.append_handoff_receipt(text, uuid, bigint, uuid, uuid, integer, text, text, text, text, text, text, text, integer, text, text[], text[], jsonb, text[]),
   symphony_staging.latest_handoff_receipt(text, uuid, bigint, uuid, uuid),
   symphony_staging.handoff_effect_statuses(text, uuid, bigint, uuid, uuid, text[]),
   symphony_staging.handoff_legacy_effect_operation_id(text, text, uuid, bigint, uuid, uuid),
@@ -551,7 +559,7 @@ as $$
 begin
   execute format(
     'grant execute on function '
-    'symphony_staging.append_handoff_receipt(text, uuid, bigint, uuid, uuid, integer, text, text, text, text, text, text, integer, text, text[], text[], jsonb, text[]), '
+    'symphony_staging.append_handoff_receipt(text, uuid, bigint, uuid, uuid, integer, text, text, text, text, text, text, text, integer, text, text[], text[], jsonb, text[]), '
     'symphony_staging.latest_handoff_receipt(text, uuid, bigint, uuid, uuid), '
     'symphony_staging.handoff_effect_statuses(text, uuid, bigint, uuid, uuid, text[]), '
     'symphony_staging.handoff_legacy_effect_operation_id(text, text, uuid, bigint, uuid, uuid), '
@@ -577,7 +585,7 @@ begin
   for principal in select login_role from symphony_staging.node_login_principals loop
     execute format(
       'grant execute on function '
-      'symphony_staging.append_handoff_receipt(text, uuid, bigint, uuid, uuid, integer, text, text, text, text, text, text, integer, text, text[], text[], jsonb, text[]), '
+      'symphony_staging.append_handoff_receipt(text, uuid, bigint, uuid, uuid, integer, text, text, text, text, text, text, text, integer, text, text[], text[], jsonb, text[]), '
       'symphony_staging.latest_handoff_receipt(text, uuid, bigint, uuid, uuid), '
       'symphony_staging.handoff_effect_statuses(text, uuid, bigint, uuid, uuid, text[]), '
       'symphony_staging.handoff_legacy_effect_operation_id(text, text, uuid, bigint, uuid, uuid), '

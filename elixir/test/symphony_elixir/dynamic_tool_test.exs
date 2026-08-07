@@ -144,9 +144,9 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
       "commitSha" => nil,
       "prNumber" => nil,
       "currentPhase" => "verification",
-      "completedSteps" => ["preflight", "branch", "implementation"],
-      "pendingSteps" => ["tests", "commit", "push", "pull_request", "review"],
-      "testResults" => [],
+      "completedSteps" => ["preflight", "branch", "implementation", "tests"],
+      "pendingSteps" => ["commit", "push", "pull_request", "review"],
+      "testResults" => [%{"name" => "make all", "status" => "passed"}],
       "effectOperationIds" => ["linear-comment:1", "ARO-166:linear-state:1"]
     }
 
@@ -167,7 +167,7 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
         handoff_context_fetcher: fn "ARO-166" -> {:ok, :connection, %{issue_id: "ARO-166"}} end,
         handoff_appender: fn :connection, %{issue_id: "ARO-166"}, attrs ->
           assert attrs.current_phase == :verification
-          assert attrs.completed_step_ids == [:preflight, :branch, :implementation]
+          assert attrs.completed_step_ids == [:preflight, :branch, :implementation, :tests]
 
           assert attrs.effect_operation_ids == [
                    "ARO-166:linear-comment:1",
@@ -175,12 +175,45 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
                  ]
 
           assert attrs.worktree_fingerprint == String.duplicate("f", 64)
+          assert attrs.tested_head_sha == String.duplicate("a", 40)
           {:ok, Map.put(attrs, :checkpoint_sequence, 8)}
         end
       )
 
     assert response["success"]
     assert response["output"] =~ "checkpoint_sequence"
+  end
+
+  test "managed handoff checkpoints reject malformed branches before workspace evidence" do
+    arguments = %{
+      "branch" => nil,
+      "commitSha" => nil,
+      "prNumber" => nil,
+      "currentPhase" => "implementation",
+      "completedSteps" => ["preflight", "branch"],
+      "pendingSteps" => ["implementation", "tests", "commit", "push", "pull_request", "review"],
+      "testResults" => [],
+      "effectOperationIds" => []
+    }
+
+    for malformed <- [nil, 42, " "] do
+      response =
+        DynamicTool.execute(
+          "handoff_checkpoint",
+          Map.put(arguments, "branch", malformed),
+          managed_session: true,
+          managed_issue_id: "ARO-166",
+          handoff_repository: "aroakpm-svg/symphony",
+          handoff_evidence_fetcher: fn _workspace, _branch, _repository, _host ->
+            flunk("malformed branches must fail before external evidence collection")
+          end
+        )
+
+      refute response["success"]
+
+      assert %{"error" => %{"reason" => ":invalid_handoff_checkpoint_arguments"}} =
+               Jason.decode!(response["output"])
+    end
   end
 
   test "managed handoff checkpoints reject malformed effect ID lists without raising" do

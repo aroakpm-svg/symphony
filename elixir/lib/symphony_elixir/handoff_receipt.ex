@@ -15,7 +15,7 @@ defmodule SymphonyElixir.HandoffReceipt do
   @receipt_keys ~w(
     receipt_schema_version issue_id canonical_owner canonical_repository claim_id generation
     checkpoint_sequence recorded_at linear_updated_at branch worktree_fingerprint remote_branch_sha
-    commit_sha pr_number current_phase completed_step_ids
+    tested_head_sha commit_sha pr_number current_phase completed_step_ids
     pending_step_ids test_results effect_operation_ids
   )a
 
@@ -33,6 +33,7 @@ defmodule SymphonyElixir.HandoffReceipt do
           branch: String.t(),
           worktree_fingerprint: String.t(),
           remote_branch_sha: String.t() | nil,
+          tested_head_sha: String.t() | nil,
           commit_sha: String.t() | nil,
           pr_number: pos_integer() | nil,
           current_phase: atom(),
@@ -49,6 +50,7 @@ defmodule SymphonyElixir.HandoffReceipt do
           required(:branch) => String.t(),
           required(:worktree_fingerprint) => String.t(),
           required(:remote_branch_sha) => String.t() | nil,
+          required(:head_sha) => String.t(),
           required(:commit_sha) => String.t() | nil,
           required(:pr_number) => pos_integer() | nil,
           required(:pr_ready?) => boolean(),
@@ -273,6 +275,9 @@ defmodule SymphonyElixir.HandoffReceipt do
       not valid_commit_sha?(Map.get(attrs, :commit_sha)) ->
         {:error, :invalid_commit_sha}
 
+      not valid_commit_sha?(Map.get(attrs, :tested_head_sha)) ->
+        {:error, :invalid_tested_head_sha}
+
       not valid_pr_number?(Map.get(attrs, :pr_number)) ->
         {:error, :invalid_pr_number}
 
@@ -322,6 +327,9 @@ defmodule SymphonyElixir.HandoffReceipt do
     completed = Map.get(attrs, :completed_step_ids, [])
 
     cond do
+      :tests in completed != is_binary(Map.get(attrs, :tested_head_sha)) ->
+        {:error, :inconsistent_tested_head_artifact}
+
       :commit in completed != is_binary(Map.get(attrs, :commit_sha)) ->
         {:error, :inconsistent_commit_artifact}
 
@@ -391,6 +399,9 @@ defmodule SymphonyElixir.HandoffReceipt do
 
       not same_datetime?(Map.get(truth, :linear_updated_at), receipt.linear_updated_at) ->
         {:error, :linear_revision_changed}
+
+      :tests in receipt.completed_step_ids and Map.get(truth, :head_sha) != receipt.tested_head_sha ->
+        {:error, :tested_head_changed}
 
       Map.get(truth, :active_claim?) != true ->
         {:error, :claim_inactive}
@@ -491,6 +502,7 @@ defmodule SymphonyElixir.HandoffReceipt do
         Map.fetch!(attrs, :branch),
         Map.fetch!(attrs, :worktree_fingerprint),
         Map.get(attrs, :remote_branch_sha),
+        Map.get(attrs, :tested_head_sha),
         Map.get(attrs, :commit_sha),
         Map.get(attrs, :pr_number),
         Atom.to_string(Map.fetch!(attrs, :current_phase)),
@@ -517,7 +529,7 @@ defmodule SymphonyElixir.HandoffReceipt do
     """
     select #{receipt_columns()} from symphony_staging.append_handoff_receipt(
       $1, $2::text::uuid, $3, $4::text::uuid, $5::text::uuid,
-      $6, $7, $8, $9, $10, $11, $12, $13, $14, $15::text[], $16::text[], $17::jsonb, $18::text[]
+      $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16::text[], $17::text[], $18::jsonb, $19::text[]
     )
     """
   end
@@ -546,7 +558,7 @@ defmodule SymphonyElixir.HandoffReceipt do
     """
     receipt_schema_version, issue_id, canonical_owner, canonical_repository,
     claim_id::text as claim_id, generation, checkpoint_sequence, recorded_at, linear_updated_at,
-    branch, worktree_fingerprint, remote_branch_sha, commit_sha,
+    branch, worktree_fingerprint, remote_branch_sha, tested_head_sha, commit_sha,
     pr_number, current_phase, completed_step_ids, pending_step_ids, test_results,
     effect_operation_ids
     """
@@ -570,6 +582,7 @@ defmodule SymphonyElixir.HandoffReceipt do
          branch,
          worktree_fingerprint,
          remote_branch_sha,
+         tested_head_sha,
          commit_sha,
          pr_number,
          phase,
@@ -596,6 +609,7 @@ defmodule SymphonyElixir.HandoffReceipt do
          branch: branch,
          worktree_fingerprint: worktree_fingerprint,
          remote_branch_sha: remote_branch_sha,
+         tested_head_sha: tested_head_sha,
          commit_sha: commit_sha,
          pr_number: pr_number,
          current_phase: decoded_phase,

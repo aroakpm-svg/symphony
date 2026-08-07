@@ -107,6 +107,7 @@ defmodule SymphonyElixir.HandoffReceiptTest do
     branch: "codex/aro-166-handoff-receipts",
     worktree_fingerprint: String.duplicate("f", 64),
     remote_branch_sha: nil,
+    tested_head_sha: String.duplicate("a", 40),
     commit_sha: String.duplicate("a", 40),
     pr_number: nil,
     current_phase: :delivery,
@@ -123,6 +124,7 @@ defmodule SymphonyElixir.HandoffReceiptTest do
     branch: "codex/aro-166-handoff-receipts",
     worktree_fingerprint: String.duplicate("f", 64),
     remote_branch_sha: nil,
+    head_sha: String.duplicate("a", 40),
     commit_sha: String.duplicate("a", 40),
     pr_number: nil,
     pr_ready?: false,
@@ -195,6 +197,7 @@ defmodule SymphonyElixir.HandoffReceiptTest do
       String.duplicate("f", 64),
       nil,
       String.duplicate("a", 40),
+      String.duplicate("a", 40),
       19,
       "delivery",
       ["preflight", "branch"],
@@ -211,18 +214,18 @@ defmodule SymphonyElixir.HandoffReceiptTest do
              {:error, :receipt_incompatible}
   end
 
-  test "append SQL preserves the complete 18-argument function contract" do
+  test "append SQL preserves the complete 19-argument function contract" do
     sql = HandoffReceipt.append_sql_for_test()
 
     assert sql =~ "claim_id::text as claim_id"
-    assert sql =~ "$13, $14, $15::text[], $16::text[], $17::jsonb, $18::text[]"
+    assert sql =~ "$14, $15, $16::text[], $17::text[], $18::jsonb, $19::text[]"
   end
 
   test "append passes test results as a JSON value instead of encoded JSON text" do
     params = HandoffReceipt.append_params_for_test(@claim, @receipt)
 
-    assert Enum.at(params, 16) == [%{"name" => "make all", "status" => "passed"}]
-    refute is_binary(Enum.at(params, 16))
+    assert Enum.at(params, 17) == [%{"name" => "make all", "status" => "passed"}]
+    refute is_binary(Enum.at(params, 17))
   end
 
   test "database rows with null or unknown test statuses fail closed" do
@@ -239,6 +242,7 @@ defmodule SymphonyElixir.HandoffReceiptTest do
       "codex/aro-166-handoff-receipts",
       String.duplicate("f", 64),
       nil,
+      String.duplicate("a", 40),
       String.duplicate("a", 40),
       19,
       "delivery",
@@ -361,10 +365,16 @@ defmodule SymphonyElixir.HandoffReceiptTest do
       failed
       | completed_step_ids: [:preflight, :branch, :implementation],
         pending_step_ids: [:tests, :commit, :push, :pull_request, :review],
+        tested_head_sha: nil,
         commit_sha: nil
     }
 
     assert HandoffReceipt.resume(pending, %{@truth | commit_sha: nil}) == {:ok, :tests}
+  end
+
+  test "completed tests are bound to the exact HEAD they exercised" do
+    assert HandoffReceipt.resume(@receipt, %{@truth | head_sha: String.duplicate("b", 40)}) ==
+             {:safe_recheck, :tested_head_changed}
   end
 
   test "completed tests require at least one structured result" do

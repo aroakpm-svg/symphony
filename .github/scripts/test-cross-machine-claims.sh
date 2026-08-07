@@ -201,7 +201,7 @@ if psql_admin -c "insert into symphony_staging.effect_operations(operation_id,ef
   echo "ARO-166 unexpectedly allowed a legacy effect ID after forward migration" >&2; exit 1
 fi
 derived_effects="$(PGPASSWORD=disposable psql -X -q -A -t -v ON_ERROR_STOP=1 -d "$(node_url claim_node_b)" -c \
-  "select effect_operation_ids from symphony_staging.append_handoff_receipt('EFFECTS','$handoff_claim_id',$handoff_generation,'$node_b','$instance_b',1,'aroakpm-svg','symphony','codex/effects',repeat('f',64),null,null,null,'implementation',array['preflight','branch'],array['implementation','tests','commit','push','pull_request','review'],'[]'::jsonb,array[]::text[]);")"
+  "select effect_operation_ids from symphony_staging.append_handoff_receipt('EFFECTS','$handoff_claim_id',$handoff_generation,'$node_b','$instance_b',1,'aroakpm-svg','symphony','codex/effects',repeat('f',64),null,null,null,null,'implementation',array['preflight','branch'],array['implementation','tests','commit','push','pull_request','review'],'[]'::jsonb,array[]::text[]);")"
 [[ "$derived_effects" == *"EFFECTS:effect-linear_comment"* ]]
 [[ "$derived_effects" == *"EFFECTS:effect-unknown"* ]]
 [[ "$derived_effects" == *"EFFECTS:legacy-before-handoff"* ]]

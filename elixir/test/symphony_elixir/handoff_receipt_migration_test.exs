@@ -75,6 +75,7 @@ defmodule SymphonyElixir.HandoffReceiptMigrationTest do
     assert sql =~ "requested_phase <> 'complete' and cardinality(requested_pending) = 0"
     assert sql =~ "requested_completed || requested_pending <> array["
     assert sql =~ "('commit' = any(requested_completed)) <> (requested_commit_sha is not null)"
+    assert sql =~ "('tests' = any(requested_completed)) <> (requested_tested_head_sha is not null)"
     assert sql =~ "('pull_request' = any(requested_completed)) <> (requested_pr_number is not null)"
     assert sql =~ "not exists (select 1 from unnest(completed) value where value = any(pending))"
     assert sql =~ "array['name', 'status']::text[]"
