@@ -64,9 +64,9 @@ defmodule SymphonyElixir.AgentRunner do
                      worker_host,
                      opts
                    ),
+                 :ok <- Workspace.run_before_run_hook(workspace, issue, worker_host),
                  {:ok, handoff_resume} <-
-                   prepare_handoff(issue, receipt, workspace, worker_host, opts),
-                 :ok <- Workspace.run_before_run_hook(workspace, issue, worker_host) do
+                   prepare_handoff(issue, receipt, workspace, worker_host, opts) do
               run_codex_turns(
                 workspace,
                 issue,

@@ -42,6 +42,8 @@ defmodule SymphonyElixir.HandoffReceiptMigrationTest do
     refute sql =~ "returns setof symphony_staging.handoff_receipts"
     refute sql =~ "select receipts.*"
     assert length(Regex.scan(~r/inserted\.checkpoint_sequence|receipts\.checkpoint_sequence/, sql)) >= 3
+    assert sql =~ "prior_effect_operation_ids || requested_effect_operation_ids"
+    assert sql =~ "select distinct operation_id"
   end
 
   test "fixed step and structured test allowlists are enforced in the database" do

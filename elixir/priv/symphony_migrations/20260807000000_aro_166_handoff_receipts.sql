@@ -132,6 +132,7 @@ as $$
 declare
   inserted symphony_staging.handoff_receipts%rowtype;
   active_linear_updated_at timestamptz;
+  prior_effect_operation_ids text[] := '{}';
 begin
   select claims.linear_updated_at into active_linear_updated_at
   from symphony_staging.issue_claims claims
@@ -158,6 +159,14 @@ begin
     raise exception using errcode = '55000',
       message = 'receipt requires a matching active claim generation';
   end if;
+
+  select coalesce((
+    select receipts.effect_operation_ids
+    from symphony_staging.handoff_receipts receipts
+    where receipts.issue_id = requested_issue_id
+    order by receipts.generation desc, receipts.checkpoint_sequence desc
+    limit 1
+  ), '{}') into prior_effect_operation_ids;
 
   if requested_schema_version <> 1
      or requested_owner is null or requested_owner !~ '[^[:space:]]'
@@ -200,6 +209,12 @@ begin
      ) then
     raise exception using errcode = '22023', message = 'invalid HandoffReceiptV1';
   end if;
+
+  requested_effect_operation_ids := array(
+    select distinct operation_id
+    from unnest(prior_effect_operation_ids || requested_effect_operation_ids) operation_id
+    order by operation_id
+  );
 
   insert into symphony_staging.handoff_receipts (
     receipt_schema_version, issue_id, canonical_owner, canonical_repository,
