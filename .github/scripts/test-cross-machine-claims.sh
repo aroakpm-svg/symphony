@@ -234,6 +234,10 @@ test "$routed_renewal" = "f"
 psql_admin -c "update symphony_staging.issue_claims set released_at = clock_timestamp() where issue_id = 'ROUTE-CHANGE';"
 
 claim claim_node_a CUSTOM-STATE "$node_a" "$instance_a" 'in review' >/dev/null
+if psql_admin -f "$handoff_rollback" >/dev/null 2>&1; then
+  echo "ARO-166 rollback unexpectedly ignored post-upgrade effect operations" >&2; exit 1
+fi
+psql_admin -c "delete from symphony_staging.effect_operations operations where not exists (select 1 from symphony_staging.effect_operation_id_upgrade upgrade where upgrade.canonical_operation_id = operations.operation_id);"
 psql_admin -f "$handoff_rollback"
 psql_admin -f "$effect_rollback"
 test "$(psql_admin -A -t -c "select to_regclass('symphony_staging.effect_operations') is null;")" = "t"

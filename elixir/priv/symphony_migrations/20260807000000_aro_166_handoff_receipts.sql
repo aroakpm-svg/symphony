@@ -1,5 +1,31 @@
 begin;
 
+create table symphony_staging.effect_operation_id_upgrade (
+  original_operation_id text primary key,
+  canonical_operation_id text not null,
+  issue_id text not null
+);
+
+revoke all on table symphony_staging.effect_operation_id_upgrade
+  from public, anon, authenticated, service_role,
+       symphony_staging_runtime, symphony_staging_provisioner;
+
+insert into symphony_staging.effect_operation_id_upgrade (
+  original_operation_id, canonical_operation_id, issue_id
+)
+select
+  operations.operation_id,
+  case
+    when left(operations.operation_id, length(operations.issue_id) + 1) = operations.issue_id || ':'
+      and operations.operation_id ~ '^[A-Za-z0-9][A-Za-z0-9._-]{0,127}:[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$'
+      then operations.operation_id
+    when operations.operation_id ~ '^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$'
+      then operations.issue_id || ':' || operations.operation_id
+    else operations.issue_id || ':legacy-' || md5(operations.operation_id)
+  end,
+  operations.issue_id
+from symphony_staging.effect_operations operations;
+
 do $$
 declare
   collision_count bigint;
@@ -14,21 +40,9 @@ begin
 
   select count(*) into collision_count
   from (
-    select normalized.issue_id, normalized.operation_id
-    from (
-      select
-        operations.issue_id,
-        case
-          when left(operations.operation_id, length(operations.issue_id) + 1) = operations.issue_id || ':'
-            and operations.operation_id ~ '^[A-Za-z0-9][A-Za-z0-9._-]{0,127}:[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$'
-            then operations.operation_id
-          when operations.operation_id ~ '^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$'
-            then operations.issue_id || ':' || operations.operation_id
-          else operations.issue_id || ':legacy-' || md5(operations.operation_id)
-        end as operation_id
-      from symphony_staging.effect_operations operations
-    ) normalized
-    group by normalized.issue_id, normalized.operation_id
+    select upgrade.issue_id, upgrade.canonical_operation_id
+    from symphony_staging.effect_operation_id_upgrade upgrade
+    group by upgrade.issue_id, upgrade.canonical_operation_id
     having count(*) > 1
   ) collisions;
 
@@ -38,14 +52,9 @@ begin
   end if;
 
   update symphony_staging.effect_operations operations
-  set operation_id = case
-    when left(operations.operation_id, length(operations.issue_id) + 1) = operations.issue_id || ':'
-      and operations.operation_id ~ '^[A-Za-z0-9][A-Za-z0-9._-]{0,127}:[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$'
-      then operations.operation_id
-    when operations.operation_id ~ '^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$'
-      then operations.issue_id || ':' || operations.operation_id
-    else operations.issue_id || ':legacy-' || md5(operations.operation_id)
-  end;
+  set operation_id = upgrade.canonical_operation_id
+  from symphony_staging.effect_operation_id_upgrade upgrade
+  where operations.operation_id = upgrade.original_operation_id;
 end
 $$;
 

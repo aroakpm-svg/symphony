@@ -804,6 +804,33 @@ defmodule SymphonyElixir.Workspace do
     end
   end
 
+  @doc false
+  @spec run_git_command_with_status(Path.t(), [String.t()], worker_host()) ::
+          {:ok, non_neg_integer(), binary()} | {:error, term()}
+  def run_git_command_with_status(workspace, args, worker_host \\ nil)
+      when is_binary(workspace) and is_list(args) do
+    command = git_command_for_log(args)
+
+    case worker_host do
+      nil ->
+        case run_local_preflight_command("git", ["-C", workspace | args], command) do
+          {output, status} when is_integer(status) -> {:ok, status, IO.iodata_to_binary(output)}
+          {:error, reason} -> {:error, {:git_command_failed, command, inspect(reason)}}
+        end
+
+      host when is_binary(host) ->
+        script = "cd #{shell_escape(workspace)} && #{remote_git_command(args)}"
+
+        case run_remote_command(host, script, Config.settings!().hooks.timeout_ms) do
+          {:ok, {output, status}} when is_integer(status) ->
+            {:ok, status, IO.iodata_to_binary(output)}
+
+          {:error, reason} ->
+            {:error, {:git_command_failed, command, inspect(reason)}}
+        end
+    end
+  end
+
   @spec sanitize_command_output(iodata(), non_neg_integer()) :: String.t()
   def sanitize_command_output(output, max_bytes \\ 2_048) do
     sanitize_hook_output_for_log(output, max_bytes)

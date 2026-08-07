@@ -50,6 +50,8 @@ defmodule SymphonyElixir.HandoffReceiptMigrationTest do
     assert sql =~ "legacy effect operation normalization collision"
     assert sql =~ "operations.issue_id || ':legacy-' || md5(operations.operation_id)"
     assert sql =~ "update symphony_staging.effect_operations operations"
+    assert sql =~ "create table symphony_staging.effect_operation_id_upgrade"
+    assert sql =~ "original_operation_id, canonical_operation_id, issue_id"
     assert sql =~ "add constraint effect_operation_id_canonical"
     assert sql =~ "left(operation_id, length(issue_id) + 1) = issue_id || ':'"
   end
@@ -107,6 +109,9 @@ defmodule SymphonyElixir.HandoffReceiptMigrationTest do
     assert rollback =~ "drop table if exists symphony_staging.handoff_receipts"
     assert rollback =~ "drop function if exists symphony_staging.handoff_effect_statuses"
     assert rollback =~ "drop constraint if exists effect_operation_id_canonical"
+    assert rollback =~ "cannot roll back ARO-166 after new effect operations were recorded"
+    assert rollback =~ "set operation_id = upgrade.original_operation_id"
+    assert rollback =~ "drop table symphony_staging.effect_operation_id_upgrade"
     refute rollback =~ "drop schema"
     refute rollback =~ "symphony_production"
   end

@@ -54,7 +54,7 @@ defmodule SymphonyElixir.HandoffReceipt do
           required(:pr_ready?) => boolean(),
           required(:linear_updated_at) => DateTime.t(),
           required(:active_claim?) => boolean(),
-          required(:effect_operations) => %{optional(String.t()) => :succeeded | :failed_no_effect}
+          required(:effect_operations) => %{optional(String.t()) => :succeeded}
         }
 
   @spec schema_version() :: 1
@@ -383,9 +383,7 @@ defmodule SymphonyElixir.HandoffReceipt do
 
     is_map(operations) and
       MapSet.equal?(MapSet.new(Map.keys(operations)), MapSet.new(receipt.effect_operation_ids)) and
-      Enum.all?(operations, fn {_operation_id, status} ->
-        status in [:succeeded, :failed_no_effect]
-      end)
+      Enum.all?(operations, fn {_operation_id, status} -> status == :succeeded end)
   end
 
   defp valid_unique_subset?(values, allowlist) when is_list(values) do
@@ -637,12 +635,15 @@ defmodule SymphonyElixir.HandoffReceipt do
     |> Enum.reduce_while({:ok, []}, fn path, {:ok, hashes} ->
       args = ["diff", "--no-index", "--binary", "--no-prefix", "--", "/dev/null", path]
 
-      case Workspace.run_git_command(workspace, args, worker_host) do
-        {:error, {:git_command_failed, _command, 1, evidence}} ->
+      case Workspace.run_git_command_with_status(workspace, args, worker_host) do
+        {:ok, 1, evidence} ->
           {:cont, {:ok, [[path, evidence] | hashes]}}
 
-        {:ok, evidence} ->
+        {:ok, 0, evidence} ->
           {:cont, {:ok, [[path, evidence] | hashes]}}
+
+        {:ok, status, _evidence} ->
+          {:halt, {:error, {:untracked_hash_failed, path, status}}}
 
         {:error, reason} ->
           {:halt, {:error, reason}}

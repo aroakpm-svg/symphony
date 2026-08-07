@@ -1,7 +1,28 @@
 defmodule SymphonyElixir.HandoffReceiptTest do
   use ExUnit.Case, async: true
 
-  alias SymphonyElixir.HandoffReceipt
+  alias SymphonyElixir.{HandoffReceipt, Workspace}
+
+  test "raw Git evidence retains bytes beyond the log sanitization limit" do
+    workspace =
+      Path.join(System.tmp_dir!(), "handoff-raw-diff-#{System.unique_integer([:positive])}")
+
+    try do
+      File.mkdir_p!(workspace)
+      File.write!(Path.join(workspace, "large.txt"), String.duplicate("evidence-tail\n", 400))
+
+      assert {:ok, 1, evidence} =
+               Workspace.run_git_command_with_status(
+                 workspace,
+                 ["diff", "--no-index", "--binary", "--no-prefix", "--", "/dev/null", "large.txt"]
+               )
+
+      assert byte_size(evidence) > 2_048
+      assert evidence =~ "evidence-tail"
+    after
+      File.rm_rf(workspace)
+    end
+  end
 
   test "handoff verification is based on freshly fetched tracker and workspace evidence" do
     source = File.read!(Path.expand("../../lib/symphony_elixir/agent_runner.ex", __DIR__))
@@ -356,7 +377,8 @@ defmodule SymphonyElixir.HandoffReceiptTest do
       {%{@truth | linear_updated_at: ~U[2026-08-07 00:00:00Z]}, :linear_revision_changed},
       {%{@truth | active_claim?: false}, :claim_inactive},
       {%{@truth | effect_operations: %{}}, :effect_ledger_changed},
-      {%{@truth | effect_operations: %{"ARO-166:git-commit:1" => :unknown}}, :effect_ledger_changed}
+      {%{@truth | effect_operations: %{"ARO-166:git-commit:1" => :unknown}}, :effect_ledger_changed},
+      {%{@truth | effect_operations: %{"ARO-166:git-commit:1" => :failed_no_effect}}, :effect_ledger_changed}
     ]
 
     for {truth, reason} <- cases do

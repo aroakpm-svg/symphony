@@ -14,4 +14,28 @@ drop table if exists symphony_staging.handoff_receipts;
 alter table symphony_staging.effect_operations
   drop constraint if exists effect_operation_id_canonical;
 
+do $$
+begin
+  if exists (
+    select 1
+    from symphony_staging.effect_operations operations
+    where not exists (
+      select 1
+      from symphony_staging.effect_operation_id_upgrade upgrade
+      where upgrade.canonical_operation_id = operations.operation_id
+    )
+  ) then
+    raise exception using errcode = '55000',
+      message = 'cannot roll back ARO-166 after new effect operations were recorded';
+  end if;
+
+  update symphony_staging.effect_operations operations
+  set operation_id = upgrade.original_operation_id
+  from symphony_staging.effect_operation_id_upgrade upgrade
+  where operations.operation_id = upgrade.canonical_operation_id;
+end
+$$;
+
+drop table symphony_staging.effect_operation_id_upgrade;
+
 commit;
