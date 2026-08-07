@@ -68,6 +68,10 @@ defmodule SymphonyElixir.HandoffReceiptMigrationTest do
     assert sql =~ "grant execute on function"
     assert sql =~ "grant_handoff_api_to_node_login"
     assert sql =~ "select login_role from symphony_staging.node_login_principals"
+    assert sql =~ "handoff_effect_statuses(text, uuid, bigint, uuid, uuid, text[])"
+    assert sql =~ "operations.issue_id = requested_issue_id"
+    assert sql =~ "operations.operation_id = any(requested_operation_ids)"
+    assert length(Regex.scan(~r/effect status read requires an active claim/, sql)) == 1
   end
 
   test "rollback removes only ARO-166 objects" do
@@ -75,6 +79,7 @@ defmodule SymphonyElixir.HandoffReceiptMigrationTest do
 
     assert rollback =~ "where contract_name = 'handoff-receipt'"
     assert rollback =~ "drop table if exists symphony_staging.handoff_receipts"
+    assert rollback =~ "drop function if exists symphony_staging.handoff_effect_statuses"
     refute rollback =~ "drop schema"
     refute rollback =~ "symphony_production"
   end

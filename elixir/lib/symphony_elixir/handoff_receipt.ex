@@ -95,6 +95,25 @@ defmodule SymphonyElixir.HandoffReceipt do
     end
   end
 
+  @spec effect_statuses(Postgrex.conn(), map(), [String.t()]) ::
+          {:ok, %{optional(String.t()) => :succeeded | :failed_no_effect | :unknown}}
+          | {:error, term()}
+  def effect_statuses(connection, claim, operation_ids)
+      when is_map(claim) and is_list(operation_ids) do
+    params = claim_params(claim) ++ [operation_ids]
+
+    case Postgrex.query(connection, effect_statuses_sql(), params) do
+      {:ok, %Postgrex.Result{rows: rows}} ->
+        {:ok, Map.new(rows, fn [operation_id, status] -> {operation_id, decode_effect_status(status)} end)}
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  def effect_statuses(_connection, _claim, _operation_ids),
+    do: {:error, :invalid_effect_operation_ids}
+
   @doc "Returns the next pending step only when every external truth matches."
   @spec resume(receipt() | nil, truth()) :: {:ok, atom() | :complete} | {:safe_recheck, term()}
   def resume(nil, _truth), do: {:safe_recheck, :receipt_missing}
@@ -305,6 +324,18 @@ defmodule SymphonyElixir.HandoffReceipt do
     )
     """
   end
+
+  defp effect_statuses_sql do
+    """
+    select operation_id, status from symphony_staging.handoff_effect_statuses(
+      $1, $2::text::uuid, $3, $4::text::uuid, $5::text::uuid, $6::text[]
+    )
+    """
+  end
+
+  defp decode_effect_status("succeeded"), do: :succeeded
+  defp decode_effect_status("failed-no-effect"), do: :failed_no_effect
+  defp decode_effect_status(_status), do: :unknown
 
   defp receipt_columns do
     """

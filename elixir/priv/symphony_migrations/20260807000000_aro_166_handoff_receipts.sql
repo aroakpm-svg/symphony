@@ -269,6 +269,55 @@ begin
 end
 $$;
 
+create or replace function symphony_staging.handoff_effect_statuses(
+  requested_issue_id text,
+  active_claim_id uuid,
+  active_generation bigint,
+  active_node_id uuid,
+  active_node_instance_id uuid,
+  requested_operation_ids text[]
+)
+returns table (operation_id text, status text)
+language plpgsql
+stable
+security definer
+set search_path = pg_catalog, pg_temp
+as $$
+begin
+  if not symphony_staging.validate_active_claim(
+    active_claim_id, active_generation, active_node_id, active_node_instance_id
+  ) then
+    raise exception using errcode = '55000', message = 'effect status read requires an active claim';
+  end if;
+
+  if not exists (
+    select 1 from symphony_staging.issue_claims claims
+    where claims.issue_id = requested_issue_id
+      and claims.claim_id = active_claim_id
+  ) then
+    raise exception using errcode = '55000', message = 'active claim issue mismatch';
+  end if;
+
+  if requested_operation_ids is null
+     or coalesce(array_ndims(requested_operation_ids), 1) <> 1
+     or coalesce(array_length(requested_operation_ids, 1), 0) <>
+       (select count(distinct value) from unnest(requested_operation_ids) value)
+     or exists (
+       select 1 from unnest(requested_operation_ids) value
+       where value is null or btrim(value) = ''
+     ) then
+    raise exception using errcode = '22023', message = 'invalid effect operation IDs';
+  end if;
+
+  return query
+  select operations.operation_id, operations.status
+  from symphony_staging.effect_operations operations
+  where operations.issue_id = requested_issue_id
+    and operations.operation_id = any(requested_operation_ids)
+  order by operations.operation_id;
+end
+$$;
+
 create or replace function symphony_staging.handoff_receipt_ready()
 returns boolean
 language sql
@@ -287,12 +336,14 @@ revoke all on function
   symphony_staging.validate_handoff_tests(jsonb),
   symphony_staging.append_handoff_receipt(text, uuid, bigint, uuid, uuid, integer, text, text, text, text, integer, text, text[], text[], jsonb, text[]),
   symphony_staging.latest_handoff_receipt(text, uuid, bigint, uuid, uuid),
+  symphony_staging.handoff_effect_statuses(text, uuid, bigint, uuid, uuid, text[]),
   symphony_staging.handoff_receipt_ready()
   from public, anon, authenticated, service_role, symphony_staging_provisioner;
 
 grant execute on function
   symphony_staging.append_handoff_receipt(text, uuid, bigint, uuid, uuid, integer, text, text, text, text, integer, text, text[], text[], jsonb, text[]),
   symphony_staging.latest_handoff_receipt(text, uuid, bigint, uuid, uuid),
+  symphony_staging.handoff_effect_statuses(text, uuid, bigint, uuid, uuid, text[]),
   symphony_staging.handoff_receipt_ready()
   to symphony_staging_runtime;
 
@@ -307,6 +358,7 @@ begin
     'grant execute on function '
     'symphony_staging.append_handoff_receipt(text, uuid, bigint, uuid, uuid, integer, text, text, text, text, integer, text, text[], text[], jsonb, text[]), '
     'symphony_staging.latest_handoff_receipt(text, uuid, bigint, uuid, uuid), '
+    'symphony_staging.handoff_effect_statuses(text, uuid, bigint, uuid, uuid, text[]), '
     'symphony_staging.handoff_receipt_ready() to %I',
     new.login_role
   );
@@ -331,6 +383,7 @@ begin
       'grant execute on function '
       'symphony_staging.append_handoff_receipt(text, uuid, bigint, uuid, uuid, integer, text, text, text, text, integer, text, text[], text[], jsonb, text[]), '
       'symphony_staging.latest_handoff_receipt(text, uuid, bigint, uuid, uuid), '
+      'symphony_staging.handoff_effect_statuses(text, uuid, bigint, uuid, uuid, text[]), '
       'symphony_staging.handoff_receipt_ready() to %I', principal.login_role
     );
   end loop;
