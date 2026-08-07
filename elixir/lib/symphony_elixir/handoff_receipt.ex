@@ -122,14 +122,18 @@ defmodule SymphonyElixir.HandoffReceipt do
   defp github_repository_from_uri(remote) do
     uri = URI.parse(remote)
 
-    with true <- uri.scheme in ["http", "https", "ssh"],
-         true <- is_binary(uri.host) and String.downcase(uri.host) == "github.com",
-         true <- valid_remote_port?(uri.port),
-         true <- uri.scheme != "ssh" or uri.userinfo == "git",
-         {:ok, repository} <- repository_from_uri_path(uri.path) do
-      {:ok, repository}
-    else
-      _other -> {:error, :handoff_origin_invalid}
+    cond do
+      uri.scheme not in ["http", "https", "ssh"] ->
+        {:error, :handoff_origin_invalid}
+
+      not is_binary(uri.host) or String.downcase(uri.host) != "github.com" ->
+        {:error, :handoff_origin_invalid}
+
+      uri.scheme == "ssh" and uri.userinfo != "git" ->
+        {:error, :handoff_origin_invalid}
+
+      true ->
+        repository_from_uri_path(uri.path)
     end
   end
 
@@ -141,8 +145,6 @@ defmodule SymphonyElixir.HandoffReceipt do
   end
 
   defp repository_from_uri_path(_path), do: {:error, :handoff_origin_invalid}
-  defp valid_remote_port?(nil), do: true
-  defp valid_remote_port?(port), do: is_integer(port) and port in 1..65_535
 
   @doc false
   @spec decode_row_for_test(list()) :: {:ok, receipt()} | {:error, :receipt_incompatible}
