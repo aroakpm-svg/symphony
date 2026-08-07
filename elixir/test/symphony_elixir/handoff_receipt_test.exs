@@ -14,7 +14,7 @@ defmodule SymphonyElixir.HandoffReceiptTest do
     recorded_at: ~U[2026-08-07 00:00:00Z],
     branch: "codex/aro-166-handoff-receipts",
     commit_sha: String.duplicate("a", 40),
-    pr_number: 19,
+    pr_number: nil,
     current_phase: :delivery,
     completed_step_ids: [:preflight, :branch, :implementation, :tests, :commit],
     pending_step_ids: [:push, :pull_request, :review],
@@ -28,8 +28,8 @@ defmodule SymphonyElixir.HandoffReceiptTest do
     canonical_repository: "symphony",
     branch: "codex/aro-166-handoff-receipts",
     commit_sha: String.duplicate("a", 40),
-    pr_number: 19,
-    pr_ready?: true,
+    pr_number: nil,
+    pr_ready?: false,
     linear_revision_current?: true,
     active_claim?: true,
     effect_operations: %{"ARO-166:git-commit:1" => :succeeded}
@@ -48,10 +48,7 @@ defmodule SymphonyElixir.HandoffReceiptTest do
   end
 
   test "a verified pre-PR checkpoint resumes without requiring PR readiness" do
-    receipt = %{@receipt | pr_number: nil}
-    truth = %{@truth | pr_number: nil, pr_ready?: false}
-
-    assert HandoffReceipt.resume(receipt, truth) == {:ok, :push}
+    assert HandoffReceipt.resume(@receipt, @truth) == {:ok, :push}
   end
 
   test "missing or future receipts safely require a full recheck" do
@@ -158,6 +155,12 @@ defmodule SymphonyElixir.HandoffReceiptTest do
       row = List.replace_at(base_row, 14, [%{"name" => name, "status" => "passed"}])
       assert HandoffReceipt.decode_row_for_test(row) == {:error, :receipt_incompatible}
     end
+
+    extra_key = %{"name" => "make all", "status" => "passed", "output" => "ignored"}
+
+    assert base_row
+           |> List.replace_at(14, [extra_key])
+           |> HandoffReceipt.decode_row_for_test() == {:error, :receipt_incompatible}
   end
 
   test "database rows validate phase and step shapes before atom conversion" do
@@ -206,6 +209,33 @@ defmodule SymphonyElixir.HandoffReceiptTest do
              {:safe_recheck, :incomplete_step_accounting}
   end
 
+  test "workflow steps retain their canonical prefix and suffix order" do
+    receipt = %{
+      @receipt
+      | completed_step_ids: [:preflight],
+        pending_step_ids: [:review, :branch, :implementation, :tests, :commit, :push, :pull_request]
+    }
+
+    assert HandoffReceipt.resume(receipt, @truth) ==
+             {:safe_recheck, :noncanonical_step_order}
+  end
+
+  test "completed delivery steps require their artifacts" do
+    missing_commit = %{@receipt | commit_sha: nil}
+
+    premature_commit = %{
+      @receipt
+      | completed_step_ids: [:preflight, :branch, :implementation, :tests],
+        pending_step_ids: [:commit, :push, :pull_request, :review]
+    }
+
+    assert HandoffReceipt.resume(missing_commit, %{@truth | commit_sha: nil}) ==
+             {:safe_recheck, :inconsistent_commit_artifact}
+
+    assert HandoffReceipt.resume(premature_commit, @truth) ==
+             {:safe_recheck, :inconsistent_commit_artifact}
+  end
+
   test "structured test results reject extra free-form fields" do
     receipt = %{
       @receipt
@@ -224,11 +254,12 @@ defmodule SymphonyElixir.HandoffReceiptTest do
 
     pending = %{
       failed
-      | completed_step_ids: List.delete(failed.completed_step_ids, :tests),
-        pending_step_ids: [:tests | failed.pending_step_ids]
+      | completed_step_ids: [:preflight, :branch, :implementation],
+        pending_step_ids: [:tests, :commit, :push, :pull_request, :review],
+        commit_sha: nil
     }
 
-    assert HandoffReceipt.resume(pending, @truth) == {:ok, :tests}
+    assert HandoffReceipt.resume(pending, %{@truth | commit_sha: nil}) == {:ok, :tests}
   end
 
   test "completion requires terminal phase and every fixed step" do
@@ -239,14 +270,21 @@ defmodule SymphonyElixir.HandoffReceiptTest do
                @receipt
                | current_phase: :preflight,
                  completed_step_ids: all_steps,
-                 pending_step_ids: []
+                 pending_step_ids: [],
+                 pr_number: 19
              },
-             @truth
+             %{@truth | pr_number: 19, pr_ready?: true}
            ) == {:safe_recheck, :inconsistent_progress}
 
     assert HandoffReceipt.resume(
-             %{@receipt | current_phase: :complete, completed_step_ids: all_steps, pending_step_ids: []},
-             @truth
+             %{
+               @receipt
+               | current_phase: :complete,
+                 completed_step_ids: all_steps,
+                 pending_step_ids: [],
+                 pr_number: 19
+             },
+             %{@truth | pr_number: 19, pr_ready?: true}
            ) == {:ok, :complete}
 
     assert HandoffReceipt.resume(
@@ -254,9 +292,10 @@ defmodule SymphonyElixir.HandoffReceiptTest do
                @receipt
                | current_phase: :complete,
                  completed_step_ids: Enum.drop(all_steps, -1),
-                 pending_step_ids: [List.last(all_steps)]
+                 pending_step_ids: [List.last(all_steps)],
+                 pr_number: 19
              },
-             @truth
+             %{@truth | pr_number: 19, pr_ready?: true}
            ) == {:safe_recheck, :inconsistent_progress}
   end
 
@@ -265,7 +304,6 @@ defmodule SymphonyElixir.HandoffReceiptTest do
       {%{@truth | commit_sha: String.duplicate("b", 40)}, :git_or_repository_state_changed},
       {%{@truth | linear_revision_current?: false}, :linear_revision_changed},
       {%{@truth | active_claim?: false}, :claim_inactive},
-      {%{@truth | pr_ready?: false}, :pr_not_ready},
       {%{@truth | effect_operations: %{}}, :effect_ledger_changed},
       {%{@truth | effect_operations: %{"ARO-166:git-commit:1" => :unknown}}, :effect_ledger_changed}
     ]
@@ -273,5 +311,15 @@ defmodule SymphonyElixir.HandoffReceiptTest do
     for {truth, reason} <- cases do
       assert HandoffReceipt.resume(@receipt, truth) == {:safe_recheck, reason}
     end
+
+    existing_pr = %{
+      @receipt
+      | completed_step_ids: Enum.drop(HandoffReceipt.step_ids(), -1),
+        pending_step_ids: [:review],
+        pr_number: 19
+    }
+
+    assert HandoffReceipt.resume(existing_pr, %{@truth | pr_number: 19, pr_ready?: false}) ==
+             {:safe_recheck, :pr_not_ready}
   end
 end

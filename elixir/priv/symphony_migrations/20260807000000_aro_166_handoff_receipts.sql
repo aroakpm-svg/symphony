@@ -74,7 +74,7 @@ as $$
         or (select array_agg(key order by key) from jsonb_object_keys(result) key)
            is distinct from array['name', 'status']::text[]
         or jsonb_typeof(result->'name') is distinct from 'string'
-        or btrim(result->>'name') = ''
+        or result->>'name' !~ '[^[:space:]]'
         or jsonb_typeof(result->'status') is distinct from 'string'
         or result->>'status' is null
         or result->>'status' not in ('passed', 'failed', 'skipped')
@@ -158,6 +158,12 @@ begin
        'preflight', 'implementation', 'verification', 'delivery', 'review', 'complete'
      )
      or not symphony_staging.validate_handoff_steps(requested_completed, requested_pending)
+     or requested_completed || requested_pending <> array[
+       'preflight', 'branch', 'implementation', 'tests',
+       'commit', 'push', 'pull_request', 'review'
+     ]::text[]
+     or (('commit' = any(requested_completed)) <> (requested_commit_sha is not null))
+     or (('pull_request' = any(requested_completed)) <> (requested_pr_number is not null))
      or (
        requested_phase = 'complete'
        and (

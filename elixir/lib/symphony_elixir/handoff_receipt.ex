@@ -135,6 +135,7 @@ defmodule SymphonyElixir.HandoffReceipt do
   defp validate_attrs(attrs) do
     with :ok <- validate_identity(attrs),
          :ok <- validate_progress(attrs),
+         :ok <- validate_artifacts(attrs),
          do: validate_evidence(attrs)
   end
 
@@ -180,8 +181,26 @@ defmodule SymphonyElixir.HandoffReceipt do
       not all_steps_accounted_for?(completed, pending) ->
         {:error, :incomplete_step_accounting}
 
+      completed ++ pending != @steps ->
+        {:error, :noncanonical_step_order}
+
       not consistent_completion?(Map.get(attrs, :current_phase), completed, pending) ->
         {:error, :inconsistent_progress}
+
+      true ->
+        :ok
+    end
+  end
+
+  defp validate_artifacts(attrs) do
+    completed = Map.get(attrs, :completed_step_ids, [])
+
+    cond do
+      :commit in completed != is_binary(Map.get(attrs, :commit_sha)) ->
+        {:error, :inconsistent_commit_artifact}
+
+      :pull_request in completed != is_integer(Map.get(attrs, :pr_number)) ->
+        {:error, :inconsistent_pull_request_artifact}
 
       true ->
         :ok
@@ -460,8 +479,9 @@ defmodule SymphonyElixir.HandoffReceipt do
 
   defp decode_test_results(tests) when is_list(tests) do
     Enum.reduce_while(tests, {:ok, []}, fn
-      %{"name" => name, "status" => status}, {:ok, decoded} ->
-        if nonempty_string?(name) and status in ["passed", "failed", "skipped"] do
+      %{"name" => name, "status" => status} = result, {:ok, decoded} ->
+        if map_size(result) == 2 and nonempty_string?(name) and
+             status in ["passed", "failed", "skipped"] do
           {:cont, {:ok, [%{name: name, status: String.to_existing_atom(status)} | decoded]}}
         else
           {:halt, {:error, :receipt_incompatible}}
