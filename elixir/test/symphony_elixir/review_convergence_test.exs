@@ -629,6 +629,44 @@ defmodule SymphonyElixir.ReviewConvergenceTest do
              GitHubReviewClient.parse_triage_for_test(follow_up, trusted)
   end
 
+  test "review requests ask the trusted producer for typed triage evidence" do
+    body = GitHubReviewClient.review_request_body_for_test("review-key")
+
+    assert body =~ "@codex review"
+    assert body =~ "Finding-Triage: fix_in_current_pr | follow_up_required | blocked_unverified"
+    assert body =~ "Triage-Evidence: introduced_by_pr"
+    assert body =~ "Triage-Reason: required only for follow_up_required"
+    assert body =~ "Use blocked_unverified when evidence is insufficient"
+  end
+
+  test "triage marker values are normalized case-insensitively and malformed values fail closed" do
+    trusted = %{
+      "login" => "chatgpt-codex-connector[bot]",
+      "__typename" => "Bot",
+      "databaseId" => 199_175_422
+    }
+
+    body = "Finding-Triage: FIX_IN_CURRENT_PR\nTriage-Evidence: INTRODUCED_BY_PR"
+
+    assert %{state: :fix_in_current_pr, evidence: :introduced_by_pr} =
+             GitHubReviewClient.parse_triage_for_test(body, trusted)
+
+    assert GitHubReviewClient.parse_triage_for_test(
+             "Finding-Triage: FIX_IN_CURRENT_PR\nTriage-Evidence: unknown",
+             trusted
+           ) == nil
+  end
+
+  test "repository owner can add a typed triage decision while other users cannot" do
+    owner = %{"login" => "aroakpm-svg", "__typename" => "User"}
+    body = "Finding-Triage: follow_up_required\nTriage-Evidence: ROOT_CAUSE_OUT_OF_SCOPE\nTriage-Reason: shared contract"
+
+    assert %{state: :follow_up_required, evidence: :root_cause_out_of_scope, reason: "shared contract"} =
+             GitHubReviewClient.parse_triage_for_test(body, owner, "aroakpm-svg")
+
+    refute GitHubReviewClient.parse_triage_for_test(body, owner, "different-owner")
+  end
+
   test "normalized actionable threads carry only trusted typed triage" do
     thread = %{
       "isResolved" => false,
@@ -651,6 +689,31 @@ defmodule SymphonyElixir.ReviewConvergenceTest do
 
     assert [%{triage: %{state: :fix_in_current_pr, evidence: :introduced_by_pr}}] =
              GitHubReviewClient.normalize_threads_for_test([thread], "head")
+  end
+
+  test "a later typed owner reply can triage the original actionable thread" do
+    thread = %{
+      "isResolved" => false,
+      "comments" => %{
+        "nodes" => [
+          %{
+            "body" => "P1 regression",
+            "path" => "lib/example.ex",
+            "url" => "thread",
+            "commit" => %{"oid" => "head"},
+            "author" => %{"login" => "chatgpt-codex-connector[bot]", "__typename" => "Bot", "databaseId" => 199_175_422}
+          },
+          %{
+            "body" => "Finding-Triage: follow_up_required\nTriage-Evidence: root_cause_out_of_scope\nTriage-Reason: shared contract",
+            "commit" => %{"oid" => "head"},
+            "author" => %{"login" => "aroakpm-svg", "__typename" => "User"}
+          }
+        ]
+      }
+    }
+
+    assert [%{triage: %{state: :follow_up_required, evidence: :root_cause_out_of_scope}}] =
+             GitHubReviewClient.normalize_threads_for_test([thread], "head", "aroakpm-svg")
   end
 
   test "unresolved actionable threads remain blocking across head changes" do
@@ -1150,6 +1213,70 @@ defmodule SymphonyElixir.ReviewConvergenceTest do
 
     assert {:follow_up, %{follow_up_findings: [_]}} =
              ReviewConvergence.evaluate(snapshot(%{threads: [finding]}), 0, 3)
+  end
+
+  test "mixed blocked and follow-up triage waits while preserving the follow-up findings" do
+    blocked = %{
+      resolved: false,
+      priority: 1,
+      body: "P1 missing evidence",
+      triage: %{state: :blocked_unverified, reason: :insufficient_evidence}
+    }
+
+    follow_up = %{
+      resolved: false,
+      priority: 2,
+      body: "P2 outside this PR",
+      triage: %{
+        state: :follow_up_required,
+        evidence: :root_cause_out_of_scope,
+        reason: "shared contract belongs to a separate change"
+      }
+    }
+
+    assert {:wait, %{reason: :finding_triage_unverified, follow_up_findings: [entry]}} =
+             ReviewConvergence.evaluate(snapshot(%{threads: [blocked, follow_up]}), 0, 3)
+
+    assert entry.finding.body == "P2 outside this PR"
+  end
+
+  test "mixed triage waits and writes one deduplicated PR reminder before human wait" do
+    blocked = %{
+      resolved: false,
+      priority: 1,
+      body: "P1 missing evidence",
+      triage: %{state: :blocked_unverified, reason: :insufficient_evidence}
+    }
+
+    follow_up = %{
+      resolved: false,
+      priority: 2,
+      body: "P2 outside this PR",
+      triage: %{
+        state: :follow_up_required,
+        evidence: :root_cause_out_of_scope,
+        reason: "shared contract belongs to a separate change"
+      }
+    }
+
+    Application.put_env(
+      :symphony_elixir,
+      :review_snapshot,
+      {:ok, snapshot(%{threads: [blocked, follow_up]})}
+    )
+
+    state = ReviewMonitor.run_with(%{}, settings(), ReviewClient, Tracker)
+    assert_receive {:pr_comment, "aroakpm-svg/repo", 42, body}
+    assert body =~ "triage-state: `follow_up_required`"
+    assert_receive {:comment, "issue-160", human_body}
+    assert human_body =~ "finding_triage_unverified"
+    assert_receive {:status, "aroakpm-svg/repo", "head", :pending, _}
+    refute_receive {:state, _, _}
+
+    _state = ReviewMonitor.run_with(state, settings(), ReviewClient, Tracker)
+    refute_receive {:pr_comment, _, _, _}
+    refute_receive {:comment, _, _}
+    refute_receive {:state, _, _}
   end
 
   test "follow-up reminder is written to the PR once without changing Linear state" do

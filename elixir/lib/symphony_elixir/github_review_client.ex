@@ -94,7 +94,7 @@ defmodule SymphonyElixir.GitHubReviewClient do
          {:ok, base_verification} <- verify_base_claims(repository, pull_request) do
       {:ok,
        pull_request
-       |> normalize_snapshot(checks, base_verification, issue_comments)
+       |> normalize_snapshot(checks, base_verification, issue_comments, repository_owner(repository))
        |> Map.put(:repository, repository)
        |> Map.put(:pull_request_number, number)}
     end
@@ -102,13 +102,39 @@ defmodule SymphonyElixir.GitHubReviewClient do
 
   @spec request_review(String.t(), pos_integer(), String.t()) :: :ok | {:error, term()}
   def request_review(repository, number, key) do
-    body = "@codex review\n\ndedup-key: `#{key}`"
+    body = review_request_body(key)
 
     case run(["pr", "comment", Integer.to_string(number), "--repo", repository, "--body", body]) do
       {:ok, _output} -> :ok
       {:error, reason} -> {:error, reason}
     end
   end
+
+  defp review_request_body(key) do
+    """
+    @codex review
+
+    dedup-key: `#{key}`
+
+    For every actionable P1-P4 finding, include these exact machine-readable lines in the same inline review comment:
+    Finding-Triage: fix_in_current_pr | follow_up_required | blocked_unverified
+    Triage-Evidence: introduced_by_pr | violates_invariant | violates_acceptance_criterion | root_cause_out_of_scope | insufficient_evidence
+    Triage-Reason: required only for follow_up_required
+
+    Do not infer ownership from severity, path, current head, or free-form prose. Use blocked_unverified when evidence is insufficient.
+    """
+  end
+
+  defp repository_owner(repository) do
+    case String.split(repository, "/", parts: 2) do
+      [owner, _name] -> owner
+      _ -> nil
+    end
+  end
+
+  @doc false
+  @spec review_request_body_for_test(String.t()) :: String.t()
+  def review_request_body_for_test(key), do: review_request_body(key)
 
   @spec create_pr_comment(String.t(), pos_integer(), String.t()) :: :ok | {:error, term()}
   def create_pr_comment(repository, number, body)
@@ -206,16 +232,31 @@ defmodule SymphonyElixir.GitHubReviewClient do
 
   @doc false
   @spec normalize_threads_for_test([map()], String.t()) :: [map()]
-  def normalize_threads_for_test(threads, head_sha), do: normalize_threads(threads, head_sha)
+  def normalize_threads_for_test(threads, head_sha), do: normalize_threads(threads, head_sha, nil)
+
+  @doc false
+  @spec normalize_threads_for_test([map()], String.t(), String.t() | nil) :: [map()]
+  def normalize_threads_for_test(threads, head_sha, triage_owner),
+    do: normalize_threads(threads, head_sha, triage_owner)
 
   @doc false
   @spec parse_triage_for_test(String.t(), map()) :: map() | nil
-  def parse_triage_for_test(body, author), do: parse_triage(%{"body" => body, "author" => author})
+  def parse_triage_for_test(body, author), do: parse_triage(%{"body" => body, "author" => author}, nil)
+
+  @doc false
+  @spec parse_triage_for_test(String.t(), map(), String.t() | nil) :: map() | nil
+  def parse_triage_for_test(body, author, triage_owner),
+    do: parse_triage(%{"body" => body, "author" => author}, triage_owner)
 
   @doc false
   @spec normalize_snapshot_for_test(map(), [map()], map(), [map()]) :: map()
   def normalize_snapshot_for_test(pull_request, checks, base_verification, issue_comments),
-    do: normalize_snapshot(pull_request, checks, base_verification, issue_comments)
+    do: normalize_snapshot(pull_request, checks, base_verification, issue_comments, nil)
+
+  @doc false
+  @spec normalize_snapshot_for_test(map(), [map()], map(), [map()], String.t() | nil) :: map()
+  def normalize_snapshot_for_test(pull_request, checks, base_verification, issue_comments, triage_owner),
+    do: normalize_snapshot(pull_request, checks, base_verification, issue_comments, triage_owner)
 
   @doc false
   @spec base_missing_paths_for_test([map()], String.t()) :: [String.t()]
@@ -828,7 +869,7 @@ defmodule SymphonyElixir.GitHubReviewClient do
     String.contains?(value, "/") and !String.contains?(value, " ")
   end
 
-  defp normalize_snapshot(pull_request, checks, base_verification, issue_comments) do
+  defp normalize_snapshot(pull_request, checks, base_verification, issue_comments, triage_owner) do
     head_sha = pull_request["headRefOid"]
     threads = get_in(pull_request, ["reviewThreads", "nodes"]) || []
     current_threads = current_head_threads(pull_request)
@@ -852,7 +893,7 @@ defmodule SymphonyElixir.GitHubReviewClient do
       base_verification_required: base_verification.required,
       base_verification: base_verification.result,
       required_checks: checks,
-      threads: normalize_threads(threads, head_sha),
+      threads: normalize_threads(threads, head_sha, triage_owner),
       structural_risk: structural_risk?(current_threads, head_sha)
     }
   end
@@ -958,12 +999,11 @@ defmodule SymphonyElixir.GitHubReviewClient do
 
   defp trusted_reviewer?(_author), do: false
 
-  defp normalize_threads(threads, _head_sha) do
+  defp normalize_threads(threads, _head_sha, triage_owner) do
     Enum.flat_map(threads, fn thread ->
-      comment =
-        (get_in(thread, ["comments", "nodes"]) || [])
-        |> Enum.reverse()
-        |> Enum.find(&(not is_nil(priority(&1["body"] || ""))))
+      comments = get_in(thread, ["comments", "nodes"]) || []
+      comment = Enum.find(Enum.reverse(comments), &(not is_nil(priority(&1["body"] || ""))))
+      triage_comment = Enum.find(Enum.reverse(comments), &triage_marker?(&1, triage_owner))
 
       if comment do
         body = comment["body"] || ""
@@ -976,7 +1016,7 @@ defmodule SymphonyElixir.GitHubReviewClient do
             path: comment["path"],
             url: comment["url"],
             commit_sha: get_in(comment, ["commit", "oid"]),
-            triage: parse_triage(comment)
+            triage: parse_triage(triage_comment, triage_owner)
           }
         ]
       else
@@ -1002,17 +1042,29 @@ defmodule SymphonyElixir.GitHubReviewClient do
     end
   end
 
-  defp parse_triage(comment) when is_map(comment) do
+  defp parse_triage(comment, triage_owner) when is_map(comment) do
     body = comment["body"] || ""
 
-    if trusted_reviewer?(comment["author"]) do
+    if trusted_reviewer?(comment["author"]) or trusted_owner?(comment["author"], triage_owner) do
       parse_triage_body(body)
     else
       nil
     end
   end
 
-  defp parse_triage(_comment), do: nil
+  defp parse_triage(_comment, _triage_owner), do: nil
+
+  defp triage_marker?(comment, triage_owner) when is_map(comment) do
+    parse_triage(comment, triage_owner) != nil
+  end
+
+  defp triage_marker?(_comment, _triage_owner), do: false
+
+  defp trusted_owner?(%{"login" => login, "__typename" => "User"}, owner)
+       when is_binary(login) and is_binary(owner),
+       do: login == owner
+
+  defp trusted_owner?(_author, _owner), do: false
 
   defp parse_triage_body(body) do
     with {:ok, state_name} <-
@@ -1022,7 +1074,11 @@ defmodule SymphonyElixir.GitHubReviewClient do
              body,
              ~r/^Triage-Evidence:\s*(introduced_by_pr|violates_invariant|violates_acceptance_criterion|root_cause_out_of_scope|insufficient_evidence)\s*$/im
            ) do
-      triage_from_markers(body, triage_state(state_name), triage_evidence(evidence_name))
+      triage_from_markers(
+        body,
+        triage_state(String.downcase(state_name)),
+        triage_evidence(String.downcase(evidence_name))
+      )
     else
       _ -> nil
     end

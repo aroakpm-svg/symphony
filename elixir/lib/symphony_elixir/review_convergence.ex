@@ -78,6 +78,16 @@ defmodule SymphonyElixir.ReviewConvergence do
     end
   end
 
+  defp finding_triage_gate(
+         %{blocked_unverified: [_ | _], follow_up_required: [_ | _] = follow_up_findings},
+         evidence
+       ),
+       do:
+         {:wait,
+          evidence
+          |> Map.put(:reason, :finding_triage_unverified)
+          |> Map.put(:follow_up_findings, follow_up_findings)}
+
   defp finding_triage_gate(%{blocked_unverified: [_ | _]}, evidence),
     do: {:wait, Map.put(evidence, :reason, :finding_triage_unverified)}
 

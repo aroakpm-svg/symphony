@@ -211,14 +211,7 @@ defmodule SymphonyElixir.ReviewMonitor do
 
   defp apply_decision({:follow_up, evidence}, _issue, entry, settings, review_client, _tracker, snapshot) do
     findings = evidence.follow_up_findings
-
-    key =
-      ReviewConvergence.dedup_key(
-        :follow_up,
-        "pr:#{snapshot.pull_request_number}",
-        snapshot.current_head_sha,
-        :single_pr_reminder
-      )
+    key = follow_up_key(snapshot)
 
     with {entry, :ok} <-
            ensure_published_status(
@@ -250,10 +243,17 @@ defmodule SymphonyElixir.ReviewMonitor do
              snapshot,
              :pending,
              "Waiting for required evidence or human judgment"
-           ) do
-      dedup_action(entry, key, fn ->
-        tracker.create_comment(issue.id, human_comment(settings, snapshot, reason, key))
-      end)
+           ),
+         {entry, reminder_result} <-
+           maybe_follow_up_reminder(entry, settings.repository, review_client, snapshot, evidence),
+         {entry, tracker_result} <-
+           dedup_action(entry, key, fn ->
+             tracker.create_comment(issue.id, human_comment(settings, snapshot, reason, key))
+           end) do
+      result = if reminder_result in [:ok, :deduplicated], do: tracker_result, else: reminder_result
+      {entry, result}
+    else
+      {entry, {:error, reason}} -> {entry, {:error, reason}}
     end
     |> then(fn {updated, result} ->
       {%{updated | waiting: result == :ok}, result}
@@ -333,6 +333,29 @@ defmodule SymphonyElixir.ReviewMonitor do
         )
       end
     end
+  end
+
+  defp maybe_follow_up_reminder(entry, repository, review_client, snapshot, evidence) do
+    case evidence[:follow_up_findings] || [] do
+      [] ->
+        {entry, :ok}
+
+      findings ->
+        key = follow_up_key(snapshot)
+
+        dedup_action(entry, key, fn ->
+          ensure_follow_up_reminder(review_client, repository, snapshot, findings, key)
+        end)
+    end
+  end
+
+  defp follow_up_key(snapshot) do
+    ReviewConvergence.dedup_key(
+      :follow_up,
+      "pr:#{snapshot.pull_request_number}",
+      snapshot.current_head_sha,
+      :single_pr_reminder
+    )
   end
 
   defp apply_rework(issue, entry, settings, tracker, snapshot, findings, fingerprint, key) do
