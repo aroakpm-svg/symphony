@@ -83,9 +83,19 @@ defmodule SymphonyElixir.ClaimService do
     if coordinator_running?(), do: safe_call({:effect_context, issue_id}), else: {:error, :claim_service_unavailable}
   end
 
+  @spec handoff_context(String.t()) :: {:ok, Postgrex.conn(), map()} | {:error, term()}
+  def handoff_context(issue_id) when is_binary(issue_id) do
+    if coordinator_running?(), do: safe_call({:handoff_context, issue_id}), else: {:error, :claim_service_unavailable}
+  end
+
   @spec effect_ledger_ready?() :: boolean()
   def effect_ledger_ready? do
     coordinator_running?() and safe_call(:effect_ledger_ready?) == true
+  end
+
+  @spec handoff_receipt_ready?() :: boolean()
+  def handoff_receipt_ready? do
+    coordinator_running?() and safe_call(:handoff_receipt_ready?) == true
   end
 
   @doc false
@@ -154,7 +164,32 @@ defmodule SymphonyElixir.ClaimService do
     {:reply, ready, state}
   end
 
+  def handle_call(:handoff_receipt_ready?, _from, state) do
+    sql = "select symphony_staging.handoff_receipt_ready()"
+    ready = match?({:ok, %Postgrex.Result{rows: [[true]]}}, Postgrex.query(state.connection, sql, []))
+    {:reply, ready, state}
+  end
+
   def handle_call({:effect_context, issue_id}, {caller, _tag}, state) do
+    context_reply(issue_id, caller, state, :effect)
+  end
+
+  def handle_call({:handoff_context, issue_id}, {caller, _tag}, state) do
+    context_reply(issue_id, caller, state, :handoff)
+  end
+
+  def handle_call({:bind_worker, issue_id, worker}, _from, state) do
+    case Map.fetch(state.claims, issue_id) do
+      {:ok, claim} ->
+        claims = Map.put(state.claims, issue_id, Map.put(claim, :worker, worker))
+        {:reply, :ok, %{state | claims: claims}}
+
+      :error ->
+        {:reply, {:error, :claim_not_owned}, state}
+    end
+  end
+
+  defp context_reply(issue_id, caller, state, kind) do
     case Map.fetch(state.claims, issue_id) do
       {:ok, %{worker: ^caller} = claim} ->
         context = %{
@@ -168,23 +203,15 @@ defmodule SymphonyElixir.ClaimService do
         {:reply, {:ok, state.connection, context}, state}
 
       {:ok, _claim} ->
-        {:reply, {:error, :effect_context_not_owned_by_worker}, state}
+        {:reply, {:error, context_not_owned_error(kind)}, state}
 
       :error ->
         {:reply, {:error, :claim_not_owned}, state}
     end
   end
 
-  def handle_call({:bind_worker, issue_id, worker}, _from, state) do
-    case Map.fetch(state.claims, issue_id) do
-      {:ok, claim} ->
-        claims = Map.put(state.claims, issue_id, Map.put(claim, :worker, worker))
-        {:reply, :ok, %{state | claims: claims}}
-
-      :error ->
-        {:reply, {:error, :claim_not_owned}, state}
-    end
-  end
+  defp context_not_owned_error(:effect), do: :effect_context_not_owned_by_worker
+  defp context_not_owned_error(:handoff), do: :handoff_context_not_owned_by_worker
 
   @impl true
   def handle_info(:heartbeat, state) do
