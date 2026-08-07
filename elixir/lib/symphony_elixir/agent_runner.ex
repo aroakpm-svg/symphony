@@ -4,6 +4,7 @@ defmodule SymphonyElixir.AgentRunner do
   """
 
   require Logger
+
   alias SymphonyElixir.{
     ClaimService,
     Codex.AppServer,
@@ -12,6 +13,7 @@ defmodule SymphonyElixir.AgentRunner do
     HandoffReceipt,
     Linear.Issue
   }
+
   alias SymphonyElixir.{PromptBuilder, ReadinessGate, Tracker, Workspace}
 
   @type worker_host :: String.t() | nil
@@ -443,7 +445,8 @@ defmodule SymphonyElixir.AgentRunner do
         base <>
           "\n\nHandoff could not be trusted (#{inspect(reason)}). Recheck all external state before continuing.\n"
 
-      _none -> base
+      _none ->
+        base
     end
   end
 
