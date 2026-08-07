@@ -9,6 +9,17 @@ defmodule SymphonyElixir.HandoffReceiptTest do
     assert source =~ "fetch_handoff_issue(issue.id, issue_fetcher)"
     assert source =~ "handoff_commit_sha(previous, git_evidence.head_sha)"
     refute source =~ "handoff_commit_sha(previous, readiness.head_sha)"
+    assert source =~ "workspace_evidence(workspace, readiness.issue_branch, repository, worker_host)"
+  end
+
+  test "canonical origin parsing accepts GitHub transports without accepting lookalike hosts" do
+    assert HandoffReceipt.github_repository_from_remote_for_test("https://github.com/aroakpm-svg/symphony.git") == {:ok, "aroakpm-svg/symphony"}
+
+    assert HandoffReceipt.github_repository_from_remote_for_test("git@github.com:aroakpm-svg/symphony.git") == {:ok, "aroakpm-svg/symphony"}
+
+    assert HandoffReceipt.github_repository_from_remote_for_test("ssh://git@github.com/aroakpm-svg/symphony") == {:ok, "aroakpm-svg/symphony"}
+
+    assert HandoffReceipt.github_repository_from_remote_for_test("https://github.com.example/aroakpm-svg/symphony.git") == {:error, :handoff_origin_invalid}
   end
 
   @receipt %{

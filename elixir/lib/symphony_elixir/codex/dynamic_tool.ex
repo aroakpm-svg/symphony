@@ -172,7 +172,7 @@ defmodule SymphonyElixir.Codex.DynamicTool do
     issue_id = Keyword.get(opts, :managed_issue_id)
     context_fetcher = Keyword.get(opts, :handoff_context_fetcher, &ClaimService.handoff_context/1)
     appender = Keyword.get(opts, :handoff_appender, &HandoffReceipt.append/3)
-    evidence_fetcher = Keyword.get(opts, :handoff_evidence_fetcher, &HandoffReceipt.workspace_evidence/3)
+    evidence_fetcher = Keyword.get(opts, :handoff_evidence_fetcher, &HandoffReceipt.workspace_evidence/4)
 
     with true <- Keyword.get(opts, :managed_session, false),
          true <- is_binary(issue_id),
@@ -181,6 +181,7 @@ defmodule SymphonyElixir.Codex.DynamicTool do
            evidence_fetcher.(
              Keyword.get(opts, :managed_workspace),
              attrs.branch,
+             "#{attrs.canonical_owner}/#{attrs.canonical_repository}",
              Keyword.get(opts, :worker_host)
            ),
          {:ok, attrs} <- checkpoint_git_evidence(attrs, evidence),

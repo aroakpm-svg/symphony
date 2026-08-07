@@ -66,7 +66,7 @@ defmodule SymphonyElixir.HandoffReceipt do
   @spec phases() :: [atom()]
   def phases, do: @phases
 
-  @spec workspace_evidence(Path.t(), String.t(), String.t() | nil) ::
+  @spec workspace_evidence(Path.t(), String.t(), String.t(), String.t() | nil) ::
           {:ok,
            %{
              worktree_fingerprint: String.t(),
@@ -75,17 +75,18 @@ defmodule SymphonyElixir.HandoffReceipt do
              clean?: boolean()
            }}
           | {:error, term()}
-  def workspace_evidence(workspace, branch, worker_host)
-      when is_binary(workspace) and is_binary(branch) do
+  def workspace_evidence(workspace, branch, canonical_repository, worker_host)
+      when is_binary(workspace) and is_binary(branch) and is_binary(canonical_repository) do
     with {:ok, status} <- Workspace.run_git_command(workspace, ["status", "--porcelain=v1", "-z", "--untracked-files=all"], worker_host),
          {:ok, diff} <- Workspace.run_git_command(workspace, ["diff", "--binary", "HEAD"], worker_host),
          {:ok, cached} <- Workspace.run_git_command(workspace, ["diff", "--binary", "--cached", "HEAD"], worker_host),
          {:ok, head_sha} <- Workspace.run_git_command(workspace, ["rev-parse", "HEAD"], worker_host),
          {:ok, untracked_hashes} <- hash_untracked_files(workspace, status, worker_host),
+         {:ok, origin_repository} <- canonical_origin_repository(workspace, canonical_repository, worker_host),
          {:ok, remote_sha} <- remote_branch_sha(workspace, branch, worker_host) do
       fingerprint =
         :sha256
-        |> :crypto.hash([status, diff, cached, untracked_hashes])
+        |> :crypto.hash([status, diff, cached, untracked_hashes, origin_repository])
         |> Base.encode16(case: :lower)
 
       {:ok,
@@ -98,9 +99,33 @@ defmodule SymphonyElixir.HandoffReceipt do
     end
   end
 
+  defp canonical_origin_repository(workspace, expected_repository, worker_host) do
+    with {:ok, url} <- Workspace.run_git_command(workspace, ["config", "--get", "remote.origin.url"], worker_host),
+         {:ok, actual_repository} <- github_repository_from_remote(url),
+         true <- String.downcase(actual_repository) == String.downcase(expected_repository) do
+      {:ok, String.downcase(actual_repository)}
+    else
+      false -> {:error, :handoff_origin_mismatch}
+      {:error, _reason} = error -> error
+    end
+  end
+
+  defp github_repository_from_remote(url) do
+    pattern = ~r{^(?:https?://(?:[^@/]+@)?github\.com/|git@github\.com:|ssh://git@github\.com/)([^/\s]+/[^/\s]+?)(?:\.git)?/?$}i
+
+    case Regex.run(pattern, String.trim(url), capture: :all_but_first) do
+      [repository] -> {:ok, repository}
+      _other -> {:error, :handoff_origin_invalid}
+    end
+  end
+
   @doc false
   @spec decode_row_for_test(list()) :: {:ok, receipt()} | {:error, :receipt_incompatible}
   def decode_row_for_test(row), do: decode_row(row)
+
+  @doc false
+  @spec github_repository_from_remote_for_test(String.t()) :: {:ok, String.t()} | {:error, atom()}
+  def github_repository_from_remote_for_test(url), do: github_repository_from_remote(url)
 
   @doc false
   @spec append_sql_for_test() :: String.t()

@@ -155,7 +155,7 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
         managed_session: true,
         managed_issue_id: "ARO-166",
         handoff_repository: "aroakpm-svg/symphony",
-        handoff_evidence_fetcher: fn nil, "codex/aro-166", nil ->
+        handoff_evidence_fetcher: fn nil, "codex/aro-166", "aroakpm-svg/symphony", nil ->
           {:ok,
            %{
              worktree_fingerprint: String.duplicate("f", 64),

@@ -273,7 +273,8 @@ defmodule SymphonyElixir.AgentRunner do
          {:ok, fresh_issue} <- fetch_handoff_issue(issue.id, issue_fetcher),
          {:ok, previous} <- HandoffReceipt.latest(connection, claim),
          {:ok, repository, owner, name} <- handoff_repository(),
-         {:ok, git_evidence} <- HandoffReceipt.workspace_evidence(workspace, readiness.issue_branch, worker_host),
+         {:ok, git_evidence} <-
+           HandoffReceipt.workspace_evidence(workspace, readiness.issue_branch, repository, worker_host),
          {:ok, truth} <-
            handoff_truth(previous, fresh_issue, readiness, git_evidence, claim, connection, repository, opts),
          resume <- HandoffReceipt.resume(previous, truth),
