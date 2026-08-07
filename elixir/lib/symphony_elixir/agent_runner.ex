@@ -299,25 +299,44 @@ defmodule SymphonyElixir.AgentRunner do
          opts
        ) do
     with {:ok, connection, claim} <- context.(fresh_issue.id) do
-      case Postgrex.transaction(connection, fn transaction ->
-             case run_locked_handoff(
-                    transaction,
-                    claim,
-                    fresh_issue,
-                    readiness,
-                    workspace,
-                    worker_host,
-                    opts
-                  ) do
-               {:ok, _issue, _resume} = result -> result
-               {:error, reason} -> Postgrex.rollback(transaction, reason)
-             end
-           end) do
-        {:ok, result} -> result
-        {:error, reason} -> {:error, reason}
-      end
+      run_handoff_transaction(
+        connection,
+        claim,
+        fresh_issue,
+        readiness,
+        workspace,
+        worker_host,
+        opts
+      )
     end
   end
+
+  defp run_handoff_transaction(
+         connection,
+         claim,
+         fresh_issue,
+         readiness,
+         workspace,
+         worker_host,
+         opts
+       ) do
+    transaction_result =
+      Postgrex.transaction(connection, fn transaction ->
+        transaction
+        |> run_locked_handoff(claim, fresh_issue, readiness, workspace, worker_host, opts)
+        |> finish_handoff_transaction(transaction)
+      end)
+
+    unwrap_handoff_transaction(transaction_result)
+  end
+
+  defp finish_handoff_transaction({:ok, _issue, _resume} = result, _transaction), do: result
+
+  defp finish_handoff_transaction({:error, reason}, transaction),
+    do: Postgrex.rollback(transaction, reason)
+
+  defp unwrap_handoff_transaction({:ok, result}), do: result
+  defp unwrap_handoff_transaction({:error, reason}), do: {:error, reason}
 
   defp run_locked_handoff(
          connection,
