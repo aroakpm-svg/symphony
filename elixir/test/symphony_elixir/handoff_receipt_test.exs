@@ -185,6 +185,25 @@ defmodule SymphonyElixir.HandoffReceiptTest do
              {:safe_recheck, :invalid_test_results}
   end
 
+  test "completion requires terminal phase and every fixed step" do
+    all_steps = HandoffReceipt.step_ids()
+
+    assert HandoffReceipt.resume(
+             %{@receipt | current_phase: :preflight, pending_step_ids: []},
+             @truth
+           ) == {:safe_recheck, :inconsistent_progress}
+
+    assert HandoffReceipt.resume(
+             %{@receipt | current_phase: :complete, completed_step_ids: all_steps, pending_step_ids: []},
+             @truth
+           ) == {:ok, :complete}
+
+    assert HandoffReceipt.resume(
+             %{@receipt | current_phase: :complete, pending_step_ids: [:review]},
+             @truth
+           ) == {:safe_recheck, :inconsistent_progress}
+  end
+
   test "changed Git, Linear, claim, or ledger truth requires a safe recheck" do
     cases = [
       {%{@truth | commit_sha: String.duplicate("b", 40)}, :git_or_repository_state_changed},

@@ -156,6 +156,14 @@ begin
        'preflight', 'implementation', 'verification', 'delivery', 'review', 'complete'
      )
      or not symphony_staging.validate_handoff_steps(requested_completed, requested_pending)
+     or (
+       requested_phase = 'complete'
+       and (
+         cardinality(requested_pending) <> 0
+         or cardinality(requested_completed) <> 8
+       )
+     )
+     or (requested_phase <> 'complete' and cardinality(requested_pending) = 0)
      or not symphony_staging.validate_handoff_tests(requested_test_results)
      or requested_effect_operation_ids is null
      or coalesce(array_ndims(requested_effect_operation_ids), 1) <> 1
