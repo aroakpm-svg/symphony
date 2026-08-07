@@ -35,6 +35,23 @@ defmodule SymphonyElixir.HandoffReceiptTest do
     assert source =~ "Reuse the exact existing ID for the same intended effect"
   end
 
+  test "handoff evidence requires the expected checked-out symbolic branch" do
+    assert HandoffReceipt.validate_checked_out_branch_for_test(
+             "codex/aro-166-handoff-receipts",
+             "codex/aro-166-handoff-receipts"
+           ) == {:ok, "codex/aro-166-handoff-receipts"}
+
+    assert HandoffReceipt.validate_checked_out_branch_for_test(
+             "other-branch",
+             "codex/aro-166-handoff-receipts"
+           ) == {:error, :handoff_branch_mismatch}
+
+    assert HandoffReceipt.validate_checked_out_branch_for_test(
+             "HEAD",
+             "codex/aro-166-handoff-receipts"
+           ) == {:error, :handoff_branch_mismatch}
+  end
+
   test "canonical origin parsing accepts GitHub transports without accepting lookalike hosts" do
     assert HandoffReceipt.github_repository_from_remote_for_test("https://github.com/aroakpm-svg/symphony.git") == {:ok, "aroakpm-svg/symphony"}
 

@@ -77,7 +77,8 @@ defmodule SymphonyElixir.HandoffReceipt do
           | {:error, term()}
   def workspace_evidence(workspace, branch, canonical_repository, worker_host)
       when is_binary(workspace) and is_binary(branch) and is_binary(canonical_repository) do
-    with {:ok, status} <- Workspace.run_git_command(workspace, ["status", "--porcelain=v1", "-z", "--untracked-files=all"], worker_host),
+    with {:ok, checked_out_branch} <- checked_out_branch(workspace, branch, worker_host),
+         {:ok, status} <- Workspace.run_git_command(workspace, ["status", "--porcelain=v1", "-z", "--untracked-files=all"], worker_host),
          {:ok, diff} <- Workspace.run_git_command(workspace, ["diff", "--binary", "HEAD"], worker_host),
          {:ok, cached} <- Workspace.run_git_command(workspace, ["diff", "--binary", "--cached", "HEAD"], worker_host),
          {:ok, head_sha} <- Workspace.run_git_command(workspace, ["rev-parse", "HEAD"], worker_host),
@@ -86,7 +87,14 @@ defmodule SymphonyElixir.HandoffReceipt do
          {:ok, remote_sha} <- remote_branch_sha(workspace, branch, worker_host) do
       fingerprint =
         :sha256
-        |> :crypto.hash([status, diff, cached, untracked_hashes, origin_repository])
+        |> :crypto.hash([
+          checked_out_branch,
+          status,
+          diff,
+          cached,
+          untracked_hashes,
+          origin_repository
+        ])
         |> Base.encode16(case: :lower)
 
       {:ok,
@@ -98,6 +106,20 @@ defmodule SymphonyElixir.HandoffReceipt do
        }}
     end
   end
+
+  defp checked_out_branch(workspace, expected_branch, worker_host) do
+    case Workspace.run_git_command(
+           workspace,
+           ["symbolic-ref", "--quiet", "--short", "HEAD"],
+           worker_host
+         ) do
+      {:ok, branch} -> validate_checked_out_branch(String.trim(branch), expected_branch)
+      {:error, _reason} -> {:error, :handoff_branch_mismatch}
+    end
+  end
+
+  defp validate_checked_out_branch(branch, branch) when branch != "", do: {:ok, branch}
+  defp validate_checked_out_branch(_actual, _expected), do: {:error, :handoff_branch_mismatch}
 
   defp canonical_origin_repository(workspace, expected_repository, worker_host) do
     with {:ok, url} <- Workspace.run_git_command(workspace, ["config", "--get", "remote.origin.url"], worker_host),
@@ -153,6 +175,12 @@ defmodule SymphonyElixir.HandoffReceipt do
   @doc false
   @spec github_repository_from_remote_for_test(String.t()) :: {:ok, String.t()} | {:error, atom()}
   def github_repository_from_remote_for_test(url), do: github_repository_from_remote(url)
+
+  @doc false
+  @spec validate_checked_out_branch_for_test(String.t(), String.t()) ::
+          {:ok, String.t()} | {:error, :handoff_branch_mismatch}
+  def validate_checked_out_branch_for_test(actual, expected),
+    do: validate_checked_out_branch(actual, expected)
 
   @doc false
   @spec append_sql_for_test() :: String.t()
