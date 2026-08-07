@@ -282,6 +282,38 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
     assert response["success"]
   end
 
+  test "managed effects accept a maximum-length canonical checkpoint ID on retry" do
+    canonical_id = "ARO-166:x" <> String.duplicate("a", 127)
+
+    response =
+      DynamicTool.execute(
+        "linear_comment",
+        %{"operationId" => canonical_id, "body" => "retry"},
+        managed_session: true,
+        managed_issue_id: "ARO-166",
+        effect_context_fetcher: fn "ARO-166" ->
+          {:ok, :connection,
+           %{
+             issue_id: "ARO-166",
+             claim_id: Ecto.UUID.generate(),
+             generation: 1,
+             node_id: Ecto.UUID.generate(),
+             node_instance_id: Ecto.UUID.generate()
+           }}
+        end,
+        legacy_effect_id_fetcher: fn :connection, _claim, ^canonical_id, ^canonical_id ->
+          {:ok, nil}
+        end,
+        managed_effect_runner: fn "linear_comment", :connection, context, "retry", _opts ->
+          assert context.operation_id == canonical_id
+          assert context.requested_operation_id == canonical_id
+          {:ok, %{"id" => "existing-comment"}}
+        end
+      )
+
+    assert response["success"]
+  end
+
   test "managed comments write canonical markers while retaining legacy reconciliation evidence" do
     assert DynamicTool.comment_bodies_for_test("ARO-166", "comment:1", "hello") ==
              {"hello\n\n<!-- symphony-effect:ARO-166:comment:1 -->", "hello\n\n<!-- symphony-effect:comment:1 -->"}

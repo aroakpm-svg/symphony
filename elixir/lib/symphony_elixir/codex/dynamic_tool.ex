@@ -324,7 +324,7 @@ defmodule SymphonyElixir.Codex.DynamicTool do
 
     with true <- Keyword.get(opts, :managed_session, false),
          true <- is_binary(issue_id),
-         {:ok, operation_id, value} <- normalize_managed_effect_arguments(tool, arguments),
+         {:ok, operation_id, value} <- normalize_managed_effect_arguments(tool, arguments, issue_id),
          {:ok, connection, claim_context} <- context_fetcher.(issue_id),
          canonical_operation_id <- EffectLedger.operation_id(claim_context.issue_id, operation_id),
          {:ok, legacy_operation_id} <-
@@ -371,13 +371,12 @@ defmodule SymphonyElixir.Codex.DynamicTool do
     end
   end
 
-  defp normalize_managed_effect_arguments(tool, arguments) when is_map(arguments) do
+  defp normalize_managed_effect_arguments(tool, arguments, issue_id) when is_map(arguments) do
     operation_id = Map.get(arguments, "operationId") || Map.get(arguments, :operationId)
     value_key = if tool == @linear_comment_tool, do: "body", else: "state"
     value = Map.get(arguments, value_key) || Map.get(arguments, String.to_atom(value_key))
 
-    if is_binary(operation_id) and
-         Regex.match?(~r/\A[A-Za-z0-9][A-Za-z0-9._:-]{0,127}\z/, operation_id) and
+    if EffectLedger.valid_requested_operation_id?(issue_id, operation_id) and
          is_binary(value) and
          String.trim(value) != "" do
       {:ok, operation_id, value}
@@ -386,7 +385,7 @@ defmodule SymphonyElixir.Codex.DynamicTool do
     end
   end
 
-  defp normalize_managed_effect_arguments(_tool, _arguments),
+  defp normalize_managed_effect_arguments(_tool, _arguments, _issue_id),
     do: {:error, :invalid_managed_effect_arguments}
 
   defp effect_fingerprint(tool, value) do
