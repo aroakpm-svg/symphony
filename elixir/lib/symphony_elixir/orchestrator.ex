@@ -1034,15 +1034,19 @@ defmodule SymphonyElixir.Orchestrator do
 
   defp spawn_issue_on_worker_host(%State{} = state, issue, attempt, recipient, worker_host, distributed_claim) do
     case Task.Supervisor.start_child(SymphonyElixir.TaskSupervisor, fn ->
-           AgentRunner.run(issue, recipient,
-             attempt: attempt,
-             worker_host: worker_host,
-             distributed_claim: distributed_claim
-           )
+           receive do
+             :claim_bound ->
+               AgentRunner.run(issue, recipient,
+                 attempt: attempt,
+                 worker_host: worker_host,
+                 distributed_claim: distributed_claim
+               )
+           end
          end) do
       {:ok, pid} ->
         case ClaimService.bind_worker(issue.id, pid) do
           :ok ->
+            send(pid, :claim_bound)
             track_spawned_issue(state, issue, attempt, worker_host, distributed_claim, pid)
 
           {:error, reason} ->

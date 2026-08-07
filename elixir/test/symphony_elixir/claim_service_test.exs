@@ -10,6 +10,17 @@ defmodule SymphonyElixir.ClaimServiceTest do
     refute source =~ "DateTime.to_iso8601(updated_at)"
   end
 
+  test "orchestrator releases a worker only after its database claim is bound" do
+    source = File.read!(Path.expand("../../lib/symphony_elixir/orchestrator.ex", __DIR__))
+
+    receive_offset = source |> :binary.match("receive do\n             :claim_bound") |> elem(0)
+    bind_offset = source |> :binary.match("ClaimService.bind_worker(issue.id, pid)") |> elem(0)
+    release_offset = source |> :binary.match("send(pid, :claim_bound)") |> elem(0)
+
+    assert receive_offset < bind_offset
+    assert bind_offset < release_offset
+  end
+
   test "lease deadlines remain anchored before a slow database grant returns" do
     grant_started_ms = System.monotonic_time(:millisecond)
     Process.sleep(5)

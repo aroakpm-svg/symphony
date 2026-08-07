@@ -266,19 +266,30 @@ defmodule SymphonyElixir.AgentRunner do
   defp prepare_distributed_handoff(issue, readiness, workspace, worker_host, _claim, opts) do
     ready? = Keyword.get(opts, :handoff_receipt_ready?, &ClaimService.handoff_receipt_ready?/0)
     context = Keyword.get(opts, :handoff_context, &ClaimService.handoff_context/1)
+    issue_fetcher = Keyword.get(opts, :handoff_issue_fetcher, &Tracker.fetch_issue_states_by_ids/1)
 
     with true <- ready?.() || {:error, :handoff_receipt_contract_unavailable},
          {:ok, connection, claim} <- context.(issue.id),
+         {:ok, fresh_issue} <- fetch_handoff_issue(issue.id, issue_fetcher),
          {:ok, previous} <- HandoffReceipt.latest(connection, claim),
          {:ok, repository, owner, name} <- handoff_repository(),
          {:ok, git_evidence} <- HandoffReceipt.workspace_evidence(workspace, readiness.issue_branch, worker_host),
          {:ok, truth} <-
-           handoff_truth(previous, issue, readiness, git_evidence, claim, connection, repository, opts),
+           handoff_truth(previous, fresh_issue, readiness, git_evidence, claim, connection, repository, opts),
          resume <- HandoffReceipt.resume(previous, truth),
          attrs <- checkpoint_attrs(previous, resume, readiness, git_evidence, owner, name),
          {:ok, _checkpoint} <- HandoffReceipt.append(connection, claim, attrs) do
       Logger.info("Handoff checkpoint restored for #{issue_context(issue)} result=#{inspect(resume)}")
       {:ok, resume}
+    end
+  end
+
+  defp fetch_handoff_issue(issue_id, issue_fetcher) do
+    case issue_fetcher.([issue_id]) do
+      {:ok, [%Issue{id: ^issue_id} = issue]} -> {:ok, issue}
+      {:ok, []} -> {:error, :handoff_issue_not_found}
+      {:ok, _issues} -> {:error, :handoff_issue_response_invalid}
+      {:error, reason} -> {:error, {:handoff_issue_fetch_failed, reason}}
     end
   end
 
@@ -308,7 +319,7 @@ defmodule SymphonyElixir.AgentRunner do
          branch: readiness.issue_branch,
          worktree_fingerprint: git_evidence.worktree_fingerprint,
          remote_branch_sha: handoff_remote_sha(previous, git_evidence.remote_branch_sha),
-         commit_sha: handoff_commit_sha(previous, readiness.head_sha),
+         commit_sha: handoff_commit_sha(previous, git_evidence.head_sha),
          pr_number: pr.number,
          pr_ready?: pr.ready?,
          linear_updated_at: issue.updated_at,

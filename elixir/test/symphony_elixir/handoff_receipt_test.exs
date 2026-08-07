@@ -3,6 +3,14 @@ defmodule SymphonyElixir.HandoffReceiptTest do
 
   alias SymphonyElixir.HandoffReceipt
 
+  test "handoff verification is based on freshly fetched tracker and workspace evidence" do
+    source = File.read!(Path.expand("../../lib/symphony_elixir/agent_runner.ex", __DIR__))
+
+    assert source =~ "fetch_handoff_issue(issue.id, issue_fetcher)"
+    assert source =~ "handoff_commit_sha(previous, git_evidence.head_sha)"
+    refute source =~ "handoff_commit_sha(previous, readiness.head_sha)"
+  end
+
   @receipt %{
     receipt_schema_version: 1,
     issue_id: "ARO-166",
