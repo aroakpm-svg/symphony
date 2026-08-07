@@ -243,7 +243,7 @@ defmodule SymphonyElixir.HandoffReceipt do
     operations = Map.get(truth, :effect_operations, %{})
 
     is_map(operations) and
-      MapSet.new(Map.keys(operations)) == MapSet.new(receipt.effect_operation_ids) and
+      MapSet.equal?(MapSet.new(Map.keys(operations)), MapSet.new(receipt.effect_operation_ids)) and
       Enum.all?(operations, fn {_operation_id, status} ->
         status in [:succeeded, :failed_no_effect]
       end)
@@ -256,7 +256,7 @@ defmodule SymphonyElixir.HandoffReceipt do
   defp valid_unique_subset?(_values, _allowlist), do: false
 
   defp consistent_completion?(:complete, completed, []),
-    do: MapSet.new(completed) == MapSet.new(@steps)
+    do: MapSet.equal?(MapSet.new(completed), MapSet.new(@steps))
 
   defp consistent_completion?(:complete, _completed, _pending), do: false
   defp consistent_completion?(_phase, _completed, []), do: false
