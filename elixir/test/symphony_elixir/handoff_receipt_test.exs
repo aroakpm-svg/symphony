@@ -98,6 +98,11 @@ defmodule SymphonyElixir.HandoffReceiptTest do
       row = List.replace_at(base_row, 14, [%{"name" => "make all", "status" => status}])
       assert HandoffReceipt.decode_row_for_test(row) == {:error, :receipt_incompatible}
     end
+
+    for name <- [42, "   "] do
+      row = List.replace_at(base_row, 14, [%{"name" => name, "status" => "passed"}])
+      assert HandoffReceipt.decode_row_for_test(row) == {:error, :receipt_incompatible}
+    end
   end
 
   test "database rows validate phase and step shapes before atom conversion" do

@@ -217,8 +217,9 @@ defmodule SymphonyElixir.HandoffReceipt do
 
   defp valid_tests?(tests) when is_list(tests) do
     Enum.all?(tests, fn
-      %{name: name, status: status} = result when is_binary(name) and byte_size(name) > 0 ->
-        map_size(result) == 2 and status in [:passed, :failed, :skipped]
+      %{name: name, status: status} = result when is_binary(name) ->
+        map_size(result) == 2 and status in [:passed, :failed, :skipped] and
+          nonempty_string?(name)
 
       _other ->
         false
@@ -371,9 +372,12 @@ defmodule SymphonyElixir.HandoffReceipt do
 
   defp decode_test_results(tests) when is_list(tests) do
     Enum.reduce_while(tests, {:ok, []}, fn
-      %{"name" => name, "status" => status}, {:ok, decoded}
-      when is_binary(name) and name != "" and status in ["passed", "failed", "skipped"] ->
-        {:cont, {:ok, [%{name: name, status: String.to_existing_atom(status)} | decoded]}}
+      %{"name" => name, "status" => status}, {:ok, decoded} ->
+        if nonempty_string?(name) and status in ["passed", "failed", "skipped"] do
+          {:cont, {:ok, [%{name: name, status: String.to_existing_atom(status)} | decoded]}}
+        else
+          {:halt, {:error, :receipt_incompatible}}
+        end
 
       _result, _decoded ->
         {:halt, {:error, :receipt_incompatible}}
