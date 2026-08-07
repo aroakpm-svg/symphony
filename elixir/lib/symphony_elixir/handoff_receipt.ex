@@ -202,7 +202,7 @@ defmodule SymphonyElixir.HandoffReceipt do
   end
 
   defp validate_decoded(%{receipt_schema_version: @schema_version} = receipt) do
-    if Enum.all?(@receipt_keys, &Map.has_key?(receipt, &1)) do
+    if Enum.all?(@receipt_keys, &Map.has_key?(receipt, &1)) and valid_receipt_metadata?(receipt) do
       validate_attrs(receipt)
     else
       {:error, :receipt_incompatible}
@@ -210,6 +210,13 @@ defmodule SymphonyElixir.HandoffReceipt do
   end
 
   defp validate_decoded(_receipt), do: {:error, :receipt_incompatible}
+
+  defp valid_receipt_metadata?(receipt) do
+    nonempty_string?(receipt.issue_id) and valid_uuid?(receipt.claim_id) and
+      is_integer(receipt.generation) and receipt.generation > 0 and
+      is_integer(receipt.checkpoint_sequence) and receipt.checkpoint_sequence > 0 and
+      match?(%DateTime{}, receipt.recorded_at)
+  end
 
   defp verify_truth(receipt, truth) do
     checks = [
@@ -298,6 +305,8 @@ defmodule SymphonyElixir.HandoffReceipt do
   defp valid_commit_sha?(_sha), do: false
   defp valid_pr_number?(nil), do: true
   defp valid_pr_number?(number), do: is_integer(number) and number > 0
+  defp valid_uuid?(value) when is_binary(value), do: match?({:ok, _uuid}, Ecto.UUID.cast(value))
+  defp valid_uuid?(_value), do: false
 
   defp append_params(claim, attrs) do
     claim_params(claim) ++

@@ -69,6 +69,23 @@ defmodule SymphonyElixir.HandoffReceiptTest do
     end
   end
 
+  test "receipts with invalid persisted metadata fail closed" do
+    invalid_values = [
+      {:issue_id, " "},
+      {:claim_id, nil},
+      {:claim_id, "not-a-uuid"},
+      {:generation, 0},
+      {:checkpoint_sequence, 0},
+      {:recorded_at, nil}
+    ]
+
+    for {key, value} <- invalid_values do
+      assert @receipt
+             |> Map.put(key, value)
+             |> HandoffReceipt.resume(@truth) == {:safe_recheck, :receipt_incompatible}
+    end
+  end
+
   test "database rows decode schema version before checkpoint sequence" do
     row = [
       1,
