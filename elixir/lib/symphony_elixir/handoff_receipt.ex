@@ -10,6 +10,11 @@ defmodule SymphonyElixir.HandoffReceipt do
   @schema_version 1
   @steps ~w(preflight branch implementation tests commit push pull_request review)a
   @phases ~w(preflight implementation verification delivery review complete)a
+  @receipt_keys ~w(
+    receipt_schema_version issue_id canonical_owner canonical_repository claim_id generation
+    checkpoint_sequence recorded_at branch commit_sha pr_number current_phase completed_step_ids
+    pending_step_ids test_results effect_operation_ids
+  )a
 
   @type test_result :: %{name: String.t(), status: :passed | :failed | :skipped}
   @type receipt :: %{
@@ -171,8 +176,13 @@ defmodule SymphonyElixir.HandoffReceipt do
     end
   end
 
-  defp validate_decoded(%{receipt_schema_version: @schema_version} = receipt),
-    do: validate_attrs(receipt)
+  defp validate_decoded(%{receipt_schema_version: @schema_version} = receipt) do
+    if Enum.all?(@receipt_keys, &Map.has_key?(receipt, &1)) do
+      validate_attrs(receipt)
+    else
+      {:error, :receipt_incompatible}
+    end
+  end
 
   defp validate_decoded(_receipt), do: {:error, :receipt_incompatible}
 

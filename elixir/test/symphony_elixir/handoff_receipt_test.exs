@@ -54,6 +54,14 @@ defmodule SymphonyElixir.HandoffReceiptTest do
              {:safe_recheck, :receipt_incompatible}
   end
 
+  test "receipts missing any V1 field fail closed before verification" do
+    for key <- Map.keys(@receipt) do
+      assert @receipt
+             |> Map.delete(key)
+             |> HandoffReceipt.resume(@truth) == {:safe_recheck, :receipt_incompatible}
+    end
+  end
+
   test "database rows decode schema version before checkpoint sequence" do
     row = [
       1,
