@@ -1057,13 +1057,7 @@ defmodule SymphonyElixir.Orchestrator do
     orchestrator = self()
 
     case Task.Supervisor.start_child(SymphonyElixir.TaskSupervisor, fn ->
-           await_claim_binding_for_test(orchestrator, @claim_binding_timeout_ms, fn ->
-             AgentRunner.run(issue, recipient,
-               attempt: attempt,
-               worker_host: worker_host,
-               distributed_claim: distributed_claim
-             )
-           end)
+           run_bound_agent(orchestrator, issue, attempt, recipient, worker_host, distributed_claim)
          end) do
       {:ok, pid} ->
         case ClaimService.bind_worker(issue.id, pid) do
@@ -1096,6 +1090,16 @@ defmodule SymphonyElixir.Orchestrator do
           worker_host: worker_host
         })
     end
+  end
+
+  defp run_bound_agent(orchestrator, issue, attempt, recipient, worker_host, distributed_claim) do
+    await_claim_binding_for_test(orchestrator, @claim_binding_timeout_ms, fn ->
+      AgentRunner.run(issue, recipient,
+        attempt: attempt,
+        worker_host: worker_host,
+        distributed_claim: distributed_claim
+      )
+    end)
   end
 
   defp track_spawned_issue(state, issue, attempt, worker_host, distributed_claim, pid) do
