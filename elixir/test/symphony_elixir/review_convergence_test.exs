@@ -11,6 +11,10 @@ defmodule SymphonyElixir.ReviewConvergenceTest do
     @spec snapshot(String.t(), String.t()) :: {:ok, map()} | {:error, term()}
     def snapshot(_repository, _branch), do: Application.fetch_env!(:symphony_elixir, :review_snapshot)
 
+    @spec snapshot(String.t(), String.t(), String.t() | nil) :: {:ok, map()} | {:error, term()}
+    def snapshot(_repository, _branch, _triage_owner),
+      do: Application.fetch_env!(:symphony_elixir, :review_snapshot)
+
     @spec request_review(String.t(), pos_integer(), String.t()) :: :ok
     def request_review(repository, number, key) do
       send(Application.fetch_env!(:symphony_elixir, :review_recipient), {:review_requested, repository, number, key})
@@ -117,6 +121,19 @@ defmodule SymphonyElixir.ReviewConvergenceTest do
              })
 
     assert malformed_message =~ "must use owner/name format"
+  end
+
+  test "review convergence accepts an explicit GitHub triage owner" do
+    assert {:ok, config} =
+             Schema.parse(%{
+               "review_convergence" => %{
+                 "enabled" => true,
+                 "repository" => "aroakpm-svg/symphony",
+                 "triage_owner" => "maintainer-login"
+               }
+             })
+
+    assert config.review_convergence.triage_owner == "maintainer-login"
   end
 
   test "missing expected GitHub Actions checks fail closed instead of treating zero rows as passing" do
@@ -714,6 +731,39 @@ defmodule SymphonyElixir.ReviewConvergenceTest do
 
     assert [%{triage: %{state: :follow_up_required, evidence: :root_cause_out_of_scope}}] =
              GitHubReviewClient.normalize_threads_for_test([thread], "head", "aroakpm-svg")
+  end
+
+  test "the latest trusted triage attempt overrides an earlier valid marker" do
+    thread = %{
+      "isResolved" => false,
+      "comments" => %{
+        "nodes" => [
+          %{
+            "body" => "P1 regression\nFinding-Triage: fix_in_current_pr\nTriage-Evidence: introduced_by_pr",
+            "path" => "lib/example.ex",
+            "url" => "thread",
+            "commit" => %{"oid" => "head"},
+            "author" => %{"login" => "chatgpt-codex-connector[bot]", "__typename" => "Bot", "databaseId" => 199_175_422}
+          },
+          %{
+            "body" => "Finding-Triage: fix_in_current_pr\nTriage-Evidence: unknown",
+            "commit" => %{"oid" => "head"},
+            "author" => %{"login" => "chatgpt-codex-connector[bot]", "__typename" => "Bot", "databaseId" => 199_175_422}
+          }
+        ]
+      }
+    }
+
+    assert [%{triage: nil}] = GitHubReviewClient.normalize_threads_for_test([thread], "head")
+  end
+
+  test "organization repositories require an explicit human triage owner" do
+    user_owned = %{"repositoryOwner" => %{"login" => "user-owner", "__typename" => "User"}}
+    org_owned = %{"repositoryOwner" => %{"login" => "team-org", "__typename" => "Organization"}}
+
+    assert GitHubReviewClient.triage_owner_for_test(user_owned, nil) == "user-owner"
+    assert GitHubReviewClient.triage_owner_for_test(org_owned, nil) == nil
+    assert GitHubReviewClient.triage_owner_for_test(org_owned, "maintainer-login") == "maintainer-login"
   end
 
   test "unresolved actionable threads remain blocking across head changes" do
@@ -1655,7 +1705,8 @@ defmodule SymphonyElixir.ReviewConvergenceTest do
       review_state: "In Review",
       in_progress_state: "In Progress",
       max_fix_rounds: 3,
-      human_owner: "owner"
+      human_owner: "owner",
+      triage_owner: nil
     }
   end
 

@@ -214,7 +214,10 @@ Notes:
   invocation when a turn completes normally but the issue is still in an active state. Default: `20`.
 - `review_convergence.enabled` defaults to `false`. When enabled, `repository` is required in
   `owner/name` form. `review_state`, `in_progress_state`, `max_fix_rounds`, and `human_owner`
-  configure monitoring, rework, and escalation without changing merge authorization.
+  configure monitoring, rework, and escalation without changing merge authorization. An optional
+  `triage_owner` exact GitHub login authorizes typed human triage; user-owned repositories may
+  default to the repository owner, while organization-owned repositories require this explicit
+  setting for human triage.
 - If the Markdown body is blank, Symphony uses a default prompt template that includes the issue
   identifier, title, and body.
 - Use `hooks.after_create` to bootstrap a fresh workspace. For a Git-backed repo, you can run

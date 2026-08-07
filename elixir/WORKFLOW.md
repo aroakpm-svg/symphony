@@ -43,6 +43,9 @@ review_convergence:
   in_progress_state: "In Progress"
   max_fix_rounds: 3
   human_owner: "PM AROAK"
+  # Optional exact GitHub login allowed to provide typed triage in review threads.
+  # Required when repository is organization-owned and human triage is needed.
+  # triage_owner: "github-maintainer-login"
 codex:
   command: |
     ENV_FILE="C:/Users/aroak/Desktop/codex/symphony/elixir/.env.local"

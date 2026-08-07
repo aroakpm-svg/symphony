@@ -134,7 +134,8 @@ defmodule SymphonyElixir.ReviewMonitor do
 
   defp reconcile_snapshot(issue, entry, state, settings, review_client, tracker) do
     with branch when is_binary(branch) and branch != "" <- issue.branch_name,
-         {:ok, snapshot} <- review_client.snapshot(settings.repository, branch) do
+         {:ok, snapshot} <-
+           review_snapshot(review_client, settings.repository, branch, settings) do
       entry = invalidate_old_head(entry, snapshot.current_head_sha)
       decision = ReviewConvergence.evaluate(snapshot, entry.fix_rounds, settings.max_fix_rounds)
       {updated_entry, _outcome} = apply_decision(decision, issue, entry, settings, review_client, tracker, snapshot)
@@ -150,7 +151,7 @@ defmodule SymphonyElixir.ReviewMonitor do
     entry =
       case issue.branch_name do
         branch when is_binary(branch) and branch != "" ->
-          case review_client.snapshot(settings.repository, branch) do
+          case review_snapshot(review_client, settings.repository, branch, settings) do
             {:ok, snapshot} -> invalidate_old_head(entry, snapshot.current_head_sha)
             {:error, _snapshot_reason} -> entry
           end
@@ -167,6 +168,13 @@ defmodule SymphonyElixir.ReviewMonitor do
   end
 
   defp invalidate_old_head(entry, current_head), do: Map.put(entry, :head_sha, current_head)
+
+  defp review_snapshot(review_client, repository, branch, settings) do
+    case Map.get(settings, :triage_owner) do
+      nil -> review_client.snapshot(repository, branch)
+      triage_owner -> review_client.snapshot(repository, branch, triage_owner)
+    end
+  end
 
   defp apply_decision({:request_review, _evidence}, issue, entry, settings, review_client, _tracker, snapshot) do
     digest = ReviewConvergence.dedup_key(:review_request, issue.id, snapshot.current_head_sha, :codex)

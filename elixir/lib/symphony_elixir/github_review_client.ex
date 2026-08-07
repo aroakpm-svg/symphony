@@ -4,6 +4,10 @@ defmodule SymphonyElixir.GitHubReviewClient do
   @graphql """
   query SymphonyReviewConvergence($owner: String!, $name: String!, $number: Int!, $endCursor: String) {
     repository(owner: $owner, name: $name) {
+      owner {
+        login
+        __typename
+      }
       pullRequest(number: $number) {
         number
         headRefOid
@@ -86,7 +90,11 @@ defmodule SymphonyElixir.GitHubReviewClient do
   ]
 
   @spec snapshot(String.t(), String.t()) :: {:ok, map()} | {:error, term()}
-  def snapshot(repository, branch) when is_binary(repository) and is_binary(branch) do
+  def snapshot(repository, branch), do: snapshot(repository, branch, nil)
+
+  @spec snapshot(String.t(), String.t(), String.t() | nil) :: {:ok, map()} | {:error, term()}
+  def snapshot(repository, branch, configured_triage_owner)
+      when is_binary(repository) and is_binary(branch) do
     with {:ok, number} <- find_pull_request(repository, branch),
          {:ok, pull_request} <- fetch_pull_request(repository, number),
          {:ok, issue_comments} <- fetch_issue_comments(repository, number),
@@ -94,7 +102,12 @@ defmodule SymphonyElixir.GitHubReviewClient do
          {:ok, base_verification} <- verify_base_claims(repository, pull_request) do
       {:ok,
        pull_request
-       |> normalize_snapshot(checks, base_verification, issue_comments, repository_owner(repository))
+       |> normalize_snapshot(
+         checks,
+         base_verification,
+         issue_comments,
+         triage_owner(pull_request, configured_triage_owner)
+       )
        |> Map.put(:repository, repository)
        |> Map.put(:pull_request_number, number)}
     end
@@ -123,13 +136,6 @@ defmodule SymphonyElixir.GitHubReviewClient do
 
     Do not infer ownership from severity, path, current head, or free-form prose. Use blocked_unverified when evidence is insufficient.
     """
-  end
-
-  defp repository_owner(repository) do
-    case String.split(repository, "/", parts: 2) do
-      [owner, _name] -> owner
-      _ -> nil
-    end
   end
 
   @doc false
@@ -257,6 +263,11 @@ defmodule SymphonyElixir.GitHubReviewClient do
   @spec normalize_snapshot_for_test(map(), [map()], map(), [map()], String.t() | nil) :: map()
   def normalize_snapshot_for_test(pull_request, checks, base_verification, issue_comments, triage_owner),
     do: normalize_snapshot(pull_request, checks, base_verification, issue_comments, triage_owner)
+
+  @doc false
+  @spec triage_owner_for_test(map(), String.t() | nil) :: String.t() | nil
+  def triage_owner_for_test(pull_request, configured_owner),
+    do: triage_owner(pull_request, configured_owner)
 
   @doc false
   @spec base_missing_paths_for_test([map()], String.t()) :: [String.t()]
@@ -689,7 +700,7 @@ defmodule SymphonyElixir.GitHubReviewClient do
        ) do
     if is_list(nodes) and is_boolean(has_next_page) and
          (is_binary(end_cursor) or is_nil(end_cursor)) do
-      {:ok, pull_request, nodes}
+      {:ok, Map.put(pull_request, "repositoryOwner", get_in(page, ["data", "repository", "owner"])), nodes}
     else
       {:error, {:invalid_pull_request_page, page}}
     end
@@ -1003,7 +1014,7 @@ defmodule SymphonyElixir.GitHubReviewClient do
     Enum.flat_map(threads, fn thread ->
       comments = get_in(thread, ["comments", "nodes"]) || []
       comment = Enum.find(Enum.reverse(comments), &(not is_nil(priority(&1["body"] || ""))))
-      triage_comment = Enum.find(Enum.reverse(comments), &triage_marker?(&1, triage_owner))
+      triage_comment = Enum.find(Enum.reverse(comments), &triage_attempt?(&1, triage_owner))
 
       if comment do
         body = comment["body"] || ""
@@ -1054,17 +1065,37 @@ defmodule SymphonyElixir.GitHubReviewClient do
 
   defp parse_triage(_comment, _triage_owner), do: nil
 
-  defp triage_marker?(comment, triage_owner) when is_map(comment) do
-    parse_triage(comment, triage_owner) != nil
+  defp triage_attempt?(comment, triage_owner) when is_map(comment) do
+    trusted_triage_author?(comment["author"], triage_owner) and triage_marker_text?(comment["body"] || "")
   end
 
-  defp triage_marker?(_comment, _triage_owner), do: false
+  defp triage_attempt?(_comment, _triage_owner), do: false
+
+  defp trusted_triage_author?(author, triage_owner) do
+    trusted_reviewer?(author) or trusted_owner?(author, triage_owner)
+  end
+
+  defp triage_marker_text?(body) when is_binary(body) do
+    Regex.match?(~r/(?:^|\r?\n)\s*(?:Finding-Triage|Triage-Evidence|Triage-Reason):/i, body)
+  end
+
+  defp triage_marker_text?(_body), do: false
 
   defp trusted_owner?(%{"login" => login, "__typename" => "User"}, owner)
        when is_binary(login) and is_binary(owner),
        do: login == owner
 
   defp trusted_owner?(_author, _owner), do: false
+
+  defp triage_owner(_pull_request, configured_owner) when is_binary(configured_owner) do
+    if String.trim(configured_owner) == "", do: nil, else: configured_owner
+  end
+
+  defp triage_owner(%{"repositoryOwner" => %{"login" => login, "__typename" => "User"}}, nil)
+       when is_binary(login),
+       do: login
+
+  defp triage_owner(_pull_request, _configured_owner), do: nil
 
   defp parse_triage_body(body) do
     with {:ok, state_name} <-

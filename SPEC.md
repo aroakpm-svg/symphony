@@ -361,6 +361,11 @@ operations MUST remain recoverable after restart and after the issue leaves the 
 round MUST be counted only once the target state is observed and completion is durable.
 Technical convergence MUST NOT authorize merge, deployment, or terminal tracker transitions.
 
+For the local finding-triage gate, an optional `triage_owner` field is an exact GitHub login that
+may provide typed human triage. If it is omitted, a user-owned repository may use its verified
+repository-owner login; organization-owned repositories MUST keep human triage untrusted unless
+an explicit `triage_owner` is configured. A malformed or stale triage attempt MUST fail closed.
+
 Note:
 
 - The workflow front matter is extensible. Extensions MAY define additional top-level keys without
