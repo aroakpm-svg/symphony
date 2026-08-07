@@ -298,6 +298,12 @@ issues. Severity and ownership are separate. Later routing may consume the typed
 under its own policy; unknown ownership must remain in review for follow-up or human disposition.
 When this lint applies to an existing PR, update its description to the structured contract.
 
+The review monitor's local Finding Triage Gate is fail-closed. Each actionable finding must carry
+`fix_in_current_pr`, `follow_up_required`, or `blocked_unverified` with typed evidence before an
+agent may edit. Only the first state reuses the existing rework transition. The second writes one
+deduplicated reminder to the original PR and waits for a human decision; the third stays in review.
+No state creates an issue or PR, resolves review threads, merges, or relies on an external receipt.
+
 Run the real external end-to-end test only when you want Symphony to create disposable Linear
 resources and launch a real `codex app-server` session:
 

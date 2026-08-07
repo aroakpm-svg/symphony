@@ -209,6 +209,35 @@ defmodule SymphonyElixir.ReviewMonitor do
     end
   end
 
+  defp apply_decision({:follow_up, evidence}, _issue, entry, settings, review_client, _tracker, snapshot) do
+    findings = evidence.follow_up_findings
+
+    key =
+      ReviewConvergence.dedup_key(
+        :follow_up,
+        "pr:#{snapshot.pull_request_number}",
+        snapshot.current_head_sha,
+        :single_pr_reminder
+      )
+
+    with {entry, :ok} <-
+           ensure_published_status(
+             entry,
+             review_client,
+             settings.repository,
+             snapshot,
+             :failure,
+             "Review triage requires human follow-up"
+           ) do
+      dedup_action(entry, key, fn ->
+        ensure_follow_up_reminder(review_client, settings.repository, snapshot, findings, key)
+      end)
+    end
+    |> then(fn {updated, result} ->
+      {%{updated | waiting: result in [:ok, :deduplicated]}, result}
+    end)
+  end
+
   defp apply_decision({:wait, evidence}, issue, entry, settings, review_client, tracker, snapshot) do
     reason = evidence[:reason] || :external_or_human_validation
     key = ReviewConvergence.dedup_key(:wait, issue.id, snapshot.current_head_sha, reason)
@@ -289,6 +318,20 @@ defmodule SymphonyElixir.ReviewMonitor do
 
       {:error, reason} ->
         {:error, reason}
+    end
+  end
+
+  defp ensure_follow_up_reminder(review_client, repository, snapshot, findings, key) do
+    with {:ok, exists?} <- review_client.pr_comment_exists?(repository, snapshot.pull_request_number, key) do
+      if exists? do
+        :ok
+      else
+        review_client.create_pr_comment(
+          repository,
+          snapshot.pull_request_number,
+          follow_up_comment(snapshot, findings, key)
+        )
+      end
     end
   end
 
@@ -478,6 +521,27 @@ defmodule SymphonyElixir.ReviewMonitor do
     #{details}
 
     Symphony should reuse the same branch/PR and fix only these scoped findings.
+    dedup-key: `#{key}`
+    """
+  end
+
+  defp follow_up_comment(snapshot, findings, key) do
+    details =
+      Enum.map_join(findings, "\n", fn entry ->
+        finding = entry.finding
+        "- P#{finding[:priority]}: #{finding[:url] || finding[:path] || finding[:body]} (reason: #{entry.reason})"
+      end)
+
+    """
+    Finding Triage Gate requires human follow-up before any agent patch.
+
+    - triage-state: `follow_up_required`
+    - PR: ##{snapshot.pull_request_number}
+    - currentHeadSha: `#{snapshot.current_head_sha}`
+    #{details}
+
+    The root cause is evidenced as outside this PR. A human must decide whether to open a follow-up issue or PR.
+    Symphony will not patch this PR, create an issue or PR, resolve review threads, or merge.
     dedup-key: `#{key}`
     """
   end

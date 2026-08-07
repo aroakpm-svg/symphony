@@ -6,10 +6,13 @@ defmodule SymphonyElixir.ReviewConvergence do
   terminal tracker transition.
   """
 
+  alias SymphonyElixir.FindingTriage
+
   @type decision ::
           {:converged, map()}
           | {:request_review, map()}
           | {:rework, map()}
+          | {:follow_up, map()}
           | {:wait, map()}
           | {:escalate, map()}
 
@@ -17,11 +20,13 @@ defmodule SymphonyElixir.ReviewConvergence do
   def evaluate(snapshot, fix_rounds, max_fix_rounds)
       when is_map(snapshot) and is_integer(fix_rounds) and is_integer(max_fix_rounds) do
     actionable = Enum.filter(snapshot[:threads] || [], &actionable_thread?/1)
-    gate_evidence = evidence(snapshot, actionable)
+    triage = FindingTriage.classify(actionable, snapshot)
+    gate_evidence = evidence(snapshot, actionable, triage)
 
     with :continue <- waiting_gate(snapshot, gate_evidence),
          :continue <- current_head_gate(snapshot, gate_evidence),
          :continue <- base_gate(snapshot, gate_evidence),
+         :continue <- finding_triage_gate(triage, gate_evidence),
          :continue <- actionable_gate(snapshot, actionable, gate_evidence, fix_rounds, max_fix_rounds),
          :continue <- review_gate(snapshot, gate_evidence),
          :continue <- checks_gate(snapshot, gate_evidence) do
@@ -73,6 +78,14 @@ defmodule SymphonyElixir.ReviewConvergence do
     end
   end
 
+  defp finding_triage_gate(%{blocked_unverified: [_ | _]}, evidence),
+    do: {:wait, Map.put(evidence, :reason, :finding_triage_unverified)}
+
+  defp finding_triage_gate(%{follow_up_required: [_ | _] = findings}, evidence),
+    do: {:follow_up, Map.put(evidence, :follow_up_findings, findings)}
+
+  defp finding_triage_gate(_triage, _evidence), do: :continue
+
   defp review_gate(snapshot, evidence) do
     if snapshot[:reviewed_head_sha] == snapshot[:current_head_sha] and
          snapshot[:review_result] == :no_major_issues do
@@ -102,7 +115,7 @@ defmodule SymphonyElixir.ReviewConvergence do
     fix_rounds >= max_fix_rounds or snapshot[:structural_risk] == true
   end
 
-  defp evidence(snapshot, actionable) do
+  defp evidence(snapshot, actionable, triage) do
     %{
       current_head_sha: snapshot[:current_head_sha],
       reviewed_head_sha: snapshot[:reviewed_head_sha],
@@ -110,7 +123,8 @@ defmodule SymphonyElixir.ReviewConvergence do
       base_ref_oid: snapshot[:base_ref_oid],
       base_verification: snapshot[:base_verification],
       required_checks: snapshot[:required_checks] || [],
-      actionable_threads: actionable
+      actionable_threads: actionable,
+      finding_triage: triage
     }
   end
 end

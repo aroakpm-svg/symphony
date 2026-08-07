@@ -22,6 +22,17 @@ defmodule SymphonyElixir.ReviewConvergenceTest do
       {:ok, key in Application.get_env(:symphony_elixir, :existing_review_keys, [])}
     end
 
+    @spec pr_comment_exists?(String.t(), pos_integer(), String.t()) :: {:ok, boolean()}
+    def pr_comment_exists?(_repository, _number, key) do
+      {:ok, key in Application.get_env(:symphony_elixir, :existing_follow_up_keys, [])}
+    end
+
+    @spec create_pr_comment(String.t(), pos_integer(), String.t()) :: :ok
+    def create_pr_comment(repository, number, body) do
+      send(Application.fetch_env!(:symphony_elixir, :review_recipient), {:pr_comment, repository, number, body})
+      :ok
+    end
+
     @spec publish_status(String.t(), String.t(), atom(), String.t(), String.t() | nil) :: :ok
     def publish_status(repository, head_sha, state, description, _target_url) do
       send(
@@ -83,6 +94,7 @@ defmodule SymphonyElixir.ReviewConvergenceTest do
       Application.delete_env(:symphony_elixir, :review_issues)
       Application.delete_env(:symphony_elixir, :review_snapshot)
       Application.delete_env(:symphony_elixir, :existing_review_keys)
+      Application.delete_env(:symphony_elixir, :existing_follow_up_keys)
       Application.delete_env(:symphony_elixir, :review_history)
       Application.delete_env(:symphony_elixir, :linear_client_module)
       Application.delete_env(:symphony_elixir, :review_state_result)
@@ -588,6 +600,59 @@ defmodule SymphonyElixir.ReviewConvergenceTest do
     assert query =~ "comments(first: 100)"
   end
 
+  test "triage markers require a trusted reviewer and typed evidence" do
+    trusted = %{
+      "login" => "chatgpt-codex-connector[bot]",
+      "__typename" => "Bot",
+      "databaseId" => 199_175_422
+    }
+
+    body = """
+    **P1** regression
+    Finding-Triage: fix_in_current_pr
+    Triage-Evidence: introduced_by_pr
+    """
+
+    assert %{state: :fix_in_current_pr, evidence: :introduced_by_pr} =
+             GitHubReviewClient.parse_triage_for_test(body, trusted)
+
+    assert GitHubReviewClient.parse_triage_for_test(body, %{"login" => "random-user"}) == nil
+
+    follow_up = """
+    P2 shared contract
+    Finding-Triage: follow_up_required
+    Triage-Evidence: root_cause_out_of_scope
+    Triage-Reason: shared contract belongs to another change
+    """
+
+    assert %{state: :follow_up_required, reason: "shared contract belongs to another change"} =
+             GitHubReviewClient.parse_triage_for_test(follow_up, trusted)
+  end
+
+  test "normalized actionable threads carry only trusted typed triage" do
+    thread = %{
+      "isResolved" => false,
+      "comments" => %{
+        "nodes" => [
+          %{
+            "body" => "P1 regression\nFinding-Triage: fix_in_current_pr\nTriage-Evidence: introduced_by_pr",
+            "path" => "lib/example.ex",
+            "url" => "thread",
+            "commit" => %{"oid" => "head"},
+            "author" => %{
+              "login" => "chatgpt-codex-connector[bot]",
+              "__typename" => "Bot",
+              "databaseId" => 199_175_422
+            }
+          }
+        ]
+      }
+    }
+
+    assert [%{triage: %{state: :fix_in_current_pr, evidence: :introduced_by_pr}}] =
+             GitHubReviewClient.normalize_threads_for_test([thread], "head")
+  end
+
   test "unresolved actionable threads remain blocking across head changes" do
     thread = fn commit, body ->
       %{
@@ -1064,6 +1129,57 @@ defmodule SymphonyElixir.ReviewConvergenceTest do
              |> ReviewConvergence.evaluate(0, 3)
   end
 
+  test "missing finding triage evidence keeps the issue in review" do
+    finding = %{resolved: false, priority: 1, body: "P1 missing triage", triage: nil}
+
+    assert {:wait, %{reason: :finding_triage_unverified}} =
+             ReviewConvergence.evaluate(snapshot(%{threads: [finding]}), 0, 3)
+  end
+
+  test "follow-up triage is a PR reminder decision, not a rework decision" do
+    finding = %{
+      resolved: false,
+      priority: 2,
+      body: "P2 outside this PR",
+      triage: %{
+        state: :follow_up_required,
+        evidence: :root_cause_out_of_scope,
+        reason: "shared contract belongs to a separate change"
+      }
+    }
+
+    assert {:follow_up, %{follow_up_findings: [_]}} =
+             ReviewConvergence.evaluate(snapshot(%{threads: [finding]}), 0, 3)
+  end
+
+  test "follow-up reminder is written to the PR once without changing Linear state" do
+    finding = %{
+      resolved: false,
+      priority: 2,
+      body: "P2 outside this PR",
+      triage: %{
+        state: :follow_up_required,
+        evidence: :root_cause_out_of_scope,
+        reason: "shared contract belongs to a separate change"
+      }
+    }
+
+    Application.put_env(:symphony_elixir, :review_snapshot, {:ok, snapshot(%{threads: [finding]})})
+
+    state = ReviewMonitor.run_with(%{}, settings(), ReviewClient, Tracker)
+    assert_receive {:pr_comment, "aroakpm-svg/repo", 42, body}
+    assert body =~ "triage-state: `follow_up_required`"
+    refute_receive {:comment, _, _}
+    refute_receive {:state, _, _}
+
+    key = ReviewConvergence.dedup_key(:follow_up, "pr:42", "head", :single_pr_reminder)
+    Application.put_env(:symphony_elixir, :existing_follow_up_keys, [key])
+    _state = ReviewMonitor.run_with(state, settings(), ReviewClient, Tracker)
+    refute_receive {:pr_comment, _, _, _}
+    refute_receive {:comment, _, _}
+    refute_receive {:state, _, _}
+  end
+
   test "an explicit human wait reason is preserved in the decision evidence" do
     assert {:wait, %{reason: :staging}} =
              snapshot(%{waiting_reason: :staging}) |> ReviewConvergence.evaluate(0, 3)
@@ -1452,22 +1568,33 @@ defmodule SymphonyElixir.ReviewConvergenceTest do
   end
 
   defp snapshot(overrides \\ %{}) do
-    Map.merge(
-      %{
-        repository: "aroakpm-svg/repo",
-        pull_request_number: 42,
-        current_head_sha: "head",
-        reviewed_head_sha: "head",
-        review_result: :no_major_issues,
-        base_ref_oid: "base",
-        base_verification_required: false,
-        base_verification: :not_required,
-        required_checks: [%{name: "test", state: :success}],
-        threads: [],
-        waiting_reason: nil
-      },
-      overrides
-    )
+    snapshot =
+      Map.merge(
+        %{
+          repository: "aroakpm-svg/repo",
+          pull_request_number: 42,
+          current_head_sha: "head",
+          reviewed_head_sha: "head",
+          review_result: :no_major_issues,
+          base_ref_oid: "base",
+          base_verification_required: false,
+          base_verification: :not_required,
+          required_checks: [%{name: "test", state: :success}],
+          threads: [],
+          waiting_reason: nil
+        },
+        overrides
+      )
+
+    Map.update!(snapshot, :threads, fn threads ->
+      Enum.map(threads, fn
+        finding when is_map(finding) ->
+          Map.put_new(finding, :triage, %{state: :fix_in_current_pr, evidence: :introduced_by_pr})
+
+        finding ->
+          finding
+      end)
+    end)
   end
 
   defp rework_body(key) do

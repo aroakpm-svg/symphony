@@ -555,6 +555,17 @@ or placeholder fields without inferring meaning from free-form prose.
 - When this lint applies to an existing pull request, its description MUST be migrated to the
   structured contract before it can pass validation.
 
+Review routing is a separate, advisory-only extension. Before an agent may edit a pull request in
+response to an actionable finding, the finding MUST carry a typed triage decision:
+`fix_in_current_pr`, `follow_up_required`, or `blocked_unverified`. The decision MUST include the
+corresponding evidence; severity, current-head position, path, or free-form prose alone MUST NOT
+authorize a fix. Missing or malformed triage is `blocked_unverified` and keeps the issue in review.
+
+Only `fix_in_current_pr` may enter the existing rework transition. `follow_up_required` writes at
+most one idempotent reminder to the original pull request for the same head and waits for human
+choice; it MUST NOT patch, create an issue or pull request, resolve a thread, or merge. The monitor
+does not infer a follow-up from prose and does not consume a Central Brain disposition or receipt.
+
 ## 6. Configuration Specification
 
 ### 6.1 Configuration Resolution Pipeline

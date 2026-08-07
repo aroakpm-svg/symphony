@@ -437,6 +437,20 @@ only after proving that the finding violates a declared invariant or acceptance 
 the PR introduced the defect. If ownership is unknown, fail closed: keep the issue In Review for a
 follow-up or human disposition.
 
+Finding Triage Gate
+
+Review Monitor requires every actionable finding to carry one explicit typed decision before an
+agent can edit the branch: `fix_in_current_pr`, `follow_up_required`, or `blocked_unverified`.
+The trusted review adapter may provide the exact lines `Finding-Triage`, `Triage-Evidence`, and,
+for a follow-up, a non-empty `Triage-Reason`. Missing, malformed, or unsupported evidence is
+`blocked_unverified`; priority, current-head position, path, and free-form prose are not evidence.
+
+Only `fix_in_current_pr` enters the existing Linear rework transition. `follow_up_required` leaves
+one deduplicated reminder on the original PR for human choice and keeps the issue in review. It
+does not patch, create an issue or PR, resolve a review thread, or merge. The gate is local to
+Symphony's review monitor and does not restore or depend on any external disposition/receipt
+contract.
+
 Review Convergence Runtime
 
 After a PR enters In Review, Symphony's Review Monitor owns machine-verifiable convergence. A
