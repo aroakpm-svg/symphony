@@ -90,7 +90,24 @@ create or replace function symphony_staging.append_handoff_receipt(
   requested_test_results jsonb,
   requested_effect_operation_ids text[]
 )
-returns setof symphony_staging.handoff_receipts
+returns table (
+  receipt_schema_version integer,
+  issue_id text,
+  canonical_owner text,
+  canonical_repository text,
+  claim_id uuid,
+  generation bigint,
+  checkpoint_sequence bigint,
+  recorded_at timestamptz,
+  branch text,
+  commit_sha text,
+  pr_number integer,
+  current_phase text,
+  completed_step_ids text[],
+  pending_step_ids text[],
+  test_results jsonb,
+  effect_operation_ids text[]
+)
 language plpgsql
 security definer
 set search_path = pg_catalog, pg_temp
@@ -153,7 +170,23 @@ begin
     requested_test_results, requested_effect_operation_ids
   ) returning * into inserted;
 
-  return next inserted;
+  return query select
+    inserted.receipt_schema_version,
+    inserted.issue_id,
+    inserted.canonical_owner,
+    inserted.canonical_repository,
+    inserted.claim_id,
+    inserted.generation,
+    inserted.checkpoint_sequence,
+    inserted.recorded_at,
+    inserted.branch,
+    inserted.commit_sha,
+    inserted.pr_number,
+    inserted.current_phase,
+    inserted.completed_step_ids,
+    inserted.pending_step_ids,
+    inserted.test_results,
+    inserted.effect_operation_ids;
 end
 $$;
 
@@ -164,7 +197,24 @@ create or replace function symphony_staging.latest_handoff_receipt(
   active_node_id uuid,
   active_node_instance_id uuid
 )
-returns setof symphony_staging.handoff_receipts
+returns table (
+  receipt_schema_version integer,
+  issue_id text,
+  canonical_owner text,
+  canonical_repository text,
+  claim_id uuid,
+  generation bigint,
+  checkpoint_sequence bigint,
+  recorded_at timestamptz,
+  branch text,
+  commit_sha text,
+  pr_number integer,
+  current_phase text,
+  completed_step_ids text[],
+  pending_step_ids text[],
+  test_results jsonb,
+  effect_operation_ids text[]
+)
 language plpgsql
 stable
 security definer
@@ -186,7 +236,23 @@ begin
   end if;
 
   return query
-  select receipts.*
+  select
+    receipts.receipt_schema_version,
+    receipts.issue_id,
+    receipts.canonical_owner,
+    receipts.canonical_repository,
+    receipts.claim_id,
+    receipts.generation,
+    receipts.checkpoint_sequence,
+    receipts.recorded_at,
+    receipts.branch,
+    receipts.commit_sha,
+    receipts.pr_number,
+    receipts.current_phase,
+    receipts.completed_step_ids,
+    receipts.pending_step_ids,
+    receipts.test_results,
+    receipts.effect_operation_ids
   from symphony_staging.handoff_receipts receipts
   where receipts.issue_id = requested_issue_id
   order by receipts.generation desc, receipts.checkpoint_sequence desc

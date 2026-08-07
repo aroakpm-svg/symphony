@@ -46,6 +46,34 @@ defmodule SymphonyElixir.HandoffReceiptTest do
              {:safe_recheck, :receipt_incompatible}
   end
 
+  test "database rows decode schema version before checkpoint sequence" do
+    row = [
+      1,
+      "ARO-166",
+      "aroakpm-svg",
+      "symphony",
+      "00000000-0000-0000-0000-000000000001",
+      2,
+      7,
+      ~U[2026-08-07 00:00:00Z],
+      "codex/aro-166-handoff-receipts",
+      String.duplicate("a", 40),
+      19,
+      "delivery",
+      ["preflight", "branch"],
+      ["push"],
+      [%{"name" => "make all", "status" => "passed"}],
+      ["ARO-166:git-commit:1"]
+    ]
+
+    assert {:ok, receipt} = HandoffReceipt.decode_row_for_test(row)
+    assert receipt.receipt_schema_version == 1
+    assert receipt.checkpoint_sequence == 7
+
+    assert HandoffReceipt.decode_row_for_test([7, 1 | Enum.drop(row, 2)]) ==
+             {:error, :receipt_incompatible}
+  end
+
   test "step overlap, duplicates, and values outside the allowlist fail closed" do
     overlap = %{@receipt | pending_step_ids: [:commit, :push]}
     duplicate = %{@receipt | completed_step_ids: [:preflight, :preflight]}

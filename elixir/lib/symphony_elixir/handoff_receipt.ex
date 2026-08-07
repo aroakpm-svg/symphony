@@ -53,6 +53,10 @@ defmodule SymphonyElixir.HandoffReceipt do
   @spec phases() :: [atom()]
   def phases, do: @phases
 
+  @doc false
+  @spec decode_row_for_test(list()) :: {:ok, receipt()} | {:error, :receipt_incompatible}
+  def decode_row_for_test(row), do: decode_row(row)
+
   @spec append(Postgrex.conn(), map(), map()) :: {:ok, receipt()} | {:error, term()}
   def append(connection, claim, attrs) when is_map(claim) and is_map(attrs) do
     with :ok <- validate_attrs(attrs),
@@ -266,7 +270,7 @@ defmodule SymphonyElixir.HandoffReceipt do
 
   defp append_sql do
     """
-    select * from symphony_staging.append_handoff_receipt(
+    select #{receipt_columns()} from symphony_staging.append_handoff_receipt(
       $1, $2::text::uuid, $3, $4::text::uuid, $5::text::uuid,
       $6, $7, $8, $9, $10, $11, $12::text[], $13::text[], $14::jsonb, $15::text[]
     )
@@ -275,10 +279,21 @@ defmodule SymphonyElixir.HandoffReceipt do
 
   defp latest_sql do
     """
-    select * from symphony_staging.latest_handoff_receipt(
+    select #{receipt_columns()} from symphony_staging.latest_handoff_receipt(
       $1, $2::text::uuid, $3, $4::text::uuid, $5::text::uuid
     )
     """
+  end
+
+  defp receipt_columns do
+    """
+    receipt_schema_version, issue_id, canonical_owner, canonical_repository,
+    claim_id, generation, checkpoint_sequence, recorded_at, branch, commit_sha,
+    pr_number, current_phase, completed_step_ids, pending_step_ids, test_results,
+    effect_operation_ids
+    """
+    |> String.replace("\n", " ")
+    |> String.trim()
   end
 
   defp decode_row([version | _rest]) when version != @schema_version,

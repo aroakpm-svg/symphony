@@ -34,6 +34,10 @@ defmodule SymphonyElixir.HandoffReceiptMigrationTest do
     assert sql =~ "for update of claims"
     assert sql =~ "receipt requires a matching active claim generation"
     assert sql =~ "order by receipts.generation desc, receipts.checkpoint_sequence desc"
+    assert length(Regex.scan(~r/returns table \(\s*receipt_schema_version integer,/s, sql)) == 2
+    refute sql =~ "returns setof symphony_staging.handoff_receipts"
+    refute sql =~ "select receipts.*"
+    assert length(Regex.scan(~r/inserted\.checkpoint_sequence|receipts\.checkpoint_sequence/, sql)) >= 3
   end
 
   test "fixed step and structured test allowlists are enforced in the database" do
