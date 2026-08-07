@@ -111,13 +111,38 @@ defmodule SymphonyElixir.HandoffReceipt do
   end
 
   defp github_repository_from_remote(url) do
-    pattern = ~r{^(?:https?://(?:[^@/]+@)?github\.com/|git@github\.com:|ssh://git@github\.com/)([^/\s]+/[^/\s]+?)(?:\.git)?/?$}i
+    remote = String.trim(url)
 
-    case Regex.run(pattern, String.trim(url), capture: :all_but_first) do
+    case Regex.run(~r{^git@github\.com:([^/\s]+/[^/\s]+?)(?:\.git)?/?$}i, remote, capture: :all_but_first) do
+      [repository] -> {:ok, repository}
+      _other -> github_repository_from_uri(remote)
+    end
+  end
+
+  defp github_repository_from_uri(remote) do
+    uri = URI.parse(remote)
+
+    with true <- uri.scheme in ["http", "https", "ssh"],
+         true <- is_binary(uri.host) and String.downcase(uri.host) == "github.com",
+         true <- valid_remote_port?(uri.port),
+         true <- uri.scheme != "ssh" or uri.userinfo == "git",
+         {:ok, repository} <- repository_from_uri_path(uri.path) do
+      {:ok, repository}
+    else
+      _other -> {:error, :handoff_origin_invalid}
+    end
+  end
+
+  defp repository_from_uri_path(path) when is_binary(path) do
+    case Regex.run(~r{^/([^/\s]+/[^/\s]+?)(?:\.git)?/?$}, path, capture: :all_but_first) do
       [repository] -> {:ok, repository}
       _other -> {:error, :handoff_origin_invalid}
     end
   end
+
+  defp repository_from_uri_path(_path), do: {:error, :handoff_origin_invalid}
+  defp valid_remote_port?(nil), do: true
+  defp valid_remote_port?(port), do: is_integer(port) and port in 1..65_535
 
   @doc false
   @spec decode_row_for_test(list()) :: {:ok, receipt()} | {:error, :receipt_incompatible}

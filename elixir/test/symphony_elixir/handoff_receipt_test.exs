@@ -19,6 +19,12 @@ defmodule SymphonyElixir.HandoffReceiptTest do
 
     assert HandoffReceipt.github_repository_from_remote_for_test("ssh://git@github.com/aroakpm-svg/symphony") == {:ok, "aroakpm-svg/symphony"}
 
+    assert HandoffReceipt.github_repository_from_remote_for_test("ssh://git@github.com:22/aroakpm-svg/symphony.git") ==
+             {:ok, "aroakpm-svg/symphony"}
+
+    assert HandoffReceipt.github_repository_from_remote_for_test("https://github.com:443/aroakpm-svg/symphony.git") ==
+             {:ok, "aroakpm-svg/symphony"}
+
     assert HandoffReceipt.github_repository_from_remote_for_test("https://github.com.example/aroakpm-svg/symphony.git") == {:error, :handoff_origin_invalid}
   end
 
