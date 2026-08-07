@@ -93,7 +93,9 @@ defmodule SymphonyElixir.Codex.AppServer do
       Keyword.get(opts, :tool_executor, fn tool, arguments ->
         DynamicTool.execute(tool, arguments,
           managed_session: Map.get(session, :managed_session, false),
-          managed_issue_id: Map.get(session, :managed_issue_id)
+          managed_issue_id: Map.get(session, :managed_issue_id),
+          managed_workspace: workspace,
+          worker_host: Map.get(session, :worker_host)
         )
       end)
 

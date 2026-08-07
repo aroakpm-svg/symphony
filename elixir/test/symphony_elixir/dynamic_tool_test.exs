@@ -155,11 +155,19 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
         managed_session: true,
         managed_issue_id: "ARO-166",
         handoff_repository: "aroakpm-svg/symphony",
+        handoff_evidence_fetcher: fn nil, "codex/aro-166", nil ->
+          {:ok,
+           %{
+             worktree_fingerprint: String.duplicate("f", 64),
+             remote_branch_sha: nil
+           }}
+        end,
         handoff_context_fetcher: fn "ARO-166" -> {:ok, :connection, %{issue_id: "ARO-166"}} end,
         handoff_appender: fn :connection, %{issue_id: "ARO-166"}, attrs ->
           assert attrs.current_phase == :verification
           assert attrs.completed_step_ids == [:preflight, :branch, :implementation]
           assert attrs.effect_operation_ids == ["ARO-166:linear-comment:1"]
+          assert attrs.worktree_fingerprint == String.duplicate("f", 64)
           {:ok, Map.put(attrs, :checkpoint_sequence, 8)}
         end
       )

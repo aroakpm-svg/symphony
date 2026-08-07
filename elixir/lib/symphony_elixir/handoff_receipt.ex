@@ -7,12 +7,15 @@ defmodule SymphonyElixir.HandoffReceipt do
   state before a pending step can be selected.
   """
 
+  alias SymphonyElixir.Workspace
+
   @schema_version 1
   @steps ~w(preflight branch implementation tests commit push pull_request review)a
   @phases ~w(preflight implementation verification delivery review complete)a
   @receipt_keys ~w(
     receipt_schema_version issue_id canonical_owner canonical_repository claim_id generation
-    checkpoint_sequence recorded_at linear_updated_at branch commit_sha pr_number current_phase completed_step_ids
+    checkpoint_sequence recorded_at linear_updated_at branch worktree_fingerprint remote_branch_sha
+    commit_sha pr_number current_phase completed_step_ids
     pending_step_ids test_results effect_operation_ids
   )a
 
@@ -28,6 +31,8 @@ defmodule SymphonyElixir.HandoffReceipt do
           recorded_at: DateTime.t(),
           linear_updated_at: DateTime.t(),
           branch: String.t(),
+          worktree_fingerprint: String.t(),
+          remote_branch_sha: String.t() | nil,
           commit_sha: String.t() | nil,
           pr_number: pos_integer() | nil,
           current_phase: atom(),
@@ -42,6 +47,8 @@ defmodule SymphonyElixir.HandoffReceipt do
           required(:canonical_owner) => String.t(),
           required(:canonical_repository) => String.t(),
           required(:branch) => String.t(),
+          required(:worktree_fingerprint) => String.t(),
+          required(:remote_branch_sha) => String.t() | nil,
           required(:commit_sha) => String.t() | nil,
           required(:pr_number) => pos_integer() | nil,
           required(:pr_ready?) => boolean(),
@@ -58,6 +65,25 @@ defmodule SymphonyElixir.HandoffReceipt do
 
   @spec phases() :: [atom()]
   def phases, do: @phases
+
+  @spec workspace_evidence(Path.t(), String.t(), String.t() | nil) ::
+          {:ok, %{worktree_fingerprint: String.t(), remote_branch_sha: String.t() | nil}}
+          | {:error, term()}
+  def workspace_evidence(workspace, branch, worker_host)
+      when is_binary(workspace) and is_binary(branch) do
+    with {:ok, status} <- Workspace.run_git_command(workspace, ["status", "--porcelain=v1", "-z", "--untracked-files=all"], worker_host),
+         {:ok, diff} <- Workspace.run_git_command(workspace, ["diff", "--binary", "HEAD"], worker_host),
+         {:ok, cached} <- Workspace.run_git_command(workspace, ["diff", "--binary", "--cached", "HEAD"], worker_host),
+         {:ok, untracked_hashes} <- hash_untracked_files(workspace, status, worker_host),
+         {:ok, remote_sha} <- remote_branch_sha(workspace, branch, worker_host) do
+      fingerprint =
+        :sha256
+        |> :crypto.hash([status, diff, cached, untracked_hashes])
+        |> Base.encode16(case: :lower)
+
+      {:ok, %{worktree_fingerprint: fingerprint, remote_branch_sha: remote_sha}}
+    end
+  end
 
   @doc false
   @spec decode_row_for_test(list()) :: {:ok, receipt()} | {:error, :receipt_incompatible}
@@ -157,6 +183,12 @@ defmodule SymphonyElixir.HandoffReceipt do
       not valid_pr_number?(Map.get(attrs, :pr_number)) ->
         {:error, :invalid_pr_number}
 
+      not valid_fingerprint?(Map.get(attrs, :worktree_fingerprint)) ->
+        {:error, :invalid_worktree_fingerprint}
+
+      not valid_commit_sha?(Map.get(attrs, :remote_branch_sha)) ->
+        {:error, :invalid_remote_branch_sha}
+
       true ->
         :ok
     end
@@ -203,6 +235,9 @@ defmodule SymphonyElixir.HandoffReceipt do
       :pull_request in completed != is_integer(Map.get(attrs, :pr_number)) ->
         {:error, :inconsistent_pull_request_artifact}
 
+      :push in completed and Map.get(attrs, :remote_branch_sha) != Map.get(attrs, :commit_sha) ->
+        {:error, :inconsistent_push_artifact}
+
       true ->
         :ok
     end
@@ -248,6 +283,8 @@ defmodule SymphonyElixir.HandoffReceipt do
       {:canonical_owner, receipt.canonical_owner},
       {:canonical_repository, receipt.canonical_repository},
       {:branch, receipt.branch},
+      {:worktree_fingerprint, receipt.worktree_fingerprint},
+      {:remote_branch_sha, receipt.remote_branch_sha},
       {:commit_sha, receipt.commit_sha},
       {:pr_number, receipt.pr_number}
     ]
@@ -334,6 +371,8 @@ defmodule SymphonyElixir.HandoffReceipt do
   defp valid_commit_sha?(_sha), do: false
   defp valid_pr_number?(nil), do: true
   defp valid_pr_number?(number), do: is_integer(number) and number > 0
+  defp valid_fingerprint?(value) when is_binary(value), do: Regex.match?(~r/^[0-9a-f]{64}$/, value)
+  defp valid_fingerprint?(_value), do: false
   defp valid_uuid?(value) when is_binary(value), do: match?({:ok, _uuid}, Ecto.UUID.cast(value))
   defp valid_uuid?(_value), do: false
 
@@ -349,6 +388,8 @@ defmodule SymphonyElixir.HandoffReceipt do
         Map.fetch!(attrs, :canonical_owner),
         Map.fetch!(attrs, :canonical_repository),
         Map.fetch!(attrs, :branch),
+        Map.fetch!(attrs, :worktree_fingerprint),
+        Map.get(attrs, :remote_branch_sha),
         Map.get(attrs, :commit_sha),
         Map.get(attrs, :pr_number),
         Atom.to_string(Map.fetch!(attrs, :current_phase)),
@@ -375,7 +416,7 @@ defmodule SymphonyElixir.HandoffReceipt do
     """
     select #{receipt_columns()} from symphony_staging.append_handoff_receipt(
       $1, $2::text::uuid, $3, $4::text::uuid, $5::text::uuid,
-      $6, $7, $8, $9, $10, $11, $12, $13::text[], $14::text[], $15::jsonb, $16::text[]
+      $6, $7, $8, $9, $10, $11, $12, $13, $14, $15::text[], $16::text[], $17::jsonb, $18::text[]
     )
     """
   end
@@ -404,7 +445,7 @@ defmodule SymphonyElixir.HandoffReceipt do
     """
     receipt_schema_version, issue_id, canonical_owner, canonical_repository,
     claim_id::text as claim_id, generation, checkpoint_sequence, recorded_at, linear_updated_at,
-    branch, commit_sha,
+    branch, worktree_fingerprint, remote_branch_sha, commit_sha,
     pr_number, current_phase, completed_step_ids, pending_step_ids, test_results,
     effect_operation_ids
     """
@@ -426,6 +467,8 @@ defmodule SymphonyElixir.HandoffReceipt do
          recorded_at,
          linear_updated_at,
          branch,
+         worktree_fingerprint,
+         remote_branch_sha,
          commit_sha,
          pr_number,
          phase,
@@ -450,6 +493,8 @@ defmodule SymphonyElixir.HandoffReceipt do
          recorded_at: recorded_at,
          linear_updated_at: linear_updated_at,
          branch: branch,
+         worktree_fingerprint: worktree_fingerprint,
+         remote_branch_sha: remote_branch_sha,
          commit_sha: commit_sha,
          pr_number: pr_number,
          current_phase: decoded_phase,
@@ -507,4 +552,38 @@ defmodule SymphonyElixir.HandoffReceipt do
   end
 
   defp decode_test_results(_tests), do: {:error, :receipt_incompatible}
+
+  defp hash_untracked_files(workspace, status, worker_host) do
+    status
+    |> String.split(<<0>>, trim: true)
+    |> Enum.filter(&String.starts_with?(&1, "?? "))
+    |> Enum.map(&String.slice(&1, 3..-1//1))
+    |> Enum.sort()
+    |> Enum.reduce_while({:ok, []}, fn path, {:ok, hashes} ->
+      case Workspace.run_git_command(workspace, ["hash-object", "--", path], worker_host) do
+        {:ok, hash} -> {:cont, {:ok, [[path, String.trim(hash)] | hashes]}}
+        {:error, reason} -> {:halt, {:error, reason}}
+      end
+    end)
+    |> case do
+      {:ok, hashes} -> {:ok, hashes |> Enum.reverse() |> :erlang.term_to_binary()}
+      error -> error
+    end
+  end
+
+  defp remote_branch_sha(workspace, branch, worker_host) do
+    ref = "refs/heads/#{branch}"
+
+    case Workspace.run_git_command(workspace, ["ls-remote", "--heads", "origin", ref], worker_host) do
+      {:ok, output} ->
+        case String.split(String.trim(output), ~r/\s+/, trim: true) do
+          [] -> {:ok, nil}
+          [sha, ^ref] when byte_size(sha) == 40 -> {:ok, String.downcase(sha)}
+          _other -> {:error, :invalid_remote_branch_evidence}
+        end
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
 end

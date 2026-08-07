@@ -14,6 +14,8 @@ defmodule SymphonyElixir.HandoffReceiptTest do
     recorded_at: ~U[2026-08-07 00:00:00Z],
     linear_updated_at: ~U[2026-08-06 23:59:00Z],
     branch: "codex/aro-166-handoff-receipts",
+    worktree_fingerprint: String.duplicate("f", 64),
+    remote_branch_sha: nil,
     commit_sha: String.duplicate("a", 40),
     pr_number: nil,
     current_phase: :delivery,
@@ -28,6 +30,8 @@ defmodule SymphonyElixir.HandoffReceiptTest do
     canonical_owner: "aroakpm-svg",
     canonical_repository: "symphony",
     branch: "codex/aro-166-handoff-receipts",
+    worktree_fingerprint: String.duplicate("f", 64),
+    remote_branch_sha: nil,
     commit_sha: String.duplicate("a", 40),
     pr_number: nil,
     pr_ready?: false,
@@ -97,6 +101,8 @@ defmodule SymphonyElixir.HandoffReceiptTest do
       ~U[2026-08-07 00:00:00Z],
       ~U[2026-08-06 23:59:00Z],
       "codex/aro-166-handoff-receipts",
+      String.duplicate("f", 64),
+      nil,
       String.duplicate("a", 40),
       19,
       "delivery",
@@ -114,19 +120,18 @@ defmodule SymphonyElixir.HandoffReceiptTest do
              {:error, :receipt_incompatible}
   end
 
-  test "append SQL preserves the complete 16-argument function contract" do
+  test "append SQL preserves the complete 18-argument function contract" do
     sql = HandoffReceipt.append_sql_for_test()
 
     assert sql =~ "claim_id::text as claim_id"
-    assert sql =~ "$11, $12, $13::text[], $14::text[], $15::jsonb, $16::text[]"
-    refute sql =~ "$12::text[]"
+    assert sql =~ "$13, $14, $15::text[], $16::text[], $17::jsonb, $18::text[]"
   end
 
   test "append passes test results as a JSON value instead of encoded JSON text" do
     params = HandoffReceipt.append_params_for_test(@claim, @receipt)
 
-    assert Enum.at(params, 14) == [%{"name" => "make all", "status" => "passed"}]
-    refute is_binary(Enum.at(params, 14))
+    assert Enum.at(params, 16) == [%{"name" => "make all", "status" => "passed"}]
+    refute is_binary(Enum.at(params, 16))
   end
 
   test "database rows with null or unknown test statuses fail closed" do
@@ -141,6 +146,8 @@ defmodule SymphonyElixir.HandoffReceiptTest do
       ~U[2026-08-07 00:00:00Z],
       ~U[2026-08-06 23:59:00Z],
       "codex/aro-166-handoff-receipts",
+      String.duplicate("f", 64),
+      nil,
       String.duplicate("a", 40),
       19,
       "delivery",
@@ -151,19 +158,19 @@ defmodule SymphonyElixir.HandoffReceiptTest do
     ]
 
     for status <- [nil, "unknown"] do
-      row = List.replace_at(base_row, 15, [%{"name" => "make all", "status" => status}])
+      row = List.replace_at(base_row, 17, [%{"name" => "make all", "status" => status}])
       assert HandoffReceipt.decode_row_for_test(row) == {:error, :receipt_incompatible}
     end
 
     for name <- [42, "   "] do
-      row = List.replace_at(base_row, 15, [%{"name" => name, "status" => "passed"}])
+      row = List.replace_at(base_row, 17, [%{"name" => name, "status" => "passed"}])
       assert HandoffReceipt.decode_row_for_test(row) == {:error, :receipt_incompatible}
     end
 
     extra_key = %{"name" => "make all", "status" => "passed", "output" => "ignored"}
 
     assert base_row
-           |> List.replace_at(15, [extra_key])
+           |> List.replace_at(17, [extra_key])
            |> HandoffReceipt.decode_row_for_test() == {:error, :receipt_incompatible}
   end
 
@@ -179,6 +186,8 @@ defmodule SymphonyElixir.HandoffReceiptTest do
       ~U[2026-08-07 00:00:00Z],
       ~U[2026-08-06 23:59:00Z],
       "codex/aro-166-handoff-receipts",
+      String.duplicate("f", 64),
+      nil,
       String.duplicate("a", 40),
       19,
       "delivery",
@@ -188,7 +197,7 @@ defmodule SymphonyElixir.HandoffReceiptTest do
       []
     ]
 
-    malformed_fields = [{12, "legacy"}, {13, ["unknown"]}, {14, nil}]
+    malformed_fields = [{14, "legacy"}, {15, ["unknown"]}, {16, nil}]
 
     for {index, value} <- malformed_fields do
       assert base_row
@@ -276,9 +285,10 @@ defmodule SymphonyElixir.HandoffReceiptTest do
                | current_phase: :preflight,
                  completed_step_ids: all_steps,
                  pending_step_ids: [],
-                 pr_number: 19
+                 pr_number: 19,
+                 remote_branch_sha: String.duplicate("a", 40)
              },
-             %{@truth | pr_number: 19, pr_ready?: true}
+             %{@truth | pr_number: 19, pr_ready?: true, remote_branch_sha: String.duplicate("a", 40)}
            ) == {:safe_recheck, :inconsistent_progress}
 
     assert HandoffReceipt.resume(
@@ -287,9 +297,10 @@ defmodule SymphonyElixir.HandoffReceiptTest do
                | current_phase: :complete,
                  completed_step_ids: all_steps,
                  pending_step_ids: [],
-                 pr_number: 19
+                 pr_number: 19,
+                 remote_branch_sha: String.duplicate("a", 40)
              },
-             %{@truth | pr_number: 19, pr_ready?: true}
+             %{@truth | pr_number: 19, pr_ready?: true, remote_branch_sha: String.duplicate("a", 40)}
            ) == {:ok, :complete}
 
     assert HandoffReceipt.resume(
@@ -298,9 +309,10 @@ defmodule SymphonyElixir.HandoffReceiptTest do
                | current_phase: :complete,
                  completed_step_ids: Enum.drop(all_steps, -1),
                  pending_step_ids: [List.last(all_steps)],
-                 pr_number: 19
+                 pr_number: 19,
+                 remote_branch_sha: String.duplicate("a", 40)
              },
-             %{@truth | pr_number: 19, pr_ready?: true}
+             %{@truth | pr_number: 19, pr_ready?: true, remote_branch_sha: String.duplicate("a", 40)}
            ) == {:safe_recheck, :inconsistent_progress}
   end
 
@@ -321,10 +333,11 @@ defmodule SymphonyElixir.HandoffReceiptTest do
       @receipt
       | completed_step_ids: Enum.drop(HandoffReceipt.step_ids(), -1),
         pending_step_ids: [:review],
-        pr_number: 19
+        pr_number: 19,
+        remote_branch_sha: String.duplicate("a", 40)
     }
 
-    assert HandoffReceipt.resume(existing_pr, %{@truth | pr_number: 19, pr_ready?: false}) ==
+    assert HandoffReceipt.resume(existing_pr, %{@truth | pr_number: 19, pr_ready?: false, remote_branch_sha: String.duplicate("a", 40)}) ==
              {:safe_recheck, :pr_not_ready}
   end
 end

@@ -172,10 +172,18 @@ defmodule SymphonyElixir.Codex.DynamicTool do
     issue_id = Keyword.get(opts, :managed_issue_id)
     context_fetcher = Keyword.get(opts, :handoff_context_fetcher, &ClaimService.handoff_context/1)
     appender = Keyword.get(opts, :handoff_appender, &HandoffReceipt.append/3)
+    evidence_fetcher = Keyword.get(opts, :handoff_evidence_fetcher, &HandoffReceipt.workspace_evidence/3)
 
     with true <- Keyword.get(opts, :managed_session, false),
          true <- is_binary(issue_id),
          {:ok, attrs} <- normalize_handoff_checkpoint(arguments, opts),
+         {:ok, evidence} <-
+           evidence_fetcher.(
+             Keyword.get(opts, :managed_workspace),
+             attrs.branch,
+             Keyword.get(opts, :worker_host)
+           ),
+         attrs <- checkpoint_git_evidence(attrs, evidence),
          {:ok, connection, claim} <- context_fetcher.(issue_id),
          {:ok, receipt} <- appender.(connection, claim, attrs) do
       dynamic_tool_response(true, encode_payload(receipt))
@@ -216,6 +224,15 @@ defmodule SymphonyElixir.Codex.DynamicTool do
 
   defp normalize_handoff_checkpoint(_arguments, _opts),
     do: {:error, :invalid_handoff_checkpoint_arguments}
+
+  defp checkpoint_git_evidence(attrs, evidence) do
+    remote_sha = if :push in attrs.completed_step_ids, do: evidence.remote_branch_sha, else: nil
+
+    Map.merge(attrs, %{
+      worktree_fingerprint: evidence.worktree_fingerprint,
+      remote_branch_sha: remote_sha
+    })
+  end
 
   defp decode_handoff_atoms(values, allowed) when is_list(values) do
     Enum.reduce_while(values, {:ok, []}, fn value, {:ok, result} ->

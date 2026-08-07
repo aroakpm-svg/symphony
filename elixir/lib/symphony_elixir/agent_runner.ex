@@ -64,7 +64,8 @@ defmodule SymphonyElixir.AgentRunner do
                      worker_host,
                      opts
                    ),
-                 {:ok, handoff_resume} <- prepare_handoff(issue, receipt, opts),
+                 {:ok, handoff_resume} <-
+                   prepare_handoff(issue, receipt, workspace, worker_host, opts),
                  :ok <- Workspace.run_before_run_hook(workspace, issue, worker_host) do
               run_codex_turns(
                 workspace,
@@ -252,14 +253,16 @@ defmodule SymphonyElixir.AgentRunner do
 
   defp maybe_put_readiness_command_runner(opts, _runner), do: opts
 
-  defp prepare_handoff(issue, readiness, opts) do
+  defp prepare_handoff(issue, readiness, workspace, worker_host, opts) do
     case Keyword.get(opts, :distributed_claim) do
-      claim when is_map(claim) -> prepare_distributed_handoff(issue, readiness, claim, opts)
+      claim when is_map(claim) ->
+        prepare_distributed_handoff(issue, readiness, workspace, worker_host, claim, opts)
+
       _claim -> {:ok, nil}
     end
   end
 
-  defp prepare_distributed_handoff(issue, readiness, _claim, opts) do
+  defp prepare_distributed_handoff(issue, readiness, workspace, worker_host, _claim, opts) do
     ready? = Keyword.get(opts, :handoff_receipt_ready?, &ClaimService.handoff_receipt_ready?/0)
     context = Keyword.get(opts, :handoff_context, &ClaimService.handoff_context/1)
 
@@ -267,9 +270,11 @@ defmodule SymphonyElixir.AgentRunner do
          {:ok, connection, claim} <- context.(issue.id),
          {:ok, previous} <- HandoffReceipt.latest(connection, claim),
          {:ok, repository, owner, name} <- handoff_repository(),
-         {:ok, truth} <- handoff_truth(previous, issue, readiness, claim, connection, repository, opts),
+         {:ok, git_evidence} <- HandoffReceipt.workspace_evidence(workspace, readiness.issue_branch, worker_host),
+         {:ok, truth} <-
+           handoff_truth(previous, issue, readiness, git_evidence, claim, connection, repository, opts),
          resume <- HandoffReceipt.resume(previous, truth),
-         attrs <- checkpoint_attrs(previous, resume, readiness, owner, name),
+         attrs <- checkpoint_attrs(previous, resume, readiness, git_evidence, owner, name),
          {:ok, _checkpoint} <- HandoffReceipt.append(connection, claim, attrs) do
       Logger.info("Handoff checkpoint restored for #{issue_context(issue)} result=#{inspect(resume)}")
       {:ok, resume}
@@ -289,7 +294,7 @@ defmodule SymphonyElixir.AgentRunner do
     end
   end
 
-  defp handoff_truth(previous, issue, readiness, claim, connection, repository, opts) do
+  defp handoff_truth(previous, issue, readiness, git_evidence, claim, connection, repository, opts) do
     operation_ids = if previous, do: previous.effect_operation_ids, else: []
 
     with {:ok, effects} <- HandoffReceipt.effect_statuses(connection, claim, operation_ids),
@@ -300,6 +305,8 @@ defmodule SymphonyElixir.AgentRunner do
          canonical_owner: repository |> String.split("/", parts: 2) |> hd(),
          canonical_repository: repository |> String.split("/", parts: 2) |> List.last(),
          branch: readiness.issue_branch,
+         worktree_fingerprint: git_evidence.worktree_fingerprint,
+         remote_branch_sha: handoff_remote_sha(previous, git_evidence.remote_branch_sha),
          commit_sha: handoff_commit_sha(previous, readiness.head_sha),
          pr_number: pr.number,
          pr_ready?: pr.ready?,
@@ -336,16 +343,25 @@ defmodule SymphonyElixir.AgentRunner do
   defp handoff_commit_sha(%{commit_sha: nil}, _head_sha), do: nil
   defp handoff_commit_sha(_previous, head_sha), do: head_sha
 
+  defp handoff_remote_sha(%{completed_step_ids: completed}, remote_sha) do
+    if :push in completed, do: remote_sha, else: nil
+  end
+
+  defp handoff_remote_sha(_previous, _remote_sha), do: nil
+
   defp same_claim_revision?(%{linear_updated_at: claim_revision}, %DateTime{} = issue_revision),
     do: DateTime.compare(claim_revision, issue_revision) == :eq
 
   defp same_claim_revision?(_claim, _issue_revision), do: false
 
-  defp checkpoint_attrs(previous, {:ok, _next}, _readiness, _owner, _name) when is_map(previous) do
+  defp checkpoint_attrs(previous, {:ok, _next}, _readiness, _git_evidence, _owner, _name)
+       when is_map(previous) do
     Map.take(previous, [
       :canonical_owner,
       :canonical_repository,
       :branch,
+      :worktree_fingerprint,
+      :remote_branch_sha,
       :commit_sha,
       :pr_number,
       :current_phase,
@@ -356,11 +372,13 @@ defmodule SymphonyElixir.AgentRunner do
     ])
   end
 
-  defp checkpoint_attrs(_previous, _resume, readiness, owner, name) do
+  defp checkpoint_attrs(_previous, _resume, readiness, git_evidence, owner, name) do
     %{
       canonical_owner: owner,
       canonical_repository: name,
       branch: readiness.issue_branch,
+      worktree_fingerprint: git_evidence.worktree_fingerprint,
+      remote_branch_sha: nil,
       commit_sha: nil,
       pr_number: nil,
       current_phase: :implementation,
