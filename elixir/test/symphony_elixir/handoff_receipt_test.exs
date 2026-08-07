@@ -74,6 +74,32 @@ defmodule SymphonyElixir.HandoffReceiptTest do
              {:error, :receipt_incompatible}
   end
 
+  test "database rows with null or unknown test statuses fail closed" do
+    base_row = [
+      1,
+      "ARO-166",
+      "aroakpm-svg",
+      "symphony",
+      "00000000-0000-0000-0000-000000000001",
+      2,
+      7,
+      ~U[2026-08-07 00:00:00Z],
+      "codex/aro-166-handoff-receipts",
+      String.duplicate("a", 40),
+      19,
+      "delivery",
+      ["preflight"],
+      ["push"],
+      [],
+      []
+    ]
+
+    for status <- [nil, "unknown"] do
+      row = List.replace_at(base_row, 14, [%{"name" => "make all", "status" => status}])
+      assert HandoffReceipt.decode_row_for_test(row) == {:error, :receipt_incompatible}
+    end
+  end
+
   test "step overlap, duplicates, and values outside the allowlist fail closed" do
     overlap = %{@receipt | pending_step_ids: [:commit, :push]}
     duplicate = %{@receipt | completed_step_ids: [:preflight, :preflight]}

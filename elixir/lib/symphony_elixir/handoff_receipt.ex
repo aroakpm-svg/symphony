@@ -317,29 +317,45 @@ defmodule SymphonyElixir.HandoffReceipt do
          tests,
          effects
        ]) do
-    {:ok,
-     %{
-       receipt_schema_version: version,
-       issue_id: issue_id,
-       canonical_owner: owner,
-       canonical_repository: repository,
-       claim_id: claim_id,
-       generation: generation,
-       checkpoint_sequence: sequence,
-       recorded_at: recorded_at,
-       branch: branch,
-       commit_sha: commit_sha,
-       pr_number: pr_number,
-       current_phase: String.to_existing_atom(phase),
-       completed_step_ids: Enum.map(completed, &String.to_existing_atom/1),
-       pending_step_ids: Enum.map(pending, &String.to_existing_atom/1),
-       test_results:
-         Enum.map(tests, fn result ->
-           %{name: result["name"], status: String.to_existing_atom(result["status"])}
-         end),
-       effect_operation_ids: effects
-     }}
+    with {:ok, decoded_tests} <- decode_test_results(tests) do
+      {:ok,
+       %{
+         receipt_schema_version: version,
+         issue_id: issue_id,
+         canonical_owner: owner,
+         canonical_repository: repository,
+         claim_id: claim_id,
+         generation: generation,
+         checkpoint_sequence: sequence,
+         recorded_at: recorded_at,
+         branch: branch,
+         commit_sha: commit_sha,
+         pr_number: pr_number,
+         current_phase: String.to_existing_atom(phase),
+         completed_step_ids: Enum.map(completed, &String.to_existing_atom/1),
+         pending_step_ids: Enum.map(pending, &String.to_existing_atom/1),
+         test_results: decoded_tests,
+         effect_operation_ids: effects
+       }}
+    end
   end
 
   defp decode_row(_row), do: {:error, :receipt_incompatible}
+
+  defp decode_test_results(tests) when is_list(tests) do
+    Enum.reduce_while(tests, {:ok, []}, fn
+      %{"name" => name, "status" => status}, {:ok, decoded}
+      when is_binary(name) and name != "" and status in ["passed", "failed", "skipped"] ->
+        {:cont, {:ok, [%{name: name, status: String.to_existing_atom(status)} | decoded]}}
+
+      _result, _decoded ->
+        {:halt, {:error, :receipt_incompatible}}
+    end)
+    |> case do
+      {:ok, decoded} -> {:ok, Enum.reverse(decoded)}
+      error -> error
+    end
+  end
+
+  defp decode_test_results(_tests), do: {:error, :receipt_incompatible}
 end

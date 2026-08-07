@@ -68,6 +68,7 @@ as $$
         or (select array_agg(key order by key) from jsonb_object_keys(result) key)
            is distinct from array['name', 'status']::text[]
         or coalesce(result->>'name', '') = ''
+        or result->>'status' is null
         or result->>'status' not in ('passed', 'failed', 'skipped')
     )
 $$;
