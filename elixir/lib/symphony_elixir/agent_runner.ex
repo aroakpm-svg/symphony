@@ -303,44 +303,25 @@ defmodule SymphonyElixir.AgentRunner do
          {:ok, git_evidence} <-
            HandoffReceipt.workspace_evidence(workspace, readiness.issue_branch, repository, worker_host),
          {:ok, pr} <- handoff_pull_request(repository, readiness.issue_branch, opts) do
-      run_handoff_transaction(
-        connection,
-        claim,
-        fresh_issue,
-        readiness,
-        git_evidence,
-        pr,
-        repository,
-        owner,
-        name
-      )
+      evidence = %{
+        issue: fresh_issue,
+        readiness: readiness,
+        git: git_evidence,
+        pull_request: pr,
+        repository: repository,
+        owner: owner,
+        name: name
+      }
+
+      run_handoff_transaction(connection, claim, evidence)
     end
   end
 
-  defp run_handoff_transaction(
-         connection,
-         claim,
-         fresh_issue,
-         readiness,
-         git_evidence,
-         pr,
-         repository,
-         owner,
-         name
-       ) do
+  defp run_handoff_transaction(connection, claim, evidence) do
     transaction_result =
       Postgrex.transaction(connection, fn transaction ->
         transaction
-        |> run_locked_handoff(
-          claim,
-          fresh_issue,
-          readiness,
-          git_evidence,
-          pr,
-          repository,
-          owner,
-          name
-        )
+        |> run_locked_handoff(claim, evidence)
         |> finish_handoff_transaction(transaction)
       end)
 
@@ -355,17 +336,17 @@ defmodule SymphonyElixir.AgentRunner do
   defp unwrap_handoff_transaction({:ok, result}), do: result
   defp unwrap_handoff_transaction({:error, reason}), do: {:error, reason}
 
-  defp run_locked_handoff(
-         connection,
-         claim,
-         fresh_issue,
-         readiness,
-         git_evidence,
-         pr,
-         repository,
-         owner,
-         name
-       ) do
+  defp run_locked_handoff(connection, claim, evidence) do
+    %{
+      issue: fresh_issue,
+      readiness: readiness,
+      git: git_evidence,
+      pull_request: pr,
+      repository: repository,
+      owner: owner,
+      name: name
+    } = evidence
+
     with :ok <- lock_handoff_claim(connection, claim),
          {:ok, previous} <- HandoffReceipt.latest(connection, claim),
          {:ok, truth} <-
