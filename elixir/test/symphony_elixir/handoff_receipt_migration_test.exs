@@ -62,6 +62,8 @@ defmodule SymphonyElixir.HandoffReceiptMigrationTest do
     assert sql =~ "jsonb_typeof(result->'status') is distinct from 'string'"
     assert sql =~ "result->>'status' is null"
     assert sql =~ "('passed', 'failed', 'skipped')"
+    assert sql =~ "requested_test_results @> '[{\"status\":\"failed\"}]'::jsonb"
+    assert sql =~ "'tests' = any(requested_completed)"
   end
 
   test "handoff reads require a new active claim and runtime gets function-only access" do

@@ -193,6 +193,9 @@ defmodule SymphonyElixir.HandoffReceipt do
       not valid_tests?(Map.get(attrs, :test_results, [])) ->
         {:error, :invalid_test_results}
 
+      failed_tests_marked_complete?(attrs) ->
+        {:error, :failed_tests_marked_complete}
+
       not unique_nonempty_strings?(Map.get(attrs, :effect_operation_ids, [])) ->
         {:error, :invalid_effect_operation_ids}
 
@@ -291,6 +294,11 @@ defmodule SymphonyElixir.HandoffReceipt do
   end
 
   defp valid_tests?(_tests), do: false
+
+  defp failed_tests_marked_complete?(attrs) do
+    :tests in Map.get(attrs, :completed_step_ids, []) and
+      Enum.any?(Map.get(attrs, :test_results, []), &(&1.status == :failed))
+  end
 
   defp unique_nonempty_strings?(values) when is_list(values) do
     Enum.all?(values, &(is_binary(&1) and byte_size(String.trim(&1)) > 0)) and

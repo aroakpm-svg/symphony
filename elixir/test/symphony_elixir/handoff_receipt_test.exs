@@ -216,6 +216,21 @@ defmodule SymphonyElixir.HandoffReceiptTest do
              {:safe_recheck, :invalid_test_results}
   end
 
+  test "failed evidence keeps the tests step pending" do
+    failed = %{@receipt | test_results: [%{name: "make all", status: :failed}]}
+
+    assert HandoffReceipt.resume(failed, @truth) ==
+             {:safe_recheck, :failed_tests_marked_complete}
+
+    pending = %{
+      failed
+      | completed_step_ids: List.delete(failed.completed_step_ids, :tests),
+        pending_step_ids: [:tests | failed.pending_step_ids]
+    }
+
+    assert HandoffReceipt.resume(pending, @truth) == {:ok, :tests}
+  end
+
   test "completion requires terminal phase and every fixed step" do
     all_steps = HandoffReceipt.step_ids()
 

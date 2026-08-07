@@ -167,6 +167,10 @@ begin
      )
      or (requested_phase <> 'complete' and cardinality(requested_pending) = 0)
      or not symphony_staging.validate_handoff_tests(requested_test_results)
+     or (
+       requested_test_results @> '[{"status":"failed"}]'::jsonb
+       and 'tests' = any(requested_completed)
+     )
      or requested_effect_operation_ids is null
      or coalesce(array_ndims(requested_effect_operation_ids), 1) <> 1
      or coalesce(array_length(requested_effect_operation_ids, 1), 0) <>
