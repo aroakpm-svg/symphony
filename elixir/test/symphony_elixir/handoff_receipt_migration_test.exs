@@ -48,6 +48,9 @@ defmodule SymphonyElixir.HandoffReceiptMigrationTest do
     end
 
     assert sql =~ "count(distinct value)"
+    assert sql =~ "coalesce(array_ndims(completed), 1) = 1"
+    assert sql =~ "coalesce(array_ndims(pending), 1) = 1"
+    assert sql =~ "coalesce(array_ndims(requested_effect_operation_ids), 1) <> 1"
     assert sql =~ "not exists (select 1 from unnest(completed) value where value = any(pending))"
     assert sql =~ "array['name', 'status']::text[]"
     assert sql =~ "jsonb_typeof(result->'name') is distinct from 'string'"

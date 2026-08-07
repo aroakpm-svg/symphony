@@ -44,7 +44,11 @@ as $$
            ('commit'), ('push'), ('pull_request'), ('review')
   )
   select
-    coalesce(array_length(completed, 1), 0) =
+    completed is not null
+    and pending is not null
+    and coalesce(array_ndims(completed), 1) = 1
+    and coalesce(array_ndims(pending), 1) = 1
+    and coalesce(array_length(completed, 1), 0) =
       (select count(distinct value) from unnest(completed) value)
     and coalesce(array_length(pending, 1), 0) =
       (select count(distinct value) from unnest(pending) value)
@@ -153,6 +157,8 @@ begin
      )
      or not symphony_staging.validate_handoff_steps(requested_completed, requested_pending)
      or not symphony_staging.validate_handoff_tests(requested_test_results)
+     or requested_effect_operation_ids is null
+     or coalesce(array_ndims(requested_effect_operation_ids), 1) <> 1
      or coalesce(array_length(requested_effect_operation_ids, 1), 0) <>
        (select count(distinct value) from unnest(requested_effect_operation_ids) value)
      or exists (
