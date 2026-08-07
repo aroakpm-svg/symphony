@@ -97,7 +97,8 @@ defmodule SymphonyElixir.EffectLedgerMigrationTest do
     source = File.read!(@effect_ledger)
 
     assert source =~ "select status, native_resource, attempt_id::text"
-    assert source =~ ~s(context.issue_id <> ":" <> context.operation_id)
+    assert SymphonyElixir.EffectLedger.operation_id("ARO-166", "comment-1") ==
+             "ARO-166:comment-1"
     assert source =~ "defp encode_resource(resource) when is_map(resource), do: resource"
     refute source =~ "Jason.encode!(resource)"
   end
