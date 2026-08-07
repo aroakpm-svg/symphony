@@ -569,7 +569,8 @@ defmodule SymphonyElixir.HandoffReceipt do
         {:ok, evidence} ->
           {:cont, {:ok, [[path, evidence] | hashes]}}
 
-        {:error, reason} -> {:halt, {:error, reason}}
+        {:error, reason} ->
+          {:halt, {:error, reason}}
       end
     end)
     |> case do
