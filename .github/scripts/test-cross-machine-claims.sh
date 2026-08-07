@@ -4,6 +4,8 @@ set -euo pipefail
 root_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 database_url="${TEST_DATABASE_URL:?TEST_DATABASE_URL is required}"
 migration="$root_dir/elixir/priv/symphony_migrations/20260804000000_aro_164_cross_machine_claims.sql"
+effect_migration="$root_dir/elixir/priv/symphony_migrations/20260805000000_aro_165_effect_ledger.sql"
+effect_rollback="$root_dir/elixir/priv/symphony_migrations/20260805000000_aro_165_effect_ledger.down.sql"
 
 psql_admin() { psql -X -q -v ON_ERROR_STOP=1 -d "$database_url" "$@"; }
 node_url() { printf 'postgresql://%s:disposable@localhost:5432/postgres' "$1"; }
@@ -71,7 +73,8 @@ insert into symphony_staging.routing_assignments(issue_id,routing_policy,target_
   ('RACE','unassigned',null,1,1), ('CAP-A','unassigned',null,1,1), ('CAP-B','unassigned',null,1,1),
   ('CAP-C','unassigned',null,1,1), ('EXCLUSIVE','exclusive','$node_a',1,1),
   ('PREFERRED','preferred-with-fallback','$node_a',1,1), ('TAKEOVER','unassigned',null,1,1),
-  ('ROUTE-CHANGE','unassigned',null,1,1), ('CUSTOM-STATE','unassigned',null,1,1);
+  ('ROUTE-CHANGE','unassigned',null,1,1), ('CUSTOM-STATE','unassigned',null,1,1),
+  ('EFFECTS','unassigned',null,1,1);
 SQL
 
 tmp_dir="$(mktemp -d)"
@@ -106,6 +109,91 @@ new="$(claim claim_node_b TAKEOVER "$node_b" "$instance_b" 'in progress' 60000 0
 new_generation="${new#*:}"
 test "$new_generation" = 2
 
+psql_admin -f "$effect_migration"
+test "$(PGPASSWORD=disposable psql -X -q -A -t -v ON_ERROR_STOP=1 -d "$(node_url claim_node_c)" -c \
+  "select symphony_staging.effect_ledger_ready();")" = "t"
+
+effect_claim="$(claim claim_node_c EFFECTS "$node_c" "$instance_c")"
+effect_claim_id="${effect_claim%:*}"
+effect_generation="${effect_claim#*:}"
+
+for effect_type in linear_comment github_comment git_commit git_push github_pr_create github_pr_update linear_state; do
+  operation_id="effect-$effect_type"
+  attempt_id="$(cat /proc/sys/kernel/random/uuid)"
+  begun="$(PGPASSWORD=disposable psql -X -q -A -t -v ON_ERROR_STOP=1 -d "$(node_url claim_node_c)" -c \
+    "select status from symphony_staging.begin_effect('$operation_id','$effect_type','fp-$effect_type','EFFECTS','$effect_claim_id',$effect_generation,'$node_c','$instance_c','$attempt_id',300000);")"
+  test "$begun" = "pending"
+  finished="$(PGPASSWORD=disposable psql -X -q -A -t -v ON_ERROR_STOP=1 -d "$(node_url claim_node_c)" -c \
+    "select symphony_staging.finish_effect('$operation_id','fp-$effect_type','$attempt_id','succeeded','{\"native_id\":\"$operation_id\"}'::jsonb,null);")"
+  test "$finished" = "t"
+  repeated="$(PGPASSWORD=disposable psql -X -q -A -t -v ON_ERROR_STOP=1 -d "$(node_url claim_node_c)" -c \
+    "select status from symphony_staging.begin_effect('$operation_id','$effect_type','fp-$effect_type','EFFECTS','$effect_claim_id',$effect_generation,'$node_c','$instance_c','$(cat /proc/sys/kernel/random/uuid)',300000);")"
+  test "$repeated" = "succeeded"
+done
+
+first_attempt_id="$(cat /proc/sys/kernel/random/uuid)"
+second_attempt_id="$(cat /proc/sys/kernel/random/uuid)"
+test "$(PGPASSWORD=disposable psql -X -q -A -t -v ON_ERROR_STOP=1 -d "$(node_url claim_node_c)" -c \
+  "select status from symphony_staging.begin_effect('effect-concurrent','linear_comment','fp-concurrent','EFFECTS','$effect_claim_id',$effect_generation,'$node_c','$instance_c','$first_attempt_id',300000);")" = "pending"
+test "$(PGPASSWORD=disposable psql -X -q -A -t -v ON_ERROR_STOP=1 -d "$(node_url claim_node_c)" -c \
+  "select status from symphony_staging.begin_effect('effect-concurrent','linear_comment','fp-concurrent','EFFECTS','$effect_claim_id',$effect_generation,'$node_c','$instance_c','$second_attempt_id',300000);")" = "in-flight"
+test "$(PGPASSWORD=disposable psql -X -q -A -t -v ON_ERROR_STOP=1 -d "$(node_url claim_node_c)" -c \
+  "select symphony_staging.finish_effect('effect-concurrent','fp-concurrent','$first_attempt_id','succeeded','{\"native_id\":\"effect-concurrent\"}'::jsonb,null);")" = "t"
+
+relinquish_first_attempt_id="$(cat /proc/sys/kernel/random/uuid)"
+relinquish_second_attempt_id="$(cat /proc/sys/kernel/random/uuid)"
+test "$(PGPASSWORD=disposable psql -X -q -A -t -v ON_ERROR_STOP=1 -d "$(node_url claim_node_c)" -c \
+  "select status from symphony_staging.begin_effect('effect-relinquish','linear_state','fp-relinquish','EFFECTS','$effect_claim_id',$effect_generation,'$node_c','$instance_c','$relinquish_first_attempt_id',300000);")" = "pending"
+test "$(PGPASSWORD=disposable psql -X -q -A -t -v ON_ERROR_STOP=1 -d "$(node_url claim_node_c)" -c \
+  "select symphony_staging.relinquish_effect('effect-relinquish','fp-relinquish','$relinquish_first_attempt_id');")" = "t"
+test "$(PGPASSWORD=disposable psql -X -q -A -t -v ON_ERROR_STOP=1 -d "$(node_url claim_node_c)" -c \
+  "select status from symphony_staging.begin_effect('effect-relinquish','linear_state','fp-relinquish','EFFECTS','$effect_claim_id',$effect_generation,'$node_c','$instance_c','$relinquish_second_attempt_id',300000);")" = "pending"
+
+if PGPASSWORD=disposable psql -X -q -A -t -v ON_ERROR_STOP=1 -d "$(node_url claim_node_c)" -c \
+  "select status from symphony_staging.begin_effect('effect-linear_comment','linear_comment','different-fingerprint','EFFECTS','$effect_claim_id',$effect_generation,'$node_c','$instance_c','$(cat /proc/sys/kernel/random/uuid)',300000);" \
+  >/dev/null 2>&1; then
+  echo "effect ledger unexpectedly accepted request fingerprint drift" >&2; exit 1
+fi
+
+unknown_attempt_id="$(cat /proc/sys/kernel/random/uuid)"
+PGPASSWORD=disposable psql -X -q -A -t -v ON_ERROR_STOP=1 -d "$(node_url claim_node_c)" -c \
+  "select status from symphony_staging.begin_effect('effect-unknown','github_pr_create','fp-unknown','EFFECTS','$effect_claim_id',$effect_generation,'$node_c','$instance_c','$unknown_attempt_id',300000);" \
+  >/dev/null
+PGPASSWORD=disposable psql -X -q -A -t -v ON_ERROR_STOP=1 -d "$(node_url claim_node_c)" -c \
+  "select symphony_staging.finish_effect('effect-unknown','fp-unknown','$unknown_attempt_id','unknown',null,'timeout');" \
+  >/dev/null
+reconcile_attempt_id="$(cat /proc/sys/kernel/random/uuid)"
+test "$(PGPASSWORD=disposable psql -X -q -A -t -v ON_ERROR_STOP=1 -d "$(node_url claim_node_c)" -c \
+  "select status from symphony_staging.begin_effect('effect-unknown','github_pr_create','fp-unknown','EFFECTS','$effect_claim_id',$effect_generation,'$node_c','$instance_c','$reconcile_attempt_id',300000);")" = "unknown"
+test "$(PGPASSWORD=disposable psql -X -q -A -t -v ON_ERROR_STOP=1 -d "$(node_url claim_node_b)" -c \
+  "select symphony_staging.reconcile_effect('effect-unknown','fp-unknown','$reconcile_attempt_id','EFFECTS','$effect_claim_id',$effect_generation,'$node_c','$instance_c','succeeded','{\"number\":18}'::jsonb);")" = "f"
+test "$(PGPASSWORD=disposable psql -X -q -A -t -v ON_ERROR_STOP=1 -d "$(node_url claim_node_c)" -c \
+  "select symphony_staging.reconcile_effect('effect-unknown','fp-unknown','$reconcile_attempt_id','EFFECTS','$effect_claim_id',$effect_generation,'$node_c','$instance_c','succeeded','{\"number\":18}'::jsonb);")" = "t"
+
+handoff_attempt_id="$(cat /proc/sys/kernel/random/uuid)"
+PGPASSWORD=disposable psql -X -q -A -t -v ON_ERROR_STOP=1 -d "$(node_url claim_node_c)" -c \
+  "select status from symphony_staging.begin_effect('effect-handoff','linear_comment','fp-handoff','EFFECTS','$effect_claim_id',$effect_generation,'$node_c','$instance_c','$handoff_attempt_id',300000);" \
+  >/dev/null
+PGPASSWORD=disposable psql -X -q -A -t -v ON_ERROR_STOP=1 -d "$(node_url claim_node_c)" -c \
+  "select symphony_staging.finish_effect('effect-handoff','fp-handoff','$handoff_attempt_id','unknown',null,'timeout');" \
+  >/dev/null
+psql_admin -c "update symphony_staging.issue_claims set released_at = clock_timestamp() where issue_id = 'EFFECTS';"
+psql_admin -c "update symphony_staging.issue_claims set released_at = clock_timestamp() where issue_id = 'TAKEOVER';"
+handoff_claim="$(claim claim_node_b EFFECTS "$node_b" "$instance_b")"
+handoff_claim_id="${handoff_claim%:*}"
+handoff_generation="${handoff_claim#*:}"
+handoff_reconcile_attempt_id="$(cat /proc/sys/kernel/random/uuid)"
+test "$(PGPASSWORD=disposable psql -X -q -A -t -v ON_ERROR_STOP=1 -d "$(node_url claim_node_b)" -c \
+  "select status from symphony_staging.begin_effect('effect-handoff','linear_comment','fp-handoff','EFFECTS','$handoff_claim_id',$handoff_generation,'$node_b','$instance_b','$handoff_reconcile_attempt_id',300000);")" = "unknown"
+test "$(PGPASSWORD=disposable psql -X -q -A -t -v ON_ERROR_STOP=1 -d "$(node_url claim_node_b)" -c \
+  "select symphony_staging.reconcile_effect('effect-handoff','fp-handoff','$handoff_reconcile_attempt_id','EFFECTS','$handoff_claim_id',$handoff_generation,'$node_b','$instance_b','failed-no-effect',null);")" = "t"
+
+if PGPASSWORD=disposable psql -X -q -A -t -v ON_ERROR_STOP=1 -d "$(node_url claim_node_c)" -c \
+  "select status from symphony_staging.begin_effect('effect-stale','git_push','fp-stale','TAKEOVER','$old_id',$old_generation,'$node_c','$instance_c','$(cat /proc/sys/kernel/random/uuid)',300000);" \
+  >/dev/null 2>&1; then
+  echo "effect ledger unexpectedly accepted a stale generation" >&2; exit 1
+fi
+
 stale="$(PGPASSWORD=disposable psql -X -q -A -t -v ON_ERROR_STOP=1 -d "$(node_url claim_node_c)" -c \
   "select symphony_staging.renew_claim('$old_id',$old_generation,'$node_c','$instance_c',60000), symphony_staging.validate_active_claim('$old_id',$old_generation,'$node_c','$instance_c'), symphony_staging.complete_claim('$old_id',$old_generation,'$node_c','$instance_c');")"
 test "$stale" = "f|f|f"
@@ -122,6 +210,9 @@ test "$routed_renewal" = "f"
 psql_admin -c "update symphony_staging.issue_claims set released_at = clock_timestamp() where issue_id = 'ROUTE-CHANGE';"
 
 claim claim_node_a CUSTOM-STATE "$node_a" "$instance_a" 'in review' >/dev/null
+psql_admin -f "$effect_rollback"
+test "$(psql_admin -A -t -c "select to_regclass('symphony_staging.effect_operations') is null;")" = "t"
+test "$(psql_admin -A -t -c "select to_regclass('symphony_staging.issue_claims') is not null;")" = "t"
 psql_admin -c "delete from symphony_staging.active_node_instances where node_id = '$node_a';"
 
-echo "ARO-164 disposable PostgreSQL claim lifecycle passed without printing credentials"
+echo "ARO-164/165 disposable PostgreSQL claim and effect lifecycle passed without printing credentials"

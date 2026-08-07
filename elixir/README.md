@@ -21,7 +21,12 @@ This directory contains the current Elixir/OTP implementation of Symphony, based
 5. Keeps Codex working on the issue until the work is done
 
 During app-server sessions, Symphony also serves a client-side `linear_graphql` tool so that repo
-skills can make raw Linear GraphQL calls.
+skills can make raw Linear GraphQL calls. For orchestrator-managed claim sessions, raw GraphQL
+queries remain available, but raw mutations fail closed. Those sessions instead expose fixed
+`linear_comment` and `linear_state` tools, which record stable operation IDs in the effect ledger
+and use an attempt lease to prevent overlapping workers from applying the same effect twice.
+Managed mode starts only when the staging database reports the `effect-ledger` contract as installed;
+otherwise the claimed agent session fails closed until the ARO-165 migration is applied.
 
 If a claimed issue moves to a terminal state (`Done`, `Closed`, `Cancelled`, or `Duplicate`),
 Symphony stops the active agent for that issue and cleans up matching workspaces.
@@ -73,8 +78,9 @@ human approval protection until then.
    set it as the `LINEAR_API_KEY` environment variable.
 3. Copy this directory's `WORKFLOW.md` to your repo.
 4. Optionally copy the `commit`, `push`, `pull`, `land`, and `linear` skills to your repo.
-   - The `linear` skill expects Symphony's `linear_graphql` app-server tool for raw Linear GraphQL
-     operations such as comment editing or upload flows.
+   - The `linear` skill uses `linear_comment` and `linear_state` for writes in managed claim
+     sessions, while `linear_graphql` remains query-only there. Raw mutation workflows such as
+     comment editing or uploads are available only in manual sessions.
 5. Customize the copied `WORKFLOW.md` file for your project.
    - To get your project's slug, right-click the project and copy its URL. The slug is part of the
      URL.
@@ -142,7 +148,8 @@ The `WORKFLOW.md` file uses YAML front matter for configuration, plus a Markdown
 Codex session prompt.
 
 For multiple Symphony machines polling the same Linear project, enable the staging-backed claim
-coordinator only after the ARO-164 migration and ARO-169 node enrollment are complete:
+coordinator only after the ARO-164 claim migration, ARO-165 effect-ledger migration, and ARO-169
+node enrollment are complete:
 
 ```yaml
 claim:

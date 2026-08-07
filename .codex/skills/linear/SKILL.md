@@ -1,13 +1,42 @@
 ---
 name: linear
 description: |
-  Use Symphony's `linear_graphql` client tool for raw Linear GraphQL
-  operations such as comment editing and upload flows.
+  Use Symphony's managed Linear tools for claim-session comments and state
+  changes, and `linear_graphql` for queries or manual-session operations.
 ---
 
 # Linear GraphQL
 
-Use this skill for raw Linear GraphQL work during Symphony app-server sessions.
+Use this skill for Linear work during Symphony app-server sessions.
+
+## Managed claim sessions
+
+When Symphony is running an orchestrator-managed claim session:
+
+- Use `linear_comment` to create an issue comment. Pass a stable `operationId`
+  and the desired `body`.
+- Use `linear_state` to move the claimed issue. Pass a stable `operationId`
+  and the destination state name in `state`.
+- Use `linear_graphql` only for read-only queries. Raw mutations fail closed in
+  managed sessions, including `commentCreate`, `commentUpdate`, `issueUpdate`,
+  uploads, and attachments.
+- Reuse the same `operationId` when retrying the same intended effect. Choose a
+  new ID only for a genuinely different comment or state transition.
+- If a required mutation has no managed tool, report it as unsupported instead
+  of repeatedly retrying `linear_graphql`.
+
+Examples:
+
+```json
+{"operationId":"handoff-summary-v1","body":"PR is ready for review."}
+```
+
+```json
+{"operationId":"move-to-in-review-v1","state":"In Review"}
+```
+
+The raw mutation examples later in this document apply only to manual,
+non-managed app-server sessions.
 
 ## Primary tool
 
@@ -18,7 +47,7 @@ Tool input:
 
 ```json
 {
-  "query": "query or mutation document",
+  "query": "GraphQL query document (managed sessions) or query/mutation document (manual sessions)",
   "variables": {
     "optional": "graphql variables object"
   }
@@ -223,39 +252,15 @@ mutation UpdateComment($id: String!, $body: String!) {
 
 ### Create a comment
 
-Use `commentCreate` through `linear_graphql`:
-
-```graphql
-mutation CreateComment($issueId: String!, $body: String!) {
-  commentCreate(input: { issueId: $issueId, body: $body }) {
-    success
-    comment {
-      id
-      url
-    }
-  }
-}
-```
+In a managed claim session, use `linear_comment` with a stable `operationId`
+and the desired `body`. Use `commentCreate` through `linear_graphql` only in a
+manual session.
 
 ### Move an issue to a different state
 
-Use `issueUpdate` with the destination `stateId`:
-
-```graphql
-mutation MoveIssueToState($id: String!, $stateId: String!) {
-  issueUpdate(id: $id, input: { stateId: $stateId }) {
-    success
-    issue {
-      id
-      identifier
-      state {
-        id
-        name
-      }
-    }
-  }
-}
-```
+In a managed claim session, use `linear_state` with a stable `operationId` and
+the exact destination state name. The wrapper resolves the state ID safely.
+Use `issueUpdate` through `linear_graphql` only in a manual session.
 
 ### Attach a GitHub PR to an issue
 
@@ -338,6 +343,9 @@ query IssueFieldArgs {
 
 Do this in three steps:
 
+This workflow is manual-session-only; managed claim sessions do not currently
+expose an upload mutation wrapper.
+
 1. Call `linear_graphql` with `fileUpload` to get `uploadUrl`, `assetUrl`, and
    any required upload headers.
 2. Upload the local file bytes to `uploadUrl` with `curl -X PUT` and the exact
@@ -375,8 +383,10 @@ mutation FileUpload(
 
 ## Usage rules
 
-- Use `linear_graphql` for comment edits, uploads, and ad-hoc Linear API
-  queries.
+- In managed claim sessions, use `linear_comment` and `linear_state` for their
+  supported writes and keep `linear_graphql` query-only.
+- Use raw `linear_graphql` mutations for comment edits, uploads, attachments,
+  and other writes only in manual sessions.
 - Prefer the narrowest issue lookup that matches what you already know:
   key -> identifier search -> internal id.
 - For state transitions, fetch team states first and use the exact `stateId`

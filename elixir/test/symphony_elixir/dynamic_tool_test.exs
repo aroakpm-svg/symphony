@@ -3,6 +3,86 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
 
   alias SymphonyElixir.Codex.DynamicTool
 
+  test "managed sessions allow raw Linear queries" do
+    client = fn query, variables, _opts ->
+      send(self(), {:linear_request, query, variables})
+      {:ok, %{"data" => %{"viewer" => %{"id" => "viewer-1"}}}}
+    end
+
+    response =
+      DynamicTool.execute(
+        "linear_graphql",
+        %{"query" => "# safe read\nquery Viewer { viewer { id } }"},
+        managed_session: true,
+        linear_client: client
+      )
+
+    assert response["success"]
+    assert_received {:linear_request, "# safe read\nquery Viewer { viewer { id } }", %{}}
+  end
+
+  test "managed sessions parse fragment-first query documents without treating fields as operations" do
+    query = "fragment mutation on Viewer { id } query Viewer { viewer { ...mutation } }"
+
+    response =
+      DynamicTool.execute(
+        "linear_graphql",
+        %{"query" => query},
+        managed_session: true,
+        linear_client: fn forwarded, %{}, [] ->
+          assert forwarded == query
+          {:ok, %{"data" => %{"viewer" => %{"id" => "viewer-1"}}}}
+        end
+      )
+
+    assert response["success"]
+  end
+
+  test "managed sessions reject raw Linear mutations before calling the client" do
+    client = fn _query, _variables, _opts ->
+      flunk("managed mutation must fail before a Linear request")
+    end
+
+    for document <- [
+          "mutation UpdateIssue { issueUpdate(id: \"1\", input: {}) { success } }",
+          "# comment\n  mutation($id: String!) { issueUpdate(id: $id, input: {}) { success } }",
+          ",\uFEFF # ignored tokens\r\n, mutation { issueUpdate(id: \"1\", input: {}) { success } }",
+          "mutation,# ignored tokens\n UpdateIssue { issueUpdate(id: \"1\", input: {}) { success } }",
+          "fragment F on IssuePayload { success } mutation Update { issueUpdate(id: \"1\", input: {}) { ...F } }",
+          "query Viewer { viewer { id } } mutation Update { issueUpdate(id: \"1\", input: {}) { success } }",
+          ~S|fragment F on Mutation { field(arg: """first \""" still first""") }
+          mutation Update { issueUpdate(id: "1", input: {description: """second \""" still second"""}) { success } }|
+        ] do
+      response =
+        DynamicTool.execute(
+          "linear_graphql",
+          %{"query" => document},
+          managed_session: true,
+          linear_client: client
+        )
+
+      refute response["success"]
+      assert response["output"] =~ "cannot execute raw Linear mutations"
+    end
+  end
+
+  test "manual sessions preserve the raw Linear mutation path" do
+    client = fn query, _variables, _opts ->
+      send(self(), {:linear_mutation, query})
+      {:ok, %{"data" => %{"issueUpdate" => %{"success" => true}}}}
+    end
+
+    response =
+      DynamicTool.execute(
+        "linear_graphql",
+        %{"query" => "mutation { issueUpdate(id: \"1\", input: {}) { success } }"},
+        linear_client: client
+      )
+
+    assert response["success"]
+    assert_received {:linear_mutation, _query}
+  end
+
   test "tool_specs advertises the linear_graphql input contract" do
     assert [
              %{
@@ -20,6 +100,12 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
            ] = DynamicTool.tool_specs()
 
     assert description =~ "Linear"
+  end
+
+  test "managed tool specs expose only the fixed Linear effect wrappers" do
+    names = DynamicTool.tool_specs(managed_session: true) |> Enum.map(& &1["name"])
+
+    assert names == ["linear_graphql", "linear_comment", "linear_state"]
   end
 
   test "unsupported tools return a failure payload with the supported tool list" do
@@ -40,6 +126,15 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
                "text" => response["output"]
              }
            ]
+  end
+
+  test "managed unsupported-tool errors report the managed wrappers" do
+    response = DynamicTool.execute("linear_commment", %{}, managed_session: true)
+
+    refute response["success"]
+    assert response["output"] =~ "linear_graphql"
+    assert response["output"] =~ "linear_comment"
+    assert response["output"] =~ "linear_state"
   end
 
   test "linear_graphql returns successful GraphQL responses as tool text" do
