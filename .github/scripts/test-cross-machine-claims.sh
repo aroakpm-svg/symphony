@@ -6,6 +6,8 @@ database_url="${TEST_DATABASE_URL:?TEST_DATABASE_URL is required}"
 migration="$root_dir/elixir/priv/symphony_migrations/20260804000000_aro_164_cross_machine_claims.sql"
 effect_migration="$root_dir/elixir/priv/symphony_migrations/20260805000000_aro_165_effect_ledger.sql"
 effect_rollback="$root_dir/elixir/priv/symphony_migrations/20260805000000_aro_165_effect_ledger.down.sql"
+handoff_migration="$root_dir/elixir/priv/symphony_migrations/20260807000000_aro_166_handoff_receipts.sql"
+handoff_rollback="$root_dir/elixir/priv/symphony_migrations/20260807000000_aro_166_handoff_receipts.down.sql"
 
 psql_admin() { psql -X -q -v ON_ERROR_STOP=1 -d "$database_url" "$@"; }
 node_url() { printf 'postgresql://%s:disposable@localhost:5432/postgres' "$1"; }
@@ -188,6 +190,21 @@ test "$(PGPASSWORD=disposable psql -X -q -A -t -v ON_ERROR_STOP=1 -d "$(node_url
 test "$(PGPASSWORD=disposable psql -X -q -A -t -v ON_ERROR_STOP=1 -d "$(node_url claim_node_b)" -c \
   "select symphony_staging.reconcile_effect('EFFECTS:effect-handoff','fp-handoff','$handoff_reconcile_attempt_id','EFFECTS','$handoff_claim_id',$handoff_generation,'$node_b','$instance_b','failed-no-effect',null);")" = "t"
 
+psql_admin -f "$handoff_migration"
+derived_effects="$(PGPASSWORD=disposable psql -X -q -A -t -v ON_ERROR_STOP=1 -d "$(node_url claim_node_b)" -c \
+  "select effect_operation_ids from symphony_staging.append_handoff_receipt('EFFECTS','$handoff_claim_id',$handoff_generation,'$node_b','$instance_b',1,'aroakpm-svg','symphony','codex/effects',repeat('f',64),null,null,null,'implementation',array['preflight','branch'],array['implementation','tests','commit','push','pull_request','review'],'[]'::jsonb,array[]::text[]);")"
+[[ "$derived_effects" == *"EFFECTS:effect-linear_comment"* ]]
+[[ "$derived_effects" == *"EFFECTS:effect-unknown"* ]]
+post_checkpoint_attempt_id="$(cat /proc/sys/kernel/random/uuid)"
+test "$(PGPASSWORD=disposable psql -X -q -A -t -v ON_ERROR_STOP=1 -d "$(node_url claim_node_b)" -c \
+  "select status from symphony_staging.begin_effect('EFFECTS:effect-after-checkpoint','linear_comment','fp-after-checkpoint','EFFECTS','$handoff_claim_id',$handoff_generation,'$node_b','$instance_b','$post_checkpoint_attempt_id',300000);")" = "pending"
+test "$(PGPASSWORD=disposable psql -X -q -A -t -v ON_ERROR_STOP=1 -d "$(node_url claim_node_b)" -c \
+  "select symphony_staging.finish_effect('EFFECTS:effect-after-checkpoint','fp-after-checkpoint','$post_checkpoint_attempt_id','succeeded','{\"native_id\":\"after-checkpoint\"}'::jsonb,null);")" = "t"
+latest_effects="$(PGPASSWORD=disposable psql -X -q -A -t -v ON_ERROR_STOP=1 -d "$(node_url claim_node_b)" -c \
+  "select effect_operation_ids from symphony_staging.latest_handoff_receipt('EFFECTS','$handoff_claim_id',$handoff_generation,'$node_b','$instance_b');")"
+[[ "$latest_effects" == *"EFFECTS:effect-after-checkpoint"* ]]
+[[ "$derived_effects" != *"EFFECTS:effect-after-checkpoint"* ]]
+
 if PGPASSWORD=disposable psql -X -q -A -t -v ON_ERROR_STOP=1 -d "$(node_url claim_node_c)" -c \
   "select status from symphony_staging.begin_effect('TAKEOVER:effect-stale','git_push','fp-stale','TAKEOVER','$old_id',$old_generation,'$node_c','$instance_c','$(cat /proc/sys/kernel/random/uuid)',300000);" \
   >/dev/null 2>&1; then
@@ -210,6 +227,7 @@ test "$routed_renewal" = "f"
 psql_admin -c "update symphony_staging.issue_claims set released_at = clock_timestamp() where issue_id = 'ROUTE-CHANGE';"
 
 claim claim_node_a CUSTOM-STATE "$node_a" "$instance_a" 'in review' >/dev/null
+psql_admin -f "$handoff_rollback"
 psql_admin -f "$effect_rollback"
 test "$(psql_admin -A -t -c "select to_regclass('symphony_staging.effect_operations') is null;")" = "t"
 test "$(psql_admin -A -t -c "select to_regclass('symphony_staging.issue_claims') is not null;")" = "t"

@@ -10,6 +10,8 @@ defmodule SymphonyElixir.HandoffReceiptTest do
     assert source =~ "handoff_commit_sha(previous, git_evidence.head_sha)"
     refute source =~ "handoff_commit_sha(previous, readiness.head_sha)"
     assert source =~ "workspace_evidence(workspace, readiness.issue_branch, repository, worker_host)"
+    assert source =~ "Known canonical managed effect IDs"
+    assert source =~ "Reuse the exact existing ID for the same intended effect"
   end
 
   test "canonical origin parsing accepts GitHub transports without accepting lookalike hosts" do

@@ -168,6 +168,18 @@ begin
     limit 1
   ), '{}') into prior_effect_operation_ids;
 
+  prior_effect_operation_ids := array(
+    select distinct known.operation_id
+    from (
+      select unnest(prior_effect_operation_ids) as operation_id
+      union all
+      select operations.operation_id
+      from symphony_staging.effect_operations operations
+      where operations.issue_id = requested_issue_id
+    ) known
+    order by known.operation_id
+  );
+
   if requested_schema_version <> 1
      or requested_owner is null or requested_owner !~ '[^[:space:]]'
      or requested_repository is null or requested_repository !~ '[^[:space:]]'
@@ -211,6 +223,7 @@ begin
        select 1 from unnest(requested_effect_operation_ids) value
        where value is null or btrim(value) = ''
           or left(value, length(requested_issue_id) + 1) <> requested_issue_id || ':'
+          or value !~ '^[A-Za-z0-9][A-Za-z0-9._-]{0,127}:[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$'
      ) then
     raise exception using errcode = '22023', message = 'invalid HandoffReceiptV1';
   end if;
@@ -325,7 +338,17 @@ begin
     receipts.completed_step_ids,
     receipts.pending_step_ids,
     receipts.test_results,
-    receipts.effect_operation_ids
+    array(
+      select distinct known.operation_id
+      from (
+        select unnest(receipts.effect_operation_ids) as operation_id
+        union all
+        select operations.operation_id
+        from symphony_staging.effect_operations operations
+        where operations.issue_id = receipts.issue_id
+      ) known
+      order by known.operation_id
+    ) as effect_operation_ids
   from symphony_staging.handoff_receipts receipts
   where receipts.issue_id = requested_issue_id
   order by receipts.generation desc, receipts.checkpoint_sequence desc

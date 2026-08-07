@@ -112,6 +112,9 @@ defmodule SymphonyElixir.EffectLedgerMigrationTest do
 
     assert File.read!(@migration) =~
              "left(requested_operation_id, length(requested_issue_id) + 1) <> requested_issue_id || ':'"
+
+    assert File.read!(@migration) =~
+             "requested_operation_id !~ '^[A-Za-z0-9][A-Za-z0-9._-]{0,127}:[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$'"
   end
 
   test "runtime access is function-only and existing node logins receive it" do

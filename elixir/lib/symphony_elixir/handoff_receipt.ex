@@ -319,7 +319,7 @@ defmodule SymphonyElixir.HandoffReceipt do
       failed_tests_marked_complete?(attrs) ->
         {:error, :failed_tests_marked_complete}
 
-      not unique_nonempty_strings?(Map.get(attrs, :effect_operation_ids, [])) ->
+      not valid_effect_operation_ids?(Map.get(attrs, :effect_operation_ids, [])) ->
         {:error, :invalid_effect_operation_ids}
 
       true ->
@@ -431,12 +431,14 @@ defmodule SymphonyElixir.HandoffReceipt do
       Enum.any?(Map.get(attrs, :test_results, []), &(&1.status == :failed))
   end
 
-  defp unique_nonempty_strings?(values) when is_list(values) do
-    Enum.all?(values, &(is_binary(&1) and byte_size(String.trim(&1)) > 0)) and
+  defp valid_effect_operation_ids?(values) when is_list(values) do
+    pattern = ~r/\A[A-Za-z0-9][A-Za-z0-9._-]{0,127}:[A-Za-z0-9][A-Za-z0-9._:-]{0,127}\z/
+
+    Enum.all?(values, &(is_binary(&1) and Regex.match?(pattern, &1))) and
       length(values) == MapSet.size(MapSet.new(values))
   end
 
-  defp unique_nonempty_strings?(_values), do: false
+  defp valid_effect_operation_ids?(_values), do: false
 
   defp nonempty_string?(value), do: is_binary(value) and byte_size(String.trim(value)) > 0
   defp valid_commit_sha?(nil), do: true

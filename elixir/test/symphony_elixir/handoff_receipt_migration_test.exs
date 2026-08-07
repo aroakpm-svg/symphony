@@ -44,6 +44,9 @@ defmodule SymphonyElixir.HandoffReceiptMigrationTest do
     assert length(Regex.scan(~r/inserted\.checkpoint_sequence|receipts\.checkpoint_sequence/, sql)) >= 3
     assert sql =~ "prior_effect_operation_ids || requested_effect_operation_ids"
     assert sql =~ "select distinct operation_id"
+    assert length(Regex.scan(~r/from symphony_staging\.effect_operations operations/, sql)) == 3
+    assert sql =~ "where operations.issue_id = requested_issue_id"
+    assert sql =~ "where operations.issue_id = receipts.issue_id"
   end
 
   test "fixed step and structured test allowlists are enforced in the database" do
@@ -59,6 +62,7 @@ defmodule SymphonyElixir.HandoffReceiptMigrationTest do
     assert sql =~ "coalesce(array_length(pending, 1), 0) = 8"
     assert sql =~ "coalesce(array_ndims(requested_effect_operation_ids), 1) <> 1"
     assert sql =~ "left(value, length(requested_issue_id) + 1) <> requested_issue_id || ':'"
+    assert sql =~ "value !~ '^[A-Za-z0-9][A-Za-z0-9._-]{0,127}:[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$'"
     assert sql =~ "requested_phase = 'complete'"
     assert sql =~ "cardinality(requested_completed) <> 8"
     assert sql =~ "requested_phase <> 'complete' and cardinality(requested_pending) = 0"

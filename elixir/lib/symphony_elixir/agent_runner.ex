@@ -279,9 +279,9 @@ defmodule SymphonyElixir.AgentRunner do
            handoff_truth(previous, fresh_issue, readiness, git_evidence, claim, connection, repository, opts),
          resume <- HandoffReceipt.resume(previous, truth),
          attrs <- checkpoint_attrs(previous, resume, readiness, git_evidence, owner, name),
-         {:ok, _checkpoint} <- HandoffReceipt.append(connection, claim, attrs) do
+         {:ok, checkpoint} <- HandoffReceipt.append(connection, claim, attrs) do
       Logger.info("Handoff checkpoint restored for #{issue_context(issue)} result=#{inspect(resume)}")
-      {:ok, resume}
+      {:ok, %{decision: resume, effect_operation_ids: checkpoint.effect_operation_ids}}
     end
   end
 
@@ -477,13 +477,15 @@ defmodule SymphonyElixir.AgentRunner do
         "\n\nFor managed runs, call handoff_checkpoint after every durable safe transition: implementation, tests, commit, push, pull request, and review. Include all completed/pending steps, structured test evidence, and managed effect operation IDs.\n"
 
     case Keyword.get(opts, :handoff_resume) do
-      {:ok, next} ->
+      %{decision: {:ok, next}, effect_operation_ids: operation_ids} ->
         base <>
-          "\n\nVerified handoff: resume at #{next}. Recheck external state before side effects.\n"
+          "\n\nVerified handoff: resume at #{next}. Recheck external state before side effects." <>
+          handoff_effect_context(operation_ids)
 
-      {:safe_recheck, reason} ->
+      %{decision: {:safe_recheck, reason}, effect_operation_ids: operation_ids} ->
         base <>
-          "\n\nHandoff could not be trusted (#{inspect(reason)}). Recheck all external state before continuing.\n"
+          "\n\nHandoff could not be trusted (#{inspect(reason)}). Recheck all external state before continuing." <>
+          handoff_effect_context(operation_ids)
 
       _none ->
         base
@@ -500,6 +502,10 @@ defmodule SymphonyElixir.AgentRunner do
     - The original task instructions and prior turn context are already present in this thread, so do not restate them before acting.
     - Focus on the remaining ticket work and do not end the turn while the issue stays active unless you are truly blocked.
     """
+  end
+
+  defp handoff_effect_context(operation_ids) do
+    "\nKnown canonical managed effect IDs: #{Jason.encode!(operation_ids)}. Reuse the exact existing ID for the same intended effect; do not mint a replacement key.\n"
   end
 
   defp continue_with_issue?(%Issue{id: issue_id} = issue, issue_state_fetcher) when is_binary(issue_id) do
