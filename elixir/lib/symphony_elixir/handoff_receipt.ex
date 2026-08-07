@@ -67,13 +67,20 @@ defmodule SymphonyElixir.HandoffReceipt do
   def phases, do: @phases
 
   @spec workspace_evidence(Path.t(), String.t(), String.t() | nil) ::
-          {:ok, %{worktree_fingerprint: String.t(), remote_branch_sha: String.t() | nil}}
+          {:ok,
+           %{
+             worktree_fingerprint: String.t(),
+             remote_branch_sha: String.t() | nil,
+             head_sha: String.t(),
+             clean?: boolean()
+           }}
           | {:error, term()}
   def workspace_evidence(workspace, branch, worker_host)
       when is_binary(workspace) and is_binary(branch) do
     with {:ok, status} <- Workspace.run_git_command(workspace, ["status", "--porcelain=v1", "-z", "--untracked-files=all"], worker_host),
          {:ok, diff} <- Workspace.run_git_command(workspace, ["diff", "--binary", "HEAD"], worker_host),
          {:ok, cached} <- Workspace.run_git_command(workspace, ["diff", "--binary", "--cached", "HEAD"], worker_host),
+         {:ok, head_sha} <- Workspace.run_git_command(workspace, ["rev-parse", "HEAD"], worker_host),
          {:ok, untracked_hashes} <- hash_untracked_files(workspace, status, worker_host),
          {:ok, remote_sha} <- remote_branch_sha(workspace, branch, worker_host) do
       fingerprint =
@@ -81,7 +88,13 @@ defmodule SymphonyElixir.HandoffReceipt do
         |> :crypto.hash([status, diff, cached, untracked_hashes])
         |> Base.encode16(case: :lower)
 
-      {:ok, %{worktree_fingerprint: fingerprint, remote_branch_sha: remote_sha}}
+      {:ok,
+       %{
+         worktree_fingerprint: fingerprint,
+         remote_branch_sha: remote_sha,
+         head_sha: head_sha |> String.trim() |> String.downcase(),
+         clean?: status == ""
+       }}
     end
   end
 

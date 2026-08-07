@@ -40,6 +40,10 @@ defmodule SymphonyElixir.EffectLedger do
   @spec effect_types() :: [effect_type()]
   def effect_types, do: @effect_types
 
+  @spec operation_id(String.t(), String.t()) :: String.t()
+  def operation_id(issue_id, operation_id) when is_binary(issue_id) and is_binary(operation_id),
+    do: issue_id <> ":" <> operation_id
+
   @spec execute(
           Postgrex.conn(),
           effect_type(),
@@ -194,7 +198,7 @@ defmodule SymphonyElixir.EffectLedger do
   end
 
   defp namespace_operation(context) do
-    namespaced_id = context.issue_id <> ":" <> context.operation_id
+    namespaced_id = operation_id(context.issue_id, context.operation_id)
     %{context | operation_id: namespaced_id}
   end
 

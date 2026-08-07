@@ -183,8 +183,9 @@ defmodule SymphonyElixir.Codex.DynamicTool do
              attrs.branch,
              Keyword.get(opts, :worker_host)
            ),
-         attrs <- checkpoint_git_evidence(attrs, evidence),
+         {:ok, attrs} <- checkpoint_git_evidence(attrs, evidence),
          {:ok, connection, claim} <- context_fetcher.(issue_id),
+         attrs <- namespace_effect_operation_ids(attrs, claim.issue_id),
          {:ok, receipt} <- appender.(connection, claim, attrs) do
       dynamic_tool_response(true, encode_payload(receipt))
     else
@@ -228,10 +229,22 @@ defmodule SymphonyElixir.Codex.DynamicTool do
   defp checkpoint_git_evidence(attrs, evidence) do
     remote_sha = if :push in attrs.completed_step_ids, do: evidence.remote_branch_sha, else: nil
 
-    Map.merge(attrs, %{
-      worktree_fingerprint: evidence.worktree_fingerprint,
-      remote_branch_sha: remote_sha
-    })
+    if :commit in attrs.completed_step_ids and
+         (not evidence.clean? or attrs.commit_sha != evidence.head_sha) do
+      {:error, :completed_commit_not_verified}
+    else
+      {:ok,
+       Map.merge(attrs, %{
+         worktree_fingerprint: evidence.worktree_fingerprint,
+         remote_branch_sha: remote_sha
+       })}
+    end
+  end
+
+  defp namespace_effect_operation_ids(attrs, issue_id) do
+    Map.update!(attrs, :effect_operation_ids, fn operation_ids ->
+      Enum.map(operation_ids, &EffectLedger.operation_id(issue_id, &1))
+    end)
   end
 
   defp decode_handoff_atoms(values, allowed) when is_list(values) do
