@@ -213,7 +213,10 @@ defmodule SymphonyElixir.Codex.DynamicTool do
          {:ok, pending} <- decode_handoff_atoms(value(arguments, "pendingSteps"), HandoffReceipt.step_ids()),
          {:ok, tests} <- decode_handoff_tests(value(arguments, "testResults")),
          {:ok, effect_operation_ids} <-
-           decode_effect_operation_ids(value(arguments, "effectOperationIds")) do
+           decode_effect_operation_ids(
+             value(arguments, "effectOperationIds"),
+             Keyword.get(opts, :managed_issue_id)
+           ) do
       {:ok,
        %{
          canonical_owner: owner,
@@ -301,17 +304,15 @@ defmodule SymphonyElixir.Codex.DynamicTool do
 
   defp decode_handoff_tests(_values), do: {:error, :invalid_handoff_test}
 
-  defp decode_effect_operation_ids(values) when is_list(values) do
-    if Enum.all?(values, fn value ->
-         is_binary(value) and Regex.match?(~r/\A[A-Za-z0-9][A-Za-z0-9._:-]{0,127}\z/, value)
-       end) do
+  defp decode_effect_operation_ids(values, issue_id) when is_list(values) and is_binary(issue_id) do
+    if Enum.all?(values, &EffectLedger.valid_requested_operation_id?(issue_id, &1)) do
       {:ok, values}
     else
       {:error, :invalid_effect_operation_ids}
     end
   end
 
-  defp decode_effect_operation_ids(_values), do: {:error, :invalid_effect_operation_ids}
+  defp decode_effect_operation_ids(_values, _issue_id), do: {:error, :invalid_effect_operation_ids}
 
   defp value(map, key), do: Map.get(map, key) || Map.get(map, String.to_atom(key))
 

@@ -139,6 +139,9 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
   end
 
   test "managed handoff checkpoints persist each explicit durable transition" do
+    max_raw_id = "x" <> String.duplicate("a", 127)
+    max_canonical_id = "ARO-166:" <> max_raw_id
+
     arguments = %{
       "branch" => "codex/aro-166",
       "commitSha" => nil,
@@ -147,7 +150,7 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
       "completedSteps" => ["preflight", "branch", "implementation", "tests"],
       "pendingSteps" => ["commit", "push", "pull_request", "review"],
       "testResults" => [%{"name" => "make all", "status" => "passed"}],
-      "effectOperationIds" => ["linear-comment:1", "ARO-166:linear-state:1"]
+      "effectOperationIds" => ["linear-comment:1", "ARO-166:linear-state:1", max_canonical_id]
     }
 
     response =
@@ -171,7 +174,8 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
 
           assert attrs.effect_operation_ids == [
                    "ARO-166:linear-comment:1",
-                   "ARO-166:linear-state:1"
+                   "ARO-166:linear-state:1",
+                   max_canonical_id
                  ]
 
           assert attrs.worktree_fingerprint == String.duplicate("f", 64)

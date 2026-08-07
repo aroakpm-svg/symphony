@@ -11,6 +11,8 @@ defmodule SymphonyElixir.EffectLedger do
     github_pr_update linear_state
   )a
   @attempt_lease_ms 300_000
+  @raw_operation_id ~r/\A[A-Za-z0-9][A-Za-z0-9._:-]{0,127}\z/
+  @canonical_operation_id ~r/\A[A-Za-z0-9][A-Za-z0-9._-]{0,127}:[A-Za-z0-9][A-Za-z0-9._:-]{0,127}\z/
 
   @type effect_type ::
           :linear_comment
@@ -48,6 +50,22 @@ defmodule SymphonyElixir.EffectLedger do
       do: operation_id,
       else: prefix <> operation_id
   end
+
+  @spec valid_requested_operation_id?(String.t(), term()) :: boolean()
+  def valid_requested_operation_id?(issue_id, operation_id)
+      when is_binary(issue_id) and is_binary(operation_id) do
+    Regex.match?(@raw_operation_id, operation_id) or
+      (String.starts_with?(operation_id, issue_id <> ":") and
+         valid_canonical_operation_id?(operation_id))
+  end
+
+  def valid_requested_operation_id?(_issue_id, _operation_id), do: false
+
+  @spec valid_canonical_operation_id?(term()) :: boolean()
+  def valid_canonical_operation_id?(operation_id) when is_binary(operation_id),
+    do: Regex.match?(@canonical_operation_id, operation_id)
+
+  def valid_canonical_operation_id?(_operation_id), do: false
 
   @spec execute(
           Postgrex.conn(),

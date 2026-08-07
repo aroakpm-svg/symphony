@@ -7,7 +7,7 @@ defmodule SymphonyElixir.HandoffReceipt do
   state before a pending step can be selected.
   """
 
-  alias SymphonyElixir.Workspace
+  alias SymphonyElixir.{EffectLedger, Workspace}
 
   @schema_version 1
   @steps ~w(preflight branch implementation tests commit push pull_request review)a
@@ -473,9 +473,7 @@ defmodule SymphonyElixir.HandoffReceipt do
   end
 
   defp valid_effect_operation_ids?(values) when is_list(values) do
-    pattern = ~r/\A[A-Za-z0-9][A-Za-z0-9._-]{0,127}:[A-Za-z0-9][A-Za-z0-9._:-]{0,127}\z/
-
-    Enum.all?(values, &(is_binary(&1) and Regex.match?(pattern, &1))) and
+    Enum.all?(values, &EffectLedger.valid_canonical_operation_id?/1) and
       length(values) == MapSet.size(MapSet.new(values))
   end
 
