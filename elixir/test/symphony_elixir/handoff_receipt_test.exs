@@ -77,6 +77,7 @@ defmodule SymphonyElixir.HandoffReceiptTest do
   test "append SQL preserves the complete 16-argument function contract" do
     sql = HandoffReceipt.append_sql_for_test()
 
+    assert sql =~ "claim_id::text as claim_id"
     assert sql =~ "$11, $12, $13::text[], $14::text[], $15::jsonb, $16::text[]"
     refute sql =~ "$12::text[]"
   end

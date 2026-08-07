@@ -293,7 +293,7 @@ defmodule SymphonyElixir.HandoffReceipt do
   defp receipt_columns do
     """
     receipt_schema_version, issue_id, canonical_owner, canonical_repository,
-    claim_id, generation, checkpoint_sequence, recorded_at, branch, commit_sha,
+    claim_id::text as claim_id, generation, checkpoint_sequence, recorded_at, branch, commit_sha,
     pr_number, current_phase, completed_step_ids, pending_step_ids, test_results,
     effect_operation_ids
     """
