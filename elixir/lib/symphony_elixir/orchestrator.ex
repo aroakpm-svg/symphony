@@ -12,6 +12,7 @@ defmodule SymphonyElixir.Orchestrator do
 
   @continuation_retry_delay_ms 1_000
   @failure_retry_base_ms 10_000
+  @claim_binding_timeout_ms 16_000
   # Slightly above the dashboard render interval so "checking now…" can render.
   @poll_transition_render_delay_ms 20
   @empty_codex_totals %{
@@ -48,6 +49,26 @@ defmodule SymphonyElixir.Orchestrator do
   def start_link(opts \\ []) do
     name = Keyword.get(opts, :name, __MODULE__)
     GenServer.start_link(__MODULE__, opts, name: name)
+  end
+
+  @doc false
+  @spec await_claim_binding_for_test(pid(), non_neg_integer(), (-> term())) :: term()
+  def await_claim_binding_for_test(orchestrator, timeout_ms, run)
+      when is_pid(orchestrator) and is_integer(timeout_ms) and timeout_ms >= 0 and is_function(run, 0) do
+    orchestrator_ref = Process.monitor(orchestrator)
+
+    receive do
+      :claim_bound ->
+        Process.demonitor(orchestrator_ref, [:flush])
+        run.()
+
+      {:DOWN, ^orchestrator_ref, :process, ^orchestrator, _reason} ->
+        :claim_binding_abandoned
+    after
+      timeout_ms ->
+        Process.demonitor(orchestrator_ref, [:flush])
+        :claim_binding_timeout
+    end
   end
 
   @impl true
@@ -1033,15 +1054,16 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   defp spawn_issue_on_worker_host(%State{} = state, issue, attempt, recipient, worker_host, distributed_claim) do
+    orchestrator = self()
+
     case Task.Supervisor.start_child(SymphonyElixir.TaskSupervisor, fn ->
-           receive do
-             :claim_bound ->
-               AgentRunner.run(issue, recipient,
-                 attempt: attempt,
-                 worker_host: worker_host,
-                 distributed_claim: distributed_claim
-               )
-           end
+           await_claim_binding_for_test(orchestrator, @claim_binding_timeout_ms, fn ->
+             AgentRunner.run(issue, recipient,
+               attempt: attempt,
+               worker_host: worker_host,
+               distributed_claim: distributed_claim
+             )
+           end)
          end) do
       {:ok, pid} ->
         case ClaimService.bind_worker(issue.id, pid) do

@@ -44,9 +44,12 @@ defmodule SymphonyElixir.HandoffReceiptMigrationTest do
     assert length(Regex.scan(~r/inserted\.checkpoint_sequence|receipts\.checkpoint_sequence/, sql)) >= 3
     assert sql =~ "prior_effect_operation_ids || requested_effect_operation_ids"
     assert sql =~ "select distinct operation_id"
-    assert length(Regex.scan(~r/from symphony_staging\.effect_operations operations/, sql)) == 3
+    assert length(Regex.scan(~r/from symphony_staging\.effect_operations operations/, sql)) >= 3
     assert sql =~ "where operations.issue_id = requested_issue_id"
     assert sql =~ "where operations.issue_id = receipts.issue_id"
+    assert sql =~ "legacy effect operation normalization collision"
+    assert sql =~ "operations.issue_id || ':legacy-' || md5(operations.operation_id)"
+    assert sql =~ "update symphony_staging.effect_operations operations"
   end
 
   test "fixed step and structured test allowlists are enforced in the database" do

@@ -10,15 +10,26 @@ defmodule SymphonyElixir.ClaimServiceTest do
     refute source =~ "DateTime.to_iso8601(updated_at)"
   end
 
-  test "orchestrator releases a worker only after its database claim is bound" do
+  test "claim-binding handshake is ordered, bounded, and owned by the orchestrator" do
     source = File.read!(Path.expand("../../lib/symphony_elixir/orchestrator.ex", __DIR__))
 
-    receive_offset = source |> :binary.match("receive do\n             :claim_bound") |> elem(0)
     bind_offset = source |> :binary.match("ClaimService.bind_worker(issue.id, pid)") |> elem(0)
     release_offset = source |> :binary.match("send(pid, :claim_bound)") |> elem(0)
 
-    assert receive_offset < bind_offset
     assert bind_offset < release_offset
+
+    owner = spawn(fn -> Process.sleep(:infinity) end)
+    released = Task.async(fn -> SymphonyElixir.Orchestrator.await_claim_binding_for_test(owner, 100, fn -> :ran end) end)
+    send(released.pid, :claim_bound)
+    assert Task.await(released) == :ran
+
+    abandoned_owner = spawn(fn -> Process.sleep(:infinity) end)
+    abandoned = Task.async(fn -> SymphonyElixir.Orchestrator.await_claim_binding_for_test(abandoned_owner, 1_000, fn -> :ran end) end)
+    Process.exit(abandoned_owner, :kill)
+    assert Task.await(abandoned) == :claim_binding_abandoned
+
+    assert SymphonyElixir.Orchestrator.await_claim_binding_for_test(self(), 0, fn -> :ran end) ==
+             :claim_binding_timeout
   end
 
   test "lease deadlines remain anchored before a slow database grant returns" do

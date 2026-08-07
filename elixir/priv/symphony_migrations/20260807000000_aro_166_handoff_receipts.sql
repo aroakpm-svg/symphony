@@ -1,5 +1,54 @@
 begin;
 
+do $$
+declare
+  collision_count bigint;
+begin
+  if exists (
+    select 1 from symphony_staging.effect_operations operations
+    where operations.issue_id !~ '^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$'
+  ) then
+    raise exception using errcode = '22023',
+      message = 'legacy effect operation has an invalid issue identity';
+  end if;
+
+  select count(*) into collision_count
+  from (
+    select normalized.issue_id, normalized.operation_id
+    from (
+      select
+        operations.issue_id,
+        case
+          when left(operations.operation_id, length(operations.issue_id) + 1) = operations.issue_id || ':'
+            and operations.operation_id ~ '^[A-Za-z0-9][A-Za-z0-9._-]{0,127}:[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$'
+            then operations.operation_id
+          when operations.operation_id ~ '^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$'
+            then operations.issue_id || ':' || operations.operation_id
+          else operations.issue_id || ':legacy-' || md5(operations.operation_id)
+        end as operation_id
+      from symphony_staging.effect_operations operations
+    ) normalized
+    group by normalized.issue_id, normalized.operation_id
+    having count(*) > 1
+  ) collisions;
+
+  if collision_count > 0 then
+    raise exception using errcode = '55000',
+      message = 'legacy effect operation normalization collision';
+  end if;
+
+  update symphony_staging.effect_operations operations
+  set operation_id = case
+    when left(operations.operation_id, length(operations.issue_id) + 1) = operations.issue_id || ':'
+      and operations.operation_id ~ '^[A-Za-z0-9][A-Za-z0-9._-]{0,127}:[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$'
+      then operations.operation_id
+    when operations.operation_id ~ '^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$'
+      then operations.issue_id || ':' || operations.operation_id
+    else operations.issue_id || ':legacy-' || md5(operations.operation_id)
+  end;
+end
+$$;
+
 create table symphony_staging.handoff_receipts (
   checkpoint_sequence bigint generated always as identity primary key,
   receipt_schema_version integer not null check (receipt_schema_version = 1),

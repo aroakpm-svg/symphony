@@ -190,11 +190,15 @@ test "$(PGPASSWORD=disposable psql -X -q -A -t -v ON_ERROR_STOP=1 -d "$(node_url
 test "$(PGPASSWORD=disposable psql -X -q -A -t -v ON_ERROR_STOP=1 -d "$(node_url claim_node_b)" -c \
   "select symphony_staging.reconcile_effect('EFFECTS:effect-handoff','fp-handoff','$handoff_reconcile_attempt_id','EFFECTS','$handoff_claim_id',$handoff_generation,'$node_b','$instance_b','failed-no-effect',null);")" = "t"
 
+psql_admin -c "insert into symphony_staging.effect_operations(operation_id,effect_type,request_fingerprint,issue_id,claim_id,generation,status,native_resource) values ('legacy-before-handoff','linear_comment','fp-legacy','EFFECTS','$handoff_claim_id',$handoff_generation,'succeeded','{\"native_id\":\"legacy\"}'::jsonb);"
 psql_admin -f "$handoff_migration"
+test "$(psql_admin -A -t -c "select count(*) from symphony_staging.effect_operations where operation_id = 'legacy-before-handoff';")" = "0"
+test "$(psql_admin -A -t -c "select count(*) from symphony_staging.effect_operations where operation_id = 'EFFECTS:legacy-before-handoff';")" = "1"
 derived_effects="$(PGPASSWORD=disposable psql -X -q -A -t -v ON_ERROR_STOP=1 -d "$(node_url claim_node_b)" -c \
   "select effect_operation_ids from symphony_staging.append_handoff_receipt('EFFECTS','$handoff_claim_id',$handoff_generation,'$node_b','$instance_b',1,'aroakpm-svg','symphony','codex/effects',repeat('f',64),null,null,null,'implementation',array['preflight','branch'],array['implementation','tests','commit','push','pull_request','review'],'[]'::jsonb,array[]::text[]);")"
 [[ "$derived_effects" == *"EFFECTS:effect-linear_comment"* ]]
 [[ "$derived_effects" == *"EFFECTS:effect-unknown"* ]]
+[[ "$derived_effects" == *"EFFECTS:legacy-before-handoff"* ]]
 post_checkpoint_attempt_id="$(cat /proc/sys/kernel/random/uuid)"
 test "$(PGPASSWORD=disposable psql -X -q -A -t -v ON_ERROR_STOP=1 -d "$(node_url claim_node_b)" -c \
   "select status from symphony_staging.begin_effect('EFFECTS:effect-after-checkpoint','linear_comment','fp-after-checkpoint','EFFECTS','$handoff_claim_id',$handoff_generation,'$node_b','$instance_b','$post_checkpoint_attempt_id',300000);")" = "pending"
