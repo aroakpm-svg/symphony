@@ -128,6 +128,15 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
            ]
   end
 
+  test "managed unsupported-tool errors report the managed wrappers" do
+    response = DynamicTool.execute("linear_commment", %{}, managed_session: true)
+
+    refute response["success"]
+    assert response["output"] =~ "linear_graphql"
+    assert response["output"] =~ "linear_comment"
+    assert response["output"] =~ "linear_state"
+  end
+
   test "linear_graphql returns successful GraphQL responses as tool text" do
     test_pid = self()
 

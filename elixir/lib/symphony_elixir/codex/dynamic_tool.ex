@@ -95,7 +95,7 @@ defmodule SymphonyElixir.Codex.DynamicTool do
         failure_response(%{
           "error" => %{
             "message" => "Unsupported dynamic tool: #{inspect(other)}.",
-            "supportedTools" => supported_tool_names()
+            "supportedTools" => supported_tool_names(opts)
           }
         })
     end
@@ -566,7 +566,7 @@ defmodule SymphonyElixir.Codex.DynamicTool do
     }
   end
 
-  defp supported_tool_names do
-    Enum.map(tool_specs(), & &1["name"])
+  defp supported_tool_names(opts) do
+    Enum.map(tool_specs(opts), & &1["name"])
   end
 end
