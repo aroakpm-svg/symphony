@@ -309,6 +309,7 @@ defmodule SymphonyElixir.Codex.DynamicTool do
          context <-
            Map.merge(claim_context, %{
              operation_id: EffectLedger.operation_id(claim_context.issue_id, operation_id),
+             requested_operation_id: operation_id,
              request_fingerprint: effect_fingerprint(tool, value)
            }),
          {:ok, resource} <- effect_runner.(tool, connection, context, value, opts) do
@@ -345,14 +346,16 @@ defmodule SymphonyElixir.Codex.DynamicTool do
 
   defp run_managed_effect(@linear_comment_tool, connection, context, body, opts) do
     client = Keyword.get(opts, :linear_client, &Client.graphql/3)
-    marker = "<!-- symphony-effect:#{context.operation_id} -->"
-    marked_body = body <> "\n\n" <> marker
+    {marked_body, legacy_marked_body} = managed_comment_bodies(context, body)
 
     adapter = fn ->
       create_linear_comment(client, context.issue_id, marked_body)
     end
 
-    reconciler = fn -> reconcile_comment(client, context.issue_id, marked_body, nil) end
+    reconciler = fn ->
+      reconcile_comment_variants(client, context.issue_id, marked_body, legacy_marked_body)
+    end
+
     EffectLedger.execute(connection, :linear_comment, context, adapter, reconciler)
   end
 
@@ -362,6 +365,41 @@ defmodule SymphonyElixir.Codex.DynamicTool do
     adapter = fn -> update_linear_state(client, context.issue_id, state) end
     reconciler = fn -> reconcile_state(client, context.issue_id, state) end
     EffectLedger.execute(connection, :linear_state, context, adapter, reconciler)
+  end
+
+  defp managed_comment_bodies(context, body) do
+    canonical = body <> "\n\n<!-- symphony-effect:#{context.operation_id} -->"
+    requested_operation_id = Map.get(context, :requested_operation_id, context.operation_id)
+
+    legacy =
+      if requested_operation_id == context.operation_id,
+        do: nil,
+        else: body <> "\n\n<!-- symphony-effect:#{requested_operation_id} -->"
+
+    {canonical, legacy}
+  end
+
+  defp reconcile_comment_variants(client, issue_id, canonical_body, legacy_body) do
+    case reconcile_comment(client, issue_id, canonical_body, nil) do
+      :not_found when is_binary(legacy_body) -> reconcile_comment(client, issue_id, legacy_body, nil)
+      result -> result
+    end
+  end
+
+  @doc false
+  def comment_bodies_for_test(issue_id, operation_id, body) do
+    managed_comment_bodies(
+      %{
+        operation_id: EffectLedger.operation_id(issue_id, operation_id),
+        requested_operation_id: operation_id
+      },
+      body
+    )
+  end
+
+  @doc false
+  def reconcile_comment_variants_for_test(client, issue_id, canonical_body, legacy_body) do
+    reconcile_comment_variants(client, issue_id, canonical_body, legacy_body)
   end
 
   defp create_linear_comment(client, issue_id, body) do

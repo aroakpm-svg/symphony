@@ -202,11 +202,57 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
         end,
         managed_effect_runner: fn "linear_comment", :connection, context, "hello", _opts ->
           assert context.operation_id == "ARO-166:comment:1"
+          assert context.requested_operation_id == "comment:1"
           {:ok, %{"id" => "comment-1"}}
         end
       )
 
     assert response["success"]
+  end
+
+  test "managed comments write canonical markers while retaining legacy reconciliation evidence" do
+    assert DynamicTool.comment_bodies_for_test("ARO-166", "comment:1", "hello") ==
+             {"hello\n\n<!-- symphony-effect:ARO-166:comment:1 -->", "hello\n\n<!-- symphony-effect:comment:1 -->"}
+
+    assert DynamicTool.comment_bodies_for_test("ARO-166", "ARO-166:comment:1", "hello") ==
+             {"hello\n\n<!-- symphony-effect:ARO-166:comment:1 -->", nil}
+  end
+
+  test "managed comment reconciliation falls back to a pre-upgrade raw marker" do
+    canonical = "hello\n\n<!-- symphony-effect:ARO-166:comment:1 -->"
+    legacy = "hello\n\n<!-- symphony-effect:comment:1 -->"
+
+    client = fn _query, %{after: nil}, [] ->
+      call = Process.get(:comment_reconcile_call, 0)
+      Process.put(:comment_reconcile_call, call + 1)
+
+      nodes =
+        if call == 0,
+          do: [],
+          else: [%{"id" => "legacy-comment", "body" => legacy, "user" => %{"id" => "viewer"}}]
+
+      {:ok,
+       %{
+         "data" => %{
+           "viewer" => %{"id" => "viewer"},
+           "issue" => %{
+             "comments" => %{
+               "nodes" => nodes,
+               "pageInfo" => %{"hasNextPage" => false, "endCursor" => nil}
+             }
+           }
+         }
+       }}
+    end
+
+    assert DynamicTool.reconcile_comment_variants_for_test(
+             client,
+             "ARO-166",
+             canonical,
+             legacy
+           ) == {:found, %{"id" => "legacy-comment"}}
+
+    assert Process.get(:comment_reconcile_call) == 2
   end
 
   test "linear_graphql returns successful GraphQL responses as tool text" do
