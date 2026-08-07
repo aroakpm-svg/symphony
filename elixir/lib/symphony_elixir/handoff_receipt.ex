@@ -284,12 +284,15 @@ defmodule SymphonyElixir.HandoffReceipt do
       not valid_fingerprint?(Map.get(attrs, :worktree_fingerprint)) ->
         {:error, :invalid_worktree_fingerprint}
 
-      not valid_commit_sha?(Map.get(attrs, :remote_branch_sha)) ->
-        {:error, :invalid_remote_branch_sha}
-
       true ->
-        :ok
+        validate_remote_branch_sha(attrs)
     end
+  end
+
+  defp validate_remote_branch_sha(attrs) do
+    if valid_commit_sha?(Map.get(attrs, :remote_branch_sha)),
+      do: :ok,
+      else: {:error, :invalid_remote_branch_sha}
   end
 
   defp validate_progress(attrs) do
@@ -409,12 +412,13 @@ defmodule SymphonyElixir.HandoffReceipt do
       receipt.pr_number != nil and Map.get(truth, :pr_ready?) != true ->
         {:error, :pr_not_ready}
 
-      not effect_ledger_matches?(receipt, truth) ->
-        {:error, :effect_ledger_changed}
-
       true ->
-        :ok
+        verify_effect_ledger(receipt, truth)
     end
+  end
+
+  defp verify_effect_ledger(receipt, truth) do
+    if effect_ledger_matches?(receipt, truth), do: :ok, else: {:error, :effect_ledger_changed}
   end
 
   defp effect_ledger_matches?(receipt, truth) do
