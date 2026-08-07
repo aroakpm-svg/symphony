@@ -205,6 +205,17 @@ derived_effects="$(PGPASSWORD=disposable psql -X -q -A -t -v ON_ERROR_STOP=1 -d 
 [[ "$derived_effects" == *"EFFECTS:effect-linear_comment"* ]]
 [[ "$derived_effects" == *"EFFECTS:effect-unknown"* ]]
 [[ "$derived_effects" == *"EFFECTS:legacy-before-handoff"* ]]
+if PGPASSWORD=disposable psql -X -q -A -t -v ON_ERROR_STOP=1 -d "$(node_url claim_node_b)" -c \
+  "select 1 from symphony_staging.append_handoff_receipt('EFFECTS','$handoff_claim_id',$handoff_generation,'$node_b','$instance_b',1,'aroakpm-svg','symphony','codex/effects',repeat('f',64),null,null,null,null,'implementation',array['preflight','branch'],array['implementation','tests','commit','push','pull_request','review'],'[]'::jsonb,array['EFFECTS:mistyped']);" \
+  >/dev/null 2>&1; then
+  echo "handoff receipt unexpectedly accepted a nonexistent effect ID" >&2; exit 1
+fi
+tested_head="$(PGPASSWORD=disposable psql -X -q -A -t -v ON_ERROR_STOP=1 -d "$(node_url claim_node_b)" -c \
+  "select tested_head_sha from symphony_staging.append_handoff_receipt('EFFECTS','$handoff_claim_id',$handoff_generation,'$node_b','$instance_b',1,'aroakpm-svg','symphony','codex/effects',repeat('f',64),null,repeat('a',40),null,null,'verification',array['preflight','branch','implementation','tests'],array['commit','push','pull_request','review'],'[{\"name\":\"make all\",\"status\":\"passed\"}]'::jsonb,array[]::text[]);")"
+test "$tested_head" = "$(printf 'a%.0s' {1..40})"
+preserved_tested_head="$(PGPASSWORD=disposable psql -X -q -A -t -v ON_ERROR_STOP=1 -d "$(node_url claim_node_b)" -c \
+  "select tested_head_sha from symphony_staging.append_handoff_receipt('EFFECTS','$handoff_claim_id',$handoff_generation,'$node_b','$instance_b',1,'aroakpm-svg','symphony','codex/effects',repeat('0',64),null,repeat('b',40),repeat('b',40),null,'delivery',array['preflight','branch','implementation','tests','commit'],array['push','pull_request','review'],'[{\"name\":\"make all\",\"status\":\"passed\"}]'::jsonb,array[]::text[]);")"
+test "$preserved_tested_head" = "$tested_head"
 post_checkpoint_attempt_id="$(cat /proc/sys/kernel/random/uuid)"
 test "$(PGPASSWORD=disposable psql -X -q -A -t -v ON_ERROR_STOP=1 -d "$(node_url claim_node_b)" -c \
   "select status from symphony_staging.begin_effect('EFFECTS:effect-after-checkpoint','linear_comment','fp-after-checkpoint','EFFECTS','$handoff_claim_id',$handoff_generation,'$node_b','$instance_b','$post_checkpoint_attempt_id',300000);")" = "pending"

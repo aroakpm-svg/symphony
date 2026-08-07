@@ -42,8 +42,8 @@ defmodule SymphonyElixir.HandoffReceiptMigrationTest do
     refute sql =~ "returns setof symphony_staging.handoff_receipts"
     refute sql =~ "select receipts.*"
     assert length(Regex.scan(~r/inserted\.checkpoint_sequence|receipts\.checkpoint_sequence/, sql)) >= 3
-    assert sql =~ "prior_effect_operation_ids || requested_effect_operation_ids"
-    assert sql =~ "select distinct operation_id"
+    assert sql =~ "requested_effect_operation_ids := prior_effect_operation_ids"
+    assert sql =~ "array_agg(operations.operation_id order by operations.operation_id)"
     assert length(Regex.scan(~r/from symphony_staging\.effect_operations operations/, sql)) >= 3
     assert sql =~ "where operations.issue_id = requested_issue_id"
     assert sql =~ "where operations.issue_id = receipts.issue_id"
@@ -76,6 +76,9 @@ defmodule SymphonyElixir.HandoffReceiptMigrationTest do
     assert sql =~ "requested_completed || requested_pending <> array["
     assert sql =~ "('commit' = any(requested_completed)) <> (requested_commit_sha is not null)"
     assert sql =~ "('tests' = any(requested_completed)) <> (requested_tested_head_sha is not null)"
+    assert sql =~ "prior_tests_completed and 'tests' = any(requested_completed)"
+    assert sql =~ "requested_tested_head_sha := prior_tested_head_sha"
+    assert sql =~ "operations.operation_id = value"
     assert sql =~ "('pull_request' = any(requested_completed)) <> (requested_pr_number is not null)"
     assert sql =~ "not exists (select 1 from unnest(completed) value where value = any(pending))"
     assert sql =~ "array['name', 'status']::text[]"

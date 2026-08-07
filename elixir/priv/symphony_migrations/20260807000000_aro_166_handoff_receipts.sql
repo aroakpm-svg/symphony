@@ -201,6 +201,8 @@ declare
   inserted symphony_staging.handoff_receipts%rowtype;
   active_linear_updated_at timestamptz;
   prior_effect_operation_ids text[] := '{}';
+  prior_tested_head_sha text;
+  prior_tests_completed boolean := false;
 begin
   select claims.linear_updated_at into active_linear_updated_at
   from symphony_staging.issue_claims claims
@@ -228,25 +230,19 @@ begin
       message = 'receipt requires a matching active claim generation';
   end if;
 
-  select coalesce((
-    select receipts.effect_operation_ids
-    from symphony_staging.handoff_receipts receipts
-    where receipts.issue_id = requested_issue_id
-    order by receipts.generation desc, receipts.checkpoint_sequence desc
-    limit 1
-  ), '{}') into prior_effect_operation_ids;
+  select
+    receipts.tested_head_sha,
+    'tests' = any(receipts.completed_step_ids)
+  into prior_tested_head_sha, prior_tests_completed
+  from symphony_staging.handoff_receipts receipts
+  where receipts.issue_id = requested_issue_id
+  order by receipts.generation desc, receipts.checkpoint_sequence desc
+  limit 1;
 
-  prior_effect_operation_ids := array(
-    select distinct known.operation_id
-    from (
-      select unnest(prior_effect_operation_ids) as operation_id
-      union all
-      select operations.operation_id
-      from symphony_staging.effect_operations operations
-      where operations.issue_id = requested_issue_id
-    ) known
-    order by known.operation_id
-  );
+  select coalesce(array_agg(operations.operation_id order by operations.operation_id), '{}')
+  into prior_effect_operation_ids
+  from symphony_staging.effect_operations operations
+  where operations.issue_id = requested_issue_id;
 
   if requested_schema_version <> 1
      or requested_owner is null or requested_owner !~ '[^[:space:]]'
@@ -294,15 +290,20 @@ begin
        where value is null or btrim(value) = ''
           or left(value, length(requested_issue_id) + 1) <> requested_issue_id || ':'
           or value !~ '^[A-Za-z0-9][A-Za-z0-9._-]{0,127}:[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$'
+          or not exists (
+            select 1 from symphony_staging.effect_operations operations
+            where operations.issue_id = requested_issue_id
+              and operations.operation_id = value
+          )
      ) then
     raise exception using errcode = '22023', message = 'invalid HandoffReceiptV1';
   end if;
 
-  requested_effect_operation_ids := array(
-    select distinct operation_id
-    from unnest(prior_effect_operation_ids || requested_effect_operation_ids) operation_id
-    order by operation_id
-  );
+  requested_effect_operation_ids := prior_effect_operation_ids;
+
+  if prior_tests_completed and 'tests' = any(requested_completed) then
+    requested_tested_head_sha := prior_tested_head_sha;
+  end if;
 
   insert into symphony_staging.handoff_receipts (
     receipt_schema_version, issue_id, canonical_owner, canonical_repository,
