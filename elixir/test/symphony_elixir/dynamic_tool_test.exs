@@ -215,7 +215,7 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
              {"hello\n\n<!-- symphony-effect:ARO-166:comment:1 -->", "hello\n\n<!-- symphony-effect:comment:1 -->"}
 
     assert DynamicTool.comment_bodies_for_test("ARO-166", "ARO-166:comment:1", "hello") ==
-             {"hello\n\n<!-- symphony-effect:ARO-166:comment:1 -->", nil}
+             {"hello\n\n<!-- symphony-effect:ARO-166:comment:1 -->", "hello\n\n<!-- symphony-effect:comment:1 -->"}
   end
 
   test "managed comment reconciliation falls back to a pre-upgrade raw marker" do

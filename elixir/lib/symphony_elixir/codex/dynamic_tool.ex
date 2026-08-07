@@ -370,11 +370,24 @@ defmodule SymphonyElixir.Codex.DynamicTool do
   defp managed_comment_bodies(context, body) do
     canonical = body <> "\n\n<!-- symphony-effect:#{context.operation_id} -->"
     requested_operation_id = Map.get(context, :requested_operation_id, context.operation_id)
+    issue_prefix = context.issue_id <> ":"
+
+    legacy_operation_id =
+      cond do
+        requested_operation_id != context.operation_id ->
+          requested_operation_id
+
+        String.starts_with?(context.operation_id, issue_prefix) ->
+          String.replace_prefix(context.operation_id, issue_prefix, "")
+
+        true ->
+          nil
+      end
 
     legacy =
-      if requested_operation_id == context.operation_id,
-        do: nil,
-        else: body <> "\n\n<!-- symphony-effect:#{requested_operation_id} -->"
+      if is_binary(legacy_operation_id),
+        do: body <> "\n\n<!-- symphony-effect:#{legacy_operation_id} -->",
+        else: nil
 
     {canonical, legacy}
   end
@@ -392,6 +405,7 @@ defmodule SymphonyElixir.Codex.DynamicTool do
   def comment_bodies_for_test(issue_id, operation_id, body) do
     managed_comment_bodies(
       %{
+        issue_id: issue_id,
         operation_id: EffectLedger.operation_id(issue_id, operation_id),
         requested_operation_id: operation_id
       },
