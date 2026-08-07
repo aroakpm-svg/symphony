@@ -3,12 +3,13 @@ defmodule SymphonyElixir.Codex.DynamicTool do
   Executes client-side tool calls requested by Codex app-server turns.
   """
 
-  alias SymphonyElixir.{ClaimService, EffectLedger}
+  alias SymphonyElixir.{ClaimService, Config, EffectLedger, HandoffReceipt}
   alias SymphonyElixir.Linear.Client
 
   @linear_graphql_tool "linear_graphql"
   @linear_comment_tool "linear_comment"
   @linear_state_tool "linear_state"
+  @handoff_checkpoint_tool "handoff_checkpoint"
   @linear_graphql_description """
   Execute a raw GraphQL query or mutation against Linear using Symphony's configured auth.
   """
@@ -46,6 +47,39 @@ defmodule SymphonyElixir.Codex.DynamicTool do
         "operationId" => %{"type" => "string"},
         "state" => %{"type" => "string"}
       }
+    }
+  }
+  @handoff_checkpoint_input_schema %{
+    "type" => "object",
+    "additionalProperties" => false,
+    "required" => [
+      "branch",
+      "currentPhase",
+      "completedSteps",
+      "pendingSteps",
+      "testResults",
+      "effectOperationIds"
+    ],
+    "properties" => %{
+      "branch" => %{"type" => "string"},
+      "commitSha" => %{"type" => ["string", "null"]},
+      "prNumber" => %{"type" => ["integer", "null"]},
+      "currentPhase" => %{"type" => "string"},
+      "completedSteps" => %{"type" => "array", "items" => %{"type" => "string"}},
+      "pendingSteps" => %{"type" => "array", "items" => %{"type" => "string"}},
+      "testResults" => %{
+        "type" => "array",
+        "items" => %{
+          "type" => "object",
+          "additionalProperties" => false,
+          "required" => ["name", "status"],
+          "properties" => %{
+            "name" => %{"type" => "string"},
+            "status" => %{"type" => "string", "enum" => ["passed", "failed", "skipped"]}
+          }
+        }
+      },
+      "effectOperationIds" => %{"type" => "array", "items" => %{"type" => "string"}}
     }
   }
 
@@ -91,6 +125,9 @@ defmodule SymphonyElixir.Codex.DynamicTool do
       @linear_state_tool ->
         execute_managed_effect(@linear_state_tool, arguments, opts)
 
+      @handoff_checkpoint_tool ->
+        execute_handoff_checkpoint(arguments, opts)
+
       other ->
         failure_response(%{
           "error" => %{
@@ -115,7 +152,13 @@ defmodule SymphonyElixir.Codex.DynamicTool do
       base ++
         [
           managed_tool_spec(@linear_comment_tool, "Create one idempotent Linear comment through the managed effect ledger."),
-          managed_tool_spec(@linear_state_tool, "Move the current Linear issue through the managed effect ledger.")
+          managed_tool_spec(@linear_state_tool, "Move the current Linear issue through the managed effect ledger."),
+          %{
+            "name" => @handoff_checkpoint_tool,
+            "description" =>
+              "Persist a durable handoff checkpoint after each safe workflow transition (implementation, tests, commit, push, pull request, and review).",
+            "inputSchema" => @handoff_checkpoint_input_schema
+          }
         ]
     else
       base
@@ -125,6 +168,100 @@ defmodule SymphonyElixir.Codex.DynamicTool do
   defp managed_tool_spec(name, description) do
     %{"name" => name, "description" => description, "inputSchema" => Map.fetch!(@managed_effect_input_schemas, name)}
   end
+
+  defp execute_handoff_checkpoint(arguments, opts) do
+    issue_id = Keyword.get(opts, :managed_issue_id)
+    context_fetcher = Keyword.get(opts, :handoff_context_fetcher, &ClaimService.handoff_context/1)
+    appender = Keyword.get(opts, :handoff_appender, &HandoffReceipt.append/3)
+
+    with true <- Keyword.get(opts, :managed_session, false),
+         true <- is_binary(issue_id),
+         {:ok, attrs} <- normalize_handoff_checkpoint(arguments, opts),
+         {:ok, connection, claim} <- context_fetcher.(issue_id),
+         {:ok, receipt} <- appender.(connection, claim, attrs) do
+      dynamic_tool_response(true, encode_payload(receipt))
+    else
+      false -> failure_response(tool_error_payload(:managed_effect_context_required))
+      {:error, reason} -> failure_response(tool_error_payload(reason))
+    end
+  end
+
+  defp normalize_handoff_checkpoint(arguments, opts) when is_map(arguments) do
+    repository =
+      Keyword.get_lazy(opts, :handoff_repository, fn ->
+        Config.settings!().review_convergence.repository
+      end)
+
+    with [owner, name] <- is_binary(repository) && String.split(repository, "/", parts: 2),
+         {:ok, phase} <- decode_handoff_atom(value(arguments, "currentPhase"), HandoffReceipt.phases()),
+         {:ok, completed} <- decode_handoff_atoms(value(arguments, "completedSteps"), HandoffReceipt.step_ids()),
+         {:ok, pending} <- decode_handoff_atoms(value(arguments, "pendingSteps"), HandoffReceipt.step_ids()),
+         {:ok, tests} <- decode_handoff_tests(value(arguments, "testResults")) do
+      {:ok,
+       %{
+         canonical_owner: owner,
+         canonical_repository: name,
+         branch: value(arguments, "branch"),
+         commit_sha: value(arguments, "commitSha"),
+         pr_number: value(arguments, "prNumber"),
+         current_phase: phase,
+         completed_step_ids: completed,
+         pending_step_ids: pending,
+         test_results: tests,
+         effect_operation_ids: value(arguments, "effectOperationIds")
+       }}
+    else
+      _reason -> {:error, :invalid_handoff_checkpoint_arguments}
+    end
+  end
+
+  defp normalize_handoff_checkpoint(_arguments, _opts),
+    do: {:error, :invalid_handoff_checkpoint_arguments}
+
+  defp decode_handoff_atoms(values, allowed) when is_list(values) do
+    Enum.reduce_while(values, {:ok, []}, fn value, {:ok, result} ->
+      case decode_handoff_atom(value, allowed) do
+        {:ok, atom} -> {:cont, {:ok, [atom | result]}}
+        error -> {:halt, error}
+      end
+    end)
+    |> case do
+      {:ok, result} -> {:ok, Enum.reverse(result)}
+      error -> error
+    end
+  end
+
+  defp decode_handoff_atoms(_values, _allowed), do: {:error, :invalid_handoff_step}
+
+  defp decode_handoff_atom(value, allowed) when is_binary(value) do
+    case Enum.find(allowed, &(Atom.to_string(&1) == value)) do
+      nil -> {:error, :invalid_handoff_atom}
+      atom -> {:ok, atom}
+    end
+  end
+
+  defp decode_handoff_atom(_value, _allowed), do: {:error, :invalid_handoff_atom}
+
+  defp decode_handoff_tests(values) when is_list(values) do
+    Enum.reduce_while(values, {:ok, []}, fn result, {:ok, tests} ->
+      with %{} <- result,
+           true <- map_size(result) == 2,
+           name when is_binary(name) <- value(result, "name"),
+           {:ok, status} <- decode_handoff_atom(value(result, "status"), [:passed, :failed, :skipped]) do
+        {:cont, {:ok, [%{name: name, status: status} | tests]}}
+      else
+        _reason -> {:halt, {:error, :invalid_handoff_test}}
+      end
+    end)
+    |> case do
+      {:ok, tests} -> {:ok, Enum.reverse(tests)}
+      error -> error
+    end
+  end
+
+  defp decode_handoff_tests(_values), do: {:error, :invalid_handoff_test}
+
+  defp value(map, key), do: Map.get(map, key) || Map.get(map, String.to_atom(key))
 
   defp execute_managed_effect(tool, arguments, opts) do
     issue_id = Keyword.get(opts, :managed_issue_id)

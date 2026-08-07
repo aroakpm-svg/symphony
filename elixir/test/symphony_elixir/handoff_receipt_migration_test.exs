@@ -19,6 +19,8 @@ defmodule SymphonyElixir.HandoffReceiptMigrationTest do
     assert sql =~ "recorded_at timestamptz not null default clock_timestamp()"
     assert sql =~ "linear_updated_at timestamptz not null"
     assert sql =~ "select claims.linear_updated_at into active_linear_updated_at"
+    assert sql =~ "canonical_owner ~ '[^[:space:]]'"
+    assert sql =~ "requested_owner !~ '[^[:space:]]'"
     assert sql =~ "revoke all on table symphony_staging.handoff_receipts"
     refute sql =~ "grant insert on"
     refute sql =~ "grant update on"

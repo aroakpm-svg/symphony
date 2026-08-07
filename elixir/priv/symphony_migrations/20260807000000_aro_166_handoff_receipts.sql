@@ -4,13 +4,13 @@ create table symphony_staging.handoff_receipts (
   checkpoint_sequence bigint generated always as identity primary key,
   receipt_schema_version integer not null check (receipt_schema_version = 1),
   issue_id text not null,
-  canonical_owner text not null check (btrim(canonical_owner) <> ''),
-  canonical_repository text not null check (btrim(canonical_repository) <> ''),
+  canonical_owner text not null check (canonical_owner ~ '[^[:space:]]'),
+  canonical_repository text not null check (canonical_repository ~ '[^[:space:]]'),
   claim_id uuid not null,
   generation bigint not null check (generation > 0),
   recorded_at timestamptz not null default clock_timestamp(),
   linear_updated_at timestamptz not null,
-  branch text not null check (btrim(branch) <> ''),
+  branch text not null check (branch ~ '[^[:space:]]'),
   commit_sha text check (commit_sha is null or commit_sha ~ '^[0-9a-f]{40}$'),
   pr_number integer check (pr_number is null or pr_number > 0),
   current_phase text not null check (current_phase in (
@@ -154,9 +154,9 @@ begin
   end if;
 
   if requested_schema_version <> 1
-     or requested_owner is null or btrim(requested_owner) = ''
-     or requested_repository is null or btrim(requested_repository) = ''
-     or requested_branch is null or btrim(requested_branch) = ''
+     or requested_owner is null or requested_owner !~ '[^[:space:]]'
+     or requested_repository is null or requested_repository !~ '[^[:space:]]'
+     or requested_branch is null or requested_branch !~ '[^[:space:]]'
      or requested_phase not in (
        'preflight', 'implementation', 'verification', 'delivery', 'review', 'complete'
      )

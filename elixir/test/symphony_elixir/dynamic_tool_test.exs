@@ -102,10 +102,10 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
     assert description =~ "Linear"
   end
 
-  test "managed tool specs expose only the fixed Linear effect wrappers" do
+  test "managed tool specs expose fixed effect and handoff wrappers" do
     names = DynamicTool.tool_specs(managed_session: true) |> Enum.map(& &1["name"])
 
-    assert names == ["linear_graphql", "linear_comment", "linear_state"]
+    assert names == ["linear_graphql", "linear_comment", "linear_state", "handoff_checkpoint"]
   end
 
   test "unsupported tools return a failure payload with the supported tool list" do
@@ -135,6 +135,37 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
     assert response["output"] =~ "linear_graphql"
     assert response["output"] =~ "linear_comment"
     assert response["output"] =~ "linear_state"
+    assert response["output"] =~ "handoff_checkpoint"
+  end
+
+  test "managed handoff checkpoints persist each explicit durable transition" do
+    arguments = %{
+      "branch" => "codex/aro-166",
+      "commitSha" => nil,
+      "prNumber" => nil,
+      "currentPhase" => "verification",
+      "completedSteps" => ["preflight", "branch", "implementation"],
+      "pendingSteps" => ["tests", "commit", "push", "pull_request", "review"],
+      "testResults" => [],
+      "effectOperationIds" => ["ARO-166:linear-comment:1"]
+    }
+
+    response =
+      DynamicTool.execute("handoff_checkpoint", arguments,
+        managed_session: true,
+        managed_issue_id: "ARO-166",
+        handoff_repository: "aroakpm-svg/symphony",
+        handoff_context_fetcher: fn "ARO-166" -> {:ok, :connection, %{issue_id: "ARO-166"}} end,
+        handoff_appender: fn :connection, %{issue_id: "ARO-166"}, attrs ->
+          assert attrs.current_phase == :verification
+          assert attrs.completed_step_ids == [:preflight, :branch, :implementation]
+          assert attrs.effect_operation_ids == ["ARO-166:linear-comment:1"]
+          {:ok, Map.put(attrs, :checkpoint_sequence, 8)}
+        end
+      )
+
+    assert response["success"]
+    assert response["output"] =~ "checkpoint_sequence"
   end
 
   test "linear_graphql returns successful GraphQL responses as tool text" do

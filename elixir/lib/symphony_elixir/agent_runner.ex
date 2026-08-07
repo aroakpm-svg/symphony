@@ -11,7 +11,8 @@ defmodule SymphonyElixir.AgentRunner do
     Config,
     GitHubReviewClient,
     HandoffReceipt,
-    Linear.Issue
+    Linear.Issue,
+    ReviewConvergence
   }
 
   alias SymphonyElixir.{PromptBuilder, ReadinessGate, Tracker, Workspace}
@@ -299,7 +300,7 @@ defmodule SymphonyElixir.AgentRunner do
          canonical_owner: repository |> String.split("/", parts: 2) |> hd(),
          canonical_repository: repository |> String.split("/", parts: 2) |> List.last(),
          branch: readiness.issue_branch,
-         commit_sha: readiness.head_sha,
+         commit_sha: handoff_commit_sha(previous, readiness.head_sha),
          pr_number: pr.number,
          pr_ready?: pr.ready?,
          linear_updated_at: issue.updated_at,
@@ -309,25 +310,31 @@ defmodule SymphonyElixir.AgentRunner do
     end
   end
 
-  defp handoff_pull_request(nil, _repository, _branch, _opts),
-    do: {:ok, %{number: nil, ready?: false}}
-
-  defp handoff_pull_request(%{pr_number: nil}, _repository, _branch, _opts),
-    do: {:ok, %{number: nil, ready?: false}}
-
-  defp handoff_pull_request(previous, repository, branch, opts) do
+  defp handoff_pull_request(_previous, repository, branch, opts) do
     snapshot = Keyword.get(opts, :handoff_review_snapshot, &GitHubReviewClient.snapshot/2)
 
-    with {:ok, current} <- snapshot.(repository, branch),
-         true <-
-           current.pull_request_number == previous.pr_number ||
-             {:error, :handoff_pull_request_changed},
-         true <-
-           current.current_head_sha == previous.commit_sha ||
-             {:error, :handoff_pull_request_head_changed} do
-      {:ok, %{number: current.pull_request_number, ready?: current.pr_ready?}}
+    case snapshot.(repository, branch) do
+      {:ok, current} ->
+        max_rounds = Config.settings!().review_convergence.max_fix_rounds
+        converged? = match?({:converged, _evidence}, ReviewConvergence.evaluate(current, 0, max_rounds))
+
+        {:ok,
+         %{
+           number: current.pull_request_number,
+           ready?: current.pr_ready? and converged?
+         }}
+
+      {:error, :pull_request_not_found} ->
+        {:ok, %{number: nil, ready?: false}}
+
+      {:error, reason} ->
+        {:error, reason}
     end
   end
+
+  defp handoff_commit_sha(nil, _head_sha), do: nil
+  defp handoff_commit_sha(%{commit_sha: nil}, _head_sha), do: nil
+  defp handoff_commit_sha(_previous, head_sha), do: head_sha
 
   defp same_claim_revision?(%{linear_updated_at: claim_revision}, %DateTime{} = issue_revision),
     do: DateTime.compare(claim_revision, issue_revision) == :eq
@@ -434,7 +441,9 @@ defmodule SymphonyElixir.AgentRunner do
   end
 
   defp build_turn_prompt(issue, opts, 1, _max_turns) do
-    base = PromptBuilder.build_prompt(issue, opts)
+    base =
+      PromptBuilder.build_prompt(issue, opts) <>
+        "\n\nFor managed runs, call handoff_checkpoint after every durable safe transition: implementation, tests, commit, push, pull request, and review. Include all completed/pending steps, structured test evidence, and managed effect operation IDs.\n"
 
     case Keyword.get(opts, :handoff_resume) do
       {:ok, next} ->
