@@ -35,6 +35,14 @@ defmodule SymphonyElixir.HandoffReceiptTest do
     effect_operations: %{"ARO-166:git-commit:1" => :succeeded}
   }
 
+  @claim %{
+    issue_id: "ARO-166",
+    claim_id: "00000000-0000-0000-0000-000000000001",
+    generation: 2,
+    node_id: "00000000-0000-0000-0000-000000000002",
+    node_instance_id: "00000000-0000-0000-0000-000000000003"
+  }
+
   test "a compatible receipt plus freshly verified truths selects the next step" do
     assert HandoffReceipt.resume(@receipt, @truth) == {:ok, :push}
   end
@@ -80,6 +88,13 @@ defmodule SymphonyElixir.HandoffReceiptTest do
     assert sql =~ "claim_id::text as claim_id"
     assert sql =~ "$11, $12, $13::text[], $14::text[], $15::jsonb, $16::text[]"
     refute sql =~ "$12::text[]"
+  end
+
+  test "append passes test results as a JSON value instead of encoded JSON text" do
+    params = HandoffReceipt.append_params_for_test(@claim, @receipt)
+
+    assert Enum.at(params, 14) == [%{"name" => "make all", "status" => "passed"}]
+    refute is_binary(Enum.at(params, 14))
   end
 
   test "database rows with null or unknown test statuses fail closed" do

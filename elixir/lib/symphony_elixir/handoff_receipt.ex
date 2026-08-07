@@ -61,6 +61,10 @@ defmodule SymphonyElixir.HandoffReceipt do
   @spec append_sql_for_test() :: String.t()
   def append_sql_for_test, do: append_sql()
 
+  @doc false
+  @spec append_params_for_test(map(), map()) :: list()
+  def append_params_for_test(claim, attrs), do: append_params(claim, attrs)
+
   @spec append(Postgrex.conn(), map(), map()) :: {:ok, receipt()} | {:error, term()}
   def append(connection, claim, attrs) when is_map(claim) and is_map(attrs) do
     with :ok <- validate_attrs(attrs),
@@ -258,7 +262,9 @@ defmodule SymphonyElixir.HandoffReceipt do
         Atom.to_string(Map.fetch!(attrs, :current_phase)),
         Enum.map(Map.get(attrs, :completed_step_ids, []), &Atom.to_string/1),
         Enum.map(Map.get(attrs, :pending_step_ids, []), &Atom.to_string/1),
-        Jason.encode!(Map.get(attrs, :test_results, [])),
+        Enum.map(Map.get(attrs, :test_results, []), fn result ->
+          %{"name" => result.name, "status" => Atom.to_string(result.status)}
+        end),
         Map.get(attrs, :effect_operation_ids, [])
       ]
   end
