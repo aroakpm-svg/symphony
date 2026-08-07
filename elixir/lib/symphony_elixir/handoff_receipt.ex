@@ -317,7 +317,10 @@ defmodule SymphonyElixir.HandoffReceipt do
          tests,
          effects
        ]) do
-    with {:ok, decoded_tests} <- decode_test_results(tests) do
+    with {:ok, decoded_phase} <- decode_allowed_atom(phase, @phases),
+         {:ok, decoded_completed} <- decode_allowed_atoms(completed, @steps),
+         {:ok, decoded_pending} <- decode_allowed_atoms(pending, @steps),
+         {:ok, decoded_tests} <- decode_test_results(tests) do
       {:ok,
        %{
          receipt_schema_version: version,
@@ -331,9 +334,9 @@ defmodule SymphonyElixir.HandoffReceipt do
          branch: branch,
          commit_sha: commit_sha,
          pr_number: pr_number,
-         current_phase: String.to_existing_atom(phase),
-         completed_step_ids: Enum.map(completed, &String.to_existing_atom/1),
-         pending_step_ids: Enum.map(pending, &String.to_existing_atom/1),
+         current_phase: decoded_phase,
+         completed_step_ids: decoded_completed,
+         pending_step_ids: decoded_pending,
          test_results: decoded_tests,
          effect_operation_ids: effects
        }}
@@ -341,6 +344,30 @@ defmodule SymphonyElixir.HandoffReceipt do
   end
 
   defp decode_row(_row), do: {:error, :receipt_incompatible}
+
+  defp decode_allowed_atoms(values, allowlist) when is_list(values) do
+    Enum.reduce_while(values, {:ok, []}, fn value, {:ok, decoded} ->
+      case decode_allowed_atom(value, allowlist) do
+        {:ok, atom} -> {:cont, {:ok, [atom | decoded]}}
+        error -> {:halt, error}
+      end
+    end)
+    |> case do
+      {:ok, decoded} -> {:ok, Enum.reverse(decoded)}
+      error -> error
+    end
+  end
+
+  defp decode_allowed_atoms(_values, _allowlist), do: {:error, :receipt_incompatible}
+
+  defp decode_allowed_atom(value, allowlist) when is_binary(value) do
+    case Enum.find(allowlist, &(Atom.to_string(&1) == value)) do
+      nil -> {:error, :receipt_incompatible}
+      atom -> {:ok, atom}
+    end
+  end
+
+  defp decode_allowed_atom(_value, _allowlist), do: {:error, :receipt_incompatible}
 
   defp decode_test_results(tests) when is_list(tests) do
     Enum.reduce_while(tests, {:ok, []}, fn

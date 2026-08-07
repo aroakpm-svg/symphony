@@ -100,6 +100,35 @@ defmodule SymphonyElixir.HandoffReceiptTest do
     end
   end
 
+  test "database rows validate phase and step shapes before atom conversion" do
+    base_row = [
+      1,
+      "ARO-166",
+      "aroakpm-svg",
+      "symphony",
+      "00000000-0000-0000-0000-000000000001",
+      2,
+      7,
+      ~U[2026-08-07 00:00:00Z],
+      "codex/aro-166-handoff-receipts",
+      String.duplicate("a", 40),
+      19,
+      "delivery",
+      ["preflight"],
+      ["push"],
+      [],
+      []
+    ]
+
+    malformed_fields = [{11, "legacy"}, {12, ["unknown"]}, {13, nil}]
+
+    for {index, value} <- malformed_fields do
+      assert base_row
+             |> List.replace_at(index, value)
+             |> HandoffReceipt.decode_row_for_test() == {:error, :receipt_incompatible}
+    end
+  end
+
   test "step overlap, duplicates, and values outside the allowlist fail closed" do
     overlap = %{@receipt | pending_step_ids: [:commit, :push]}
     duplicate = %{@receipt | completed_step_ids: [:preflight, :preflight]}
