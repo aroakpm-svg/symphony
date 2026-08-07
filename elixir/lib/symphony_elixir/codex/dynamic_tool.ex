@@ -155,8 +155,7 @@ defmodule SymphonyElixir.Codex.DynamicTool do
           managed_tool_spec(@linear_state_tool, "Move the current Linear issue through the managed effect ledger."),
           %{
             "name" => @handoff_checkpoint_tool,
-            "description" =>
-              "Persist a durable handoff checkpoint after each safe workflow transition (implementation, tests, commit, push, pull request, and review).",
+            "description" => "Persist a durable handoff checkpoint after each safe workflow transition (implementation, tests, commit, push, pull request, and review).",
             "inputSchema" => @handoff_checkpoint_input_schema
           }
         ]
