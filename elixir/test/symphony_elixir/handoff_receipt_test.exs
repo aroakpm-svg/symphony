@@ -32,6 +32,8 @@ defmodule SymphonyElixir.HandoffReceiptTest do
     assert source =~ "handoff_issue_runnable?(fresh_issue)"
     assert source =~ "checkpoint_effects"
     assert source =~ "HandoffReceipt.resume(checkpoint"
+    assert source =~ "Postgrex.transaction(connection"
+    assert source =~ "run_locked_handoff("
     assert source =~ "handoff_commit_sha(previous, git_evidence.head_sha)"
     refute source =~ "handoff_commit_sha(previous, readiness.head_sha)"
     assert source =~ "workspace_evidence(workspace, readiness.issue_branch, repository, worker_host)"

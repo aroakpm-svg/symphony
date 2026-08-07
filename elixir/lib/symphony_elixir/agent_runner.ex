@@ -298,7 +298,37 @@ defmodule SymphonyElixir.AgentRunner do
          context,
          opts
        ) do
-    with {:ok, connection, claim} <- context.(fresh_issue.id),
+    with {:ok, connection, claim} <- context.(fresh_issue.id) do
+      case Postgrex.transaction(connection, fn transaction ->
+             case run_locked_handoff(
+                    transaction,
+                    claim,
+                    fresh_issue,
+                    readiness,
+                    workspace,
+                    worker_host,
+                    opts
+                  ) do
+               {:ok, _issue, _resume} = result -> result
+               {:error, reason} -> Postgrex.rollback(transaction, reason)
+             end
+           end) do
+        {:ok, result} -> result
+        {:error, reason} -> {:error, reason}
+      end
+    end
+  end
+
+  defp run_locked_handoff(
+         connection,
+         claim,
+         fresh_issue,
+         readiness,
+         workspace,
+         worker_host,
+         opts
+       ) do
+    with :ok <- lock_handoff_claim(connection, claim),
          {:ok, previous} <- HandoffReceipt.latest(connection, claim),
          {:ok, repository, owner, name} <- handoff_repository(),
          {:ok, git_evidence} <-
@@ -315,6 +345,13 @@ defmodule SymphonyElixir.AgentRunner do
       Logger.info("Handoff checkpoint restored for #{issue_context(fresh_issue)} result=#{inspect(verified_resume)}")
 
       {:ok, fresh_issue, %{decision: verified_resume, effect_operation_ids: checkpoint.effect_operation_ids}}
+    end
+  end
+
+  defp lock_handoff_claim(connection, claim) do
+    case HandoffReceipt.effect_statuses(connection, claim, []) do
+      {:ok, _effects} -> :ok
+      {:error, reason} -> {:error, reason}
     end
   end
 

@@ -97,6 +97,7 @@ defmodule SymphonyElixir.HandoffReceiptMigrationTest do
     assert sql =~ "grant_handoff_api_to_node_login"
     assert sql =~ "select login_role from symphony_staging.node_login_principals"
     assert sql =~ "handoff_effect_statuses(text, uuid, bigint, uuid, uuid, text[])"
+    assert sql =~ ~r/handoff_effect_statuses\([\s\S]+?returns table \(operation_id text, status text\)\s+language plpgsql\s+volatile/
     assert sql =~ "operations.issue_id = requested_issue_id"
     refute sql =~ "operations.operation_id = any(requested_operation_ids)"
     assert sql =~ "for update of claims"

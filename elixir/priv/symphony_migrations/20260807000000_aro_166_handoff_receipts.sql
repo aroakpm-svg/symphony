@@ -431,7 +431,7 @@ create or replace function symphony_staging.handoff_effect_statuses(
 )
 returns table (operation_id text, status text)
 language plpgsql
-stable
+volatile
 security definer
 set search_path = pg_catalog, pg_temp
 as $$
