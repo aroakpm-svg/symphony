@@ -104,6 +104,18 @@ defmodule SymphonyElixir.FindingDispositionTest do
 
     assert %{decision: :blocked_unverified, reason: :ambiguous_assertion} =
              FindingDisposition.evaluate(["finding-1"], [valid, valid], @head)
+
+    malformed = %FindingDisposition{
+      finding_id: valid.finding_id,
+      head_sha: valid.head_sha,
+      disposition: valid.disposition,
+      cause: :invalid_cause,
+      scope: valid.scope,
+      maintainer_approved: valid.maintainer_approved
+    }
+
+    assert %{decision: :blocked_unverified, reason: :malformed_assertion} =
+             FindingDisposition.evaluate(["finding-1"], [malformed], @head)
   end
 
   test "batch precedence is blocked, then follow-up, then fix" do
@@ -168,6 +180,7 @@ defmodule SymphonyElixir.FindingDispositionTest do
     }
 
     assert {:ok, %FindingDisposition{}} = FindingDisposition.new_assertion(attrs)
+    assert {:error, :malformed_assertion} = FindingDisposition.new_assertion(:not_a_map)
     assert {:error, :invalid_head_sha} = FindingDisposition.new_assertion(%{attrs | head_sha: "head"})
     assert {:error, :malformed_assertion} = FindingDisposition.new_assertion(Map.put(attrs, :path, "lib/example.ex"))
   end

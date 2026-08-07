@@ -144,11 +144,8 @@ defmodule SymphonyElixir.FindingDisposition do
       :follow_up_required in decisions ->
         result(:follow_up_required, finding_ids, nil, handoff_text(follow_up_ids))
 
-      Enum.all?(decisions, &(&1 == :fix_in_current_pr)) ->
-        result(:fix_in_current_pr, finding_ids, nil)
-
       true ->
-        blocked(finding_ids, :unknown_decision)
+        result(:fix_in_current_pr, finding_ids, nil)
     end
   end
 
@@ -167,8 +164,6 @@ defmodule SymphonyElixir.FindingDisposition do
       valid_scope?(assertion.scope) and
       is_boolean(assertion.maintainer_approved)
   end
-
-  defp valid_assertion?(_assertion), do: false
 
   defp exact_keys?(attrs) do
     if Map.keys(attrs) |> Enum.sort() == [:cause, :disposition, :finding_id, :head_sha, :maintainer_approved, :scope],
