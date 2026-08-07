@@ -11,5 +11,7 @@ drop function if exists symphony_staging.append_handoff_receipt(text, uuid, bigi
 drop function if exists symphony_staging.validate_handoff_tests(jsonb);
 drop function if exists symphony_staging.validate_handoff_steps(text[], text[]);
 drop table if exists symphony_staging.handoff_receipts;
+alter table symphony_staging.effect_operations
+  drop constraint if exists effect_operation_id_canonical;
 
 commit;

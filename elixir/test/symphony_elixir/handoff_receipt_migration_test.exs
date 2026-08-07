@@ -50,6 +50,8 @@ defmodule SymphonyElixir.HandoffReceiptMigrationTest do
     assert sql =~ "legacy effect operation normalization collision"
     assert sql =~ "operations.issue_id || ':legacy-' || md5(operations.operation_id)"
     assert sql =~ "update symphony_staging.effect_operations operations"
+    assert sql =~ "add constraint effect_operation_id_canonical"
+    assert sql =~ "left(operation_id, length(issue_id) + 1) = issue_id || ':'"
   end
 
   test "fixed step and structured test allowlists are enforced in the database" do
@@ -104,6 +106,7 @@ defmodule SymphonyElixir.HandoffReceiptMigrationTest do
     assert rollback =~ "where contract_name = 'handoff-receipt'"
     assert rollback =~ "drop table if exists symphony_staging.handoff_receipts"
     assert rollback =~ "drop function if exists symphony_staging.handoff_effect_statuses"
+    assert rollback =~ "drop constraint if exists effect_operation_id_canonical"
     refute rollback =~ "drop schema"
     refute rollback =~ "symphony_production"
   end

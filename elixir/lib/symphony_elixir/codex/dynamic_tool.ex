@@ -300,6 +300,7 @@ defmodule SymphonyElixir.Codex.DynamicTool do
   defp execute_managed_effect(tool, arguments, opts) do
     issue_id = Keyword.get(opts, :managed_issue_id)
     context_fetcher = Keyword.get(opts, :effect_context_fetcher, &ClaimService.effect_context/1)
+    effect_runner = Keyword.get(opts, :managed_effect_runner, &run_managed_effect/5)
 
     with true <- Keyword.get(opts, :managed_session, false),
          true <- is_binary(issue_id),
@@ -307,10 +308,10 @@ defmodule SymphonyElixir.Codex.DynamicTool do
          {:ok, connection, claim_context} <- context_fetcher.(issue_id),
          context <-
            Map.merge(claim_context, %{
-             operation_id: operation_id,
+             operation_id: EffectLedger.operation_id(claim_context.issue_id, operation_id),
              request_fingerprint: effect_fingerprint(tool, value)
            }),
-         {:ok, resource} <- run_managed_effect(tool, connection, context, value, opts) do
+         {:ok, resource} <- effect_runner.(tool, connection, context, value, opts) do
       dynamic_tool_response(true, encode_payload(resource))
     else
       false -> failure_response(tool_error_payload(:managed_effect_context_required))

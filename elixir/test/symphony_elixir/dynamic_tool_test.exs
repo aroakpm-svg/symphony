@@ -183,6 +183,32 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
     assert response["output"] =~ "checkpoint_sequence"
   end
 
+  test "managed effects canonicalize operation IDs before constructing external content" do
+    response =
+      DynamicTool.execute(
+        "linear_comment",
+        %{"operationId" => "comment:1", "body" => "hello"},
+        managed_session: true,
+        managed_issue_id: "ARO-166",
+        effect_context_fetcher: fn "ARO-166" ->
+          {:ok, :connection,
+           %{
+             issue_id: "ARO-166",
+             claim_id: Ecto.UUID.generate(),
+             generation: 1,
+             node_id: Ecto.UUID.generate(),
+             node_instance_id: Ecto.UUID.generate()
+           }}
+        end,
+        managed_effect_runner: fn "linear_comment", :connection, context, "hello", _opts ->
+          assert context.operation_id == "ARO-166:comment:1"
+          {:ok, %{"id" => "comment-1"}}
+        end
+      )
+
+    assert response["success"]
+  end
+
   test "linear_graphql returns successful GraphQL responses as tool text" do
     test_pid = self()
 

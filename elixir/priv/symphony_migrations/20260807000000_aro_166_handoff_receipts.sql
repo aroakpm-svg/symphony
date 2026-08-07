@@ -49,6 +49,13 @@ begin
 end
 $$;
 
+alter table symphony_staging.effect_operations
+  add constraint effect_operation_id_canonical
+  check (
+    left(operation_id, length(issue_id) + 1) = issue_id || ':'
+    and operation_id ~ '^[A-Za-z0-9][A-Za-z0-9._-]{0,127}:[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$'
+  );
+
 create table symphony_staging.handoff_receipts (
   checkpoint_sequence bigint generated always as identity primary key,
   receipt_schema_version integer not null check (receipt_schema_version = 1),
