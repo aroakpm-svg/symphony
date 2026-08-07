@@ -17,6 +17,8 @@ defmodule SymphonyElixir.HandoffReceiptMigrationTest do
     assert sql =~ "checkpoint_sequence bigint generated always as identity"
     assert sql =~ "receipt_schema_version integer not null check (receipt_schema_version = 1)"
     assert sql =~ "recorded_at timestamptz not null default clock_timestamp()"
+    assert sql =~ "linear_updated_at timestamptz not null"
+    assert sql =~ "select claims.linear_updated_at into active_linear_updated_at"
     assert sql =~ "revoke all on table symphony_staging.handoff_receipts"
     refute sql =~ "grant insert on"
     refute sql =~ "grant update on"

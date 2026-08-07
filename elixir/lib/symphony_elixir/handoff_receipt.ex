@@ -12,7 +12,7 @@ defmodule SymphonyElixir.HandoffReceipt do
   @phases ~w(preflight implementation verification delivery review complete)a
   @receipt_keys ~w(
     receipt_schema_version issue_id canonical_owner canonical_repository claim_id generation
-    checkpoint_sequence recorded_at branch commit_sha pr_number current_phase completed_step_ids
+    checkpoint_sequence recorded_at linear_updated_at branch commit_sha pr_number current_phase completed_step_ids
     pending_step_ids test_results effect_operation_ids
   )a
 
@@ -26,6 +26,7 @@ defmodule SymphonyElixir.HandoffReceipt do
           generation: pos_integer(),
           checkpoint_sequence: pos_integer(),
           recorded_at: DateTime.t(),
+          linear_updated_at: DateTime.t(),
           branch: String.t(),
           commit_sha: String.t() | nil,
           pr_number: pos_integer() | nil,
@@ -44,7 +45,7 @@ defmodule SymphonyElixir.HandoffReceipt do
           required(:commit_sha) => String.t() | nil,
           required(:pr_number) => pos_integer() | nil,
           required(:pr_ready?) => boolean(),
-          required(:linear_revision_current?) => boolean(),
+          required(:linear_updated_at) => DateTime.t(),
           required(:active_claim?) => boolean(),
           required(:effect_operations) => %{optional(String.t()) => :succeeded | :failed_no_effect}
         }
@@ -237,7 +238,8 @@ defmodule SymphonyElixir.HandoffReceipt do
     nonempty_string?(receipt.issue_id) and valid_uuid?(receipt.claim_id) and
       is_integer(receipt.generation) and receipt.generation > 0 and
       is_integer(receipt.checkpoint_sequence) and receipt.checkpoint_sequence > 0 and
-      match?(%DateTime{}, receipt.recorded_at)
+      match?(%DateTime{}, receipt.recorded_at) and
+      match?(%DateTime{}, receipt.linear_updated_at)
   end
 
   defp verify_truth(receipt, truth) do
@@ -254,7 +256,7 @@ defmodule SymphonyElixir.HandoffReceipt do
       Enum.any?(checks, fn {key, expected} -> Map.get(truth, key) != expected end) ->
         {:error, :git_or_repository_state_changed}
 
-      Map.get(truth, :linear_revision_current?) != true ->
+      not same_datetime?(Map.get(truth, :linear_updated_at), receipt.linear_updated_at) ->
         {:error, :linear_revision_changed}
 
       Map.get(truth, :active_claim?) != true ->
@@ -335,6 +337,11 @@ defmodule SymphonyElixir.HandoffReceipt do
   defp valid_uuid?(value) when is_binary(value), do: match?({:ok, _uuid}, Ecto.UUID.cast(value))
   defp valid_uuid?(_value), do: false
 
+  defp same_datetime?(%DateTime{} = left, %DateTime{} = right),
+    do: DateTime.compare(left, right) == :eq
+
+  defp same_datetime?(_left, _right), do: false
+
   defp append_params(claim, attrs) do
     claim_params(claim) ++
       [
@@ -396,7 +403,8 @@ defmodule SymphonyElixir.HandoffReceipt do
   defp receipt_columns do
     """
     receipt_schema_version, issue_id, canonical_owner, canonical_repository,
-    claim_id::text as claim_id, generation, checkpoint_sequence, recorded_at, branch, commit_sha,
+    claim_id::text as claim_id, generation, checkpoint_sequence, recorded_at, linear_updated_at,
+    branch, commit_sha,
     pr_number, current_phase, completed_step_ids, pending_step_ids, test_results,
     effect_operation_ids
     """
@@ -416,6 +424,7 @@ defmodule SymphonyElixir.HandoffReceipt do
          generation,
          sequence,
          recorded_at,
+         linear_updated_at,
          branch,
          commit_sha,
          pr_number,
@@ -439,6 +448,7 @@ defmodule SymphonyElixir.HandoffReceipt do
          generation: generation,
          checkpoint_sequence: sequence,
          recorded_at: recorded_at,
+         linear_updated_at: linear_updated_at,
          branch: branch,
          commit_sha: commit_sha,
          pr_number: pr_number,

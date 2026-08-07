@@ -20,6 +20,7 @@ defmodule SymphonyElixir.ClaimService do
           issue_id: String.t(),
           claim_id: String.t(),
           generation: pos_integer(),
+          linear_updated_at: DateTime.t(),
           lease_deadline_ms: integer(),
           owner: pid()
         }
@@ -196,6 +197,7 @@ defmodule SymphonyElixir.ClaimService do
           issue_id: issue_id,
           claim_id: claim.claim_id,
           generation: claim.generation,
+          linear_updated_at: claim.linear_updated_at,
           node_id: state.settings.node_id,
           node_instance_id: state.settings.node_instance_id
         }
@@ -285,7 +287,13 @@ defmodule SymphonyElixir.ClaimService do
 
     case Postgrex.query(state.connection, sql, params) do
       {:ok, %Postgrex.Result{rows: [[claim_id, generation]]}} ->
-        {:ok, %{issue_id: issue.id, claim_id: claim_id, generation: generation}}
+        {:ok,
+         %{
+           issue_id: issue.id,
+           claim_id: claim_id,
+           generation: generation,
+           linear_updated_at: issue.updated_at
+         }}
 
       {:ok, result} ->
         {:error, {:unexpected_claim_result, result.num_rows}}

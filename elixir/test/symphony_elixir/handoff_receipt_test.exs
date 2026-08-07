@@ -12,6 +12,7 @@ defmodule SymphonyElixir.HandoffReceiptTest do
     generation: 2,
     checkpoint_sequence: 7,
     recorded_at: ~U[2026-08-07 00:00:00Z],
+    linear_updated_at: ~U[2026-08-06 23:59:00Z],
     branch: "codex/aro-166-handoff-receipts",
     commit_sha: String.duplicate("a", 40),
     pr_number: nil,
@@ -30,7 +31,7 @@ defmodule SymphonyElixir.HandoffReceiptTest do
     commit_sha: String.duplicate("a", 40),
     pr_number: nil,
     pr_ready?: false,
-    linear_revision_current?: true,
+    linear_updated_at: ~U[2026-08-06 23:59:00Z],
     active_claim?: true,
     effect_operations: %{"ARO-166:git-commit:1" => :succeeded}
   }
@@ -73,7 +74,8 @@ defmodule SymphonyElixir.HandoffReceiptTest do
       {:claim_id, "not-a-uuid"},
       {:generation, 0},
       {:checkpoint_sequence, 0},
-      {:recorded_at, nil}
+      {:recorded_at, nil},
+      {:linear_updated_at, nil}
     ]
 
     for {key, value} <- invalid_values do
@@ -93,6 +95,7 @@ defmodule SymphonyElixir.HandoffReceiptTest do
       2,
       7,
       ~U[2026-08-07 00:00:00Z],
+      ~U[2026-08-06 23:59:00Z],
       "codex/aro-166-handoff-receipts",
       String.duplicate("a", 40),
       19,
@@ -136,6 +139,7 @@ defmodule SymphonyElixir.HandoffReceiptTest do
       2,
       7,
       ~U[2026-08-07 00:00:00Z],
+      ~U[2026-08-06 23:59:00Z],
       "codex/aro-166-handoff-receipts",
       String.duplicate("a", 40),
       19,
@@ -147,19 +151,19 @@ defmodule SymphonyElixir.HandoffReceiptTest do
     ]
 
     for status <- [nil, "unknown"] do
-      row = List.replace_at(base_row, 14, [%{"name" => "make all", "status" => status}])
+      row = List.replace_at(base_row, 15, [%{"name" => "make all", "status" => status}])
       assert HandoffReceipt.decode_row_for_test(row) == {:error, :receipt_incompatible}
     end
 
     for name <- [42, "   "] do
-      row = List.replace_at(base_row, 14, [%{"name" => name, "status" => "passed"}])
+      row = List.replace_at(base_row, 15, [%{"name" => name, "status" => "passed"}])
       assert HandoffReceipt.decode_row_for_test(row) == {:error, :receipt_incompatible}
     end
 
     extra_key = %{"name" => "make all", "status" => "passed", "output" => "ignored"}
 
     assert base_row
-           |> List.replace_at(14, [extra_key])
+           |> List.replace_at(15, [extra_key])
            |> HandoffReceipt.decode_row_for_test() == {:error, :receipt_incompatible}
   end
 
@@ -173,6 +177,7 @@ defmodule SymphonyElixir.HandoffReceiptTest do
       2,
       7,
       ~U[2026-08-07 00:00:00Z],
+      ~U[2026-08-06 23:59:00Z],
       "codex/aro-166-handoff-receipts",
       String.duplicate("a", 40),
       19,
@@ -183,7 +188,7 @@ defmodule SymphonyElixir.HandoffReceiptTest do
       []
     ]
 
-    malformed_fields = [{11, "legacy"}, {12, ["unknown"]}, {13, nil}]
+    malformed_fields = [{12, "legacy"}, {13, ["unknown"]}, {14, nil}]
 
     for {index, value} <- malformed_fields do
       assert base_row
@@ -302,7 +307,7 @@ defmodule SymphonyElixir.HandoffReceiptTest do
   test "changed Git, Linear, claim, or ledger truth requires a safe recheck" do
     cases = [
       {%{@truth | commit_sha: String.duplicate("b", 40)}, :git_or_repository_state_changed},
-      {%{@truth | linear_revision_current?: false}, :linear_revision_changed},
+      {%{@truth | linear_updated_at: ~U[2026-08-07 00:00:00Z]}, :linear_revision_changed},
       {%{@truth | active_claim?: false}, :claim_inactive},
       {%{@truth | effect_operations: %{}}, :effect_ledger_changed},
       {%{@truth | effect_operations: %{"ARO-166:git-commit:1" => :unknown}}, :effect_ledger_changed}

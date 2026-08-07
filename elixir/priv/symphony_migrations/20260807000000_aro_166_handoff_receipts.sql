@@ -9,6 +9,7 @@ create table symphony_staging.handoff_receipts (
   claim_id uuid not null,
   generation bigint not null check (generation > 0),
   recorded_at timestamptz not null default clock_timestamp(),
+  linear_updated_at timestamptz not null,
   branch text not null check (btrim(branch) <> ''),
   commit_sha text check (commit_sha is null or commit_sha ~ '^[0-9a-f]{40}$'),
   pr_number integer check (pr_number is null or pr_number > 0),
@@ -108,6 +109,7 @@ returns table (
   generation bigint,
   checkpoint_sequence bigint,
   recorded_at timestamptz,
+  linear_updated_at timestamptz,
   branch text,
   commit_sha text,
   pr_number integer,
@@ -123,8 +125,9 @@ set search_path = pg_catalog, pg_temp
 as $$
 declare
   inserted symphony_staging.handoff_receipts%rowtype;
+  active_linear_updated_at timestamptz;
 begin
-  perform 1
+  select claims.linear_updated_at into active_linear_updated_at
   from symphony_staging.issue_claims claims
   join symphony_staging.nodes nodes on nodes.node_id = claims.node_id
   join symphony_staging.node_login_principals principals
@@ -190,11 +193,11 @@ begin
 
   insert into symphony_staging.handoff_receipts (
     receipt_schema_version, issue_id, canonical_owner, canonical_repository,
-    claim_id, generation, branch, commit_sha, pr_number, current_phase,
+    claim_id, generation, linear_updated_at, branch, commit_sha, pr_number, current_phase,
     completed_step_ids, pending_step_ids, test_results, effect_operation_ids
   ) values (
     requested_schema_version, requested_issue_id, requested_owner, requested_repository,
-    requested_claim_id, requested_generation, requested_branch, requested_commit_sha,
+    requested_claim_id, requested_generation, active_linear_updated_at, requested_branch, requested_commit_sha,
     requested_pr_number, requested_phase, requested_completed, requested_pending,
     requested_test_results, requested_effect_operation_ids
   ) returning * into inserted;
@@ -208,6 +211,7 @@ begin
     inserted.generation,
     inserted.checkpoint_sequence,
     inserted.recorded_at,
+    inserted.linear_updated_at,
     inserted.branch,
     inserted.commit_sha,
     inserted.pr_number,
@@ -235,6 +239,7 @@ returns table (
   generation bigint,
   checkpoint_sequence bigint,
   recorded_at timestamptz,
+  linear_updated_at timestamptz,
   branch text,
   commit_sha text,
   pr_number integer,
@@ -274,6 +279,7 @@ begin
     receipts.generation,
     receipts.checkpoint_sequence,
     receipts.recorded_at,
+    receipts.linear_updated_at,
     receipts.branch,
     receipts.commit_sha,
     receipts.pr_number,

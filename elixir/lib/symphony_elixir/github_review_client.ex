@@ -6,6 +6,7 @@ defmodule SymphonyElixir.GitHubReviewClient do
     repository(owner: $owner, name: $name) {
       pullRequest(number: $number) {
         number
+        isDraft
         headRefOid
         baseRefName
         baseRefOid
@@ -802,6 +803,7 @@ defmodule SymphonyElixir.GitHubReviewClient do
 
     %{
       current_head_sha: head_sha,
+      pr_ready?: pull_request["isDraft"] == false,
       reviewed_head_sha: reviewed_head_sha,
       review_result: if(reviewed_head_sha, do: :no_major_issues, else: :missing),
       base_ref_oid: pull_request["baseRefOid"],

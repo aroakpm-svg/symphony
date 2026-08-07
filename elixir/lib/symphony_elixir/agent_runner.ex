@@ -4,7 +4,14 @@ defmodule SymphonyElixir.AgentRunner do
   """
 
   require Logger
-  alias SymphonyElixir.{ClaimService, Codex.AppServer, Config, Linear.Issue}
+  alias SymphonyElixir.{
+    ClaimService,
+    Codex.AppServer,
+    Config,
+    GitHubReviewClient,
+    HandoffReceipt,
+    Linear.Issue
+  }
   alias SymphonyElixir.{PromptBuilder, ReadinessGate, Tracker, Workspace}
 
   @type worker_host :: String.t() | nil
@@ -54,8 +61,15 @@ defmodule SymphonyElixir.AgentRunner do
                      worker_host,
                      opts
                    ),
+                 {:ok, handoff_resume} <- prepare_handoff(issue, receipt, opts),
                  :ok <- Workspace.run_before_run_hook(workspace, issue, worker_host) do
-              run_codex_turns(workspace, issue, codex_update_recipient, opts, worker_host)
+              run_codex_turns(
+                workspace,
+                issue,
+                codex_update_recipient,
+                Keyword.put(opts, :handoff_resume, handoff_resume),
+                worker_host
+              )
             else
               {:error, {:workspace_preflight_failed, _type, _command, _status, _output} = reason} ->
                 {:deferred_workspace_preflight_failure, reason}
@@ -235,6 +249,119 @@ defmodule SymphonyElixir.AgentRunner do
 
   defp maybe_put_readiness_command_runner(opts, _runner), do: opts
 
+  defp prepare_handoff(issue, readiness, opts) do
+    case Keyword.get(opts, :distributed_claim) do
+      claim when is_map(claim) -> prepare_distributed_handoff(issue, readiness, claim, opts)
+      _claim -> {:ok, nil}
+    end
+  end
+
+  defp prepare_distributed_handoff(issue, readiness, _claim, opts) do
+    ready? = Keyword.get(opts, :handoff_receipt_ready?, &ClaimService.handoff_receipt_ready?/0)
+    context = Keyword.get(opts, :handoff_context, &ClaimService.handoff_context/1)
+
+    with true <- ready?.() || {:error, :handoff_receipt_contract_unavailable},
+         {:ok, connection, claim} <- context.(issue.id),
+         {:ok, previous} <- HandoffReceipt.latest(connection, claim),
+         {:ok, repository, owner, name} <- handoff_repository(),
+         {:ok, truth} <- handoff_truth(previous, issue, readiness, claim, connection, repository, opts),
+         resume <- HandoffReceipt.resume(previous, truth),
+         attrs <- checkpoint_attrs(previous, resume, readiness, owner, name),
+         {:ok, _checkpoint} <- HandoffReceipt.append(connection, claim, attrs) do
+      Logger.info("Handoff checkpoint restored for #{issue_context(issue)} result=#{inspect(resume)}")
+      {:ok, resume}
+    end
+  end
+
+  defp handoff_repository do
+    case Config.settings!().review_convergence.repository do
+      repository when is_binary(repository) ->
+        case String.split(repository, "/", parts: 2) do
+          [owner, name] -> {:ok, repository, owner, name}
+          _parts -> {:error, :handoff_repository_invalid}
+        end
+
+      _repository ->
+        {:error, :handoff_repository_unconfigured}
+    end
+  end
+
+  defp handoff_truth(previous, issue, readiness, claim, connection, repository, opts) do
+    operation_ids = if previous, do: previous.effect_operation_ids, else: []
+
+    with {:ok, effects} <- HandoffReceipt.effect_statuses(connection, claim, operation_ids),
+         {:ok, pr} <- handoff_pull_request(previous, repository, readiness.issue_branch, opts) do
+      {:ok,
+       %{
+         issue_id: issue.id,
+         canonical_owner: repository |> String.split("/", parts: 2) |> hd(),
+         canonical_repository: repository |> String.split("/", parts: 2) |> List.last(),
+         branch: readiness.issue_branch,
+         commit_sha: readiness.head_sha,
+         pr_number: pr.number,
+         pr_ready?: pr.ready?,
+         linear_updated_at: issue.updated_at,
+         active_claim?: same_claim_revision?(claim, issue.updated_at),
+         effect_operations: effects
+       }}
+    end
+  end
+
+  defp handoff_pull_request(nil, _repository, _branch, _opts),
+    do: {:ok, %{number: nil, ready?: false}}
+
+  defp handoff_pull_request(%{pr_number: nil}, _repository, _branch, _opts),
+    do: {:ok, %{number: nil, ready?: false}}
+
+  defp handoff_pull_request(previous, repository, branch, opts) do
+    snapshot = Keyword.get(opts, :handoff_review_snapshot, &GitHubReviewClient.snapshot/2)
+
+    with {:ok, current} <- snapshot.(repository, branch),
+         true <-
+           current.pull_request_number == previous.pr_number ||
+             {:error, :handoff_pull_request_changed},
+         true <-
+           current.current_head_sha == previous.commit_sha ||
+             {:error, :handoff_pull_request_head_changed} do
+      {:ok, %{number: current.pull_request_number, ready?: current.pr_ready?}}
+    end
+  end
+
+  defp same_claim_revision?(%{linear_updated_at: claim_revision}, %DateTime{} = issue_revision),
+    do: DateTime.compare(claim_revision, issue_revision) == :eq
+
+  defp same_claim_revision?(_claim, _issue_revision), do: false
+
+  defp checkpoint_attrs(previous, {:ok, _next}, _readiness, _owner, _name) when is_map(previous) do
+    Map.take(previous, [
+      :canonical_owner,
+      :canonical_repository,
+      :branch,
+      :commit_sha,
+      :pr_number,
+      :current_phase,
+      :completed_step_ids,
+      :pending_step_ids,
+      :test_results,
+      :effect_operation_ids
+    ])
+  end
+
+  defp checkpoint_attrs(_previous, _resume, readiness, owner, name) do
+    %{
+      canonical_owner: owner,
+      canonical_repository: name,
+      branch: readiness.issue_branch,
+      commit_sha: nil,
+      pr_number: nil,
+      current_phase: :implementation,
+      completed_step_ids: [:preflight, :branch],
+      pending_step_ids: [:implementation, :tests, :commit, :push, :pull_request, :review],
+      test_results: [],
+      effect_operation_ids: []
+    }
+  end
+
   defp run_codex_turns(workspace, issue, codex_update_recipient, opts, worker_host) do
     max_turns = Keyword.get(opts, :max_turns, Config.settings!().agent.max_turns)
     issue_state_fetcher = Keyword.get(opts, :issue_state_fetcher, &Tracker.fetch_issue_states_by_ids/1)
@@ -304,7 +431,21 @@ defmodule SymphonyElixir.AgentRunner do
     end
   end
 
-  defp build_turn_prompt(issue, opts, 1, _max_turns), do: PromptBuilder.build_prompt(issue, opts)
+  defp build_turn_prompt(issue, opts, 1, _max_turns) do
+    base = PromptBuilder.build_prompt(issue, opts)
+
+    case Keyword.get(opts, :handoff_resume) do
+      {:ok, next} ->
+        base <>
+          "\n\nVerified handoff: resume at #{next}. Recheck external state before side effects.\n"
+
+      {:safe_recheck, reason} ->
+        base <>
+          "\n\nHandoff could not be trusted (#{inspect(reason)}). Recheck all external state before continuing.\n"
+
+      _none -> base
+    end
+  end
 
   defp build_turn_prompt(_issue, _opts, turn_number, max_turns) do
     """
