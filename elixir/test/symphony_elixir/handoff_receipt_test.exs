@@ -78,6 +78,16 @@ defmodule SymphonyElixir.HandoffReceiptTest do
            ) == {:error, :handoff_branch_mismatch}
   end
 
+  test "dirty submodule contents fail closed before fingerprinting" do
+    dirty = "+Subproject commit #{String.duplicate("a", 40)}-dirty\n"
+    clean = "Subproject commit #{String.duplicate("a", 40)}\n"
+
+    assert HandoffReceipt.reject_dirty_submodule_diff_for_test(dirty) ==
+             {:error, :handoff_dirty_submodule}
+
+    assert HandoffReceipt.reject_dirty_submodule_diff_for_test(clean) == :ok
+  end
+
   test "canonical origin parsing accepts GitHub transports without accepting lookalike hosts" do
     assert HandoffReceipt.github_repository_from_remote_for_test("https://github.com/aroakpm-svg/symphony.git") == {:ok, "aroakpm-svg/symphony"}
 

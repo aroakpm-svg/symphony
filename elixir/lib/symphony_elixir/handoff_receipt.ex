@@ -80,8 +80,19 @@ defmodule SymphonyElixir.HandoffReceipt do
   def workspace_evidence(workspace, branch, canonical_repository, worker_host)
       when is_binary(workspace) and is_binary(branch) and is_binary(canonical_repository) do
     with {:ok, checked_out_branch} <- checked_out_branch(workspace, branch, worker_host),
-         {:ok, status} <- Workspace.run_git_command(workspace, ["status", "--porcelain=v1", "-z", "--untracked-files=all"], worker_host),
-         {:ok, diff} <- Workspace.run_git_command(workspace, ["diff", "--binary", "HEAD"], worker_host),
+         {:ok, status} <-
+           Workspace.run_git_command(
+             workspace,
+             ["status", "--porcelain=v1", "-z", "--untracked-files=all", "--ignore-submodules=none"],
+             worker_host
+           ),
+         {:ok, diff} <-
+           Workspace.run_git_command(
+             workspace,
+             ["diff", "--binary", "--submodule=short", "--ignore-submodules=none", "HEAD"],
+             worker_host
+           ),
+         :ok <- reject_dirty_submodule_diff(diff),
          {:ok, cached} <- Workspace.run_git_command(workspace, ["diff", "--binary", "--cached", "HEAD"], worker_host),
          {:ok, head_sha} <- Workspace.run_git_command(workspace, ["rev-parse", "HEAD"], worker_host),
          {:ok, untracked_hashes} <- hash_untracked_files(workspace, status, worker_host),
@@ -108,6 +119,16 @@ defmodule SymphonyElixir.HandoffReceipt do
        }}
     end
   end
+
+  defp reject_dirty_submodule_diff(diff) when is_binary(diff) do
+    if Regex.match?(~r/^\+?Subproject commit [0-9a-f]{40}-dirty$/m, diff),
+      do: {:error, :handoff_dirty_submodule},
+      else: :ok
+  end
+
+  @doc false
+  @spec reject_dirty_submodule_diff_for_test(String.t()) :: :ok | {:error, :handoff_dirty_submodule}
+  def reject_dirty_submodule_diff_for_test(diff), do: reject_dirty_submodule_diff(diff)
 
   defp checked_out_branch(workspace, expected_branch, worker_host) do
     case Workspace.run_git_command(
