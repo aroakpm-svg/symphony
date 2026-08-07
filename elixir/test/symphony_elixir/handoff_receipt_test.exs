@@ -74,6 +74,13 @@ defmodule SymphonyElixir.HandoffReceiptTest do
              {:error, :receipt_incompatible}
   end
 
+  test "append SQL preserves the complete 16-argument function contract" do
+    sql = HandoffReceipt.append_sql_for_test()
+
+    assert sql =~ "$11, $12, $13::text[], $14::text[], $15::jsonb, $16::text[]"
+    refute sql =~ "$12::text[]"
+  end
+
   test "database rows with null or unknown test statuses fail closed" do
     base_row = [
       1,

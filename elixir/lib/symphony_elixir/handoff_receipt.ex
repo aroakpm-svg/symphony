@@ -57,6 +57,10 @@ defmodule SymphonyElixir.HandoffReceipt do
   @spec decode_row_for_test(list()) :: {:ok, receipt()} | {:error, :receipt_incompatible}
   def decode_row_for_test(row), do: decode_row(row)
 
+  @doc false
+  @spec append_sql_for_test() :: String.t()
+  def append_sql_for_test, do: append_sql()
+
   @spec append(Postgrex.conn(), map(), map()) :: {:ok, receipt()} | {:error, term()}
   def append(connection, claim, attrs) when is_map(claim) and is_map(attrs) do
     with :ok <- validate_attrs(attrs),
@@ -273,7 +277,7 @@ defmodule SymphonyElixir.HandoffReceipt do
     """
     select #{receipt_columns()} from symphony_staging.append_handoff_receipt(
       $1, $2::text::uuid, $3, $4::text::uuid, $5::text::uuid,
-      $6, $7, $8, $9, $10, $11, $12::text[], $13::text[], $14::jsonb, $15::text[]
+      $6, $7, $8, $9, $10, $11, $12, $13::text[], $14::text[], $15::jsonb, $16::text[]
     )
     """
   end
