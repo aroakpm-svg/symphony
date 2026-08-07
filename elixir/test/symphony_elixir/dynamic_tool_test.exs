@@ -200,9 +200,13 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
              node_instance_id: Ecto.UUID.generate()
            }}
         end,
+        legacy_effect_id_fetcher: fn :connection, _claim, "ARO-166:comment:1", "comment:1" ->
+          {:ok, "comment:1"}
+        end,
         managed_effect_runner: fn "linear_comment", :connection, context, "hello", _opts ->
           assert context.operation_id == "ARO-166:comment:1"
           assert context.requested_operation_id == "comment:1"
+          assert context.legacy_operation_id == "comment:1"
           {:ok, %{"id" => "comment-1"}}
         end
       )
@@ -253,6 +257,16 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
            ) == {:found, %{"id" => "legacy-comment"}}
 
     assert Process.get(:comment_reconcile_call) == 2
+  end
+
+  test "managed comments use the persisted original marker for hashed legacy IDs" do
+    assert DynamicTool.comment_bodies_with_legacy_for_test(
+             "ARO-166",
+             "ARO-166:legacy-deadbeef",
+             "old marker with spaces",
+             "hello"
+           ) ==
+             {"hello\n\n<!-- symphony-effect:ARO-166:legacy-deadbeef -->", "hello\n\n<!-- symphony-effect:old marker with spaces -->"}
   end
 
   test "linear_graphql returns successful GraphQL responses as tool text" do

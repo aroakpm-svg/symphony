@@ -301,15 +301,20 @@ defmodule SymphonyElixir.Codex.DynamicTool do
     issue_id = Keyword.get(opts, :managed_issue_id)
     context_fetcher = Keyword.get(opts, :effect_context_fetcher, &ClaimService.effect_context/1)
     effect_runner = Keyword.get(opts, :managed_effect_runner, &run_managed_effect/5)
+    legacy_id_fetcher = Keyword.get(opts, :legacy_effect_id_fetcher, &legacy_effect_operation_id/4)
 
     with true <- Keyword.get(opts, :managed_session, false),
          true <- is_binary(issue_id),
          {:ok, operation_id, value} <- normalize_managed_effect_arguments(tool, arguments),
          {:ok, connection, claim_context} <- context_fetcher.(issue_id),
+         canonical_operation_id <- EffectLedger.operation_id(claim_context.issue_id, operation_id),
+         {:ok, legacy_operation_id} <-
+           legacy_id_fetcher.(connection, claim_context, canonical_operation_id, operation_id),
          context <-
            Map.merge(claim_context, %{
-             operation_id: EffectLedger.operation_id(claim_context.issue_id, operation_id),
+             operation_id: canonical_operation_id,
              requested_operation_id: operation_id,
+             legacy_operation_id: legacy_operation_id,
              request_fingerprint: effect_fingerprint(tool, value)
            }),
          {:ok, resource} <- effect_runner.(tool, connection, context, value, opts) do
@@ -317,6 +322,33 @@ defmodule SymphonyElixir.Codex.DynamicTool do
     else
       false -> failure_response(tool_error_payload(:managed_effect_context_required))
       {:error, reason} -> failure_response(tool_error_payload(reason))
+    end
+  end
+
+  defp legacy_effect_operation_id(_connection, _claim, canonical, requested)
+       when canonical != requested,
+       do: {:ok, requested}
+
+  defp legacy_effect_operation_id(connection, claim, canonical, _requested) do
+    sql = """
+    select symphony_staging.handoff_legacy_effect_operation_id(
+      $1, $2, $3::text::uuid, $4, $5::text::uuid, $6::text::uuid
+    )
+    """
+
+    params = [
+      claim.issue_id,
+      canonical,
+      claim.claim_id,
+      claim.generation,
+      claim.node_id,
+      claim.node_instance_id
+    ]
+
+    case Postgrex.query(connection, sql, params) do
+      {:ok, %Postgrex.Result{rows: [[legacy]]}} -> {:ok, legacy}
+      {:ok, result} -> {:error, {:unexpected_legacy_effect_id_result, result.num_rows}}
+      {:error, reason} -> {:error, reason}
     end
   end
 
@@ -372,8 +404,13 @@ defmodule SymphonyElixir.Codex.DynamicTool do
     requested_operation_id = Map.get(context, :requested_operation_id, context.operation_id)
     issue_prefix = context.issue_id <> ":"
 
+    legacy_operation_id = Map.get(context, :legacy_operation_id)
+
     legacy_operation_id =
       cond do
+        is_binary(legacy_operation_id) ->
+          legacy_operation_id
+
         requested_operation_id != context.operation_id ->
           requested_operation_id
 
@@ -407,7 +444,23 @@ defmodule SymphonyElixir.Codex.DynamicTool do
       %{
         issue_id: issue_id,
         operation_id: EffectLedger.operation_id(issue_id, operation_id),
-        requested_operation_id: operation_id
+        requested_operation_id: operation_id,
+        legacy_operation_id: nil
+      },
+      body
+    )
+  end
+
+  @doc false
+  @spec comment_bodies_with_legacy_for_test(String.t(), String.t(), String.t(), String.t()) ::
+          {String.t(), String.t()}
+  def comment_bodies_with_legacy_for_test(issue_id, operation_id, legacy_operation_id, body) do
+    managed_comment_bodies(
+      %{
+        issue_id: issue_id,
+        operation_id: operation_id,
+        requested_operation_id: operation_id,
+        legacy_operation_id: legacy_operation_id
       },
       body
     )

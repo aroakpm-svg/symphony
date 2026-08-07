@@ -483,12 +483,53 @@ as $$
   )
 $$;
 
+create or replace function symphony_staging.handoff_legacy_effect_operation_id(
+  requested_issue_id text,
+  requested_operation_id text,
+  active_claim_id uuid,
+  active_generation bigint,
+  active_node_id uuid,
+  active_node_instance_id uuid
+)
+returns text
+language plpgsql
+stable
+security definer
+set search_path = pg_catalog, pg_temp
+as $$
+declare
+  legacy_id text;
+begin
+  if not symphony_staging.validate_active_claim(
+    active_claim_id, active_generation, active_node_id, active_node_instance_id
+  ) then
+    raise exception using errcode = '55000', message = 'legacy effect ID read requires an active claim';
+  end if;
+
+  if not exists (
+    select 1 from symphony_staging.issue_claims claims
+    where claims.issue_id = requested_issue_id and claims.claim_id = active_claim_id
+  ) then
+    raise exception using errcode = '55000', message = 'active claim issue mismatch';
+  end if;
+
+  select upgrade.original_operation_id into legacy_id
+  from symphony_staging.effect_operation_id_upgrade upgrade
+  where upgrade.issue_id = requested_issue_id
+    and upgrade.canonical_operation_id = requested_operation_id
+    and upgrade.original_operation_id <> upgrade.canonical_operation_id;
+
+  return legacy_id;
+end
+$$;
+
 revoke all on function
   symphony_staging.validate_handoff_steps(text[], text[]),
   symphony_staging.validate_handoff_tests(jsonb),
   symphony_staging.append_handoff_receipt(text, uuid, bigint, uuid, uuid, integer, text, text, text, text, text, text, integer, text, text[], text[], jsonb, text[]),
   symphony_staging.latest_handoff_receipt(text, uuid, bigint, uuid, uuid),
   symphony_staging.handoff_effect_statuses(text, uuid, bigint, uuid, uuid, text[]),
+  symphony_staging.handoff_legacy_effect_operation_id(text, text, uuid, bigint, uuid, uuid),
   symphony_staging.handoff_receipt_ready()
   from public, anon, authenticated, service_role, symphony_staging_provisioner;
 
@@ -496,6 +537,7 @@ grant execute on function
   symphony_staging.append_handoff_receipt(text, uuid, bigint, uuid, uuid, integer, text, text, text, text, text, text, integer, text, text[], text[], jsonb, text[]),
   symphony_staging.latest_handoff_receipt(text, uuid, bigint, uuid, uuid),
   symphony_staging.handoff_effect_statuses(text, uuid, bigint, uuid, uuid, text[]),
+  symphony_staging.handoff_legacy_effect_operation_id(text, text, uuid, bigint, uuid, uuid),
   symphony_staging.handoff_receipt_ready()
   to symphony_staging_runtime;
 
@@ -511,6 +553,7 @@ begin
     'symphony_staging.append_handoff_receipt(text, uuid, bigint, uuid, uuid, integer, text, text, text, text, text, text, integer, text, text[], text[], jsonb, text[]), '
     'symphony_staging.latest_handoff_receipt(text, uuid, bigint, uuid, uuid), '
     'symphony_staging.handoff_effect_statuses(text, uuid, bigint, uuid, uuid, text[]), '
+    'symphony_staging.handoff_legacy_effect_operation_id(text, text, uuid, bigint, uuid, uuid), '
     'symphony_staging.handoff_receipt_ready() to %I',
     new.login_role
   );
@@ -536,6 +579,7 @@ begin
       'symphony_staging.append_handoff_receipt(text, uuid, bigint, uuid, uuid, integer, text, text, text, text, text, text, integer, text, text[], text[], jsonb, text[]), '
       'symphony_staging.latest_handoff_receipt(text, uuid, bigint, uuid, uuid), '
       'symphony_staging.handoff_effect_statuses(text, uuid, bigint, uuid, uuid, text[]), '
+      'symphony_staging.handoff_legacy_effect_operation_id(text, text, uuid, bigint, uuid, uuid), '
       'symphony_staging.handoff_receipt_ready() to %I', principal.login_role
     );
   end loop;

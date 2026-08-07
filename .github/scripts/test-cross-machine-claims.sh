@@ -191,9 +191,12 @@ test "$(PGPASSWORD=disposable psql -X -q -A -t -v ON_ERROR_STOP=1 -d "$(node_url
   "select symphony_staging.reconcile_effect('EFFECTS:effect-handoff','fp-handoff','$handoff_reconcile_attempt_id','EFFECTS','$handoff_claim_id',$handoff_generation,'$node_b','$instance_b','failed-no-effect',null);")" = "t"
 
 psql_admin -c "insert into symphony_staging.effect_operations(operation_id,effect_type,request_fingerprint,issue_id,claim_id,generation,status,native_resource) values ('legacy-before-handoff','linear_comment','fp-legacy','EFFECTS','$handoff_claim_id',$handoff_generation,'succeeded','{\"native_id\":\"legacy\"}'::jsonb);"
+psql_admin -c "insert into symphony_staging.effect_operations(operation_id,effect_type,request_fingerprint,issue_id,claim_id,generation,status) values ('legacy marker with spaces','linear_comment','fp-invalid-legacy','EFFECTS','$handoff_claim_id',$handoff_generation,'unknown');"
 psql_admin -f "$handoff_migration"
 test "$(psql_admin -A -t -c "select count(*) from symphony_staging.effect_operations where operation_id = 'legacy-before-handoff';")" = "0"
 test "$(psql_admin -A -t -c "select count(*) from symphony_staging.effect_operations where operation_id = 'EFFECTS:legacy-before-handoff';")" = "1"
+hashed_legacy_id="$(psql_admin -A -t -c "select canonical_operation_id from symphony_staging.effect_operation_id_upgrade where original_operation_id = 'legacy marker with spaces';")"
+test "$(PGPASSWORD=disposable psql -X -q -A -t -v ON_ERROR_STOP=1 -d "$(node_url claim_node_b)" -c "select symphony_staging.handoff_legacy_effect_operation_id('EFFECTS','$hashed_legacy_id','$handoff_claim_id',$handoff_generation,'$node_b','$instance_b');")" = "legacy marker with spaces"
 if psql_admin -c "insert into symphony_staging.effect_operations(operation_id,effect_type,request_fingerprint,issue_id,claim_id,generation) values ('legacy-after-handoff','linear_comment','fp-late-legacy','EFFECTS','$handoff_claim_id',$handoff_generation);" >/dev/null 2>&1; then
   echo "ARO-166 unexpectedly allowed a legacy effect ID after forward migration" >&2; exit 1
 fi

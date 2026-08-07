@@ -99,6 +99,8 @@ defmodule SymphonyElixir.HandoffReceiptMigrationTest do
     assert sql =~ "handoff_effect_statuses(text, uuid, bigint, uuid, uuid, text[])"
     assert sql =~ "operations.issue_id = requested_issue_id"
     assert sql =~ "operations.operation_id = any(requested_operation_ids)"
+    assert sql =~ "handoff_legacy_effect_operation_id"
+    assert sql =~ "upgrade.original_operation_id <> upgrade.canonical_operation_id"
     assert length(Regex.scan(~r/effect status read requires an active claim/, sql)) == 1
   end
 
@@ -108,6 +110,7 @@ defmodule SymphonyElixir.HandoffReceiptMigrationTest do
     assert rollback =~ "where contract_name = 'handoff-receipt'"
     assert rollback =~ "drop table if exists symphony_staging.handoff_receipts"
     assert rollback =~ "drop function if exists symphony_staging.handoff_effect_statuses"
+    assert rollback =~ "drop function if exists symphony_staging.handoff_legacy_effect_operation_id"
     assert rollback =~ "drop constraint if exists effect_operation_id_canonical"
     assert rollback =~ "cannot roll back ARO-166 after new effect operations were recorded"
     assert rollback =~ "set operation_id = upgrade.original_operation_id"
