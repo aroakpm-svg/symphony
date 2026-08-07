@@ -298,15 +298,21 @@ defmodule SymphonyElixir.AgentRunner do
          context,
          opts
        ) do
-    with {:ok, connection, claim} <- context.(fresh_issue.id) do
+    with {:ok, connection, claim} <- context.(fresh_issue.id),
+         {:ok, repository, owner, name} <- handoff_repository(),
+         {:ok, git_evidence} <-
+           HandoffReceipt.workspace_evidence(workspace, readiness.issue_branch, repository, worker_host),
+         {:ok, pr} <- handoff_pull_request(repository, readiness.issue_branch, opts) do
       run_handoff_transaction(
         connection,
         claim,
         fresh_issue,
         readiness,
-        workspace,
-        worker_host,
-        opts
+        git_evidence,
+        pr,
+        repository,
+        owner,
+        name
       )
     end
   end
@@ -316,14 +322,25 @@ defmodule SymphonyElixir.AgentRunner do
          claim,
          fresh_issue,
          readiness,
-         workspace,
-         worker_host,
-         opts
+         git_evidence,
+         pr,
+         repository,
+         owner,
+         name
        ) do
     transaction_result =
       Postgrex.transaction(connection, fn transaction ->
         transaction
-        |> run_locked_handoff(claim, fresh_issue, readiness, workspace, worker_host, opts)
+        |> run_locked_handoff(
+          claim,
+          fresh_issue,
+          readiness,
+          git_evidence,
+          pr,
+          repository,
+          owner,
+          name
+        )
         |> finish_handoff_transaction(transaction)
       end)
 
@@ -343,17 +360,25 @@ defmodule SymphonyElixir.AgentRunner do
          claim,
          fresh_issue,
          readiness,
-         workspace,
-         worker_host,
-         opts
+         git_evidence,
+         pr,
+         repository,
+         owner,
+         name
        ) do
     with :ok <- lock_handoff_claim(connection, claim),
          {:ok, previous} <- HandoffReceipt.latest(connection, claim),
-         {:ok, repository, owner, name} <- handoff_repository(),
-         {:ok, git_evidence} <-
-           HandoffReceipt.workspace_evidence(workspace, readiness.issue_branch, repository, worker_host),
          {:ok, truth} <-
-           handoff_truth(previous, fresh_issue, readiness, git_evidence, claim, connection, repository, opts),
+           handoff_truth(
+             previous,
+             fresh_issue,
+             readiness,
+             git_evidence,
+             claim,
+             connection,
+             repository,
+             pr
+           ),
          resume <- HandoffReceipt.resume(previous, truth),
          attrs <- checkpoint_attrs(previous, resume, readiness, git_evidence, owner, name),
          {:ok, checkpoint} <- HandoffReceipt.append(connection, claim, attrs),
@@ -403,11 +428,10 @@ defmodule SymphonyElixir.AgentRunner do
     end
   end
 
-  defp handoff_truth(previous, issue, readiness, git_evidence, claim, connection, repository, opts) do
+  defp handoff_truth(previous, issue, readiness, git_evidence, claim, connection, repository, pr) do
     operation_ids = if previous, do: previous.effect_operation_ids, else: []
 
-    with {:ok, effects} <- HandoffReceipt.effect_statuses(connection, claim, operation_ids),
-         {:ok, pr} <- handoff_pull_request(previous, repository, readiness.issue_branch, opts) do
+    with {:ok, effects} <- HandoffReceipt.effect_statuses(connection, claim, operation_ids) do
       {:ok,
        %{
          issue_id: issue.id,
@@ -438,7 +462,7 @@ defmodule SymphonyElixir.AgentRunner do
   @spec handoff_pr_ready_for_test(map(), map()) :: boolean()
   def handoff_pr_ready_for_test(pr, git_evidence), do: handoff_pr_ready?(pr, git_evidence)
 
-  defp handoff_pull_request(_previous, repository, branch, opts) do
+  defp handoff_pull_request(repository, branch, opts) do
     snapshot = Keyword.get(opts, :handoff_review_snapshot, &GitHubReviewClient.snapshot/2)
 
     case snapshot.(repository, branch) do

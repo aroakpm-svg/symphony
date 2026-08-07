@@ -183,6 +183,35 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
     assert response["output"] =~ "checkpoint_sequence"
   end
 
+  test "managed handoff checkpoints reject malformed effect ID lists without raising" do
+    base = %{
+      "branch" => "codex/aro-166",
+      "commitSha" => nil,
+      "prNumber" => nil,
+      "currentPhase" => "implementation",
+      "completedSteps" => ["preflight", "branch"],
+      "pendingSteps" => ["implementation", "tests", "commit", "push", "pull_request", "review"],
+      "testResults" => []
+    }
+
+    for malformed <- [nil, ["valid", 42]] do
+      response =
+        DynamicTool.execute(
+          "handoff_checkpoint",
+          Map.put(base, "effectOperationIds", malformed),
+          managed_session: true,
+          managed_issue_id: "ARO-166",
+          handoff_repository: "aroakpm-svg/symphony",
+          handoff_evidence_fetcher: fn _workspace, _branch, _repository, _host ->
+            flunk("malformed effect IDs must fail before external evidence collection")
+          end
+        )
+
+      refute response["success"]
+      assert response["output"] =~ "Invalid handoff checkpoint arguments"
+    end
+  end
+
   test "managed effects canonicalize operation IDs before constructing external content" do
     response =
       DynamicTool.execute(

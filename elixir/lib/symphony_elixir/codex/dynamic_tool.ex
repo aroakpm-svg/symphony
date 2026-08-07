@@ -209,7 +209,9 @@ defmodule SymphonyElixir.Codex.DynamicTool do
          {:ok, phase} <- decode_handoff_atom(value(arguments, "currentPhase"), HandoffReceipt.phases()),
          {:ok, completed} <- decode_handoff_atoms(value(arguments, "completedSteps"), HandoffReceipt.step_ids()),
          {:ok, pending} <- decode_handoff_atoms(value(arguments, "pendingSteps"), HandoffReceipt.step_ids()),
-         {:ok, tests} <- decode_handoff_tests(value(arguments, "testResults")) do
+         {:ok, tests} <- decode_handoff_tests(value(arguments, "testResults")),
+         {:ok, effect_operation_ids} <-
+           decode_effect_operation_ids(value(arguments, "effectOperationIds")) do
       {:ok,
        %{
          canonical_owner: owner,
@@ -221,7 +223,7 @@ defmodule SymphonyElixir.Codex.DynamicTool do
          completed_step_ids: completed,
          pending_step_ids: pending,
          test_results: tests,
-         effect_operation_ids: value(arguments, "effectOperationIds")
+         effect_operation_ids: effect_operation_ids
        }}
     else
       _reason -> {:error, :invalid_handoff_checkpoint_arguments}
@@ -294,6 +296,18 @@ defmodule SymphonyElixir.Codex.DynamicTool do
   end
 
   defp decode_handoff_tests(_values), do: {:error, :invalid_handoff_test}
+
+  defp decode_effect_operation_ids(values) when is_list(values) do
+    if Enum.all?(values, fn value ->
+         is_binary(value) and Regex.match?(~r/\A[A-Za-z0-9][A-Za-z0-9._:-]{0,127}\z/, value)
+       end) do
+      {:ok, values}
+    else
+      {:error, :invalid_effect_operation_ids}
+    end
+  end
+
+  defp decode_effect_operation_ids(_values), do: {:error, :invalid_effect_operation_ids}
 
   defp value(map, key), do: Map.get(map, key) || Map.get(map, String.to_atom(key))
 
