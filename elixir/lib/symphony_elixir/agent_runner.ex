@@ -258,7 +258,8 @@ defmodule SymphonyElixir.AgentRunner do
       claim when is_map(claim) ->
         prepare_distributed_handoff(issue, readiness, workspace, worker_host, claim, opts)
 
-      _claim -> {:ok, nil}
+      _claim ->
+        {:ok, nil}
     end
   end
 
