@@ -261,6 +261,9 @@ defmodule SymphonyElixir.HandoffReceipt do
       not valid_tests?(Map.get(attrs, :test_results, [])) ->
         {:error, :invalid_test_results}
 
+      tests_completed_without_evidence?(attrs) ->
+        {:error, :missing_test_evidence}
+
       failed_tests_marked_complete?(attrs) ->
         {:error, :failed_tests_marked_complete}
 
@@ -365,6 +368,11 @@ defmodule SymphonyElixir.HandoffReceipt do
   end
 
   defp valid_tests?(_tests), do: false
+
+  defp tests_completed_without_evidence?(attrs) do
+    :tests in Map.get(attrs, :completed_step_ids, []) and
+      Map.get(attrs, :test_results, []) == []
+  end
 
   defp failed_tests_marked_complete?(attrs) do
     :tests in Map.get(attrs, :completed_step_ids, []) and

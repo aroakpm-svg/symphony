@@ -72,6 +72,7 @@ defmodule SymphonyElixir.HandoffReceiptMigrationTest do
     assert sql =~ "result->>'status' is null"
     assert sql =~ "('passed', 'failed', 'skipped')"
     assert sql =~ "requested_test_results @> '[{\"status\":\"failed\"}]'::jsonb"
+    assert sql =~ "jsonb_array_length(requested_test_results) = 0"
     assert sql =~ "'tests' = any(requested_completed)"
   end
 

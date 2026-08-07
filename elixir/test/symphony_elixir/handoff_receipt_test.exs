@@ -284,6 +284,13 @@ defmodule SymphonyElixir.HandoffReceiptTest do
     assert HandoffReceipt.resume(pending, %{@truth | commit_sha: nil}) == {:ok, :tests}
   end
 
+  test "completed tests require at least one structured result" do
+    receipt = %{@receipt | test_results: []}
+
+    assert HandoffReceipt.resume(receipt, @truth) ==
+             {:safe_recheck, :missing_test_evidence}
+  end
+
   test "completion requires terminal phase and every fixed step" do
     all_steps = HandoffReceipt.step_ids()
 
