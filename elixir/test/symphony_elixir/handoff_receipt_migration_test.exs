@@ -98,7 +98,8 @@ defmodule SymphonyElixir.HandoffReceiptMigrationTest do
     assert sql =~ "select login_role from symphony_staging.node_login_principals"
     assert sql =~ "handoff_effect_statuses(text, uuid, bigint, uuid, uuid, text[])"
     assert sql =~ "operations.issue_id = requested_issue_id"
-    assert sql =~ "operations.operation_id = any(requested_operation_ids)"
+    refute sql =~ "operations.operation_id = any(requested_operation_ids)"
+    assert sql =~ "for update of claims"
     assert sql =~ "handoff_legacy_effect_operation_id"
     assert sql =~ "upgrade.original_operation_id <> upgrade.canonical_operation_id"
     assert length(Regex.scan(~r/effect status read requires an active claim/, sql)) == 1

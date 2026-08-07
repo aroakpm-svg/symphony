@@ -436,18 +436,20 @@ security definer
 set search_path = pg_catalog, pg_temp
 as $$
 begin
-  if not symphony_staging.validate_active_claim(
-    active_claim_id, active_generation, active_node_id, active_node_instance_id
-  ) then
-    raise exception using errcode = '55000', message = 'effect status read requires an active claim';
-  end if;
+  perform 1
+  from symphony_staging.issue_claims claims
+  where claims.issue_id = requested_issue_id
+    and claims.claim_id = active_claim_id
+    and claims.generation = active_generation
+    and claims.node_id = active_node_id
+    and claims.node_instance_id = active_node_instance_id
+    and claims.completed_at is null
+    and claims.released_at is null
+    and claims.lease_expires_at > clock_timestamp()
+  for update of claims;
 
-  if not exists (
-    select 1 from symphony_staging.issue_claims claims
-    where claims.issue_id = requested_issue_id
-      and claims.claim_id = active_claim_id
-  ) then
-    raise exception using errcode = '55000', message = 'active claim issue mismatch';
+  if not found then
+    raise exception using errcode = '55000', message = 'effect status read requires an active claim';
   end if;
 
   if requested_operation_ids is null
@@ -465,7 +467,6 @@ begin
   select operations.operation_id, operations.status
   from symphony_staging.effect_operations operations
   where operations.issue_id = requested_issue_id
-    and operations.operation_id = any(requested_operation_ids)
   order by operations.operation_id;
 end
 $$;

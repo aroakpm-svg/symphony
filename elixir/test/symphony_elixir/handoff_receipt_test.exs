@@ -1,7 +1,7 @@
 defmodule SymphonyElixir.HandoffReceiptTest do
   use ExUnit.Case, async: true
 
-  alias SymphonyElixir.{HandoffReceipt, Workspace}
+  alias SymphonyElixir.{AgentRunner, HandoffReceipt, Workspace}
 
   test "raw Git evidence retains bytes beyond the log sanitization limit" do
     workspace =
@@ -30,11 +30,33 @@ defmodule SymphonyElixir.HandoffReceiptTest do
     assert source =~ "fetch_handoff_issue(issue.id, issue_fetcher)"
     assert source =~ "run_codex_turns(\n                workspace,\n                current_issue"
     assert source =~ "handoff_issue_runnable?(fresh_issue)"
+    assert source =~ "checkpoint_effects"
+    assert source =~ "HandoffReceipt.resume(checkpoint"
     assert source =~ "handoff_commit_sha(previous, git_evidence.head_sha)"
     refute source =~ "handoff_commit_sha(previous, readiness.head_sha)"
     assert source =~ "workspace_evidence(workspace, readiness.issue_branch, repository, worker_host)"
     assert source =~ "Known canonical managed effect IDs"
     assert source =~ "Reuse the exact existing ID for the same intended effect"
+  end
+
+  test "PR readiness is bound to the locally and remotely verified head" do
+    sha = String.duplicate("a", 40)
+    evidence = %{head_sha: sha, remote_branch_sha: sha}
+
+    assert AgentRunner.handoff_pr_ready_for_test(
+             %{number: 19, head_sha: sha, ready?: true},
+             evidence
+           )
+
+    refute AgentRunner.handoff_pr_ready_for_test(
+             %{number: 19, head_sha: String.duplicate("b", 40), ready?: true},
+             evidence
+           )
+
+    refute AgentRunner.handoff_pr_ready_for_test(
+             %{number: 19, head_sha: sha, ready?: true},
+             %{evidence | remote_branch_sha: nil}
+           )
   end
 
   test "handoff evidence requires the expected checked-out symbolic branch" do

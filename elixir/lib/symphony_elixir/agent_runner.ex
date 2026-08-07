@@ -307,10 +307,14 @@ defmodule SymphonyElixir.AgentRunner do
            handoff_truth(previous, fresh_issue, readiness, git_evidence, claim, connection, repository, opts),
          resume <- HandoffReceipt.resume(previous, truth),
          attrs <- checkpoint_attrs(previous, resume, readiness, git_evidence, owner, name),
-         {:ok, checkpoint} <- HandoffReceipt.append(connection, claim, attrs) do
-      Logger.info("Handoff checkpoint restored for #{issue_context(fresh_issue)} result=#{inspect(resume)}")
+         {:ok, checkpoint} <- HandoffReceipt.append(connection, claim, attrs),
+         {:ok, checkpoint_effects} <-
+           HandoffReceipt.effect_statuses(connection, claim, checkpoint.effect_operation_ids),
+         verified_resume <-
+           HandoffReceipt.resume(checkpoint, Map.put(truth, :effect_operations, checkpoint_effects)) do
+      Logger.info("Handoff checkpoint restored for #{issue_context(fresh_issue)} result=#{inspect(verified_resume)}")
 
-      {:ok, fresh_issue, %{decision: resume, effect_operation_ids: checkpoint.effect_operation_ids}}
+      {:ok, fresh_issue, %{decision: verified_resume, effect_operation_ids: checkpoint.effect_operation_ids}}
     end
   end
 
@@ -358,13 +362,25 @@ defmodule SymphonyElixir.AgentRunner do
          remote_branch_sha: handoff_remote_sha(previous, git_evidence.remote_branch_sha),
          commit_sha: handoff_commit_sha(previous, git_evidence.head_sha),
          pr_number: pr.number,
-         pr_ready?: pr.ready?,
+         pr_ready?: handoff_pr_ready?(pr, git_evidence),
          linear_updated_at: issue.updated_at,
          active_claim?: same_claim_revision?(claim, issue.updated_at),
          effect_operations: effects
        }}
     end
   end
+
+  defp handoff_pr_ready?(%{number: nil}, _git_evidence), do: false
+
+  defp handoff_pr_ready?(pr, git_evidence) do
+    pr.ready? and is_binary(pr.head_sha) and
+      pr.head_sha == git_evidence.head_sha and
+      pr.head_sha == git_evidence.remote_branch_sha
+  end
+
+  @doc false
+  @spec handoff_pr_ready_for_test(map(), map()) :: boolean()
+  def handoff_pr_ready_for_test(pr, git_evidence), do: handoff_pr_ready?(pr, git_evidence)
 
   defp handoff_pull_request(_previous, repository, branch, opts) do
     snapshot = Keyword.get(opts, :handoff_review_snapshot, &GitHubReviewClient.snapshot/2)
@@ -377,11 +393,12 @@ defmodule SymphonyElixir.AgentRunner do
         {:ok,
          %{
            number: current.pull_request_number,
+           head_sha: current.current_head_sha,
            ready?: current.pr_ready? and converged?
          }}
 
       {:error, :pull_request_not_found} ->
-        {:ok, %{number: nil, ready?: false}}
+        {:ok, %{number: nil, head_sha: nil, ready?: false}}
 
       {:error, reason} ->
         {:error, reason}
