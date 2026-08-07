@@ -52,6 +52,8 @@ as $$
       (select count(distinct value) from unnest(completed) value)
     and coalesce(array_length(pending, 1), 0) =
       (select count(distinct value) from unnest(pending) value)
+    and coalesce(array_length(completed, 1), 0) +
+      coalesce(array_length(pending, 1), 0) = 8
     and not exists (
       select 1 from unnest(completed || pending) value
       where value not in (select step_id from allowed)

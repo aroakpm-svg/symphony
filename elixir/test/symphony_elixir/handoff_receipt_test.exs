@@ -175,6 +175,13 @@ defmodule SymphonyElixir.HandoffReceiptTest do
     assert {:safe_recheck, :invalid_pending_steps} = HandoffReceipt.resume(unknown, @truth)
   end
 
+  test "completed and pending lists always account for every fixed step" do
+    receipt = %{@receipt | completed_step_ids: [:preflight], pending_step_ids: [:review]}
+
+    assert HandoffReceipt.resume(receipt, @truth) ==
+             {:safe_recheck, :incomplete_step_accounting}
+  end
+
   test "structured test results reject extra free-form fields" do
     receipt = %{
       @receipt
@@ -189,7 +196,12 @@ defmodule SymphonyElixir.HandoffReceiptTest do
     all_steps = HandoffReceipt.step_ids()
 
     assert HandoffReceipt.resume(
-             %{@receipt | current_phase: :preflight, pending_step_ids: []},
+             %{
+               @receipt
+               | current_phase: :preflight,
+                 completed_step_ids: all_steps,
+                 pending_step_ids: []
+             },
              @truth
            ) == {:safe_recheck, :inconsistent_progress}
 
@@ -199,7 +211,12 @@ defmodule SymphonyElixir.HandoffReceiptTest do
            ) == {:ok, :complete}
 
     assert HandoffReceipt.resume(
-             %{@receipt | current_phase: :complete, pending_step_ids: [:review]},
+             %{
+               @receipt
+               | current_phase: :complete,
+                 completed_step_ids: Enum.drop(all_steps, -1),
+                 pending_step_ids: [List.last(all_steps)]
+             },
              @truth
            ) == {:safe_recheck, :inconsistent_progress}
   end

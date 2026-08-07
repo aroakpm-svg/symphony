@@ -177,6 +177,9 @@ defmodule SymphonyElixir.HandoffReceipt do
       not MapSet.disjoint?(MapSet.new(completed), MapSet.new(pending)) ->
         {:error, :overlapping_steps}
 
+      not all_steps_accounted_for?(completed, pending) ->
+        {:error, :incomplete_step_accounting}
+
       not consistent_completion?(Map.get(attrs, :current_phase), completed, pending) ->
         {:error, :inconsistent_progress}
 
@@ -254,6 +257,13 @@ defmodule SymphonyElixir.HandoffReceipt do
   end
 
   defp valid_unique_subset?(_values, _allowlist), do: false
+
+  defp all_steps_accounted_for?(completed, pending) do
+    completed
+    |> MapSet.new()
+    |> MapSet.union(MapSet.new(pending))
+    |> MapSet.equal?(MapSet.new(@steps))
+  end
 
   defp consistent_completion?(:complete, completed, []),
     do: MapSet.equal?(MapSet.new(completed), MapSet.new(@steps))
