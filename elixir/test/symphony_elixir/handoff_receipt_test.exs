@@ -47,6 +47,13 @@ defmodule SymphonyElixir.HandoffReceiptTest do
     assert HandoffReceipt.resume(@receipt, @truth) == {:ok, :push}
   end
 
+  test "a verified pre-PR checkpoint resumes without requiring PR readiness" do
+    receipt = %{@receipt | pr_number: nil}
+    truth = %{@truth | pr_number: nil, pr_ready?: false}
+
+    assert HandoffReceipt.resume(receipt, truth) == {:ok, :push}
+  end
+
   test "missing or future receipts safely require a full recheck" do
     assert HandoffReceipt.resume(nil, @truth) == {:safe_recheck, :receipt_missing}
 

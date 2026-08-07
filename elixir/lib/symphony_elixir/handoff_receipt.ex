@@ -231,7 +231,7 @@ defmodule SymphonyElixir.HandoffReceipt do
       Map.get(truth, :active_claim?) != true ->
         {:error, :claim_inactive}
 
-      Map.get(truth, :pr_ready?) != true ->
+      receipt.pr_number != nil and Map.get(truth, :pr_ready?) != true ->
         {:error, :pr_not_ready}
 
       not effect_ledger_matches?(receipt, truth) ->
