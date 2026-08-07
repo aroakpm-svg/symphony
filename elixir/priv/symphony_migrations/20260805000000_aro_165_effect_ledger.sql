@@ -50,6 +50,7 @@ declare
   existing symphony_staging.effect_operations%rowtype;
 begin
   if requested_operation_id is null or btrim(requested_operation_id) = ''
+     or left(requested_operation_id, length(requested_issue_id) + 1) <> requested_issue_id || ':'
      or requested_fingerprint is null or btrim(requested_fingerprint) = ''
      or requested_attempt_id is null
      or requested_attempt_lease_ms is null or requested_attempt_lease_ms <= 0 then

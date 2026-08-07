@@ -79,7 +79,11 @@ defmodule SymphonyElixir.Codex.DynamicTool do
           }
         }
       },
-      "effectOperationIds" => %{"type" => "array", "items" => %{"type" => "string"}}
+      "effectOperationIds" => %{
+        "type" => "array",
+        "description" => "Managed effect IDs used so far. Raw IDs and canonical issue-prefixed IDs from an earlier checkpoint response are both accepted.",
+        "items" => %{"type" => "string"}
+      }
     }
   }
 

@@ -210,6 +210,7 @@ begin
      or exists (
        select 1 from unnest(requested_effect_operation_ids) value
        where value is null or btrim(value) = ''
+          or left(value, length(requested_issue_id) + 1) <> requested_issue_id || ':'
      ) then
     raise exception using errcode = '22023', message = 'invalid HandoffReceiptV1';
   end if;

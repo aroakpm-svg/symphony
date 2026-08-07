@@ -101,8 +101,17 @@ defmodule SymphonyElixir.EffectLedgerMigrationTest do
     assert SymphonyElixir.EffectLedger.operation_id("ARO-166", "comment-1") ==
              "ARO-166:comment-1"
 
+    assert SymphonyElixir.EffectLedger.operation_id("ARO-166", "ARO-166:comment-1") ==
+             "ARO-166:comment-1"
+
+    assert SymphonyElixir.EffectLedger.operation_id("ARO-166", "ARO-16:comment-1") ==
+             "ARO-166:ARO-16:comment-1"
+
     assert source =~ "defp encode_resource(resource) when is_map(resource), do: resource"
     refute source =~ "Jason.encode!(resource)"
+
+    assert File.read!(@migration) =~
+             "left(requested_operation_id, length(requested_issue_id) + 1) <> requested_issue_id || ':'"
   end
 
   test "runtime access is function-only and existing node logins receive it" do

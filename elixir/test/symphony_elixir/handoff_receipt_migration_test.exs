@@ -58,6 +58,7 @@ defmodule SymphonyElixir.HandoffReceiptMigrationTest do
     assert sql =~ "coalesce(array_ndims(pending), 1) = 1"
     assert sql =~ "coalesce(array_length(pending, 1), 0) = 8"
     assert sql =~ "coalesce(array_ndims(requested_effect_operation_ids), 1) <> 1"
+    assert sql =~ "left(value, length(requested_issue_id) + 1) <> requested_issue_id || ':'"
     assert sql =~ "requested_phase = 'complete'"
     assert sql =~ "cardinality(requested_completed) <> 8"
     assert sql =~ "requested_phase <> 'complete' and cardinality(requested_pending) = 0"

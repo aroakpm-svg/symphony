@@ -41,8 +41,13 @@ defmodule SymphonyElixir.EffectLedger do
   def effect_types, do: @effect_types
 
   @spec operation_id(String.t(), String.t()) :: String.t()
-  def operation_id(issue_id, operation_id) when is_binary(issue_id) and is_binary(operation_id),
-    do: issue_id <> ":" <> operation_id
+  def operation_id(issue_id, operation_id) when is_binary(issue_id) and is_binary(operation_id) do
+    prefix = issue_id <> ":"
+
+    if String.starts_with?(operation_id, prefix),
+      do: operation_id,
+      else: prefix <> operation_id
+  end
 
   @spec execute(
           Postgrex.conn(),

@@ -147,7 +147,7 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
       "completedSteps" => ["preflight", "branch", "implementation"],
       "pendingSteps" => ["tests", "commit", "push", "pull_request", "review"],
       "testResults" => [],
-      "effectOperationIds" => ["ARO-166:linear-comment:1"]
+      "effectOperationIds" => ["linear-comment:1", "ARO-166:linear-state:1"]
     }
 
     response =
@@ -168,7 +168,12 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
         handoff_appender: fn :connection, %{issue_id: "ARO-166"}, attrs ->
           assert attrs.current_phase == :verification
           assert attrs.completed_step_ids == [:preflight, :branch, :implementation]
-          assert attrs.effect_operation_ids == ["ARO-166:ARO-166:linear-comment:1"]
+
+          assert attrs.effect_operation_ids == [
+                   "ARO-166:linear-comment:1",
+                   "ARO-166:linear-state:1"
+                 ]
+
           assert attrs.worktree_fingerprint == String.duplicate("f", 64)
           {:ok, Map.put(attrs, :checkpoint_sequence, 8)}
         end
