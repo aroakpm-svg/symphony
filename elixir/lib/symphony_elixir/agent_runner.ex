@@ -65,16 +65,21 @@ defmodule SymphonyElixir.AgentRunner do
                      opts
                    ),
                  :ok <- Workspace.run_before_run_hook(workspace, issue, worker_host),
-                 {:ok, handoff_resume} <-
+                 {:ok, current_issue, handoff_resume} <-
                    prepare_handoff(issue, receipt, workspace, worker_host, opts) do
               run_codex_turns(
                 workspace,
-                issue,
+                current_issue,
                 codex_update_recipient,
                 Keyword.put(opts, :handoff_resume, handoff_resume),
                 worker_host
               )
             else
+              {:stop, %Issue{} = current_issue} ->
+                Logger.info("Skipping Codex because refreshed issue is inactive or unroutable: #{issue_context(current_issue)}")
+
+                :ok
+
               {:error, {:workspace_preflight_failed, _type, _command, _status, _output} = reason} ->
                 {:deferred_workspace_preflight_failure, reason}
 
@@ -259,7 +264,7 @@ defmodule SymphonyElixir.AgentRunner do
         prepare_distributed_handoff(issue, readiness, workspace, worker_host, claim, opts)
 
       _claim ->
-        {:ok, nil}
+        {:ok, issue, nil}
     end
   end
 
@@ -269,8 +274,31 @@ defmodule SymphonyElixir.AgentRunner do
     issue_fetcher = Keyword.get(opts, :handoff_issue_fetcher, &Tracker.fetch_issue_states_by_ids/1)
 
     with true <- ready?.() || {:error, :handoff_receipt_contract_unavailable},
-         {:ok, connection, claim} <- context.(issue.id),
-         {:ok, fresh_issue} <- fetch_handoff_issue(issue.id, issue_fetcher),
+         {:ok, fresh_issue} <- fetch_handoff_issue(issue.id, issue_fetcher) do
+      if handoff_issue_runnable?(fresh_issue) do
+        continue_distributed_handoff(
+          fresh_issue,
+          readiness,
+          workspace,
+          worker_host,
+          context,
+          opts
+        )
+      else
+        {:stop, fresh_issue}
+      end
+    end
+  end
+
+  defp continue_distributed_handoff(
+         fresh_issue,
+         readiness,
+         workspace,
+         worker_host,
+         context,
+         opts
+       ) do
+    with {:ok, connection, claim} <- context.(fresh_issue.id),
          {:ok, previous} <- HandoffReceipt.latest(connection, claim),
          {:ok, repository, owner, name} <- handoff_repository(),
          {:ok, git_evidence} <-
@@ -280,10 +308,18 @@ defmodule SymphonyElixir.AgentRunner do
          resume <- HandoffReceipt.resume(previous, truth),
          attrs <- checkpoint_attrs(previous, resume, readiness, git_evidence, owner, name),
          {:ok, checkpoint} <- HandoffReceipt.append(connection, claim, attrs) do
-      Logger.info("Handoff checkpoint restored for #{issue_context(issue)} result=#{inspect(resume)}")
-      {:ok, %{decision: resume, effect_operation_ids: checkpoint.effect_operation_ids}}
+      Logger.info("Handoff checkpoint restored for #{issue_context(fresh_issue)} result=#{inspect(resume)}")
+
+      {:ok, fresh_issue, %{decision: resume, effect_operation_ids: checkpoint.effect_operation_ids}}
     end
   end
+
+  defp handoff_issue_runnable?(%Issue{} = issue),
+    do: active_issue_state?(issue.state) and issue_routable?(issue)
+
+  @doc false
+  @spec handoff_issue_runnable_for_test(Issue.t()) :: boolean()
+  def handoff_issue_runnable_for_test(issue), do: handoff_issue_runnable?(issue)
 
   defp fetch_handoff_issue(issue_id, issue_fetcher) do
     case issue_fetcher.([issue_id]) do

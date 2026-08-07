@@ -28,6 +28,8 @@ defmodule SymphonyElixir.HandoffReceiptTest do
     source = File.read!(Path.expand("../../lib/symphony_elixir/agent_runner.ex", __DIR__))
 
     assert source =~ "fetch_handoff_issue(issue.id, issue_fetcher)"
+    assert source =~ "run_codex_turns(\n                workspace,\n                current_issue"
+    assert source =~ "handoff_issue_runnable?(fresh_issue)"
     assert source =~ "handoff_commit_sha(previous, git_evidence.head_sha)"
     refute source =~ "handoff_commit_sha(previous, readiness.head_sha)"
     assert source =~ "workspace_evidence(workspace, readiness.issue_branch, repository, worker_host)"
