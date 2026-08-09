@@ -376,6 +376,30 @@ No Design 1–4 behavior is otherwise changed by ARO-166.
 
 ## 10. Verification strategy
 
+### Post-approval source synchronization
+
+Written-spec approval must be reflected in the planning sources before the
+implementation plan is written:
+
+1. Revise ARO-166's Linear description so its purpose, exact V1 fields, three
+   durable checkpoint kinds, ARO-167 ownership boundary, replacement branch,
+   and authorized-fork publishing rule match this design. Preserve existing
+   comments as history; do not rewrite ARO-165, ARO-167, or ARO-143.
+2. Update the local Design 1 implementation plan references that currently say
+   PR #19 owns the exact receipt type. They must consume the merged replacement
+   `HandoffReceipt.receipt()` and retain fresh native revalidation.
+3. Update the local Design 2 implementation plan to replace the PR #19 exact-API
+   prerequisite, remove the `HandoffReceipt.effect_statuses/3` dependency, and
+   use the existing/planned EffectLedger-owned readback seam.
+4. Update the local Design 3 and Design 4 implementation-plan prerequisites so
+   the implementation sequence waits for the merged replacement rather than PR
+   #19. Their authorization and settlement behavior does not change.
+
+These synchronization edits are planning/source-of-truth corrections, not part
+of the Symphony replacement PR file manifest. If any plan needs a behavioral
+change beyond dependency naming and ownership alignment, stop for a separate
+design review.
+
 ### Pure Elixir tests
 
 - exact V1 shape and unknown-key rejection;
