@@ -69,9 +69,8 @@ defmodule SymphonyElixir.HandoffReceipt do
          :ok <- sha(receipt.head_sha, :head_sha),
          :ok <- tested_sha(receipt.tested_head_sha, receipt.head_sha),
          :ok <- pr_number(receipt.checkpoint_kind, receipt.pr_number),
-         :ok <- test_results(receipt.test_results),
-         :ok <- effect_operation_ids(receipt.effect_operation_ids) do
-      :ok
+         :ok <- test_results(receipt.test_results) do
+      effect_operation_ids(receipt.effect_operation_ids)
     end
   end
 
@@ -200,9 +199,8 @@ defmodule SymphonyElixir.HandoffReceipt do
            :ok <- sha(observation.remote_head_sha, :remote_head_sha),
            :ok <- optional_positive(observation.pr_number),
            :ok <- optional_sha(observation.pr_head_sha),
-           :ok <- booleans(observation),
-           :ok <- effect_statuses(observation.effect_statuses) do
-        :ok
+           :ok <- booleans(observation) do
+        effect_statuses(observation.effect_statuses)
       end
 
     case result do
