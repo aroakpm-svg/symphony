@@ -102,6 +102,18 @@ defmodule SymphonyElixir.HandoffReceiptTest do
              {:error, {:handoff_git_operation_in_progress, "MERGE_HEAD"}}
   end
 
+  test "hidden Git index entries fail closed before fingerprinting" do
+    assert HandoffReceipt.reject_hidden_index_entries_for_test("H tracked.txt\0") == :ok
+
+    for tag <- ["h", "S", "s"] do
+      assert HandoffReceipt.reject_hidden_index_entries_for_test("#{tag} hidden.txt\0") ==
+               {:error, :handoff_hidden_index_entry}
+    end
+
+    assert HandoffReceipt.reject_hidden_index_entries_for_test("malformed\0") ==
+             {:error, :handoff_index_state_invalid}
+  end
+
   test "canonical origin parsing accepts GitHub transports without accepting lookalike hosts" do
     assert HandoffReceipt.github_repository_from_remote_for_test("https://github.com/aroakpm-svg/symphony.git") == {:ok, "aroakpm-svg/symphony"}
 

@@ -51,12 +51,19 @@ begin
       message = 'legacy effect operation normalization collision';
   end if;
 
-  update symphony_staging.effect_operations operations
-  set operation_id = upgrade.canonical_operation_id
-  from symphony_staging.effect_operation_id_upgrade upgrade
-  where operations.operation_id = upgrade.original_operation_id;
 end
 $$;
+
+alter table symphony_staging.effect_operations
+  drop constraint effect_operations_pkey;
+
+update symphony_staging.effect_operations operations
+set operation_id = upgrade.canonical_operation_id
+from symphony_staging.effect_operation_id_upgrade upgrade
+where operations.operation_id = upgrade.original_operation_id;
+
+alter table symphony_staging.effect_operations
+  add constraint effect_operations_pkey primary key (operation_id);
 
 alter table symphony_staging.effect_operations
   add constraint effect_operation_id_canonical

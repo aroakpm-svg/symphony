@@ -81,6 +81,7 @@ defmodule SymphonyElixir.HandoffReceipt do
       when is_binary(workspace) and is_binary(branch) and is_binary(canonical_repository) do
     with {:ok, checked_out_branch} <- checked_out_branch(workspace, branch, worker_host),
          :ok <- reject_in_progress_git_operations(workspace, worker_host),
+         :ok <- reject_hidden_index_entries(workspace, worker_host),
          {:ok, status} <-
            Workspace.run_git_command(
              workspace,
@@ -147,6 +148,34 @@ defmodule SymphonyElixir.HandoffReceipt do
           :ok | {:error, term()}
   def reject_in_progress_git_operations_for_test(probe),
     do: reject_in_progress_git_operations(probe)
+
+  defp reject_hidden_index_entries(workspace, worker_host) do
+    with {:ok, entries} <-
+           Workspace.run_git_command(workspace, ["ls-files", "-v", "-z"], worker_host) do
+      reject_hidden_index_entries(entries)
+    end
+  end
+
+  defp reject_hidden_index_entries(entries) when is_binary(entries) do
+    entries
+    |> String.split(<<0>>, trim: true)
+    |> Enum.reduce_while(:ok, fn
+      <<tag, ?\s, _path::binary>>, :ok when tag == ?S or tag in ?a..?z ->
+        {:halt, {:error, :handoff_hidden_index_entry}}
+
+      <<_tag, ?\s, _path::binary>>, :ok ->
+        {:cont, :ok}
+
+      _entry, :ok ->
+        {:halt, {:error, :handoff_index_state_invalid}}
+    end)
+  end
+
+  @doc false
+  @spec reject_hidden_index_entries_for_test(String.t()) ::
+          :ok | {:error, :handoff_hidden_index_entry | :handoff_index_state_invalid}
+  def reject_hidden_index_entries_for_test(entries),
+    do: reject_hidden_index_entries(entries)
 
   defp reject_dirty_submodule_diff(diff) when is_binary(diff) do
     if Regex.match?(~r/^\+?Subproject commit [0-9a-f]{40}-dirty$/m, diff),
