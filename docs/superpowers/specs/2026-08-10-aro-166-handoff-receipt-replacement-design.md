@@ -181,6 +181,7 @@ The function fails closed with one stable reason, including:
 
 - `:receipt_missing`;
 - `:receipt_incompatible`;
+- `:observation_incompatible`;
 - `:identity_changed`;
 - `:claim_inactive`;
 - `:linear_changed`;
