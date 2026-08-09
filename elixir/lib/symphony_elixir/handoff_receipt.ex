@@ -9,15 +9,15 @@ defmodule SymphonyElixir.HandoffReceipt do
   alias SymphonyElixir.HandoffReceipt.Store
 
   @checkpoint_kinds ~w(pushed pull_request reviewed)a
-  @receipt_keys MapSet.new(~w(
+  @receipt_keys ~w(
     receipt_schema_version issue_id repository claim_id generation
     checkpoint_sequence recorded_at checkpoint_kind branch head_sha
     tested_head_sha pr_number test_results effect_operation_ids
-  )a)
-  @observation_keys MapSet.new(~w(
+  )a
+  @observation_keys ~w(
     issue_id repository branch remote_head_sha pr_number pr_head_sha git_ready?
     linear_current? active_claim? exact_head_review_passed? effect_statuses
-  )a)
+  )a
   @sha_pattern ~r/^[0-9a-f]{40}$/
   @repository_pattern ~r/^[a-z0-9_.-]+\/[a-z0-9_.-]+$/
 
@@ -107,7 +107,11 @@ defmodule SymphonyElixir.HandoffReceipt do
   end
 
   defp exact_keys(map, expected, reason),
-    do: if(MapSet.new(Map.keys(map)) == expected, do: :ok, else: {:error, reason})
+    do:
+      if(MapSet.equal?(MapSet.new(Map.keys(map)), MapSet.new(expected)),
+        do: :ok,
+        else: {:error, reason}
+      )
 
   defp exact_value(value, value, _reason), do: :ok
   defp exact_value(_actual, _expected, reason), do: {:error, reason}
@@ -166,7 +170,7 @@ defmodule SymphonyElixir.HandoffReceipt do
   defp test_results(_results), do: {:error, :test_results}
 
   defp valid_test_result?(result) when is_map(result) do
-    MapSet.new(Map.keys(result)) == MapSet.new([:name, :status]) and
+    MapSet.equal?(MapSet.new(Map.keys(result)), MapSet.new([:name, :status])) and
       is_binary(result.name) and String.trim(result.name) != "" and
       result.status in [:passed, :skipped]
   end
@@ -270,7 +274,7 @@ defmodule SymphonyElixir.HandoffReceipt do
     expected = MapSet.new(receipt.effect_operation_ids)
     observed = MapSet.new(Map.keys(observation.effect_statuses))
 
-    if expected == observed and
+    if MapSet.equal?(expected, observed) and
          Enum.all?(observation.effect_statuses, fn {_id, status} -> status == :succeeded end),
        do: :ok,
        else: {:error, :effect_unsettled}
