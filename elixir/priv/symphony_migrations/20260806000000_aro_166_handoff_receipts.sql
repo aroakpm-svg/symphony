@@ -36,6 +36,10 @@ revoke all on table symphony_staging.handoff_receipts
   from public, anon, authenticated, service_role,
        symphony_staging_runtime, symphony_staging_provisioner;
 
+revoke all on sequence symphony_staging.handoff_receipts_checkpoint_sequence
+  from public, anon, authenticated, service_role,
+       symphony_staging_runtime, symphony_staging_provisioner;
+
 create or replace function symphony_staging.append_handoff_receipt(
   requested_issue_id text,
   requested_claim_id uuid,
@@ -110,6 +114,10 @@ begin
     where jsonb_typeof(item) <> 'object'
        or not (item ? 'name' and item ? 'status')
        or item - 'name' - 'status' <> '{}'::jsonb
+       or jsonb_typeof(item -> 'name') <> 'string'
+       or jsonb_typeof(item -> 'status') <> 'string'
+       or item ->> 'name' is null
+       or item ->> 'status' is null
        or nullif(btrim(item ->> 'name'), '') is null
        or item ->> 'status' not in ('passed', 'skipped')
   ) then

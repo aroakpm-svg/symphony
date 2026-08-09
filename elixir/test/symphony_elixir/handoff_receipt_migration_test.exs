@@ -39,6 +39,20 @@ defmodule SymphonyElixir.HandoffReceiptMigrationTest do
     assert sql =~ "array_agg(operations.operation_id order by operations.operation_id)"
   end
 
+  test "test result names and statuses are JSON strings and non-null, and identity access is revoked" do
+    sql = File.read!(@migration)
+
+    assert sql =~ "jsonb_typeof(item -> 'name') <> 'string'"
+    assert sql =~ "jsonb_typeof(item -> 'status') <> 'string'"
+    assert sql =~ "item ->> 'name' is null"
+    assert sql =~ "item ->> 'status' is null"
+
+    assert Regex.match?(
+             ~r/revoke all on sequence symphony_staging\.handoff_receipts_checkpoint_sequence\s+from public, anon, authenticated, service_role,\s+symphony_staging_runtime, symphony_staging_provisioner;/,
+             sql
+           )
+  end
+
   test "runtime access is function-only and follows enrolled node roles" do
     sql = File.read!(@migration)
 
