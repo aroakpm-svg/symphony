@@ -95,6 +95,20 @@ defmodule SymphonyElixir.HandoffReceiptTest do
     end
   end
 
+  test "rejects trailing newlines in receipt and native observation identifiers" do
+    assert {:error, :repository} =
+             HandoffReceipt.validate(%{receipt() | repository: "aroakpm-svg/symphony\n"})
+
+    assert {:error, :head_sha} =
+             HandoffReceipt.validate(%{receipt() | head_sha: @sha <> "\n"})
+
+    assert {:safe_recheck, :observation_incompatible} =
+             HandoffReceipt.resume(receipt(), %{observation() | repository: "aroakpm-svg/symphony\n"})
+
+    assert {:safe_recheck, :observation_incompatible} =
+             HandoffReceipt.resume(receipt(), %{observation() | remote_head_sha: @sha <> "\n"})
+  end
+
   test "returns the next candidate action for the three durable checkpoints" do
     assert {:ok, :pull_request} = HandoffReceipt.resume(receipt(:pushed), observation())
 

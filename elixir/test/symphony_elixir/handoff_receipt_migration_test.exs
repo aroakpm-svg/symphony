@@ -73,6 +73,8 @@ defmodule SymphonyElixir.HandoffReceiptMigrationTest do
     sql = File.read!(@migration)
 
     assert length(Regex.scan(~r/claims.issue_id = requested_issue_id/, sql)) >= 2
+    assert sql =~ "create index handoff_receipts_latest_lookup_idx"
+    assert sql =~ "on symphony_staging.handoff_receipts (issue_id, generation desc, checkpoint_sequence desc)"
     assert sql =~ "order by receipts.generation desc, receipts.checkpoint_sequence desc"
     assert sql =~ "limit 1"
   end
@@ -81,6 +83,7 @@ defmodule SymphonyElixir.HandoffReceiptMigrationTest do
     rollback = File.read!(@rollback)
 
     assert rollback =~ "where contract_name = 'handoff-receipts'"
+    assert rollback =~ "drop index if exists symphony_staging.handoff_receipts_latest_lookup_idx"
     assert rollback =~ "drop table if exists symphony_staging.handoff_receipts"
     refute rollback =~ "effect_operations"
     refute rollback =~ "issue_claims"

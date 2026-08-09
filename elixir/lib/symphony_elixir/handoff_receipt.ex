@@ -18,8 +18,8 @@ defmodule SymphonyElixir.HandoffReceipt do
     issue_id repository branch remote_head_sha pr_number pr_head_sha git_ready?
     linear_current? active_claim? exact_head_review_passed? effect_statuses
   )a
-  @sha_pattern ~r/^[0-9a-f]{40}$/
-  @repository_pattern ~r/^[a-z0-9_.-]+\/[a-z0-9_.-]+$/
+  @sha_pattern ~r/\A[0-9a-f]{40}\z/
+  @repository_pattern ~r/\A[a-z0-9_.-]+\/[a-z0-9_.-]+\z/
 
   @type checkpoint_kind :: :pushed | :pull_request | :reviewed
   @type test_result :: %{name: String.t(), status: :passed | :skipped}

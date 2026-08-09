@@ -10,6 +10,7 @@ drop function if exists symphony_staging.latest_handoff_receipt(text, uuid, bigi
 drop function if exists symphony_staging.append_handoff_receipt(
   text, uuid, bigint, uuid, uuid, text, text, text, text, text, bigint, jsonb
 );
+drop index if exists symphony_staging.handoff_receipts_latest_lookup_idx;
 drop table if exists symphony_staging.handoff_receipts;
 
 commit;

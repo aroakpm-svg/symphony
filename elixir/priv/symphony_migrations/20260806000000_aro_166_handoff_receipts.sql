@@ -30,6 +30,9 @@ create table symphony_staging.handoff_receipts (
   )
 );
 
+create index handoff_receipts_latest_lookup_idx
+  on symphony_staging.handoff_receipts (issue_id, generation desc, checkpoint_sequence desc);
+
 alter table symphony_staging.handoff_receipts enable row level security;
 
 revoke all on table symphony_staging.handoff_receipts
