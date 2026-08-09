@@ -306,6 +306,30 @@ shared-staging operator receipt.
 Any additional file requires a written-spec amendment before implementation;
 it must not be justified as incidental cleanup.
 
+### Replacement publishing boundary
+
+The original ARO-166 ticket assigned construction to PM AROAK and prohibited a
+DT fork. That transport rule cannot produce the user-authorized replacement in
+the current environment: live GitHub permissions on 2026-08-10 show
+`digitaltriumphs-tw` has read-only access to `aroakpm-svg/symphony` and write
+access to its existing fork.
+
+The user's explicit authorization to replace PR #19 and revise the ARO-166 spec
+supersedes that ticket clause only for this replacement:
+
+- develop on the independent local `codex/aro-166-replacement` branch created
+  from canonical `main`;
+- reverify GitHub identity and permissions immediately before publishing;
+- push the branch to `digitaltriumphs-tw/symphony` if canonical upstream push
+  remains unavailable;
+- open the replacement PR from that fork into `aroakpm-svg/symphony:main`;
+- do not change repository rules, branch protection, credentials, or any other
+  ticket's execution ownership.
+
+Unexpected identity, loss of fork write access, or inability to target the
+canonical upstream fails closed before push. The fork is publishing transport,
+not a new source of truth or a transfer of runtime authority.
+
 ## 8. Treatment of PR #19 and PR #22
 
 PR #19 and PR #22 remain frozen until the replacement is proven safe. Their
@@ -419,6 +443,8 @@ The replacement is ready to supersede PR #19/#22 only when all are true:
 8. Repository gates and latest-head Codex review pass.
 9. The PR is mergeable with no unresolved actionable current-head thread.
 10. Only then are PR #19 and PR #22 commented as superseded and closed.
+11. Publishing follows the narrow authorized-fork boundary when upstream push
+    remains unavailable; no GitHub administrative setting changes.
 
 ## 12. Written-spec self-review receipt
 
