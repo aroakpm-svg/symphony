@@ -6,6 +6,8 @@ defmodule SymphonyElixir.HandoffReceipt do
   ledger remain authoritative for every mutation.
   """
 
+  alias SymphonyElixir.HandoffReceipt.Store
+
   @checkpoint_kinds ~w(pushed pull_request reviewed)a
   @receipt_keys MapSet.new(~w(
     receipt_schema_version issue_id repository claim_id generation
@@ -74,6 +76,14 @@ defmodule SymphonyElixir.HandoffReceipt do
   end
 
   def validate(_receipt), do: {:error, :receipt_shape}
+
+  @spec append(Postgrex.conn(), Store.claim_context(), Store.append_attrs()) ::
+          {:ok, receipt()} | {:error, term()}
+  def append(connection, claim, attrs), do: Store.append(connection, claim, attrs)
+
+  @spec latest(Postgrex.conn(), Store.claim_context()) ::
+          {:ok, receipt() | nil} | {:error, term()}
+  def latest(connection, claim), do: Store.latest(connection, claim)
 
   @spec resume(receipt() | nil, observation()) ::
           {:ok, :pull_request | :review | :complete} | {:safe_recheck, atom()}
