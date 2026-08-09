@@ -1,6 +1,6 @@
 # ARO-166 Handoff Receipt Replacement Design
 
-**Status:** Draft for written-spec review
+**Status:** Approved after independent first-principles review
 
 **Date:** 2026-08-10
 
@@ -493,4 +493,33 @@ The replacement is ready to supersede PR #19/#22 only when all are true:
 - **Scope check:** The expected file manifest is closed; any additional file
   requires a written-spec amendment.
 - **Open-marker check:** No TODO, TBD, placeholder, or unresolved design choice
-  remains. Implementation is intentionally pending written-spec approval.
+  remains. Implementation is intentionally pending an approved implementation
+  plan.
+
+## 13. Independent approval review
+
+The user authorized source synchronization and plan writing if an independent
+review confirmed the design met the four requested architecture standards. The
+2026-08-10 review passed:
+
+- **High cohesion:** Receipt value semantics and pure resume rules live in one
+  domain module; SQL and row decoding live in one store. Runtime evidence
+  collection remains wholly in ARO-167.
+- **Low coupling:** The domain consumes normalized observations and imports no
+  Git, GitHub, Linear, ClaimService, EffectLedger, or workspace client. The
+  store reads existing claim/effect tables without changing their contracts.
+- **Lightweight:** Three remotely verifiable checkpoint kinds replace eight
+  local workflow steps and three overlapping progress fields. The design adds
+  no coordinator, workflow engine, new CI workflow, or compatibility layer.
+- **Modular:** Public types and append/latest/resume seams are explicit, the
+  file manifest is closed, and Design 1–4 consume the receipt without copying
+  its implementation.
+
+`head_sha` and `tested_head_sha` are intentionally separate evidence facts:
+the former identifies the remote revision and the latter identifies the tested
+revision. Requiring equality prevents an untested remote head from becoming a
+safe checkpoint; it is not duplicated workflow state.
+
+Written-spec approval is therefore complete. The next authorized actions are
+the source synchronization in section 10 and a Superpowers implementation
+plan. Implementation remains pending that plan.
