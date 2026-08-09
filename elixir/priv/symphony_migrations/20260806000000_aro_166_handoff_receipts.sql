@@ -36,7 +36,7 @@ revoke all on table symphony_staging.handoff_receipts
   from public, anon, authenticated, service_role,
        symphony_staging_runtime, symphony_staging_provisioner;
 
-revoke all on sequence symphony_staging.handoff_receipts_checkpoint_sequence
+revoke all on sequence symphony_staging.handoff_receipts_checkpoint_sequence_seq
   from public, anon, authenticated, service_role,
        symphony_staging_runtime, symphony_staging_provisioner;
 

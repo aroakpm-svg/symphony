@@ -48,7 +48,12 @@ defmodule SymphonyElixir.HandoffReceiptMigrationTest do
     assert sql =~ "item ->> 'status' is null"
 
     assert Regex.match?(
-             ~r/revoke all on sequence symphony_staging\.handoff_receipts_checkpoint_sequence\s+from public, anon, authenticated, service_role,\s+symphony_staging_runtime, symphony_staging_provisioner;/,
+             ~r/revoke all on sequence symphony_staging\.handoff_receipts_checkpoint_sequence_seq\s+from public, anon, authenticated, service_role,\s+symphony_staging_runtime, symphony_staging_provisioner;/,
+             sql
+           )
+
+    refute Regex.match?(
+             ~r/^revoke all on sequence symphony_staging\.handoff_receipts_checkpoint_sequence$/m,
              sql
            )
   end
