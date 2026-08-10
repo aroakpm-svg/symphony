@@ -572,7 +572,6 @@ defmodule SymphonyElixir.FindingDisposition do
   defp valid_logical_identity?(:destination, value), do: non_empty_string?(value)
   defp valid_logical_identity?(:message_kind, value), do: is_atom(value) or non_empty_string?(value)
   defp valid_logical_identity?(:effect_type, value), do: validate_effect_type(value) == :ok
-  defp valid_logical_identity?(_field, value), do: not is_nil(value)
 
   defp valid_repository?(value) do
     is_binary(value) and Regex.match?(~r/\A[^\/\s]+\/[^\/\s]+\z/, value)

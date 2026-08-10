@@ -520,6 +520,31 @@ defmodule SymphonyElixir.FindingDispositionTest do
              })
   end
 
+  test "operation IDs accept canonical finding and lineage key maps" do
+    facts = finding_input(%{})
+    assert {:ok, finding_key} = FindingDisposition.build_finding_key(facts)
+    assert {:ok, finding_lineage_key} = FindingDisposition.build_lineage_key(facts)
+
+    assert {:ok, _comment_id} =
+             FindingDisposition.operation_id(:github_comment, %{
+               repository: "owner/repo",
+               pull_request_number: 21,
+               review_thread_id: "thread-1",
+               finding_key: finding_key,
+               message_kind: :follow_up,
+               effect_type: :github_comment
+             })
+
+    assert {:ok, _linear_id} =
+             FindingDisposition.operation_id(:linear_issue_create, %{
+               repository: "owner/repo",
+               pull_request_number: 21,
+               finding_lineage_key: finding_lineage_key,
+               destination: "Backlog",
+               effect_type: :linear_issue_create
+             })
+  end
+
   test "request fingerprints round-trip the complete immutable intent" do
     intent = fingerprint_intent()
     assert {:ok, fingerprint} = FindingDisposition.request_fingerprint(intent)
