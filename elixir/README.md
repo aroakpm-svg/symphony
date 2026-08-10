@@ -167,6 +167,22 @@ committed migration. Keep the freeze in place while the result is investigated;
 create a separately reviewed forward reconciliation only when shared staging
 actually contains drift. Release the DDL freeze only after postflight succeeds.
 
+## ARO-166 handoff receipt retry semantics
+
+Handoff receipt contract version 2 keeps the append-only, staging-only V1 shape
+and makes same-generation retries deterministic. A generation is bound to one
+branch and head; identical logical checkpoints are idempotent, late lower-ranked
+checkpoints do not become latest, and a new head requires a new generation. ARO-167
+runtime integration remains a separate contract and is not enabled by this migration.
+
+This is an offline upgrade contract, not a live V1-to-V2 cutover. Stop every
+handoff-receipt V1 writer and wait for all already-started V1 calls to finish.
+Keep that write freeze in place while applying the migration from an isolated
+session with `symphony.handoff_v1_writes_drained=on`. The migration fails closed
+when that explicit drain attestation is absent; setting it without actually
+quiescing writers violates the upgrade contract. Release the write freeze only
+after the V2 transaction commits successfully.
+
 ## Configuration
 
 Pass a custom workflow file path to `./bin/symphony` when starting the service:
