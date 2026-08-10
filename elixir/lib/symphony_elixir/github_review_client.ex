@@ -1107,12 +1107,33 @@ defmodule SymphonyElixir.GitHubReviewClient do
   defp managed_agent_author?(_author), do: false
 
   defp settlement_marker?(body) when is_binary(body) do
-    Regex.match?(~r/^\s*-\s+transition-operation:\s+`(?:intent|completed)`\s*$/mi, body) and
-      Regex.match?(~r/^\s*-\s+transition-operation-id:\s+`[^`]+`\s*$/mi, body) and
-      Regex.match?(~r/^\s*-\s+dedup-key:\s+`[^`]+`\s*$/mi, body)
+    body = String.trim(body)
+    completed_transition_marker?(body) or intent_transition_marker?(body)
   end
 
   defp settlement_marker?(_body), do: false
+
+  defp completed_transition_marker?(body) do
+    case Regex.run(
+           ~r/\AReview Convergence Gate returned this issue to In Progress for latest-head repair\.\n\n- currentHeadSha: `[^`\r\n]+`\n- transition-operation: `completed`\n- transition-operation-id: `([^`\r\n]+)`\n- dedup-key: `([^`\r\n]+)`\z/,
+           body,
+           capture: :all_but_first
+         ) do
+      [operation_id, dedup_key] -> operation_id == dedup_key
+      _ -> false
+    end
+  end
+
+  defp intent_transition_marker?(body) do
+    case Regex.run(
+           ~r/\AReview Convergence Gate recorded a durable rework transition intent\.\n\n- currentHeadSha: `[^`\r\n]+`\n- target-state: `[^`\r\n]+`\n- transition-operation: `intent`\n- transition-operation-id: `([^`\r\n]+)`\n- dedup-key: `transition-intent:([^`\r\n]+)`\n\nThis operation is safe to resume after timeout or process restart; completion is recorded separately\.\z/,
+           body,
+           capture: :all_but_first
+         ) do
+      [operation_id, dedup_operation_id] -> operation_id == dedup_operation_id
+      _ -> false
+    end
+  end
 
   defp normalize_threads(threads, _head_sha) do
     Enum.flat_map(threads, fn thread ->

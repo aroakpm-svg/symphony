@@ -1047,7 +1047,7 @@ defmodule SymphonyElixir.ReviewConvergenceTest do
                 review_event_comment("system", "P2 system", head, "2026-08-09T01:00:00Z", "User", 123),
                 review_event_comment(
                   "managed",
-                  "- transition-operation: `completed`\n- transition-operation-id: `operation`\n- dedup-key: `operation`",
+                  transition_completed_body("operation", head)["body"],
                   head,
                   "2026-08-09T01:01:00Z",
                   "Bot",
@@ -1117,6 +1117,102 @@ defmodule SymphonyElixir.ReviewConvergenceTest do
     assert comment.trusted_review_source? == true
     assert comment.managed_agent_reply? == false
     assert comment.settlement_marker? == false
+  end
+
+  test "quoted complete transition templates in review prose are not settlement markers" do
+    head = String.duplicate("a", 40)
+    quoted = transition_completed_body("example", head)["body"]
+
+    pull_request = %{
+      "headRefOid" => head,
+      "reviewThreads" => %{
+        "nodes" => [
+          %{
+            "id" => "thread-quoted-template",
+            "isResolved" => false,
+            "comments" => %{
+              "nodes" => [
+                review_event_comment(
+                  "review-quoted-template",
+                  "P2 diagnostic prose quoting an example:\n\n#{quoted}\nThis is not managed metadata.",
+                  head,
+                  "2026-08-09T01:00:00Z",
+                  "Organization",
+                  261_883_814
+                )
+              ],
+              "pageInfo" => %{"hasNextPage" => false, "endCursor" => nil}
+            }
+          }
+        ]
+      }
+    }
+
+    [event] =
+      GitHubReviewClient.normalize_snapshot_for_test(
+        pull_request,
+        [],
+        %{required: false, result: :not_required},
+        []
+      ).review_events
+
+    [comment] = event.comments
+    assert comment.trusted_review_source? == true
+    assert comment.managed_agent_reply? == false
+    assert comment.settlement_marker? == false
+  end
+
+  test "settlement markers require the generated template and matching operation identity" do
+    head = String.duplicate("b", 40)
+    completed = transition_completed_body("completed-op", head)["body"]
+    intent = transition_intent_body("intent-op", head)["body"]
+
+    comments = [
+      review_event_comment("completed", completed, head, "2026-08-09T01:00:00Z", "Bot", 199_175_422),
+      review_event_comment("intent", intent, head, "2026-08-09T01:01:00Z", "Bot", 199_175_422),
+      review_event_comment(
+        "completed-mismatch",
+        String.replace(completed, "- dedup-key: `completed-op`", "- dedup-key: `other-op`"),
+        head,
+        "2026-08-09T01:02:00Z",
+        "Organization",
+        261_883_814
+      ),
+      review_event_comment(
+        "intent-mismatch",
+        String.replace(intent, "- dedup-key: `transition-intent:intent-op`", "- dedup-key: `transition-intent:other-op`"),
+        head,
+        "2026-08-09T01:03:00Z",
+        "Organization",
+        261_883_814
+      )
+    ]
+
+    pull_request = %{
+      "headRefOid" => head,
+      "reviewThreads" => %{
+        "nodes" => [
+          %{
+            "id" => "thread-marker-identity",
+            "isResolved" => false,
+            "comments" => %{
+              "nodes" => comments,
+              "pageInfo" => %{"hasNextPage" => false, "endCursor" => nil}
+            }
+          }
+        ]
+      }
+    }
+
+    [event] =
+      GitHubReviewClient.normalize_snapshot_for_test(
+        pull_request,
+        [],
+        %{required: false, result: :not_required},
+        []
+      ).review_events
+
+    assert Enum.map(event.comments, & &1.settlement_marker?) == [true, true, false, false]
   end
 
   test "resolved thread data is retained as a review event" do
@@ -2184,11 +2280,14 @@ defmodule SymphonyElixir.ReviewConvergenceTest do
     %{
       "body" => """
       Review Convergence Gate recorded a durable rework transition intent.
-      currentHeadSha: `#{head_sha}`
-      target-state: `In Progress`
-      transition-operation: `intent`
-      transition-operation-id: `#{operation_id}`
-      dedup-key: `transition-intent:#{operation_id}`
+
+      - currentHeadSha: `#{head_sha}`
+      - target-state: `In Progress`
+      - transition-operation: `intent`
+      - transition-operation-id: `#{operation_id}`
+      - dedup-key: `transition-intent:#{operation_id}`
+
+      This operation is safe to resume after timeout or process restart; completion is recorded separately.
       """
     }
   end
@@ -2197,10 +2296,11 @@ defmodule SymphonyElixir.ReviewConvergenceTest do
     %{
       "body" => """
       Review Convergence Gate returned this issue to In Progress for latest-head repair.
-      currentHeadSha: `#{head_sha}`
-      transition-operation: `completed`
-      transition-operation-id: `#{operation_id}`
-      dedup-key: `#{operation_id}`
+
+      - currentHeadSha: `#{head_sha}`
+      - transition-operation: `completed`
+      - transition-operation-id: `#{operation_id}`
+      - dedup-key: `#{operation_id}`
       """
     }
   end
