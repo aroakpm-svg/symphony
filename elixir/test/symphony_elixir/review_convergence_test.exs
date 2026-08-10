@@ -164,14 +164,14 @@ defmodule SymphonyElixir.ReviewConvergenceTest do
     assert malformed_message =~ "must use owner/name format"
   end
 
-  test "severity alone no longer produces a rework decision when a finding summary is present" do
+  test "raw actionable threads remain blocking when an empty finding summary is present" do
     snapshot =
       snapshot(%{
         threads: [%{priority: 1, resolved: false, body: "P1"}],
         finding_summary: %{decisions: [], requires_lifecycle?: false}
       })
 
-    refute match?({:rework, _}, ReviewConvergence.evaluate(snapshot, 0, 3))
+    assert {:rework, %{actionable_threads: [_]}} = ReviewConvergence.evaluate(snapshot, 0, 3)
   end
 
   test "invalid finding summaries fail closed before convergence" do
@@ -206,6 +206,42 @@ defmodule SymphonyElixir.ReviewConvergenceTest do
     refute_received {:comment, _, _}
     refute_received {:state, _, _}
     refute_received {:status, _, _, _, _}
+  end
+
+  test "successful autonomous recovery clears a stale global blocker" do
+    Application.put_env(
+      :symphony_elixir,
+      :review_snapshot,
+      {:ok, snapshot(%{finding_summary: %{decisions: [], requires_lifecycle?: false}})}
+    )
+
+    entry = %{
+      "issue-160" => %{
+        evaluated_head_sha: "old-head",
+        decisions: %{"old-finding" => %{disposition: :blocked_unverified}},
+        pending_effect_ids: ["old-operation"],
+        global_blocker: :pending_effects,
+        authorization_required: false,
+        terminal_result: nil
+      }
+    }
+
+    state =
+      ReviewMonitor.run_with(
+        entry,
+        settings(),
+        ReviewClient,
+        Tracker,
+        %{
+          profile: :aroak_autonomous_v1,
+          claim_service: AutonomousClaimService,
+          effect_ledger: AutonomousEffectLedger
+        }
+      )
+
+    assert state["issue-160"].global_blocker == nil
+    assert state["issue-160"].pending_effect_ids == []
+    assert state["issue-160"].decisions == %{}
   end
 
   test "autonomous profile bypasses the legacy advisory status publisher" do
@@ -841,10 +877,9 @@ defmodule SymphonyElixir.ReviewConvergenceTest do
           "comments",
           "nodes",
           Access.at(0),
-          "author",
-          "databaseId"
+          "author"
         ],
-        nil
+        "unsupported"
       ),
       put_in(
         valid,
@@ -868,6 +903,41 @@ defmodule SymphonyElixir.ReviewConvergenceTest do
       assert {:error, {:invalid_pull_request_page, ^invalid}} =
                GitHubReviewClient.merge_pull_request_pages_for_test([invalid])
     end
+  end
+
+  test "review pages preserve comments whose author is unavailable as untrusted evidence" do
+    page =
+      put_in(
+        review_event_page(),
+        [
+          "data",
+          "repository",
+          "pullRequest",
+          "reviewThreads",
+          "nodes",
+          Access.at(0),
+          "comments",
+          "nodes",
+          Access.at(0),
+          "author"
+        ],
+        nil
+      )
+
+    assert {:ok, pull_request} = GitHubReviewClient.merge_pull_request_pages_for_test([page])
+
+    assert get_in(pull_request, ["reviewThreads", "nodes", Access.at(0), "comments", "nodes", Access.at(0), "author"]) ==
+             nil
+
+    snapshot =
+      GitHubReviewClient.normalize_snapshot_for_test(
+        pull_request,
+        [],
+        %{required: false, result: :not_required},
+        []
+      )
+
+    assert [%{comments: [%{trusted_review_source?: false}]}] = snapshot.review_events
   end
 
   test "normalized provider facts distinguish managed and system comments" do

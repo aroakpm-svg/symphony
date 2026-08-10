@@ -697,7 +697,7 @@ defmodule SymphonyElixir.GitHubReviewClient do
       valid_commit_oid?(comment["commit"]) and
       valid_iso8601?(comment["createdAt"]) and
       valid_iso8601?(comment["updatedAt"]) and
-      valid_review_author?(comment["author"])
+      valid_review_author_field?(comment["author"])
   end
 
   defp valid_review_comment?(_comment), do: false
@@ -715,16 +715,9 @@ defmodule SymphonyElixir.GitHubReviewClient do
 
   defp valid_iso8601?(_value), do: false
 
-  defp valid_review_author?(%{
-         "login" => login,
-         "__typename" => type,
-         "databaseId" => database_id
-       }) do
-    non_empty_binary?(login) and type in ["User", "Organization", "Bot"] and
-      is_integer(database_id)
-  end
-
-  defp valid_review_author?(_author), do: false
+  defp valid_review_author_field?(nil), do: true
+  defp valid_review_author_field?(author) when is_map(author), do: true
+  defp valid_review_author_field?(_author), do: false
 
   defp encode_path_segment(value) do
     URI.encode(value, &URI.char_unreserved?/1)

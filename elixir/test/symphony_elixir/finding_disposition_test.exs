@@ -151,6 +151,8 @@ defmodule SymphonyElixir.FindingDispositionTest do
     }
 
     follow_up_facts = %{
+      introduced_by_pr?: false,
+      invariant_violation?: false,
       safe_follow_up?: true,
       in_scope?: false,
       follow_up_destination: "Backlog",
@@ -221,6 +223,45 @@ defmodule SymphonyElixir.FindingDispositionTest do
 
     assert {:ok, %{disposition: :fix_in_current_pr}} =
              FindingDisposition.classify(invariant_only, preflight_facts())
+  end
+
+  test "actionable dispositions require canonical finding identity" do
+    facts =
+      finding_facts("identity-missing", %{
+        introduced_by_pr?: true,
+        still_applies?: true,
+        root_cause_bounded?: true,
+        requires_new_decision?: false
+      })
+      |> Map.drop([
+        :repository,
+        :pull_request_number,
+        :source_head_sha,
+        :review_thread_id,
+        :selected_review_comment_id,
+        :body
+      ])
+
+    assert {:ok, %{decisions: [%{disposition: :blocked_unverified, finding_key: nil, finding_lineage_key: nil}]}} =
+             FindingDisposition.classify_all([facts], preflight_facts())
+  end
+
+  test "follow-up routing blocks missing or malformed ownership evidence" do
+    base =
+      finding_facts("follow-up-evidence", %{
+        safe_follow_up?: true,
+        in_scope?: false,
+        follow_up_destination: "Backlog",
+        requires_new_decision?: false
+      })
+
+    for facts <- [
+          Map.delete(base, :introduced_by_pr?),
+          Map.put(base, :introduced_by_pr?, :malformed)
+        ] do
+      assert {:ok, %{disposition: :blocked_unverified}} =
+               FindingDisposition.classify(facts, preflight_facts())
+    end
   end
 
   test "incomplete, malformed, or conflicting responsibility evidence blocks" do
@@ -494,6 +535,14 @@ defmodule SymphonyElixir.FindingDispositionTest do
     {:ok, key} = FindingDisposition.build_finding_key(finding_input(%{}))
     assert {:ok, %{finding_key: ^key}} = FindingDisposition.classify(%{finding_key: key}, preflight_facts())
 
+    {:ok, lineage_key} = FindingDisposition.build_lineage_key(finding_input(%{}))
+
+    assert {:ok, %{finding_key: ^key, finding_lineage_key: ^lineage_key}} =
+             FindingDisposition.classify(
+               %{finding_key: key, finding_lineage_key: lineage_key},
+               preflight_facts()
+             )
+
     string_input = %{
       "repository" => "openai/symphony",
       "pull_request_number" => 21,
@@ -504,9 +553,11 @@ defmodule SymphonyElixir.FindingDispositionTest do
     }
 
     assert {:ok, %{repository: "openai/symphony"}} = FindingDisposition.build_finding_key(string_input)
-    assert {:ok, %{finding_key: nil}} = FindingDisposition.classify(%{finding_key: %{digest: 1}}, preflight_facts())
 
-    assert {:ok, %{finding_lineage_key: nil, finding_key: %{digest: "precomputed"}}} =
+    assert {:ok, %{disposition: :blocked_unverified, finding_key: nil}} =
+             FindingDisposition.classify(%{finding_key: %{digest: 1}}, preflight_facts())
+
+    assert {:ok, %{disposition: :blocked_unverified, finding_lineage_key: nil, finding_key: nil}} =
              FindingDisposition.classify(%{finding_key: %{digest: "precomputed"}}, preflight_facts())
   end
 

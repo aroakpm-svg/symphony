@@ -381,6 +381,13 @@ current-PR responsibility. Safety conditions remain conjunctive: `still_applies?
 malformed, or conflicting responsibility evidence MUST remain `blocked_unverified`; `in_scope?`
 MUST NOT erase either positive responsibility proof.
 
+Before selecting any actionable disposition, the classifier MUST rebuild a canonical `FindingKey`
+and `FindingLineageKey` from the finding's verified repository, pull-request, head, thread,
+comment, and body identity. Missing, partial, malformed, or conflicting supplied identity MUST
+produce `blocked_unverified`; a caller-provided digest alone is not a canonical identity. The
+`follow_up_required` route MUST use the same explicit boolean ownership-evidence gate as the fix
+route, including rejection of missing, unknown, malformed, or conflicting ownership facts.
+
 Before any autonomous effect, the runtime MUST complete claim ownership and effect-ledger
 readback for the active issue, claim, node, instance, and current generation. A current verified
 claim MAY read unresolved (`pending` or `unknown`) effect rows from older generations for the same
@@ -394,6 +401,14 @@ decoding, the runtime MUST rebuild and compare the canonical `FindingKey` and
 identity with a different fingerprint MUST fail closed, and lock reconciliation MUST be
 deterministic and in fixed order. The global preflight gate MUST require both `verified? == true`
 AND `valid? == true`; every other value, including missing flags, MUST fail closed.
+
+Provider review comments whose author is unavailable or unsupported MUST be retained as untrusted
+evidence when the rest of the comment shape is valid; one such comment MUST NOT invalidate the
+whole review snapshot. Trusted-review selection MUST continue to require the configured author
+identity. Convergence MUST inspect raw actionable threads even when a syntactically valid finding
+summary is present; contradictory raw evidence MUST prevent a converged result. After a successful
+autonomous readback and reconciliation cycle, transient `global_blocker` state MUST be cleared;
+newly observed blockers may then replace it.
 
 The readback function's execute privilege MUST be granted both to existing node principals and by
 the node-login enrollment hook for principals created or re-enrolled after the readback migration.

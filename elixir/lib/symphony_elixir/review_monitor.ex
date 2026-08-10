@@ -311,6 +311,7 @@ defmodule SymphonyElixir.ReviewMonitor do
       |> Map.put(:evaluated_head_sha, snapshot[:current_head_sha])
       |> Map.put(:decisions, decisions_by_digest(summary[:decisions] || []))
       |> Map.put(:pending_effect_ids, pending_effect_ids)
+      |> Map.put(:global_blocker, nil)
 
     cond do
       pending_effect_ids != [] ->

@@ -146,6 +146,22 @@ The fixtures and focused tests must cover:
 - pre-migration, migration-time, and post-migration node enrollment;
 - every ownership table boundary, including responsibility OR and safety AND.
 
-The first baseline commit intentionally contains only this draft contract,
-fixtures, and failing/focused tests. Production behavior follows immediately in
-the next implementation commits and must map each change to one invariant.
+The initial contract/fixture baseline was followed on the same branch by the
+implementation slice mapped to these invariants. The follow-up hardening slice
+also covers the adjacent enforcement paths that can bypass the same contract:
+
+- missing or partial finding identity cannot select an actionable disposition;
+- `follow_up_required` requires explicit boolean ownership evidence with no
+  conflict;
+- a missing or unsupported review author is retained as untrusted evidence while
+  the remaining review snapshot is preserved;
+- raw actionable threads remain blocking when a finding summary is empty or
+  otherwise incomplete;
+- a successful autonomous readback/reconciliation cycle clears stale transient
+  `global_blocker` state before applying new blockers.
+
+Each item is covered by a focused regression or state-transition test and must
+remain mapped to the canonical identity, evidence-validity, snapshot
+normalization, convergence, or recovery invariant. This document remains a
+draft/non-normative implementation contract and does not authorize merge,
+deployment, autonomous worker activation, or owner API execution.

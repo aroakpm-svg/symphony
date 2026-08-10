@@ -117,17 +117,27 @@ defmodule SymphonyElixir.FindingDisposition do
 
   @spec classify(map(), map()) :: {:ok, decision()} | {:error, term()}
   def classify(facts, _preflight) when is_map(facts) do
-    {finding_key, finding_lineage_key, finding_key_digest} = identity_for(facts)
-    disposition = classify_disposition(facts)
+    case canonical_identity(facts) do
+      {:ok, {finding_key, finding_lineage_key, finding_key_digest}} ->
+        {:ok,
+         %{
+           disposition: classify_disposition(facts),
+           finding_key: finding_key,
+           finding_key_digest: finding_key_digest,
+           finding_lineage_key: finding_lineage_key,
+           facts: facts
+         }}
 
-    {:ok,
-     %{
-       disposition: disposition,
-       finding_key: finding_key,
-       finding_key_digest: finding_key_digest,
-       finding_lineage_key: finding_lineage_key,
-       facts: facts
-     }}
+      {:error, _reason} ->
+        {:ok,
+         %{
+           disposition: :blocked_unverified,
+           finding_key: nil,
+           finding_key_digest: fallback_digest(facts),
+           finding_lineage_key: nil,
+           facts: facts
+         }}
+    end
   end
 
   def classify(_facts, _preflight), do: {:error, :invalid_finding_facts}
@@ -287,20 +297,35 @@ defmodule SymphonyElixir.FindingDisposition do
   end
 
   defp follow_up_facts?(facts) do
-    no_evidence_conflict?(facts) and
-      true_value?(value(facts, :safe_follow_up?)) and
-      false_value?(value(facts, :in_scope?)) and
-      non_empty_string?(value(facts, :follow_up_destination)) and
-      false_value?(value(facts, :requires_new_decision?))
+    with {:ok, _ownership} <- ownership_evidence(facts),
+         true <- true_value?(value(facts, :safe_follow_up?)),
+         true <- false_value?(value(facts, :in_scope?)),
+         true <- non_empty_string?(value(facts, :follow_up_destination)),
+         true <- false_value?(value(facts, :requires_new_decision?)) do
+      true
+    else
+      _ -> false
+    end
   end
 
   defp responsibility_proven?(facts) do
+    case ownership_evidence(facts) do
+      {:ok, %{introduced_by_pr?: introduced_by_pr?, invariant_violation?: invariant_violation?}} ->
+        true_value?(introduced_by_pr?) or true_value?(invariant_violation?)
+
+      _ ->
+        false
+    end
+  end
+
+  defp ownership_evidence(facts) do
     with {:ok, introduced_by_pr?} <- ownership_evidence_flag(facts, :introduced_by_pr?),
          {:ok, invariant_violation?} <- ownership_evidence_flag(facts, :invariant_violation?),
+         true <- is_boolean(introduced_by_pr?) and is_boolean(invariant_violation?),
          true <- no_evidence_conflict?(facts) do
-      true_value?(introduced_by_pr?) or true_value?(invariant_violation?)
+      {:ok, %{introduced_by_pr?: introduced_by_pr?, invariant_violation?: invariant_violation?}}
     else
-      _ -> false
+      _ -> {:error, :invalid_ownership_evidence}
     end
   end
 
@@ -323,31 +348,40 @@ defmodule SymphonyElixir.FindingDisposition do
     end
   end
 
-  defp identity_for(facts) do
-    case value(facts, :finding_key) do
-      key when is_map(key) ->
-        case Map.get(key, :digest) do
-          digest when is_binary(digest) -> {key, lineage_from_key(key), digest}
-          _ -> identity_from_facts(facts)
+  defp canonical_identity(facts) do
+    case build_finding_key(facts) do
+      {:ok, finding_key} ->
+        with {:ok, lineage_key} <- build_lineage_key(facts),
+             :ok <- supplied_identity_matches(facts, :finding_key, finding_key),
+             :ok <- supplied_identity_matches(facts, :finding_lineage_key, lineage_key) do
+          {:ok, {finding_key, lineage_key, finding_key.digest}}
         end
 
-      _ ->
-        identity_from_facts(facts)
+      {:error, _reason} ->
+        canonical_supplied_identity(facts)
     end
   end
 
-  defp identity_from_facts(facts) do
-    case build_finding_key(facts) do
-      {:ok, key} -> {key, lineage_from_key(key), key.digest}
-      {:error, _reason} -> {nil, nil, fallback_digest(facts)}
+  defp canonical_supplied_identity(facts) do
+    with {:ok, finding_key} <- canonical_finding_key(value(facts, :finding_key)),
+         {:ok, derived_lineage_key} <- build_lineage_key(finding_key),
+         {:ok, lineage_key} <- supplied_lineage_key(facts, derived_lineage_key),
+         :ok <- matching_lineage_identity(finding_key, lineage_key) do
+      {:ok, {finding_key, lineage_key, finding_key.digest}}
     end
   end
 
-  defp lineage_from_key(key) do
-    case build_lineage_key(key) do
-      {:ok, lineage} -> lineage
-      {:error, _reason} -> nil
+  defp supplied_lineage_key(facts, derived_lineage_key) do
+    case value(facts, :finding_lineage_key) do
+      nil -> {:ok, derived_lineage_key}
+      supplied -> canonical_lineage_key(supplied)
     end
+  end
+
+  defp supplied_identity_matches(facts, key, expected) do
+    if present?(facts, key) and value(facts, key) != expected,
+      do: {:error, {:non_canonical_supplied_identity, key}},
+      else: :ok
   end
 
   defp fallback_digest(facts), do: digest(:symphony_blocked_finding_v1, :erlang.term_to_binary(facts, [:deterministic]))

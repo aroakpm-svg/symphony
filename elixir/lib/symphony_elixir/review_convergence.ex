@@ -45,8 +45,6 @@ defmodule SymphonyElixir.ReviewConvergence do
 
   def actionable_thread?(_thread), do: false
 
-  defp legacy_actionable_threads(%{finding_summary: _summary}), do: []
-
   defp legacy_actionable_threads(snapshot) do
     Enum.filter(snapshot[:threads] || [], &actionable_thread?/1)
   end

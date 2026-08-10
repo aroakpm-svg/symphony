@@ -89,6 +89,15 @@ acquired; an existing worker claim is left untouched. The global preflight requi
 and compares canonical finding and lineage identities, including scope and digests; lock
 reconciliation uses a deterministic fixed order.
 
+Actionable routing first rebuilds and validates canonical finding and lineage identities. Missing,
+partial, malformed, or conflicting identity, ownership, or preflight evidence remains
+`blocked_unverified`; a caller-supplied digest is not enough. Follow-up routing uses the same
+explicit boolean ownership gate as fix routing. Review comments with an unavailable or unsupported
+author remain in the snapshot as untrusted evidence, so one malformed trust field cannot erase
+other evidence. Raw actionable threads remain blocking even when an empty finding summary exists.
+After a successful autonomous readback/reconciliation cycle, transient `global_blocker` state is
+cleared before any newly observed blocker is applied.
+
 Design 2 consumes the merged HandoffReceipt V1 dependency only. It does not add a second evaluator,
 settlement engine, claim/ledger/receipt path, or coordinator, and it preserves ClaimService's
 existing lease/renew/release lifecycle. Design 3 `authorize/5` and Design 4 `settle/2` are owner contracts; when either

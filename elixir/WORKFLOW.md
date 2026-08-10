@@ -472,7 +472,11 @@ or a migration assertion.
 The preflight must verify the current head, claim ownership, and effect-ledger readback before any
 autonomous effect. Pending, unknown, malformed, or conflicting evidence fails closed. Keep
 `FindingKey`, `FindingLineageKey`, source/evaluated/current head evidence, immutable fingerprints,
-and fixed lock order as the single contract. Do not add another evaluator, settlement engine,
+and fixed lock order as the single contract. Actionable disposition requires canonical identity;
+follow-up routing requires explicit boolean ownership evidence. Missing or unsupported review
+authors remain untrusted evidence rather than invalidating the complete snapshot, raw actionable
+threads remain blocking despite an empty summary, and a successful recovery cycle clears transient
+`global_blocker` state. Do not add another evaluator, settlement engine,
 claim path, ledger path, receipt path, or coordinator, and do not change ClaimService's lifecycle.
 
 Design 3 `authorize/5` and Design 4 `settle/2` are owner APIs. If they are absent, fail closed; do
