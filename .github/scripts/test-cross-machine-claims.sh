@@ -134,7 +134,7 @@ psql_admin -c "insert into symphony_staging.handoff_receipts (
   ) overriding system value values (
     8991, 1, 'MIGRATION-CONTENT-BRANCH', 'aroakpm-svg/symphony',
     '40000000-0000-0000-0000-000000000005', 1,
-    'pushed', chr(9), repeat('a', 40), repeat('a', 40), null,
+    'pushed', chr(160), repeat('a', 40), repeat('a', 40), null,
     '[{\"name\":\"migration\",\"status\":\"passed\"}]'::jsonb, '{}'
   );"
 content_preflight_output="$tmp_dir/content-preflight"
@@ -153,7 +153,7 @@ psql_admin -c "insert into symphony_staging.handoff_receipts (
     8992, 1, 'MIGRATION-CONTENT-TEST', 'aroakpm-svg/symphony',
     '40000000-0000-0000-0000-000000000006', 1,
     'pushed', 'branch-a', repeat('a', 40), repeat('a', 40), null,
-    jsonb_build_array(jsonb_build_object('name', chr(10), 'status', 'passed')), '{}'
+    jsonb_build_array(jsonb_build_object('name', chr(8239), 'status', 'passed')), '{}'
   );"
 if psql_admin -f "$retry_migration" >"$content_preflight_output" 2>&1; then
   echo "retry migration unexpectedly accepted a whitespace-only legacy test name" >&2

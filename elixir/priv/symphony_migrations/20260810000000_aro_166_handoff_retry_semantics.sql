@@ -1,5 +1,26 @@
 begin;
 
+create or replace function symphony_staging.handoff_receipt_content_present(content text)
+returns boolean
+language sql
+immutable
+strict
+parallel safe
+set search_path = pg_catalog, pg_temp
+as $$
+  select translate(
+    content,
+    chr(9) || chr(10) || chr(11) || chr(12) || chr(13) || chr(32) ||
+    chr(133) || chr(160) || chr(5760) || chr(8192) || chr(8193) ||
+    chr(8194) || chr(8195) || chr(8196) || chr(8197) || chr(8198) ||
+    chr(8199) || chr(8200) || chr(8201) || chr(8202) || chr(8232) ||
+    chr(8233) || chr(8239) || chr(8287) || chr(12288),
+    ''
+  ) <> ''
+$$;
+
+revoke all on function symphony_staging.handoff_receipt_content_present(text) from public;
+
 -- Every V1 append takes a ROW SHARE lock on issue_claims before it can reach
 -- the receipt insert. Taking this lock first drains in-flight V1 calls and
 -- blocks new ones at their claim check for the entire install transaction.
@@ -13,7 +34,7 @@ begin
     select 1
     from symphony_staging.handoff_receipts receipts
     where receipts.branch is null
-       or receipts.branch !~ '[^[:space:]]'
+       or not symphony_staging.handoff_receipt_content_present(receipts.branch)
        or receipts.test_results is null
        or case
          when jsonb_typeof(receipts.test_results) = 'array' then
@@ -28,7 +49,7 @@ begin
                 or jsonb_typeof(item -> 'status') <> 'string'
                 or item ->> 'name' is null
                 or item ->> 'status' is null
-                or item ->> 'name' !~ '[^[:space:]]'
+                or not symphony_staging.handoff_receipt_content_present(item ->> 'name')
                 or item ->> 'status' not in ('passed', 'skipped')
            )
          else true
@@ -113,31 +134,34 @@ declare
   highest_checkpoint_rank integer;
   requested_checkpoint_rank integer;
 begin
-  if new.branch is null or new.branch !~ '[^[:space:]]' then
+  if new.branch is null
+     or not symphony_staging.handoff_receipt_content_present(new.branch) then
     raise exception using
       errcode = '22023',
       message = 'handoff receipt identity and content are required';
   end if;
 
   if new.test_results is null
-     or case
-       when jsonb_typeof(new.test_results) = 'array' then
-         jsonb_array_length(new.test_results) = 0
-         or exists (
-           select 1
-           from jsonb_array_elements(new.test_results) item
-           where jsonb_typeof(item) <> 'object'
-              or not (item ? 'name' and item ? 'status')
-              or item - 'name' - 'status' <> '{}'::jsonb
-              or jsonb_typeof(item -> 'name') <> 'string'
-              or jsonb_typeof(item -> 'status') <> 'string'
-              or item ->> 'name' is null
-              or item ->> 'status' is null
-              or item ->> 'name' !~ '[^[:space:]]'
-              or item ->> 'status' not in ('passed', 'skipped')
-         )
-       else true
-     end then
+     or jsonb_typeof(new.test_results) <> 'array' then
+    raise exception using
+      errcode = '22023',
+      message = 'test results must contain only passed or skipped named tests';
+  end if;
+
+  if jsonb_array_length(new.test_results) = 0
+     or exists (
+       select 1
+       from jsonb_array_elements(new.test_results) item
+       where jsonb_typeof(item) <> 'object'
+          or not (item ? 'name' and item ? 'status')
+          or item - 'name' - 'status' <> '{}'::jsonb
+          or jsonb_typeof(item -> 'name') <> 'string'
+          or jsonb_typeof(item -> 'status') <> 'string'
+          or item ->> 'name' is null
+          or item ->> 'status' is null
+          or not symphony_staging.handoff_receipt_content_present(item ->> 'name')
+          or item ->> 'status' not in ('passed', 'skipped')
+     ) then
     raise exception using
       errcode = '22023',
       message = 'test results must contain only passed or skipped named tests';
@@ -257,7 +281,7 @@ begin
      or requested_repository is null
      or btrim(requested_repository) = ''
      or requested_branch is null
-     or requested_branch !~ '[^[:space:]]'
+     or not symphony_staging.handoff_receipt_content_present(requested_branch)
      or requested_checkpoint_kind is null
      or requested_head_sha is null
      or requested_tested_head_sha is null
@@ -307,7 +331,7 @@ begin
        or jsonb_typeof(item -> 'status') <> 'string'
        or item ->> 'name' is null
        or item ->> 'status' is null
-       or item ->> 'name' !~ '[^[:space:]]'
+       or not symphony_staging.handoff_receipt_content_present(item ->> 'name')
        or item ->> 'status' not in ('passed', 'skipped')
   ) then
     raise exception using errcode = '22023', message = 'test results must contain only passed or skipped named tests';

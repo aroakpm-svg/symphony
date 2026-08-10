@@ -171,5 +171,6 @@ set contract_version = excluded.contract_version,
 
 drop index if exists symphony_staging.handoff_receipts_checkpoint_identity_idx;
 drop index if exists symphony_staging.effect_operations_issue_operation_idx;
+drop function if exists symphony_staging.handoff_receipt_content_present(text);
 
 commit;
