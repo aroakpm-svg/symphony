@@ -514,8 +514,33 @@ defmodule SymphonyElixir.ReviewConvergenceTest do
         "data" => %{
           "repository" => %{
             "pullRequest" => %{
+              "body" => "",
               "reviewThreads" => %{
-                "nodes" => [%{"comments" => %{"nodes" => [%{"body" => body}]}}],
+                "nodes" => [
+                  %{
+                    "id" => "thread-#{body}",
+                    "isResolved" => false,
+                    "comments" => %{
+                      "nodes" => [
+                        %{
+                          "id" => "review-#{body}",
+                          "body" => body,
+                          "path" => "lib/example.ex",
+                          "url" => "https://github.test/review/#{body}",
+                          "commit" => %{"oid" => "head"},
+                          "createdAt" => "2026-08-09T00:00:00Z",
+                          "updatedAt" => "2026-08-09T00:00:00Z",
+                          "author" => %{
+                            "login" => "chatgpt-codex-connector",
+                            "__typename" => "Organization",
+                            "databaseId" => 261_883_814
+                          }
+                        }
+                      ],
+                      "pageInfo" => %{"hasNextPage" => false, "endCursor" => nil}
+                    }
+                  }
+                ],
                 "pageInfo" => %{"hasNextPage" => has_next_page, "endCursor" => end_cursor}
               }
             }
@@ -536,11 +561,230 @@ defmodule SymphonyElixir.ReviewConvergenceTest do
            ) == ["P4 first", "P1 second"]
   end
 
+  test "normalized review events retain exact comment identity and provider order" do
+    head = String.duplicate("a", 40)
+
+    pull_request = %{
+      "body" => "## Scope Contract\n",
+      "headRefOid" => head,
+      "baseRefOid" => String.duplicate("b", 40),
+      "reviews" => %{"nodes" => []},
+      "reviewThreads" => %{
+        "nodes" => [
+          %{
+            "id" => "thread-1",
+            "isResolved" => false,
+            "comments" => %{
+              "nodes" => [
+                review_event_comment("review-1", "P2 old", head, "2026-08-09T01:00:00Z", "Organization", 261_883_814),
+                review_event_comment("review-2", "P1\r\nexact bytes", head, "2026-08-09T01:02:03Z", "Organization", 261_883_814)
+              ],
+              "pageInfo" => %{"hasNextPage" => false, "endCursor" => nil}
+            }
+          }
+        ]
+      }
+    }
+
+    snapshot =
+      GitHubReviewClient.normalize_snapshot_for_test(
+        pull_request,
+        [%{name: "make-all", state: :success}],
+        %{required: false, result: :not_required},
+        []
+      )
+
+    [event] = snapshot.review_events
+    assert snapshot.pull_request_body == "## Scope Contract\n"
+    assert event.review_thread_id == "thread-1"
+    assert event.resolved? == false
+    assert event.complete_pagination? == true
+    assert Enum.map(event.comments, & &1.id) == ["review-1", "review-2"]
+    assert Enum.map(event.comments, & &1.connection_index) == [0, 1]
+    assert Enum.at(event.comments, 1).body == "P1\r\nexact bytes"
+    assert Enum.at(event.comments, 1).updated_at == "2026-08-09T01:02:03Z"
+    assert Enum.all?(event.comments, &(&1.trusted_review_source? == true))
+  end
+
+  test "missing thread comment pagination evidence blocks normalization" do
+    page = %{
+      "data" => %{
+        "repository" => %{
+          "pullRequest" => %{
+            "body" => "",
+            "reviewThreads" => %{
+              "nodes" => [
+                %{
+                  "id" => "thread-1",
+                  "isResolved" => false,
+                  "comments" => %{"nodes" => []}
+                }
+              ],
+              "pageInfo" => %{"hasNextPage" => false, "endCursor" => nil}
+            }
+          }
+        }
+      }
+    }
+
+    assert {:error, {:invalid_pull_request_page, ^page}} =
+             GitHubReviewClient.merge_pull_request_pages_for_test([page])
+  end
+
+  test "review pages reject missing identity, malformed dates, and invalid authors" do
+    valid = review_event_page()
+
+    invalid_pages = [
+      put_in(valid, ["data", "repository", "pullRequest", "reviewThreads", "nodes", Access.at(0), "id"], ""),
+      put_in(
+        valid,
+        [
+          "data",
+          "repository",
+          "pullRequest",
+          "reviewThreads",
+          "nodes",
+          Access.at(0),
+          "comments",
+          "nodes",
+          Access.at(0),
+          "id"
+        ],
+        nil
+      ),
+      put_in(
+        valid,
+        [
+          "data",
+          "repository",
+          "pullRequest",
+          "reviewThreads",
+          "nodes",
+          Access.at(0),
+          "comments",
+          "nodes",
+          Access.at(0),
+          "author",
+          "databaseId"
+        ],
+        nil
+      ),
+      put_in(
+        valid,
+        [
+          "data",
+          "repository",
+          "pullRequest",
+          "reviewThreads",
+          "nodes",
+          Access.at(0),
+          "comments",
+          "nodes",
+          Access.at(0),
+          "createdAt"
+        ],
+        "not-a-date"
+      )
+    ]
+
+    for invalid <- invalid_pages do
+      assert {:error, {:invalid_pull_request_page, ^invalid}} =
+               GitHubReviewClient.merge_pull_request_pages_for_test([invalid])
+    end
+  end
+
+  test "normalized provider facts distinguish managed and system comments" do
+    head = String.duplicate("e", 40)
+
+    pull_request = %{
+      "headRefOid" => head,
+      "reviewThreads" => %{
+        "nodes" => [
+          %{
+            "id" => "thread-identity",
+            "isResolved" => false,
+            "comments" => %{
+              "nodes" => [
+                review_event_comment("system", "P2 system", head, "2026-08-09T01:00:00Z", "User", 123),
+                review_event_comment(
+                  "managed",
+                  "transition-operation: `operation`",
+                  head,
+                  "2026-08-09T01:01:00Z",
+                  "Bot",
+                  199_175_422
+                )
+              ],
+              "pageInfo" => %{"hasNextPage" => false, "endCursor" => nil}
+            }
+          }
+        ]
+      }
+    }
+
+    [event] =
+      GitHubReviewClient.normalize_snapshot_for_test(
+        pull_request,
+        [],
+        %{required: false, result: :not_required},
+        []
+      ).review_events
+
+    [system, managed] = event.comments
+    assert system.trusted_review_source? == false
+    assert system.managed_agent_reply? == false
+    assert managed.trusted_review_source? == true
+    assert managed.managed_agent_reply? == true
+    assert managed.settlement_marker? == true
+  end
+
+  test "resolved thread data is retained as a review event" do
+    head = String.duplicate("c", 40)
+
+    pull_request = %{
+      "headRefOid" => head,
+      "baseRefOid" => String.duplicate("d", 40),
+      "reviews" => %{"nodes" => []},
+      "reviewThreads" => %{
+        "nodes" => [
+          %{
+            "id" => "thread-resolved",
+            "isResolved" => true,
+            "comments" => %{
+              "nodes" => [
+                review_event_comment(
+                  "review-1",
+                  "P1 resolved",
+                  head,
+                  "2026-08-09T01:00:00Z",
+                  "Organization",
+                  261_883_814
+                )
+              ],
+              "pageInfo" => %{"hasNextPage" => false, "endCursor" => nil}
+            }
+          }
+        ]
+      }
+    }
+
+    snapshot =
+      GitHubReviewClient.normalize_snapshot_for_test(
+        pull_request,
+        [],
+        %{required: false, result: :not_required},
+        []
+      )
+
+    assert [%{review_thread_id: "thread-resolved", resolved?: true, comments: [_ | _]}] = snapshot.review_events
+  end
+
   test "every paginated pull-request page must have valid data and pagination evidence" do
     valid = %{
       "data" => %{
         "repository" => %{
           "pullRequest" => %{
+            "body" => "",
             "reviewThreads" => %{
               "nodes" => [],
               "pageInfo" => %{"hasNextPage" => true, "endCursor" => "next"}
@@ -580,10 +824,10 @@ defmodule SymphonyElixir.ReviewConvergenceTest do
              "release%20100%25%2F%E5%8F%B0%E7%81%A3"
   end
 
-  test "pull-request pagination exposes only the outer review-thread cursor" do
+  test "pull-request pagination exposes both outer and nested cursors" do
     query = GitHubReviewClient.pull_request_query_for_test()
 
-    assert length(Regex.scan(~r/pageInfo \{ hasNextPage endCursor \}/, query)) == 1
+    assert length(Regex.scan(~r/pageInfo \{ hasNextPage endCursor \}/, query)) == 2
     assert query =~ "reviewThreads(first: 100, after: $endCursor)"
     assert query =~ "comments(first: 100)"
   end
@@ -741,7 +985,31 @@ defmodule SymphonyElixir.ReviewConvergenceTest do
 
   test "review thread comments are merged across every comment page" do
     page = fn body ->
-      %{"data" => %{"node" => %{"comments" => %{"nodes" => [%{"body" => body}]}}}}
+      %{
+        "data" => %{
+          "node" => %{
+            "comments" => %{
+              "nodes" => [
+                %{
+                  "id" => "review-#{body}",
+                  "body" => body,
+                  "path" => "lib/example.ex",
+                  "url" => "https://github.test/review/#{body}",
+                  "commit" => %{"oid" => "head"},
+                  "createdAt" => "2026-08-09T00:00:00Z",
+                  "updatedAt" => "2026-08-09T00:00:00Z",
+                  "author" => %{
+                    "login" => "chatgpt-codex-connector",
+                    "__typename" => "Organization",
+                    "databaseId" => 261_883_814
+                  }
+                }
+              ],
+              "pageInfo" => %{"hasNextPage" => false, "endCursor" => nil}
+            }
+          }
+        }
+      }
     end
 
     assert {:ok, [%{"body" => "old"}, %{"body" => "current P1"}]} =
@@ -1420,6 +1688,63 @@ defmodule SymphonyElixir.ReviewConvergenceTest do
     %{
       "body" => "@codex review\n\ndedup-key: `aro-160-review-#{head}`",
       "created_at" => "2026-07-22T01:00:00Z"
+    }
+  end
+
+  defp review_event_comment(id, body, commit_sha, timestamp, author_type, author_id) do
+    login = if author_type == "Bot", do: "chatgpt-codex-connector[bot]", else: "chatgpt-codex-connector"
+
+    %{
+      "id" => id,
+      "body" => body,
+      "path" => "lib/example.ex",
+      "url" => "https://github.test/review/#{id}",
+      "commit" => %{"oid" => commit_sha},
+      "createdAt" => timestamp,
+      "updatedAt" => timestamp,
+      "author" => %{
+        "login" => login,
+        "__typename" => author_type,
+        "databaseId" => author_id
+      }
+    }
+  end
+
+  defp review_event_page(comment_overrides \\ %{}) do
+    comment =
+      Map.merge(
+        review_event_comment(
+          "review-1",
+          "P1 issue",
+          String.duplicate("a", 40),
+          "2026-08-09T01:00:00Z",
+          "Organization",
+          261_883_814
+        ),
+        comment_overrides
+      )
+
+    %{
+      "data" => %{
+        "repository" => %{
+          "pullRequest" => %{
+            "body" => "",
+            "reviewThreads" => %{
+              "nodes" => [
+                %{
+                  "id" => "thread-1",
+                  "isResolved" => false,
+                  "comments" => %{
+                    "nodes" => [comment],
+                    "pageInfo" => %{"hasNextPage" => false, "endCursor" => nil}
+                  }
+                }
+              ],
+              "pageInfo" => %{"hasNextPage" => false, "endCursor" => nil}
+            }
+          }
+        }
+      }
     }
   end
 
