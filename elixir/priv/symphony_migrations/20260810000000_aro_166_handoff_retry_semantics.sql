@@ -1,8 +1,10 @@
 begin;
 
--- Freeze V1 appends for the entire preflight/install transaction. Without this
--- lock, a writer can introduce incompatible legacy history after validation
--- but before the V2 function is installed.
+-- Every V1 append takes a ROW SHARE lock on issue_claims before it can reach
+-- the receipt insert. Taking this lock first drains in-flight V1 calls and
+-- blocks new ones at their claim check for the entire install transaction.
+-- The receipt-table lock then keeps the validated history stable.
+lock table symphony_staging.issue_claims in exclusive mode;
 lock table symphony_staging.handoff_receipts in share row exclusive mode;
 
 do $$

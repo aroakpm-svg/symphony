@@ -105,7 +105,13 @@ defmodule SymphonyElixir.HandoffReceiptMigrationTest do
     assert sql =~ "handoff retry migration requires unique checkpoint identities"
     assert sql =~ "legacy duplicate checkpoint identities"
     assert sql =~ "legacy generation bindings"
-    assert sql =~ "lock table symphony_staging.handoff_receipts in share row exclusive mode"
+    claim_lock = "lock table symphony_staging.issue_claims in exclusive mode"
+    receipt_lock = "lock table symphony_staging.handoff_receipts in share row exclusive mode"
+
+    assert sql =~ claim_lock
+    assert sql =~ receipt_lock
+    assert :binary.match(sql, claim_lock) < :binary.match(sql, receipt_lock)
+    assert :binary.match(sql, receipt_lock) < :binary.match(sql, "do $$")
     assert sql =~ "legacy checkpoint rank regressions"
     assert sql =~ "prior_checkpoint_rank > ranked_receipts.checkpoint_rank"
     assert sql =~ "count(distinct receipts.repository)"
