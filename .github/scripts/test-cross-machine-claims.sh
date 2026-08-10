@@ -205,6 +205,38 @@ if psql_admin -c "insert into symphony_staging.handoff_receipts (
 fi
 grep -q "handoff receipt checkpoint rank cannot regress" "$stale_body_output"
 test "$(psql_admin -A -t -c "select count(*) from symphony_staging.handoff_receipts where issue_id = 'MIGRATION-STALE-BODY';")" = "1"
+
+stale_whitespace_output="$tmp_dir/stale-v1-whitespace"
+if psql_admin -c "insert into symphony_staging.handoff_receipts (
+    checkpoint_sequence, receipt_schema_version, issue_id, repository, claim_id, generation,
+    checkpoint_kind, branch, head_sha, tested_head_sha, pr_number,
+    test_results, effect_operation_ids
+  ) overriding system value values (
+    9023, 1, 'MIGRATION-STALE-WHITESPACE', 'aroakpm-svg/symphony',
+    '40000000-0000-0000-0000-000000000004', 1,
+    'pushed', chr(9), repeat('a', 40), repeat('a', 40), null,
+    '[{\"name\":\"migration\",\"status\":\"passed\"}]'::jsonb, '{}'
+  );" >"$stale_whitespace_output" 2>&1; then
+  echo "V2 insert enforcement unexpectedly accepted a stale V1 whitespace branch" >&2
+  exit 1
+fi
+grep -q "handoff receipt identity and content are required" "$stale_whitespace_output"
+
+if psql_admin -c "insert into symphony_staging.handoff_receipts (
+    checkpoint_sequence, receipt_schema_version, issue_id, repository, claim_id, generation,
+    checkpoint_kind, branch, head_sha, tested_head_sha, pr_number,
+    test_results, effect_operation_ids
+  ) overriding system value values (
+    9024, 1, 'MIGRATION-STALE-WHITESPACE', 'aroakpm-svg/symphony',
+    '40000000-0000-0000-0000-000000000004', 1,
+    'pushed', 'branch-a', repeat('a', 40), repeat('a', 40), null,
+    jsonb_build_array(jsonb_build_object('name', chr(9), 'status', 'passed')), '{}'
+  );" >"$stale_whitespace_output" 2>&1; then
+  echo "V2 insert enforcement unexpectedly accepted a stale V1 whitespace test name" >&2
+  exit 1
+fi
+grep -q "test results must contain only passed or skipped named tests" "$stale_whitespace_output"
+test "$(psql_admin -A -t -c "select count(*) from symphony_staging.handoff_receipts where issue_id = 'MIGRATION-STALE-WHITESPACE';")" = "0"
 test "$(PGPASSWORD=disposable psql -X -q -A -t -v ON_ERROR_STOP=1 -d "$(node_url claim_node_c)" -c \
   "select symphony_staging.effect_ledger_ready();")" = "t"
 

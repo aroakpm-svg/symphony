@@ -116,6 +116,8 @@ defmodule SymphonyElixir.HandoffReceiptMigrationTest do
     assert sql =~ "create trigger enforce_handoff_receipt_v2_insert"
     assert sql =~ "before insert on symphony_staging.handoff_receipts"
     assert sql =~ "handoff receipt checkpoint rank cannot regress"
+    assert length(Regex.scan(~r/branch !~ '\[\^\[:space:\]\]'/, sql)) >= 2
+    assert length(Regex.scan(~r/item ->> 'name' !~ '\[\^\[:space:\]\]'/, sql)) >= 2
     assert sql =~ "legacy checkpoint rank regressions"
     assert sql =~ "prior_checkpoint_rank > ranked_receipts.checkpoint_rank"
     assert sql =~ "count(distinct receipts.repository)"

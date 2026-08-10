@@ -9,6 +9,33 @@ lock table symphony_staging.handoff_receipts in share row exclusive mode;
 
 do $$
 begin
+  if new.branch is null or new.branch !~ '[^[:space:]]' then
+    raise exception using
+      errcode = '22023',
+      message = 'handoff receipt identity and content are required';
+  end if;
+
+  if new.test_results is null
+     or jsonb_typeof(new.test_results) <> 'array'
+     or jsonb_array_length(new.test_results) = 0
+     or exists (
+       select 1
+       from jsonb_array_elements(new.test_results) item
+       where jsonb_typeof(item) <> 'object'
+          or not (item ? 'name' and item ? 'status')
+          or item - 'name' - 'status' <> '{}'::jsonb
+          or jsonb_typeof(item -> 'name') <> 'string'
+          or jsonb_typeof(item -> 'status') <> 'string'
+          or item ->> 'name' is null
+          or item ->> 'status' is null
+          or item ->> 'name' !~ '[^[:space:]]'
+          or item ->> 'status' not in ('passed', 'skipped')
+     ) then
+    raise exception using
+      errcode = '22023',
+      message = 'test results must contain only passed or skipped named tests';
+  end if;
+
   if exists (
     select 1
     from symphony_staging.handoff_receipts receipts
