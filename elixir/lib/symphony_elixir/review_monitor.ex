@@ -3,7 +3,17 @@ defmodule SymphonyElixir.ReviewMonitor do
 
   require Logger
 
-  alias SymphonyElixir.{Config, GitHubReviewClient, ReviewConvergence, Tracker}
+  alias SymphonyElixir.{
+    ClaimService,
+    Config,
+    EffectLedger,
+    FindingDisposition,
+    GitHubReviewClient,
+    ReviewConvergence,
+    ScopeContract,
+    Tracker
+  }
+
   alias SymphonyElixir.Linear.Issue
 
   @type state :: %{optional(String.t()) => map()}
@@ -38,6 +48,270 @@ defmodule SymphonyElixir.ReviewMonitor do
         Logger.warning("Review monitor failed to fetch review-state issues: #{inspect(reason)}")
         clear_known_successes(state, settings, review_client)
     end
+  end
+
+  @doc false
+  @spec run_with(state(), struct() | map(), module(), module(), map()) :: state()
+  def run_with(state, settings, review_client, tracker, options) when is_map(options) do
+    case Map.get(options, :profile, :legacy) do
+      :aroak_autonomous_v1 ->
+        run_autonomous(state, settings, review_client, tracker, options)
+
+      _legacy_profile ->
+        run_with(state, settings, review_client, tracker)
+    end
+  end
+
+  defp run_autonomous(state, settings, review_client, tracker, options) do
+    monitored_states = [settings.review_state, settings.in_progress_state] |> Enum.uniq()
+
+    case tracker.fetch_routed_issues_by_states(monitored_states) do
+      {:ok, issues} ->
+        routed_issues =
+          Enum.filter(issues, &Issue.routable?(&1, Config.settings!().tracker.required_labels))
+
+        active_issue_ids = MapSet.new(routed_issues, & &1.id)
+        active_state = Map.take(state, MapSet.to_list(active_issue_ids))
+
+        Enum.reduce(
+          routed_issues,
+          active_state,
+          &reconcile_autonomous_issue(&1, &2, settings, review_client, options)
+        )
+
+      {:error, _reason} ->
+        state
+    end
+  end
+
+  defp reconcile_autonomous_issue(%Issue{} = issue, state, settings, review_client, options) do
+    entry = autonomous_entry(Map.get(state, issue.id, %{}))
+
+    result =
+      with branch when is_binary(branch) and branch != "" <- issue.branch_name,
+           {:ok, snapshot} <- review_client.snapshot(settings.repository, branch),
+           {:ok, claim} <- claim_for(options, issue),
+           {:ok, connection, claim_context} <- claimed_context(options, issue, claim),
+           {:ok, operations} <- list_effect_operations(options, connection, claim_context),
+           {:ok, summary} <- finding_summary(snapshot, settings),
+           :ok <- reconcile_operation_locks(operations) do
+        autonomous_claimed_result(
+          entry,
+          issue,
+          snapshot,
+          summary,
+          operations,
+          claim_context,
+          settings,
+          options
+        )
+      else
+        nil -> {:blocked, :missing_branch_name}
+        "" -> {:blocked, :missing_branch_name}
+        {:error, reason} -> {:blocked, reason}
+      end
+
+    release_claim(options, issue.id)
+
+    case result do
+      {:ok, updated_entry} -> Map.put(state, issue.id, updated_entry)
+      {:blocked, reason, blocked_entry} -> Map.put(state, issue.id, autonomous_blocker(blocked_entry, reason))
+      {:blocked, reason} -> Map.put(state, issue.id, autonomous_blocker(entry, reason))
+    end
+  end
+
+  defp autonomous_entry(entry) do
+    Map.merge(
+      %{
+        evaluated_head_sha: nil,
+        decisions: %{},
+        pending_effect_ids: [],
+        local_blocked_finding_keys: [],
+        authorization_required: false,
+        global_blocker: nil,
+        terminal_result: nil
+      },
+      entry
+    )
+  end
+
+  defp autonomous_blocker(entry, reason) do
+    %{entry | global_blocker: reason, authorization_required: false}
+  end
+
+  defp claim_for(options, issue) do
+    claim_service = Map.get(options, :claim_service, ClaimService)
+
+    case claim_service.claim(issue, self()) do
+      {:ok, claim} when is_map(claim) -> {:ok, claim}
+      {:error, reason} -> {:error, reason}
+      {:ok, nil} -> {:error, :claim_service_unavailable}
+      other -> {:error, {:invalid_claim_result, other}}
+    end
+  end
+
+  defp claimed_context(options, issue, _claim) do
+    claim_service = Map.get(options, :claim_service, ClaimService)
+
+    with :ok <- claim_service.bind_worker(issue.id, self()) do
+      claim_service.effect_context(issue.id)
+    end
+  end
+
+  defp release_claim(options, issue_id) do
+    claim_service = Map.get(options, :claim_service, ClaimService)
+
+    if function_exported?(claim_service, :release, 1) do
+      _ = claim_service.release(issue_id)
+    end
+
+    :ok
+  end
+
+  defp list_effect_operations(options, connection, claim_context) do
+    ledger = Map.get(options, :effect_ledger, EffectLedger)
+
+    if function_exported?(ledger, :list_operations, 2) do
+      ledger.list_operations(connection, claim_context)
+    else
+      {:error, :effect_ledger_readback_unavailable}
+    end
+  end
+
+  defp reconcile_operation_locks(operations) do
+    entries =
+      operations
+      |> Enum.filter(&String.starts_with?(&1.request_fingerprint, "symphony_request_fingerprint_v1:"))
+      |> Enum.reduce_while({:ok, []}, fn operation, {:ok, acc} ->
+        case FindingDisposition.decode_request_fingerprint(operation.request_fingerprint) do
+          {:ok, intent} ->
+            {:cont,
+             {:ok,
+              [
+                %{
+                  finding_key: intent.finding_key,
+                  disposition: intent.disposition,
+                  ledger_record: operation
+                }
+                | acc
+              ]}}
+
+          {:error, reason} ->
+            {:halt, {:error, {:invalid_effect_fingerprint, reason}}}
+        end
+      end)
+
+    with {:ok, entries} <- entries,
+         {:ok, _locks} <- FindingDisposition.reconcile_locks(entries) do
+      :ok
+    end
+  end
+
+  defp finding_summary(%{finding_summary: summary}, _settings) when is_map(summary) do
+    if is_list(summary[:decisions]), do: {:ok, summary}, else: {:error, :finding_summary_invalid}
+  end
+
+  defp finding_summary(snapshot, settings) do
+    with {:ok, scope_contract} <- parse_scope_contract(snapshot),
+         {:ok, events} <- review_events(snapshot),
+         {:ok, findings} <- selected_findings(snapshot, events, settings),
+         {:ok, plan} <- FindingDisposition.classify_all(findings, %{verified?: true, valid?: true}) do
+      {:ok,
+       Map.merge(plan, %{
+         requires_lifecycle?: plan.decisions != [],
+         scope_contract: scope_contract
+       })}
+    end
+  end
+
+  defp parse_scope_contract(%{pull_request_body: body}) when is_binary(body),
+    do: ScopeContract.parse_pr_body(body)
+
+  defp parse_scope_contract(_snapshot), do: {:error, :scope_contract_unavailable}
+
+  defp review_events(%{review_events: events}) when is_list(events), do: {:ok, events}
+  defp review_events(_snapshot), do: {:error, :review_events_unavailable}
+
+  defp selected_findings(snapshot, events, settings) do
+    repository = snapshot[:repository] || settings.repository
+    pull_request_number = snapshot[:pull_request_number]
+    head_sha = snapshot[:current_head_sha]
+
+    Enum.reduce_while(events, {:ok, []}, fn event, {:ok, acc} ->
+      case FindingDisposition.select_review_comment(event, %{resolved?: event[:resolved?], settled: %{}}) do
+        {:ok, comment} ->
+          facts = %{
+            repository: repository,
+            pull_request_number: pull_request_number,
+            source_head_sha: comment[:commit_sha] || head_sha,
+            review_thread_id: event[:review_thread_id],
+            selected_review_comment_id: comment[:id],
+            body: comment[:body],
+            introduced_by_pr?: :unknown,
+            still_applies?: :unknown,
+            in_scope?: :unknown,
+            root_cause_bounded?: :unknown,
+            requires_new_decision?: :unknown,
+            safe_follow_up?: :unknown,
+            follow_up_destination: nil
+          }
+
+          {:cont, {:ok, [facts | acc]}}
+
+        :no_fresh_evidence ->
+          {:cont, {:ok, acc}}
+
+        {:error, reason} ->
+          {:halt, {:error, reason}}
+      end
+    end)
+  end
+
+  defp autonomous_claimed_result(
+         entry,
+         _issue,
+         snapshot,
+         summary,
+         operations,
+         _claim_context,
+         _settings,
+         options
+       ) do
+    pending_effect_ids =
+      operations
+      |> Enum.filter(&(&1.status in [:pending, :unknown]))
+      |> Enum.map(& &1.operation_id)
+
+    updated =
+      entry
+      |> Map.put(:evaluated_head_sha, snapshot[:current_head_sha])
+      |> Map.put(:decisions, decisions_by_digest(summary[:decisions] || []))
+      |> Map.put(:pending_effect_ids, pending_effect_ids)
+
+    cond do
+      pending_effect_ids != [] ->
+        {:blocked, :pending_effects, updated}
+
+      summary[:decisions] == [] ->
+        {:ok, updated}
+
+      not owner_apis_available?(options) ->
+        {:blocked, :owner_api_unavailable, updated}
+
+      true ->
+        {:blocked, :autonomous_execution_requires_owner_contracts, updated}
+    end
+  end
+
+  defp decisions_by_digest(decisions),
+    do: Map.new(decisions, &{&1.finding_key_digest, &1})
+
+  defp owner_apis_available?(options) do
+    authorization = Map.get(options, :patch_authorization)
+    settlement = Map.get(options, :review_settlement)
+
+    is_atom(authorization) and function_exported?(authorization, :authorize, 5) and
+      is_atom(settlement) and function_exported?(settlement, :settle, 2)
   end
 
   defp reconcile_issue(%Issue{} = issue, state, settings, review_client, tracker) do

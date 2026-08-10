@@ -77,6 +77,16 @@ defmodule SymphonyElixir.SpecsCheckTest do
     assert findings == []
   end
 
+  test "the checked-in runtime docs describe fail-closed finding disposition" do
+    spec = File.read!(Path.expand("../../../SPEC.md", __DIR__))
+    readme = File.read!(Path.expand("../../README.md", __DIR__))
+
+    assert spec =~ "FindingKey"
+    assert spec =~ "evaluated_head_sha"
+    assert readme =~ "fix_in_current_pr"
+    assert readme =~ "does not authorize merge"
+  end
+
   defp create_tmp_dir do
     unique = :erlang.unique_integer([:positive, :monotonic])
     dir = Path.join(System.tmp_dir!(), "specs-check-test-#{unique}")

@@ -361,6 +361,37 @@ operations MUST remain recoverable after restart and after the issue leaves the 
 round MUST be counted only once the target state is observed and completion is durable.
 Technical convergence MUST NOT authorize merge, deployment, or terminal tracker transitions.
 
+#### 5.3.8 Finding disposition and effect-readback (Design 2 implementation extension)
+
+An implementation that enables the Design 2 finding-disposition extension MUST use one canonical
+identity contract for each review finding. `FindingKey` identifies the finding in the current
+pull-request context; `FindingLineageKey` identifies the same finding across head changes and
+reconciliation. The identity MUST include the verified repository and pull-request scope and MUST
+not be derived from severity alone or from mutable display text.
+
+Every evaluation MUST record the verified `source_head_sha`, the `evaluated_head_sha`, and the
+observed current head. A head mismatch, missing head evidence, unverified base evidence, or an
+invalid scope contract MUST fail closed. The only dispositions are `fix_in_current_pr`,
+`follow_up_required`, and `blocked_unverified`. A classifier MAY select one of these dispositions
+only from verified evidence; severity alone MUST NOT create a rework decision.
+
+Before any autonomous effect, the runtime MUST complete claim ownership and effect-ledger
+readback for the active issue, claim, node, instance, and generation. Pending, unknown, malformed,
+or conflicting ledger rows MUST stop the cycle before owner APIs or external writes. Request
+fingerprints are immutable: reusing an operation identity with a different fingerprint MUST fail
+closed, and lock reconciliation MUST be deterministic and in fixed order.
+
+Design 2 does not add another evaluator, settlement engine, claim path, ledger path, receipt path,
+or coordinator, and MUST NOT change the existing ClaimService lifecycle. Design 3 authorization
+(`authorize/5`) and Design 4 settlement (`settle/2`) are owner contracts; when they are absent,
+the runtime MUST fail closed and MUST NOT add local stubs. `aroak_autonomous_v1` remains disabled
+by default; Design 2 validation MUST NOT start workers, use shared staging credentials, deploy, or
+touch Production.
+
+Technical convergence, a clean review result, a disposition, or a `MergeReadyCandidate` MUST NOT
+be described or interpreted as merge authorization. Merge, deployment, Linear `Done`, and Landing
+remain outside the Design 2 implementation boundary.
+
 Note:
 
 - The workflow front matter is extensible. Extensions MAY define additional top-level keys without

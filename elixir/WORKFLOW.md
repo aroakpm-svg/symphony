@@ -457,6 +457,34 @@ reuse the same branch and PR. Waiting for staging, permissions, or human product
 keeps the issue In Review and pauses retries without repeating a full review. Technical convergence
 never authorizes merge, deployment, production changes, permission changes, or Done.
 
+Design 2 Coding Process
+
+For the Design 2 finding-disposition work, preserve the existing worktree, branch, commits, and
+ledger. Do not reset, delete, or restart work. Start only from the latest merged GitHub default
+branch; PR #24 and older snapshots are drift context, not implementation bases. Use TDD for the
+pure `FindingDisposition` contract, identity, classifier, lock, and request-fingerprint behavior:
+write a focused failing test, verify that the failure is caused by the missing behavior, implement
+the smallest behavior, and rerun the focused tests. For Review Monitor, Review Convergence,
+GitHubReviewClient, and EffectLedger integration, add focused regression coverage before the
+implementation where that produces a natural test; do not manufacture TDD steps for documentation
+or a migration assertion.
+
+The preflight must verify the current head, claim ownership, and effect-ledger readback before any
+autonomous effect. Pending, unknown, malformed, or conflicting evidence fails closed. Keep
+`FindingKey`, `FindingLineageKey`, source/evaluated/current head evidence, immutable fingerprints,
+and fixed lock order as the single contract. Do not add another evaluator, settlement engine,
+claim path, ledger path, receipt path, or coordinator, and do not change ClaimService's lifecycle.
+
+Design 3 `authorize/5` and Design 4 `settle/2` are owner APIs. If they are absent, fail closed; do
+not add local stubs. Do not enable `aroak_autonomous_v1`, start workers, use shared staging
+credentials, deploy, or touch Production. Technical convergence, a disposition, or a
+`MergeReadyCandidate` never authorizes merge, deployment, Linear Done, or Landing.
+
+Before handoff, run the complete verification checklist: formatter, specs, Credo, Dialyzer, full
+tests, coverage, and a clean git diff review mapped to the Design 2 acceptance criteria. Open the
+PR only after the implementation and verification evidence are complete. Merge, deployment, Linear
+Done, and Landing remain outside this task.
+
 The state move is a recoverable transition, not two best-effort writes. Review Monitor first
 persists a stable operation intent in Linear, then moves the issue, then persists a completion
 marker. It resumes incomplete operations while the issue is in either In Review or In Progress,

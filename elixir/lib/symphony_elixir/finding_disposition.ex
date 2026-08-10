@@ -103,7 +103,7 @@ defmodule SymphonyElixir.FindingDisposition do
     with {:ok, comments} <- comments_for(thread),
          {:ok, ordered_comments} <- provider_order(comments),
          {:ok, candidates} <- trusted_candidates(ordered_comments) do
-      resolved? = value(thread, :resolved?) == true
+      resolved? = true_value?(value(thread, :resolved?))
 
       if resolved? do
         select_resolved_comment(thread, options, candidates)
@@ -280,18 +280,18 @@ defmodule SymphonyElixir.FindingDisposition do
   end
 
   defp fix_facts?(facts) do
-    value(facts, :introduced_by_pr?) == true and
-      value(facts, :still_applies?) == true and
-      value(facts, :in_scope?) == true and
-      value(facts, :root_cause_bounded?) == true and
-      value(facts, :requires_new_decision?) == false
+    true_value?(value(facts, :introduced_by_pr?)) and
+      true_value?(value(facts, :still_applies?)) and
+      true_value?(value(facts, :in_scope?)) and
+      true_value?(value(facts, :root_cause_bounded?)) and
+      false_value?(value(facts, :requires_new_decision?))
   end
 
   defp follow_up_facts?(facts) do
-    value(facts, :safe_follow_up?) == true and
-      value(facts, :in_scope?) == false and
+    true_value?(value(facts, :safe_follow_up?)) and
+      false_value?(value(facts, :in_scope?)) and
       non_empty_string?(value(facts, :follow_up_destination)) and
-      value(facts, :requires_new_decision?) == false
+      false_value?(value(facts, :requires_new_decision?))
   end
 
   defp identity_for(facts) do
@@ -371,9 +371,9 @@ defmodule SymphonyElixir.FindingDisposition do
   end
 
   defp normalize_trusted_comment(comment) do
-    if value(comment, :trusted_review_source?) == true and
-         value(comment, :managed_agent_reply?) != true and
-         value(comment, :settlement_marker?) != true do
+    if true_value?(value(comment, :trusted_review_source?)) and
+         not_true_value?(value(comment, :managed_agent_reply?)) and
+         not_true_value?(value(comment, :settlement_marker?)) do
       with {:ok, id} <- required_string(comment, :id),
            {:ok, body} <- required_binary(comment, :body) do
         {:ok, Map.put(Map.put(comment, :id, id), :body_sha256, sha256(body))}
@@ -595,10 +595,10 @@ defmodule SymphonyElixir.FindingDisposition do
 
   defp global_preflight_blocker(preflight) do
     cond do
-      value(preflight, :global_blocker) not in [nil, false] -> value(preflight, :global_blocker)
-      value(preflight, :blocked?) == true -> :preflight_blocked
-      value(preflight, :verified?) == false -> :preflight_unverified
-      value(preflight, :valid?) == false -> :preflight_invalid
+      blocker_present?(value(preflight, :global_blocker)) -> value(preflight, :global_blocker)
+      true_value?(value(preflight, :blocked?)) -> :preflight_blocked
+      false_value?(value(preflight, :verified?)) -> :preflight_unverified
+      false_value?(value(preflight, :valid?)) -> :preflight_invalid
       true -> nil
     end
   end
@@ -614,7 +614,7 @@ defmodule SymphonyElixir.FindingDisposition do
       not is_binary(source) ->
         {:error, :invalid_source_head_sha}
 
-      source != evaluated and value(plan, :revalidated?) != true ->
+      source != evaluated and not_true_value?(value(plan, :revalidated?)) ->
         {:error, :source_head_requires_revalidation}
 
       true ->
@@ -696,10 +696,22 @@ defmodule SymphonyElixir.FindingDisposition do
 
   defp value(_map, _key), do: nil
 
-  defp present?(map, key),
-    do: is_map(map) and is_atom(key) and (Map.has_key?(map, key) or Map.has_key?(map, Atom.to_string(key)))
+  defp present?(map, key) when is_map(map) and is_atom(key) do
+    case Map.fetch(map, key) do
+      {:ok, _value} -> true
+      :error -> Map.has_key?(map, Atom.to_string(key))
+    end
+  end
 
   defp non_empty_string?(value), do: is_binary(value) and byte_size(value) > 0
+
+  defp false_value?(value), do: is_boolean(value) and not value
+
+  defp blocker_present?(value), do: not is_nil(value) and (not is_boolean(value) or value)
+
+  defp true_value?(value), do: is_boolean(value) and value
+
+  defp not_true_value?(value), do: not is_boolean(value) or not value
 
   defp digest(tag, value) do
     :crypto.hash(:sha256, :erlang.term_to_binary({tag, value}, [:deterministic]))

@@ -74,6 +74,55 @@ defmodule SymphonyElixir.ReviewConvergenceTest do
     def fetch_routed_issues_by_states(_states), do: {:error, :linear_unavailable}
   end
 
+  defmodule FailingClaimService do
+    @spec claim(Issue.t(), pid()) :: {:error, :claim_service_unavailable}
+    def claim(_issue, _owner), do: {:error, :claim_service_unavailable}
+  end
+
+  defmodule AutonomousClaimService do
+    @spec claim(Issue.t(), pid()) :: {:ok, map()}
+    def claim(issue, _owner) do
+      send(Application.fetch_env!(:symphony_elixir, :review_recipient), {:autonomous_call, :claim})
+      {:ok, %{issue_id: issue.id, claim_id: "11111111-1111-4111-8111-111111111111", generation: 1}}
+    end
+
+    @spec bind_worker(String.t(), pid()) :: :ok
+    def bind_worker(_issue_id, _worker) do
+      send(Application.fetch_env!(:symphony_elixir, :review_recipient), {:autonomous_call, :bind_worker})
+      :ok
+    end
+
+    @spec effect_context(String.t()) :: {:ok, (String.t(), list() -> term()), map()}
+    def effect_context(_issue_id) do
+      send(Application.fetch_env!(:symphony_elixir, :review_recipient), {:autonomous_call, :effect_context})
+      {:ok, fn _sql, _params -> :unused end, claim_context()}
+    end
+
+    @spec release(String.t()) :: :ok
+    def release(_issue_id) do
+      send(Application.fetch_env!(:symphony_elixir, :review_recipient), {:autonomous_call, :release})
+      :ok
+    end
+
+    defp claim_context do
+      %{
+        issue_id: "issue-160",
+        claim_id: "11111111-1111-4111-8111-111111111111",
+        generation: 1,
+        node_id: "22222222-2222-4222-8222-222222222222",
+        node_instance_id: "33333333-3333-4333-8333-333333333333"
+      }
+    end
+  end
+
+  defmodule AutonomousEffectLedger do
+    @spec list_operations(term(), map()) :: {:ok, [map()]}
+    def list_operations(_connection, _claim_context) do
+      send(Application.fetch_env!(:symphony_elixir, :review_recipient), {:autonomous_call, :list_operations})
+      {:ok, Application.get_env(:symphony_elixir, :autonomous_operations, [])}
+    end
+  end
+
   setup do
     Application.put_env(:symphony_elixir, :review_recipient, self())
     Application.put_env(:symphony_elixir, :review_issues, [issue()])
@@ -87,6 +136,7 @@ defmodule SymphonyElixir.ReviewConvergenceTest do
       Application.delete_env(:symphony_elixir, :linear_client_module)
       Application.delete_env(:symphony_elixir, :review_state_result)
       Application.delete_env(:symphony_elixir, :verified_issue_state)
+      Application.delete_env(:symphony_elixir, :autonomous_operations)
     end)
   end
 
@@ -105,6 +155,126 @@ defmodule SymphonyElixir.ReviewConvergenceTest do
              })
 
     assert malformed_message =~ "must use owner/name format"
+  end
+
+  test "severity alone no longer produces a rework decision when a finding summary is present" do
+    snapshot =
+      snapshot(%{
+        threads: [%{priority: 1, resolved: false, body: "P1"}],
+        finding_summary: %{decisions: [], requires_lifecycle?: false}
+      })
+
+    refute match?({:rework, _}, ReviewConvergence.evaluate(snapshot, 0, 3))
+  end
+
+  test "invalid finding summaries fail closed before convergence" do
+    assert {:wait, %{reason: :finding_summary_invalid}} =
+             ReviewConvergence.evaluate(
+               snapshot(%{finding_summary: %{decisions: :invalid}}),
+               0,
+               3
+             )
+
+    assert {:wait, %{reason: :finding_summary_invalid}} =
+             ReviewConvergence.evaluate(snapshot(%{finding_summary: :invalid}), 0, 3)
+  end
+
+  test "autonomous global preflight failure performs no external write" do
+    Application.put_env(
+      :symphony_elixir,
+      :review_snapshot,
+      {:ok, snapshot(%{finding_summary: %{decisions: [], requires_lifecycle?: false}})}
+    )
+
+    state =
+      ReviewMonitor.run_with(
+        %{},
+        settings(),
+        ReviewClient,
+        Tracker,
+        %{profile: :aroak_autonomous_v1, claim_service: FailingClaimService}
+      )
+
+    assert state["issue-160"].global_blocker == :claim_service_unavailable
+    refute_received {:comment, _, _}
+    refute_received {:state, _, _}
+    refute_received {:status, _, _, _, _}
+  end
+
+  test "autonomous profile bypasses the legacy advisory status publisher" do
+    Application.put_env(
+      :symphony_elixir,
+      :review_snapshot,
+      {:ok, snapshot(%{finding_summary: %{decisions: [], requires_lifecycle?: false}})}
+    )
+
+    state =
+      ReviewMonitor.run_with(
+        %{},
+        settings(),
+        ReviewClient,
+        Tracker,
+        %{
+          profile: :aroak_autonomous_v1,
+          claim_service: AutonomousClaimService,
+          effect_ledger: AutonomousEffectLedger
+        }
+      )
+
+    assert state["issue-160"].decisions == %{}
+    assert state["issue-160"].pending_effect_ids == []
+    refute_received {:status, _, _, _, _}
+    assert_receive {:autonomous_call, :claim}
+    assert_receive {:autonomous_call, :bind_worker}
+    assert_receive {:autonomous_call, :effect_context}
+    assert_receive {:autonomous_call, :list_operations}
+    assert_receive {:autonomous_call, :release}
+  end
+
+  test "pending ledger effects block autonomous execution before owner APIs" do
+    Application.put_env(
+      :symphony_elixir,
+      :review_snapshot,
+      {:ok,
+       snapshot(%{
+         finding_summary: %{
+           decisions: [%{finding_key_digest: "finding-1", disposition: :fix_in_current_pr}],
+           requires_lifecycle?: true
+         }
+       })}
+    )
+
+    Application.put_env(
+      :symphony_elixir,
+      :autonomous_operations,
+      [
+        %{
+          operation_id: "issue-160:operation-1",
+          request_fingerprint: "fingerprint",
+          status: :pending
+        }
+      ]
+    )
+
+    state =
+      ReviewMonitor.run_with(
+        %{},
+        settings(),
+        ReviewClient,
+        Tracker,
+        %{
+          profile: :aroak_autonomous_v1,
+          claim_service: AutonomousClaimService,
+          effect_ledger: AutonomousEffectLedger
+        }
+      )
+
+    assert state["issue-160"].global_blocker == :pending_effects
+    assert state["issue-160"].pending_effect_ids == ["issue-160:operation-1"]
+    assert state["issue-160"].authorization_required == false
+    refute_received {:comment, _, _}
+    refute_received {:state, _, _}
+    refute_received {:status, _, _, _, _}
   end
 
   test "missing expected GitHub Actions checks fail closed instead of treating zero rows as passing" do

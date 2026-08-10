@@ -16,12 +16,13 @@ defmodule SymphonyElixir.ReviewConvergence do
   @spec evaluate(map(), non_neg_integer(), pos_integer()) :: decision()
   def evaluate(snapshot, fix_rounds, max_fix_rounds)
       when is_map(snapshot) and is_integer(fix_rounds) and is_integer(max_fix_rounds) do
-    actionable = Enum.filter(snapshot[:threads] || [], &actionable_thread?/1)
+    actionable = legacy_actionable_threads(snapshot)
     gate_evidence = evidence(snapshot, actionable)
 
     with :continue <- waiting_gate(snapshot, gate_evidence),
          :continue <- current_head_gate(snapshot, gate_evidence),
          :continue <- base_gate(snapshot, gate_evidence),
+         :continue <- finding_summary_gate(snapshot, gate_evidence),
          :continue <- actionable_gate(snapshot, actionable, gate_evidence, fix_rounds, max_fix_rounds),
          :continue <- review_gate(snapshot, gate_evidence),
          :continue <- checks_gate(snapshot, gate_evidence) do
@@ -44,6 +45,12 @@ defmodule SymphonyElixir.ReviewConvergence do
 
   def actionable_thread?(_thread), do: false
 
+  defp legacy_actionable_threads(%{finding_summary: _summary}), do: []
+
+  defp legacy_actionable_threads(snapshot) do
+    Enum.filter(snapshot[:threads] || [], &actionable_thread?/1)
+  end
+
   defp waiting_gate(%{waiting_reason: reason}, evidence) when not is_nil(reason),
     do: {:wait, Map.put(evidence, :reason, reason)}
 
@@ -62,6 +69,26 @@ defmodule SymphonyElixir.ReviewConvergence do
       :continue
     end
   end
+
+  defp finding_summary_gate(%{finding_summary: summary}, evidence) when is_map(summary) do
+    decisions = summary[:decisions]
+
+    cond do
+      not is_list(decisions) ->
+        {:wait, Map.put(evidence, :reason, :finding_summary_invalid)}
+
+      summary[:requires_lifecycle?] == true or decisions != [] ->
+        {:wait, Map.put(evidence, :reason, :finding_lifecycle_required)}
+
+      true ->
+        :continue
+    end
+  end
+
+  defp finding_summary_gate(%{finding_summary: _summary}, evidence),
+    do: {:wait, Map.put(evidence, :reason, :finding_summary_invalid)}
+
+  defp finding_summary_gate(_snapshot, _evidence), do: :continue
 
   defp actionable_gate(_snapshot, [], _evidence, _fix_rounds, _max_fix_rounds), do: :continue
 
@@ -110,7 +137,8 @@ defmodule SymphonyElixir.ReviewConvergence do
       base_ref_oid: snapshot[:base_ref_oid],
       base_verification: snapshot[:base_verification],
       required_checks: snapshot[:required_checks] || [],
-      actionable_threads: actionable
+      actionable_threads: actionable,
+      finding_summary: snapshot[:finding_summary]
     }
   end
 end

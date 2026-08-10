@@ -70,6 +70,29 @@ Each decision publishes the fixed GitHub commit status context `Review Convergen
 that context as required only after the runtime change is deployed and live-smoked; keep existing
 human approval protection until then.
 
+## Design 2 finding disposition boundary
+
+The Design 2 runtime keeps one canonical finding contract. `FindingKey` identifies a finding in the
+current repository and pull request; `FindingLineageKey` follows that finding across head changes.
+Every result records the source head, `evaluated_head_sha`, and the observed current head. Missing,
+stale, conflicting, or unverified evidence fails closed.
+
+The classifier can return only `fix_in_current_pr`, `follow_up_required`, or `blocked_unverified`.
+Severity alone is not ownership evidence. Before any autonomous effect, the runtime must verify
+the active claim and read back the effect ledger for the exact issue, claim, node, instance, and
+generation. Pending or unknown effects stop the cycle before an owner API or external write.
+Request fingerprints are immutable and lock reconciliation uses a deterministic fixed order.
+
+Design 2 consumes the merged HandoffReceipt V1 dependency only. It does not add a second evaluator,
+settlement engine, claim/ledger/receipt path, or coordinator, and it does not change ClaimService's
+existing lifecycle. Design 3 `authorize/5` and Design 4 `settle/2` are owner contracts; when either
+is unavailable, execution fails closed rather than using a local stub. `aroak_autonomous_v1` stays
+disabled by default, and this work does not start workers, use shared staging credentials, deploy,
+or touch Production.
+
+A technical pass, finding disposition, or `MergeReadyCandidate` does not authorize merge. Merge,
+deployment, Linear `Done`, and Landing remain human/owner actions outside Design 2.
+
 ## How to use it
 
 1. Make sure your codebase is set up to work well with agents: see
