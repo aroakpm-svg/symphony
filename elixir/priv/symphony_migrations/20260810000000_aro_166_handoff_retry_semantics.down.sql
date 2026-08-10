@@ -1,5 +1,9 @@
 begin;
 
+drop trigger if exists enforce_handoff_receipt_v2_insert
+  on symphony_staging.handoff_receipts;
+drop function if exists symphony_staging.enforce_handoff_receipt_v2_insert();
+
 delete from symphony_staging.contract_versions
 where contract_name = 'handoff-receipts'
   and migration_name = '20260810000000_aro_166_handoff_retry_semantics';

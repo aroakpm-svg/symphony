@@ -112,6 +112,10 @@ defmodule SymphonyElixir.HandoffReceiptMigrationTest do
     assert sql =~ receipt_lock
     assert :binary.match(sql, claim_lock) < :binary.match(sql, receipt_lock)
     assert :binary.match(sql, receipt_lock) < :binary.match(sql, "do $$")
+    assert sql =~ "create or replace function symphony_staging.enforce_handoff_receipt_v2_insert()"
+    assert sql =~ "create trigger enforce_handoff_receipt_v2_insert"
+    assert sql =~ "before insert on symphony_staging.handoff_receipts"
+    assert sql =~ "handoff receipt checkpoint rank cannot regress"
     assert sql =~ "legacy checkpoint rank regressions"
     assert sql =~ "prior_checkpoint_rank > ranked_receipts.checkpoint_rank"
     assert sql =~ "count(distinct receipts.repository)"
@@ -138,6 +142,8 @@ defmodule SymphonyElixir.HandoffReceiptMigrationTest do
     assert rollback =~ "'handoff-receipts', 1"
     assert rollback =~ "drop index if exists symphony_staging.handoff_receipts_checkpoint_identity_idx"
     assert rollback =~ "drop index if exists symphony_staging.effect_operations_issue_operation_idx"
+    assert rollback =~ "drop trigger if exists enforce_handoff_receipt_v2_insert"
+    assert rollback =~ "drop function if exists symphony_staging.enforce_handoff_receipt_v2_insert()"
     refute rollback =~ "drop table"
     refute rollback =~ "drop function symphony_staging.begin_effect"
     refute rollback =~ "drop table symphony_staging.effect_operations"

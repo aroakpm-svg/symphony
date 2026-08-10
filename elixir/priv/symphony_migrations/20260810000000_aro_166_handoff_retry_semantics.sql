@@ -72,6 +72,83 @@ begin
 end
 $$;
 
+create or replace function symphony_staging.enforce_handoff_receipt_v2_insert()
+returns trigger
+language plpgsql
+security definer
+set search_path = pg_catalog, pg_temp
+as $$
+declare
+  existing_pr_number bigint;
+  highest_checkpoint_rank integer;
+  requested_checkpoint_rank integer;
+begin
+  if exists (
+    select 1
+    from symphony_staging.handoff_receipts receipts
+    where receipts.issue_id = new.issue_id
+      and receipts.claim_id = new.claim_id
+      and receipts.generation = new.generation
+      and (
+        receipts.repository <> new.repository
+        or receipts.branch <> new.branch
+        or receipts.head_sha <> new.head_sha
+      )
+  ) then
+    raise exception using
+      errcode = '22023',
+      message = 'handoff receipt generation is bound to another repository, branch, or head';
+  end if;
+
+  select min(receipts.pr_number)
+  into existing_pr_number
+  from symphony_staging.handoff_receipts receipts
+  where receipts.issue_id = new.issue_id
+    and receipts.claim_id = new.claim_id
+    and receipts.generation = new.generation
+    and receipts.pr_number is not null;
+
+  if existing_pr_number is not null
+     and new.pr_number is not null
+     and existing_pr_number <> new.pr_number then
+    raise exception using
+      errcode = '22023',
+      message = 'handoff receipt generation is bound to another pull request';
+  end if;
+
+  requested_checkpoint_rank := case new.checkpoint_kind
+    when 'pushed' then 1
+    when 'pull_request' then 2
+    when 'reviewed' then 3
+  end;
+
+  select max(
+    case receipts.checkpoint_kind
+      when 'pushed' then 1
+      when 'pull_request' then 2
+      when 'reviewed' then 3
+    end
+  )
+  into highest_checkpoint_rank
+  from symphony_staging.handoff_receipts receipts
+  where receipts.issue_id = new.issue_id
+    and receipts.claim_id = new.claim_id
+    and receipts.generation = new.generation;
+
+  if highest_checkpoint_rank > requested_checkpoint_rank then
+    raise exception using
+      errcode = '22023',
+      message = 'handoff receipt checkpoint rank cannot regress';
+  end if;
+
+  return new;
+end
+$$;
+
+create trigger enforce_handoff_receipt_v2_insert
+before insert on symphony_staging.handoff_receipts
+for each row execute function symphony_staging.enforce_handoff_receipt_v2_insert();
+
 create unique index handoff_receipts_checkpoint_identity_idx
   on symphony_staging.handoff_receipts (
     issue_id,
