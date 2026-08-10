@@ -33,7 +33,9 @@ begin
   if exists (
     select 1
     from symphony_staging.handoff_receipts receipts
-    where receipts.branch is null
+    where receipts.issue_id is null
+       or not symphony_staging.handoff_receipt_content_present(receipts.issue_id)
+       or receipts.branch is null
        or not symphony_staging.handoff_receipt_content_present(receipts.branch)
        or receipts.test_results is null
        or case
@@ -134,7 +136,9 @@ declare
   highest_checkpoint_rank integer;
   requested_checkpoint_rank integer;
 begin
-  if new.branch is null
+  if new.issue_id is null
+     or not symphony_staging.handoff_receipt_content_present(new.issue_id)
+     or new.branch is null
      or not symphony_staging.handoff_receipt_content_present(new.branch) then
     raise exception using
       errcode = '22023',
@@ -277,7 +281,7 @@ declare
   inserted_receipt symphony_staging.handoff_receipts%rowtype;
 begin
   if requested_issue_id is null
-     or btrim(requested_issue_id) = ''
+     or not symphony_staging.handoff_receipt_content_present(requested_issue_id)
      or requested_repository is null
      or btrim(requested_repository) = ''
      or requested_branch is null

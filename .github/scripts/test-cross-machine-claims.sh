@@ -162,6 +162,23 @@ fi
 grep -q "malformed legacy receipt content" "$content_preflight_output"
 psql_admin -c "delete from symphony_staging.handoff_receipts where issue_id = 'MIGRATION-CONTENT-TEST';"
 
+psql_admin -c "insert into symphony_staging.handoff_receipts (
+    checkpoint_sequence, receipt_schema_version, issue_id, repository, claim_id, generation,
+    checkpoint_kind, branch, head_sha, tested_head_sha, pr_number,
+    test_results, effect_operation_ids
+  ) overriding system value values (
+    8993, 1, chr(160), 'aroakpm-svg/symphony',
+    '40000000-0000-0000-0000-000000000007', 1,
+    'pushed', 'branch-a', repeat('a', 40), repeat('a', 40), null,
+    '[{\"name\":\"migration\",\"status\":\"passed\"}]'::jsonb, '{}'
+  );"
+if psql_admin -f "$retry_migration" >"$content_preflight_output" 2>&1; then
+  echo "retry migration unexpectedly accepted a whitespace-only legacy issue ID" >&2
+  exit 1
+fi
+grep -q "malformed legacy receipt content" "$content_preflight_output"
+psql_admin -c "delete from symphony_staging.handoff_receipts where issue_id = chr(160);"
+
 psql_admin <<'SQL'
 insert into symphony_staging.handoff_receipts (
   checkpoint_sequence, receipt_schema_version, issue_id, repository, claim_id, generation,
@@ -272,6 +289,22 @@ if psql_admin -c "insert into symphony_staging.handoff_receipts (
 fi
 grep -q "test results must contain only passed or skipped named tests" "$stale_whitespace_output"
 test "$(psql_admin -A -t -c "select count(*) from symphony_staging.handoff_receipts where issue_id = 'MIGRATION-STALE-WHITESPACE';")" = "0"
+
+if psql_admin -c "insert into symphony_staging.handoff_receipts (
+    checkpoint_sequence, receipt_schema_version, issue_id, repository, claim_id, generation,
+    checkpoint_kind, branch, head_sha, tested_head_sha, pr_number,
+    test_results, effect_operation_ids
+  ) overriding system value values (
+    9025, 1, chr(160), 'aroakpm-svg/symphony',
+    '40000000-0000-0000-0000-000000000008', 1,
+    'pushed', 'branch-a', repeat('a', 40), repeat('a', 40), null,
+    '[{\"name\":\"migration\",\"status\":\"passed\"}]'::jsonb, '{}'
+  );" >"$stale_whitespace_output" 2>&1; then
+  echo "V2 insert enforcement unexpectedly accepted a whitespace-only stale V1 issue ID" >&2
+  exit 1
+fi
+grep -q "handoff receipt identity and content are required" "$stale_whitespace_output"
+test "$(psql_admin -A -t -c "select count(*) from symphony_staging.handoff_receipts where issue_id = chr(160);")" = "0"
 test "$(PGPASSWORD=disposable psql -X -q -A -t -v ON_ERROR_STOP=1 -d "$(node_url claim_node_c)" -c \
   "select symphony_staging.effect_ledger_ready();")" = "t"
 
