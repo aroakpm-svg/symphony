@@ -87,31 +87,43 @@ defmodule SymphonyElixir.ReviewMonitor do
   defp reconcile_autonomous_issue(%Issue{} = issue, state, settings, review_client, options) do
     entry = autonomous_entry(Map.get(state, issue.id, %{}))
 
-    result =
+    {result, acquisition} =
       with branch when is_binary(branch) and branch != "" <- issue.branch_name,
            {:ok, snapshot} <- review_client.snapshot(settings.repository, branch),
-           {:ok, claim} <- claim_for(options, issue),
-           {:ok, connection, claim_context} <- claimed_context(options, issue, claim),
-           {:ok, operations} <- list_effect_operations(options, connection, claim_context),
-           {:ok, summary} <- finding_summary(snapshot, settings),
-           :ok <- reconcile_operation_locks(operations) do
-        autonomous_claimed_result(
-          entry,
-          issue,
-          snapshot,
-          summary,
-          operations,
-          claim_context,
-          settings,
-          options
-        )
+           {:ok, claim, claim_acquisition} <- claim_for(options, issue) do
+        case claim_acquisition do
+          :new ->
+            result =
+              with {:ok, connection, claim_context} <- claimed_context(options, issue, claim),
+                   {:ok, operations} <- list_effect_operations(options, connection, claim_context),
+                   {:ok, summary} <- finding_summary(snapshot, settings),
+                   :ok <- reconcile_operation_locks(operations) do
+                autonomous_claimed_result(
+                  entry,
+                  issue,
+                  snapshot,
+                  summary,
+                  operations,
+                  claim_context,
+                  settings,
+                  options
+                )
+              else
+                {:error, reason} -> {:blocked, reason}
+              end
+
+            {result, :new}
+
+          :existing ->
+            {{:blocked, :claim_already_owned}, :existing}
+        end
       else
-        nil -> {:blocked, :missing_branch_name}
-        "" -> {:blocked, :missing_branch_name}
-        {:error, reason} -> {:blocked, reason}
+        nil -> {{:blocked, :missing_branch_name}, :none}
+        "" -> {{:blocked, :missing_branch_name}, :none}
+        {:error, reason} -> {{:blocked, reason}, :none}
       end
 
-    release_claim(options, issue.id)
+    if acquisition == :new, do: release_claim(options, issue.id)
 
     case result do
       {:ok, updated_entry} -> Map.put(state, issue.id, updated_entry)
@@ -143,10 +155,20 @@ defmodule SymphonyElixir.ReviewMonitor do
     claim_service = Map.get(options, :claim_service, ClaimService)
 
     case claim_service.claim(issue, self()) do
-      {:ok, claim} when is_map(claim) -> {:ok, claim}
-      {:error, reason} -> {:error, reason}
-      {:ok, nil} -> {:error, :claim_service_unavailable}
-      other -> {:error, {:invalid_claim_result, other}}
+      {:ok, %{acquisition: acquisition} = claim} when acquisition in [:new, :existing] ->
+        {:ok, claim, acquisition}
+
+      {:error, reason} ->
+        {:error, reason}
+
+      {:ok, nil} ->
+        {:error, :claim_service_unavailable}
+
+      {:ok, claim} when is_map(claim) ->
+        {:error, :claim_ownership_unverified}
+
+      other ->
+        {:error, {:invalid_claim_result, other}}
     end
   end
 

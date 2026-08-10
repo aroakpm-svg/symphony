@@ -69,8 +69,8 @@ begin
          operations.generation
   from symphony_staging.effect_operations operations
   where operations.issue_id = requested_issue_id
-    and operations.claim_id = requested_claim_id
-    and operations.generation = requested_generation
+    and operations.status in ('pending', 'unknown')
+    and operations.generation <= requested_generation
   order by operations.operation_id;
 end
 $$;
@@ -86,6 +86,32 @@ revoke all on function
 grant execute on function
   symphony_staging.list_effect_operations(text, uuid, bigint, uuid, uuid)
   to symphony_staging_runtime;
+
+create or replace function symphony_staging.grant_finding_readback_api_to_node_login()
+returns trigger
+language plpgsql
+security definer
+set search_path = pg_catalog, pg_temp
+as $$
+begin
+  execute format(
+    'grant execute on function '
+    'symphony_staging.list_effect_operations(text, uuid, bigint, uuid, uuid) to %I',
+    new.login_role
+  );
+  return new;
+end
+$$;
+
+revoke all on function symphony_staging.grant_finding_readback_api_to_node_login()
+  from public, anon, authenticated, service_role,
+       symphony_staging_runtime, symphony_staging_provisioner;
+
+drop trigger if exists grant_finding_readback_api_to_node_login
+  on symphony_staging.node_login_principals;
+create trigger grant_finding_readback_api_to_node_login
+after insert or update of login_role on symphony_staging.node_login_principals
+for each row execute function symphony_staging.grant_finding_readback_api_to_node_login();
 
 do $$
 declare

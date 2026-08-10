@@ -186,8 +186,11 @@ defmodule SymphonyElixir.FindingDispositionTest do
     assert {:error, {:global_blocker, :preflight_unverified}} =
              FindingDisposition.classify_all([], %{verified?: false})
 
-    assert {:error, {:global_blocker, :preflight_invalid}} =
+    assert {:error, {:global_blocker, :preflight_unverified}} =
              FindingDisposition.classify_all([], %{valid?: false})
+
+    assert {:error, {:global_blocker, :preflight_invalid}} =
+             FindingDisposition.classify_all([], %{verified?: true, valid?: false})
 
     assert {:error, {:global_blocker, :invalid_preflight}} = FindingDisposition.classify_all([], :bad)
   end
@@ -442,17 +445,21 @@ defmodule SymphonyElixir.FindingDispositionTest do
     )
   end
 
-  defp preflight_facts, do: %{verified?: true, repository: "openai/symphony", pull_request_number: 21}
+  defp preflight_facts, do: %{verified?: true, valid?: true, repository: "openai/symphony", pull_request_number: 21}
 
   defp trusted_comment(id, body, connection_index), do: %{id: id, body: body, trusted_review_source?: true, managed_agent_reply?: false, settlement_marker?: false, connection_index: connection_index}
 
   defp managed_comment(id, body, connection_index), do: %{id: id, body: body, trusted_review_source?: true, managed_agent_reply?: true, settlement_marker?: true, connection_index: connection_index}
 
   defp fingerprint_intent do
+    facts = finding_input(%{})
+    {:ok, finding_key} = FindingDisposition.build_finding_key(facts)
+    {:ok, finding_lineage_key} = FindingDisposition.build_lineage_key(facts)
+
     %{
       disposition: :fix_in_current_pr,
-      finding_key: "finding-1",
-      finding_lineage_key: "lineage-1",
+      finding_key: finding_key,
+      finding_lineage_key: finding_lineage_key,
       evaluated_head_sha: full_sha("a"),
       policy_version: "design2-v1",
       target: %{repository: "openai/symphony", pull_request_number: 21},

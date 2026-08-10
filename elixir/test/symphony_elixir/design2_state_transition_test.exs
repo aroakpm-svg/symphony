@@ -108,10 +108,11 @@ defmodule SymphonyElixir.Design2StateTransitionTest do
   end
 
   test "monitor does not release an existing worker claim" do
-    run_monitor(:existing)
+    state = run_monitor(:existing)
 
-    assert_receive {:claim, :bind_worker, _}
-    assert_receive {:claim, :effect_context, _}
+    assert state[Fixtures.issue_id()].global_blocker == :claim_already_owned
+    refute_receive {:claim, :bind_worker, _}
+    refute_receive {:claim, :effect_context, _}
     refute_receive {:claim, :release, _}
   end
 

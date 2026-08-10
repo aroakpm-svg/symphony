@@ -83,7 +83,14 @@ defmodule SymphonyElixir.ReviewConvergenceTest do
     @spec claim(Issue.t(), pid()) :: {:ok, map()}
     def claim(issue, _owner) do
       send(Application.fetch_env!(:symphony_elixir, :review_recipient), {:autonomous_call, :claim})
-      {:ok, %{issue_id: issue.id, claim_id: "11111111-1111-4111-8111-111111111111", generation: 1}}
+
+      {:ok,
+       %{
+         issue_id: issue.id,
+         claim_id: "11111111-1111-4111-8111-111111111111",
+         generation: 1,
+         acquisition: :new
+       }}
     end
 
     @spec bind_worker(String.t(), pid()) :: :ok

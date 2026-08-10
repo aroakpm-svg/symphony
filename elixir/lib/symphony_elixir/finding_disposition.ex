@@ -516,7 +516,8 @@ defmodule SymphonyElixir.FindingDisposition do
 
     with :ok <- validate_fingerprint_fields(intent, required),
          :ok <- validate_disposition(value(intent, :disposition)),
-         :ok <- validate_sha(value(intent, :evaluated_head_sha), :evaluated_head_sha) do
+         :ok <- validate_sha(value(intent, :evaluated_head_sha), :evaluated_head_sha),
+         :ok <- validate_fingerprint_identity(intent) do
       {:ok, intent}
     end
   end
@@ -597,9 +598,96 @@ defmodule SymphonyElixir.FindingDisposition do
     cond do
       blocker_present?(value(preflight, :global_blocker)) -> value(preflight, :global_blocker)
       true_value?(value(preflight, :blocked?)) -> :preflight_blocked
-      false_value?(value(preflight, :verified?)) -> :preflight_unverified
-      false_value?(value(preflight, :valid?)) -> :preflight_invalid
+      true_value?(value(preflight, :conflict?)) -> :preflight_conflicting
+      not true_value?(value(preflight, :verified?)) -> :preflight_unverified
+      not true_value?(value(preflight, :valid?)) -> :preflight_invalid
       true -> nil
+    end
+  end
+
+  defp validate_fingerprint_identity(intent) do
+    with {:ok, finding_key} <- canonical_finding_key(value(intent, :finding_key)),
+         {:ok, lineage_key} <- canonical_lineage_key(value(intent, :finding_lineage_key)),
+         :ok <- matching_lineage_identity(finding_key, lineage_key),
+         :ok <- matching_target_identity(value(intent, :target), finding_key) do
+      :ok
+    end
+  end
+
+  defp canonical_finding_key(key) when is_map(key) do
+    with {:ok, repository} <- required_string(key, :repository),
+         {:ok, pull_request_number} <- required_positive_integer(key, :pull_request_number),
+         {:ok, source_head_sha} <- required_sha(key, :source_head_sha),
+         {:ok, review_thread_id} <- required_string(key, :review_thread_id),
+         {:ok, selected_review_comment_id} <- required_string(key, :selected_review_comment_id),
+         {:ok, body_sha256} <- required_digest(key, :body_sha256),
+         {:ok, _digest_value} <- required_digest(key, :digest) do
+      expected = %{
+        repository: repository,
+        pull_request_number: pull_request_number,
+        source_head_sha: source_head_sha,
+        review_thread_id: review_thread_id,
+        selected_review_comment_id: selected_review_comment_id,
+        body_sha256: body_sha256,
+        digest:
+          digest(
+            :symphony_finding_identity_v1,
+            {repository, pull_request_number, source_head_sha, review_thread_id, selected_review_comment_id, body_sha256}
+          )
+      }
+
+      if key == expected, do: {:ok, expected}, else: {:error, :non_canonical_finding_key}
+    end
+  end
+
+  defp canonical_finding_key(_key), do: {:error, :invalid_finding_key}
+
+  defp canonical_lineage_key(key) when is_map(key) do
+    with {:ok, repository} <- required_string(key, :repository),
+         {:ok, pull_request_number} <- required_positive_integer(key, :pull_request_number),
+         {:ok, review_thread_id} <- required_string(key, :review_thread_id),
+         {:ok, _digest_value} <- required_digest(key, :digest) do
+      expected = %{
+        repository: repository,
+        pull_request_number: pull_request_number,
+        review_thread_id: review_thread_id,
+        digest: digest(:symphony_finding_lineage_v1, {repository, pull_request_number, review_thread_id})
+      }
+
+      if key == expected, do: {:ok, expected}, else: {:error, :non_canonical_finding_lineage_key}
+    end
+  end
+
+  defp canonical_lineage_key(_key), do: {:error, :invalid_finding_lineage_key}
+
+  defp matching_lineage_identity(finding_key, lineage_key) do
+    if finding_key.repository == lineage_key.repository and
+         finding_key.pull_request_number == lineage_key.pull_request_number and
+         finding_key.review_thread_id == lineage_key.review_thread_id do
+      :ok
+    else
+      {:error, :finding_lineage_scope_mismatch}
+    end
+  end
+
+  defp matching_target_identity(target, finding_key) when is_map(target) do
+    if value(target, :repository) == finding_key.repository and
+         value(target, :pull_request_number) == finding_key.pull_request_number do
+      :ok
+    else
+      {:error, :finding_target_scope_mismatch}
+    end
+  end
+
+  defp matching_target_identity(_target, _finding_key), do: {:error, :invalid_finding_target}
+
+  defp required_digest(input, key) do
+    case value(input, key) do
+      value when is_binary(value) ->
+        if Regex.match?(~r/\A[0-9a-f]{64}\z/, value), do: {:ok, value}, else: {:error, {:invalid_digest, key}}
+
+      _ ->
+        {:error, {:invalid_digest, key}}
     end
   end
 

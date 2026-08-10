@@ -341,8 +341,9 @@ defmodule SymphonyElixir.EffectLedger do
   defp valid_native_resource(resource), do: {:error, {:invalid_native_resource, resource}}
 
   defp matching_context(issue_id, claim_id, generation, claim_context) do
-    if issue_id == claim_context.issue_id and claim_id == claim_context.claim_id and
-         generation == claim_context.generation do
+    if issue_id == claim_context.issue_id and valid_uuid?(claim_id) and
+         is_integer(generation) and generation > 0 and generation <= claim_context.generation and
+         (generation < claim_context.generation or claim_id == claim_context.claim_id) do
       :ok
     else
       {:error, :effect_operation_context_mismatch}

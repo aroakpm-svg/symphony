@@ -122,6 +122,13 @@ defmodule SymphonyElixir.EffectLedgerMigrationTest do
     assert sql =~ "select login_role from symphony_staging.node_login_principals"
   end
 
+  test "finding readback access is granted to node principals enrolled later" do
+    sql = File.read!(@finding_readback_migration)
+
+    assert sql =~ "grant_finding_readback_api_to_node_login"
+    assert sql =~ "after insert or update of login_role on symphony_staging.node_login_principals"
+  end
+
   test "rollback removes only ARO-165 objects" do
     rollback = File.read!(@rollback)
 
@@ -233,7 +240,7 @@ defmodule SymphonyElixir.EffectLedgerMigrationTest do
     end
   end
 
-  test "list_operations rejects rows from another issue, claim, or generation" do
+  test "list_operations rejects rows from another issue, claim, or future generation" do
     claim = claim_context()
 
     for row <- [
