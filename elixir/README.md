@@ -129,6 +129,14 @@ committed migration. Keep the freeze in place while the result is investigated;
 create a separately reviewed forward reconciliation only when shared staging
 actually contains drift. Release the DDL freeze only after postflight succeeds.
 
+## ARO-166 handoff receipt retry semantics
+
+Handoff receipt contract version 2 keeps the append-only, staging-only V1 shape
+and makes same-generation retries deterministic. A generation is bound to one
+branch and head; identical logical checkpoints are idempotent, late lower-ranked
+checkpoints do not become latest, and a new head requires a new generation. ARO-167
+runtime integration remains a separate contract and is not enabled by this migration.
+
 ## Configuration
 
 Pass a custom workflow file path to `./bin/symphony` when starting the service:

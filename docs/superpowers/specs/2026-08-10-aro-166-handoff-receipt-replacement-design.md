@@ -105,6 +105,30 @@ required set before requesting an append.
 explicit binding between structured test evidence and the code revision. The
 database rejects a mismatch.
 
+### 3.1 Retry and regression amendment
+
+The receipt row shape remains V1-compatible; the installed contract registration
+is version `2` because append behavior now has explicit same-generation retry
+semantics:
+
+- `(issue_id, claim_id, generation)` is bound to one repository, branch, and
+  `head_sha`. A different head or branch requires a new claim generation and is
+  rejected fail closed.
+- The logical checkpoint identity is
+  `(issue_id, claim_id, generation, head_sha, checkpoint_kind, pr_number)`.
+  `pr_number` is null only for `pushed`.
+- An identical checkpoint retry returns the original row without allocating a
+  new database sequence. A retry with conflicting test results is rejected.
+- Checkpoint rank is `pushed < pull_request < reviewed`. A delayed lower-ranked
+  append returns the already recorded higher-ranked row and does not become the
+  latest receipt.
+- A generation cannot switch to a different pull-request identity after one is
+  recorded; that change requires a new generation.
+
+This amendment intentionally uses the existing claim lock and one unique
+checkpoint-identity index. It does not add a retry ledger, caller-supplied
+sequence, timestamp ordering, runtime workflow, or ARO-167 integration.
+
 ## 4. Domain API
 
 ```elixir
@@ -249,6 +273,9 @@ Database rules:
 - append validates exact V1 shape and derives the complete, ordered
   `effect_operation_ids` snapshot from existing ARO-165 rows for the same issue;
   the caller cannot omit IDs and ARO-165 records are never rewritten;
+- contract version 2 binds one head to a generation, returns existing rows for
+  identical retries, and prevents lower-ranked late appends from becoming the
+  latest receipt;
 - latest requires a new active claim for the same issue and selects by
   generation descending, then checkpoint sequence descending;
 - rows are never updated or deleted by runtime functions;

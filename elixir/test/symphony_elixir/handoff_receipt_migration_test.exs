@@ -9,6 +9,14 @@ defmodule SymphonyElixir.HandoffReceiptMigrationTest do
               "../../priv/symphony_migrations/20260806000000_aro_166_handoff_receipts.down.sql",
               __DIR__
             )
+  @retry_migration Path.expand(
+                     "../../priv/symphony_migrations/20260810000000_aro_166_handoff_retry_semantics.sql",
+                     __DIR__
+                   )
+  @retry_rollback Path.expand(
+                    "../../priv/symphony_migrations/20260810000000_aro_166_handoff_retry_semantics.down.sql",
+                    __DIR__
+                  )
 
   test "migration is staging-only and persists the exact V1 contract" do
     sql = File.read!(@migration)
@@ -88,6 +96,32 @@ defmodule SymphonyElixir.HandoffReceiptMigrationTest do
     refute rollback =~ "effect_operations"
     refute rollback =~ "issue_claims"
     refute rollback =~ "drop schema"
+    refute rollback =~ "symphony_production"
+  end
+
+  test "retry migration binds a generation, deduplicates identities, and preserves rank" do
+    sql = File.read!(@retry_migration)
+
+    assert sql =~ "create unique index handoff_receipts_checkpoint_identity_idx"
+    assert sql =~ "coalesce(pr_number, 0)"
+    assert sql =~ "handoff receipt generation is bound to another repository, branch, or head"
+    assert sql =~ "handoff receipt generation is bound to another pull request"
+    assert sql =~ "latest_checkpoint_rank > requested_checkpoint_rank"
+    assert sql =~ "handoff receipt retry identity has conflicting test results"
+    assert sql =~ "'handoff-receipts', 2"
+    refute sql =~ "symphony_production."
+  end
+
+  test "retry rollback removes only the retry contract and restores V1 registration" do
+    rollback = File.read!(@retry_rollback)
+
+    assert rollback =~ "delete from symphony_staging.contract_versions"
+    assert rollback =~ "'handoff-receipts', 1"
+    assert rollback =~ "drop index if exists symphony_staging.handoff_receipts_checkpoint_identity_idx"
+    refute rollback =~ "drop table"
+    refute rollback =~ "drop function symphony_staging.begin_effect"
+    refute rollback =~ "drop table symphony_staging.effect_operations"
+    refute rollback =~ "drop table symphony_staging.issue_claims"
     refute rollback =~ "symphony_production"
   end
 end
