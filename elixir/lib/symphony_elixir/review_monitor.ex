@@ -93,26 +93,7 @@ defmodule SymphonyElixir.ReviewMonitor do
            {:ok, claim, claim_acquisition} <- claim_for(options, issue) do
         case claim_acquisition do
           :new ->
-            result =
-              with {:ok, connection, claim_context} <- claimed_context(options, issue, claim),
-                   {:ok, operations} <- list_effect_operations(options, connection, claim_context),
-                   {:ok, summary} <- finding_summary(snapshot, settings),
-                   :ok <- reconcile_operation_locks(operations) do
-                autonomous_claimed_result(
-                  entry,
-                  issue,
-                  snapshot,
-                  summary,
-                  operations,
-                  claim_context,
-                  settings,
-                  options
-                )
-              else
-                {:error, reason} -> {:blocked, reason}
-              end
-
-            {result, :new}
+            {reconcile_new_claim(entry, issue, snapshot, claim, settings, options), :new}
 
           :existing ->
             {{:blocked, :claim_already_owned}, :existing}
@@ -129,6 +110,26 @@ defmodule SymphonyElixir.ReviewMonitor do
       {:ok, updated_entry} -> Map.put(state, issue.id, updated_entry)
       {:blocked, reason, blocked_entry} -> Map.put(state, issue.id, autonomous_blocker(blocked_entry, reason))
       {:blocked, reason} -> Map.put(state, issue.id, autonomous_blocker(entry, reason))
+    end
+  end
+
+  defp reconcile_new_claim(entry, issue, snapshot, claim, settings, options) do
+    with {:ok, connection, claim_context} <- claimed_context(options, issue, claim),
+         {:ok, operations} <- list_effect_operations(options, connection, claim_context),
+         {:ok, summary} <- finding_summary(snapshot, settings),
+         :ok <- reconcile_operation_locks(operations) do
+      autonomous_claimed_result(
+        entry,
+        issue,
+        snapshot,
+        summary,
+        operations,
+        claim_context,
+        settings,
+        options
+      )
+    else
+      {:error, reason} -> {:blocked, reason}
     end
   end
 

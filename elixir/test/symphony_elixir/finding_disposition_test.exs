@@ -255,7 +255,18 @@ defmodule SymphonyElixir.FindingDispositionTest do
         requires_new_decision?: false
       })
 
-    for facts <- [incomplete, malformed, conflicting] do
+    malformed_conflict =
+      finding_facts("malformed-conflict", %{
+        introduced_by_pr?: true,
+        invariant_violation?: false,
+        evidence_conflict?: "true",
+        in_scope?: true,
+        still_applies?: true,
+        root_cause_bounded?: true,
+        requires_new_decision?: false
+      })
+
+    for facts <- [incomplete, malformed, conflicting, malformed_conflict] do
       assert {:ok, %{disposition: :blocked_unverified}} = FindingDisposition.classify(facts, preflight_facts())
     end
   end
@@ -420,6 +431,24 @@ defmodule SymphonyElixir.FindingDispositionTest do
 
     assert {:error, {:unknown_disposition, :bad}} =
              FindingDisposition.decode_request_fingerprint(bad_fingerprint)
+
+    intent = fingerprint_intent()
+
+    for invalid_intent <- [
+          %{intent | finding_key: :malformed},
+          %{intent | finding_lineage_key: :malformed},
+          %{intent | target: :malformed},
+          %{intent | finding_key: Map.put(intent.finding_key, :digest, 123)},
+          %{intent | finding_lineage_key: Map.put(intent.finding_lineage_key, :digest, 123)}
+        ] do
+      assert {:error, _reason} = FindingDisposition.decode_request_fingerprint(fingerprint_with_intent(invalid_intent))
+    end
+
+    {:ok, other_lineage} =
+      FindingDisposition.build_lineage_key(finding_input(%{review_thread_id: "other-thread"}))
+
+    assert {:error, :finding_lineage_scope_mismatch} =
+             FindingDisposition.decode_request_fingerprint(fingerprint_with_intent(%{intent | finding_lineage_key: other_lineage}))
   end
 
   test "lock reconciliation detects disposition and effect identity conflicts" do

@@ -197,7 +197,13 @@ defmodule SymphonyElixir.Design2StateTransitionTest do
     {:ok, binary} = Base.url_decode64(encoded, padding: false)
     {:symphony_request_fingerprint_v1, intent} = :erlang.binary_to_term(binary, [:safe])
     tampered = mutate.(intent)
-    encoded_tampered = Base.url_encode64(:erlang.term_to_binary({:symphony_request_fingerprint_v1, tampered}, [:deterministic]), padding: false)
+
+    encoded_tampered =
+      Base.url_encode64(
+        :erlang.term_to_binary({:symphony_request_fingerprint_v1, tampered}, [:deterministic]),
+        padding: false
+      )
+
     "symphony_request_fingerprint_v1:" <> encoded_tampered
   end
 end

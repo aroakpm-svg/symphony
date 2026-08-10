@@ -637,9 +637,8 @@ defmodule SymphonyElixir.FindingDisposition do
   defp validate_fingerprint_identity(intent) do
     with {:ok, finding_key} <- canonical_finding_key(value(intent, :finding_key)),
          {:ok, lineage_key} <- canonical_lineage_key(value(intent, :finding_lineage_key)),
-         :ok <- matching_lineage_identity(finding_key, lineage_key),
-         :ok <- matching_target_identity(value(intent, :target), finding_key) do
-      :ok
+         :ok <- matching_lineage_identity(finding_key, lineage_key) do
+      matching_target_identity(value(intent, :target), finding_key)
     end
   end
 
@@ -651,6 +650,9 @@ defmodule SymphonyElixir.FindingDisposition do
          {:ok, selected_review_comment_id} <- required_string(key, :selected_review_comment_id),
          {:ok, body_sha256} <- required_digest(key, :body_sha256),
          {:ok, _digest_value} <- required_digest(key, :digest) do
+      identity =
+        {repository, pull_request_number, source_head_sha, review_thread_id, selected_review_comment_id, body_sha256}
+
       expected = %{
         repository: repository,
         pull_request_number: pull_request_number,
@@ -658,11 +660,7 @@ defmodule SymphonyElixir.FindingDisposition do
         review_thread_id: review_thread_id,
         selected_review_comment_id: selected_review_comment_id,
         body_sha256: body_sha256,
-        digest:
-          digest(
-            :symphony_finding_identity_v1,
-            {repository, pull_request_number, source_head_sha, review_thread_id, selected_review_comment_id, body_sha256}
-          )
+        digest: digest(:symphony_finding_identity_v1, identity)
       }
 
       if key == expected, do: {:ok, expected}, else: {:error, :non_canonical_finding_key}
