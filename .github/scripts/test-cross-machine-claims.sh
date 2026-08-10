@@ -8,8 +8,14 @@ effect_migration="$root_dir/elixir/priv/symphony_migrations/20260805000000_aro_1
 effect_rollback="$root_dir/elixir/priv/symphony_migrations/20260805000000_aro_165_effect_ledger.down.sql"
 handoff_migration="$root_dir/elixir/priv/symphony_migrations/20260806000000_aro_166_handoff_receipts.sql"
 handoff_rollback="$root_dir/elixir/priv/symphony_migrations/20260806000000_aro_166_handoff_receipts.down.sql"
+retry_migration="$root_dir/elixir/priv/symphony_migrations/20260810000000_aro_166_handoff_retry_semantics.sql"
+retry_rollback="$root_dir/elixir/priv/symphony_migrations/20260810000000_aro_166_handoff_retry_semantics.down.sql"
 
 psql_admin() { psql -X -q -v ON_ERROR_STOP=1 -d "$database_url" "$@"; }
+psql_retry_admin() {
+  PGOPTIONS="${PGOPTIONS:-} -c symphony.handoff_v1_writes_drained=on" \
+    psql -X -q -v ON_ERROR_STOP=1 -d "$database_url" "$@"
+}
 node_url() { printf 'postgresql://%s:disposable@localhost:5432/postgres' "$1"; }
 uuid() {
   if [[ -r /proc/sys/kernel/random/uuid ]]; then
@@ -86,7 +92,8 @@ insert into symphony_staging.routing_assignments(issue_id,routing_policy,target_
   ('CAP-C','unassigned',null,1,1), ('EXCLUSIVE','exclusive','$node_a',1,1),
   ('PREFERRED','preferred-with-fallback','$node_a',1,1), ('TAKEOVER','unassigned',null,1,1),
   ('ROUTE-CHANGE','unassigned',null,1,1), ('CUSTOM-STATE','unassigned',null,1,1),
-  ('EFFECTS','unassigned',null,1,1), ('HANDOFF','unassigned',null,1,1);
+  ('EFFECTS','unassigned',null,1,1), ('HANDOFF','unassigned',null,1,1),
+  ('HANDOFF-WHITESPACE','unassigned',null,1,1);
 SQL
 
 tmp_dir="$(mktemp -d)"
@@ -123,6 +130,192 @@ test "$new_generation" = 2
 
 psql_admin -f "$effect_migration"
 psql_admin -f "$handoff_migration"
+
+drain_guard_output="$tmp_dir/drain-guard"
+if psql_admin -f "$retry_migration" >"$drain_guard_output" 2>&1; then
+  echo "retry migration unexpectedly ran without a verified V1 writer drain" >&2
+  exit 1
+fi
+grep -q "requires stopped and fully drained V1 receipt writers" "$drain_guard_output"
+
+psql_admin -c "insert into symphony_staging.handoff_receipts (
+    checkpoint_sequence, receipt_schema_version, issue_id, repository, claim_id, generation,
+    checkpoint_kind, branch, head_sha, tested_head_sha, pr_number,
+    test_results, effect_operation_ids
+  ) overriding system value values (
+    8991, 1, 'MIGRATION-CONTENT-BRANCH', 'aroakpm-svg/symphony',
+    '40000000-0000-0000-0000-000000000005', 1,
+    'pushed', chr(160), repeat('a', 40), repeat('a', 40), null,
+    '[{\"name\":\"migration\",\"status\":\"passed\"}]'::jsonb, '{}'
+  );"
+content_preflight_output="$tmp_dir/content-preflight"
+if psql_retry_admin -f "$retry_migration" >"$content_preflight_output" 2>&1; then
+  echo "retry migration unexpectedly accepted a whitespace-only legacy branch" >&2
+  exit 1
+fi
+grep -q "malformed legacy receipt content" "$content_preflight_output"
+psql_admin -c "delete from symphony_staging.handoff_receipts where issue_id = 'MIGRATION-CONTENT-BRANCH';"
+
+psql_admin -c "insert into symphony_staging.handoff_receipts (
+    checkpoint_sequence, receipt_schema_version, issue_id, repository, claim_id, generation,
+    checkpoint_kind, branch, head_sha, tested_head_sha, pr_number,
+    test_results, effect_operation_ids
+  ) overriding system value values (
+    8992, 1, 'MIGRATION-CONTENT-TEST', 'aroakpm-svg/symphony',
+    '40000000-0000-0000-0000-000000000006', 1,
+    'pushed', 'branch-a', repeat('a', 40), repeat('a', 40), null,
+    jsonb_build_array(jsonb_build_object('name', chr(8239), 'status', 'passed')), '{}'
+  );"
+if psql_retry_admin -f "$retry_migration" >"$content_preflight_output" 2>&1; then
+  echo "retry migration unexpectedly accepted a whitespace-only legacy test name" >&2
+  exit 1
+fi
+grep -q "malformed legacy receipt content" "$content_preflight_output"
+psql_admin -c "delete from symphony_staging.handoff_receipts where issue_id = 'MIGRATION-CONTENT-TEST';"
+
+psql_admin -c "insert into symphony_staging.handoff_receipts (
+    checkpoint_sequence, receipt_schema_version, issue_id, repository, claim_id, generation,
+    checkpoint_kind, branch, head_sha, tested_head_sha, pr_number,
+    test_results, effect_operation_ids
+  ) overriding system value values (
+    8993, 1, chr(160), 'aroakpm-svg/symphony',
+    '40000000-0000-0000-0000-000000000007', 1,
+    'pushed', 'branch-a', repeat('a', 40), repeat('a', 40), null,
+    '[{\"name\":\"migration\",\"status\":\"passed\"}]'::jsonb, '{}'
+  );"
+if psql_retry_admin -f "$retry_migration" >"$content_preflight_output" 2>&1; then
+  echo "retry migration unexpectedly accepted a whitespace-only legacy issue ID" >&2
+  exit 1
+fi
+grep -q "malformed legacy receipt content" "$content_preflight_output"
+psql_admin -c "delete from symphony_staging.handoff_receipts where issue_id = chr(160);"
+
+psql_admin <<'SQL'
+insert into symphony_staging.handoff_receipts (
+  checkpoint_sequence, receipt_schema_version, issue_id, repository, claim_id, generation,
+  checkpoint_kind, branch, head_sha, tested_head_sha, pr_number,
+  test_results, effect_operation_ids
+) overriding system value
+values
+  (9001, 1, 'MIGRATION-BINDING', 'aroakpm-svg/symphony',
+   '40000000-0000-0000-0000-000000000001', 1, 'pushed',
+   'branch-a', repeat('a', 40), repeat('a', 40), null,
+   '[{"name":"migration","status":"passed"}]', '{}'),
+  (9002, 1, 'MIGRATION-BINDING', 'aroakpm-svg/symphony',
+   '40000000-0000-0000-0000-000000000001', 1, 'pull_request',
+   'branch-a', repeat('b', 40), repeat('b', 40), 24,
+   '[{"name":"migration","status":"passed"}]', '{}');
+SQL
+
+binding_preflight_output="$tmp_dir/binding-preflight"
+if psql_retry_admin -f "$retry_migration" >"$binding_preflight_output" 2>&1; then
+  echo "retry migration unexpectedly accepted incompatible legacy generation bindings" >&2
+  exit 1
+fi
+grep -q "legacy generation bindings" "$binding_preflight_output"
+psql_admin -c "delete from symphony_staging.handoff_receipts where issue_id = 'MIGRATION-BINDING';"
+
+psql_admin <<'SQL'
+insert into symphony_staging.handoff_receipts (
+  checkpoint_sequence, receipt_schema_version, issue_id, repository, claim_id, generation,
+  checkpoint_kind, branch, head_sha, tested_head_sha, pr_number,
+  test_results, effect_operation_ids
+) overriding system value
+values
+  (9011, 1, 'MIGRATION-RANK', 'aroakpm-svg/symphony',
+   '40000000-0000-0000-0000-000000000002', 1, 'reviewed',
+   'branch-a', repeat('a', 40), repeat('a', 40), 24,
+   '[{"name":"migration","status":"passed"}]', '{}'),
+  (9012, 1, 'MIGRATION-RANK', 'aroakpm-svg/symphony',
+   '40000000-0000-0000-0000-000000000002', 1, 'pushed',
+   'branch-a', repeat('a', 40), repeat('a', 40), null,
+   '[{"name":"migration","status":"passed"}]', '{}');
+SQL
+
+rank_preflight_output="$tmp_dir/rank-preflight"
+if psql_retry_admin -f "$retry_migration" >"$rank_preflight_output" 2>&1; then
+  echo "retry migration unexpectedly accepted a legacy checkpoint rank regression" >&2
+  exit 1
+fi
+grep -q "legacy checkpoint rank regressions" "$rank_preflight_output"
+psql_admin -c "delete from symphony_staging.handoff_receipts where issue_id = 'MIGRATION-RANK';"
+psql_retry_admin -f "$retry_migration"
+test "$(psql_admin -A -t -c "select to_regclass('symphony_staging.effect_operations_issue_operation_idx') is not null;")" = "t"
+
+psql_admin -c "insert into symphony_staging.handoff_receipts (
+    checkpoint_sequence, receipt_schema_version, issue_id, repository, claim_id, generation,
+    checkpoint_kind, branch, head_sha, tested_head_sha, pr_number,
+    test_results, effect_operation_ids
+  ) overriding system value values (
+    9021, 1, 'MIGRATION-STALE-BODY', 'aroakpm-svg/symphony',
+    '40000000-0000-0000-0000-000000000003', 1,
+    'reviewed', 'branch-a', repeat('a', 40), repeat('a', 40), 24,
+    '[{\"name\":\"migration\",\"status\":\"passed\"}]'::jsonb, '{}'
+  );"
+stale_body_output="$tmp_dir/stale-v1-body"
+if psql_admin -c "insert into symphony_staging.handoff_receipts (
+    checkpoint_sequence, receipt_schema_version, issue_id, repository, claim_id, generation,
+    checkpoint_kind, branch, head_sha, tested_head_sha, pr_number,
+    test_results, effect_operation_ids
+  ) overriding system value values (
+    9022, 1, 'MIGRATION-STALE-BODY', 'aroakpm-svg/symphony',
+    '40000000-0000-0000-0000-000000000003', 1,
+    'pushed', 'branch-a', repeat('a', 40), repeat('a', 40), null,
+    '[{\"name\":\"migration\",\"status\":\"passed\"}]'::jsonb, '{}'
+  );" >"$stale_body_output" 2>&1; then
+  echo "V2 insert enforcement unexpectedly accepted a distinct stale V1 checkpoint regression" >&2
+  exit 1
+fi
+grep -q "handoff receipt checkpoint rank cannot regress" "$stale_body_output"
+test "$(psql_admin -A -t -c "select count(*) from symphony_staging.handoff_receipts where issue_id = 'MIGRATION-STALE-BODY';")" = "1"
+
+stale_whitespace_output="$tmp_dir/stale-v1-whitespace"
+if psql_admin -c "insert into symphony_staging.handoff_receipts (
+    checkpoint_sequence, receipt_schema_version, issue_id, repository, claim_id, generation,
+    checkpoint_kind, branch, head_sha, tested_head_sha, pr_number,
+    test_results, effect_operation_ids
+  ) overriding system value values (
+    9023, 1, 'MIGRATION-STALE-WHITESPACE', 'aroakpm-svg/symphony',
+    '40000000-0000-0000-0000-000000000004', 1,
+    'pushed', chr(9), repeat('a', 40), repeat('a', 40), null,
+    '[{\"name\":\"migration\",\"status\":\"passed\"}]'::jsonb, '{}'
+  );" >"$stale_whitespace_output" 2>&1; then
+  echo "V2 insert enforcement unexpectedly accepted a stale V1 whitespace branch" >&2
+  exit 1
+fi
+grep -q "handoff receipt identity and content are required" "$stale_whitespace_output"
+
+if psql_admin -c "insert into symphony_staging.handoff_receipts (
+    checkpoint_sequence, receipt_schema_version, issue_id, repository, claim_id, generation,
+    checkpoint_kind, branch, head_sha, tested_head_sha, pr_number,
+    test_results, effect_operation_ids
+  ) overriding system value values (
+    9024, 1, 'MIGRATION-STALE-WHITESPACE', 'aroakpm-svg/symphony',
+    '40000000-0000-0000-0000-000000000004', 1,
+    'pushed', 'branch-a', repeat('a', 40), repeat('a', 40), null,
+    jsonb_build_array(jsonb_build_object('name', chr(9), 'status', 'passed')), '{}'
+  );" >"$stale_whitespace_output" 2>&1; then
+  echo "V2 insert enforcement unexpectedly accepted a stale V1 whitespace test name" >&2
+  exit 1
+fi
+grep -q "test results must contain only passed or skipped named tests" "$stale_whitespace_output"
+test "$(psql_admin -A -t -c "select count(*) from symphony_staging.handoff_receipts where issue_id = 'MIGRATION-STALE-WHITESPACE';")" = "0"
+
+if psql_admin -c "insert into symphony_staging.handoff_receipts (
+    checkpoint_sequence, receipt_schema_version, issue_id, repository, claim_id, generation,
+    checkpoint_kind, branch, head_sha, tested_head_sha, pr_number,
+    test_results, effect_operation_ids
+  ) overriding system value values (
+    9025, 1, chr(160), 'aroakpm-svg/symphony',
+    '40000000-0000-0000-0000-000000000008', 1,
+    'pushed', 'branch-a', repeat('a', 40), repeat('a', 40), null,
+    '[{\"name\":\"migration\",\"status\":\"passed\"}]'::jsonb, '{}'
+  );" >"$stale_whitespace_output" 2>&1; then
+  echo "V2 insert enforcement unexpectedly accepted a whitespace-only stale V1 issue ID" >&2
+  exit 1
+fi
+grep -q "handoff receipt identity and content are required" "$stale_whitespace_output"
+test "$(psql_admin -A -t -c "select count(*) from symphony_staging.handoff_receipts where issue_id = chr(160);")" = "0"
 test "$(PGPASSWORD=disposable psql -X -q -A -t -v ON_ERROR_STOP=1 -d "$(node_url claim_node_c)" -c \
   "select symphony_staging.effect_ledger_ready();")" = "t"
 
@@ -220,12 +413,58 @@ test "$(PGPASSWORD=disposable psql -X -q -A -t -v ON_ERROR_STOP=1 -d "$(node_url
 pushed="$(PGPASSWORD=disposable psql -X -q -A -t -v ON_ERROR_STOP=1 -d "$(node_url claim_node_c)" -c \
   "select receipt.checkpoint_sequence || '|' || receipt.checkpoint_kind || '|' || coalesce(receipt.pr_number::text, '') || '|' || receipt.effect_operation_ids::text from symphony_staging.append_handoff_receipt('HANDOFF','$handoff_receipt_claim_id',$handoff_receipt_generation,'$node_c','$instance_c','aroakpm-svg/symphony','pushed','codex/aro-166-replacement','aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa','aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',null,'[{\"name\":\"make all\",\"status\":\"passed\"}]'::jsonb) receipt;")"
 test "$pushed" = "1|pushed||{handoff-git-push}"
+duplicate_pushed="$(PGPASSWORD=disposable psql -X -q -A -t -v ON_ERROR_STOP=1 -d "$(node_url claim_node_c)" -c \
+  "select receipt.checkpoint_sequence || '|' || receipt.checkpoint_kind || '|' || coalesce(receipt.pr_number::text, '') || '|' || receipt.effect_operation_ids::text from symphony_staging.append_handoff_receipt('HANDOFF','$handoff_receipt_claim_id',$handoff_receipt_generation,'$node_c','$instance_c','aroakpm-svg/symphony','pushed','codex/aro-166-replacement','aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa','aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',null,'[{\"name\":\"make all\",\"status\":\"passed\"}]'::jsonb) receipt;")"
+test "$duplicate_pushed" = "1|pushed||{handoff-git-push}"
 pull_request="$(PGPASSWORD=disposable psql -X -q -A -t -v ON_ERROR_STOP=1 -d "$(node_url claim_node_c)" -c \
   "select receipt.checkpoint_sequence || '|' || receipt.checkpoint_kind || '|' || coalesce(receipt.pr_number::text, '') || '|' || receipt.effect_operation_ids::text from symphony_staging.append_handoff_receipt('HANDOFF','$handoff_receipt_claim_id',$handoff_receipt_generation,'$node_c','$instance_c','aroakpm-svg/symphony','pull_request','codex/aro-166-replacement','aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa','aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',23,'[{\"name\":\"make all\",\"status\":\"passed\"}]'::jsonb) receipt;")"
 test "$pull_request" = "2|pull_request|23|{handoff-git-push}"
 reviewed="$(PGPASSWORD=disposable psql -X -q -A -t -v ON_ERROR_STOP=1 -d "$(node_url claim_node_c)" -c \
   "select receipt.checkpoint_sequence || '|' || receipt.checkpoint_kind || '|' || coalesce(receipt.pr_number::text, '') || '|' || receipt.effect_operation_ids::text from symphony_staging.append_handoff_receipt('HANDOFF','$handoff_receipt_claim_id',$handoff_receipt_generation,'$node_c','$instance_c','aroakpm-svg/symphony','reviewed','codex/aro-166-replacement','aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa','aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',23,'[{\"name\":\"make all\",\"status\":\"passed\"}]'::jsonb) receipt;")"
 test "$reviewed" = "3|reviewed|23|{handoff-git-push}"
+
+psql_admin -c "update symphony_staging.issue_claims set released_at = clock_timestamp() where issue_id = 'PREFERRED';"
+whitespace_claim="$(claim claim_node_a HANDOFF-WHITESPACE "$node_a" "$instance_a")"
+whitespace_claim_id="${whitespace_claim%:*}"
+whitespace_generation="${whitespace_claim#*:}"
+if PGPASSWORD=disposable psql -X -q -A -t -v ON_ERROR_STOP=1 -d "$(node_url claim_node_a)" -c \
+  "select * from symphony_staging.append_handoff_receipt('HANDOFF-WHITESPACE','$whitespace_claim_id',$whitespace_generation,'$node_a','$instance_a','aroakpm-svg/symphony','pushed',repeat(chr(9),1),repeat('c',40),repeat('c',40),null,'[{\"name\":\"make all\",\"status\":\"passed\"}]'::jsonb);" \
+  >/dev/null 2>&1; then
+  echo "tab-only branch unexpectedly persisted a handoff receipt" >&2
+  exit 1
+fi
+if PGPASSWORD=disposable psql -X -q -A -t -v ON_ERROR_STOP=1 -d "$(node_url claim_node_a)" -c \
+  "select * from symphony_staging.append_handoff_receipt('HANDOFF-WHITESPACE','$whitespace_claim_id',$whitespace_generation,'$node_a','$instance_a','aroakpm-svg/symphony','pushed','codex/aro-166-replacement',repeat('c',40),repeat('c',40),null,jsonb_build_array(jsonb_build_object('name',chr(9),'status','passed')));" \
+  >/dev/null 2>&1; then
+  echo "tab-only test result name unexpectedly persisted a handoff receipt" >&2
+  exit 1
+fi
+late_pushed="$(PGPASSWORD=disposable psql -X -q -A -t -v ON_ERROR_STOP=1 -d "$(node_url claim_node_c)" -c \
+  "select receipt.checkpoint_sequence || '|' || receipt.checkpoint_kind || '|' || coalesce(receipt.pr_number::text, '') || '|' || receipt.effect_operation_ids::text from symphony_staging.append_handoff_receipt('HANDOFF','$handoff_receipt_claim_id',$handoff_receipt_generation,'$node_c','$instance_c','aroakpm-svg/symphony','pushed','codex/aro-166-replacement','aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa','aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',null,'[{\"name\":\"make all\",\"status\":\"passed\"}]'::jsonb) receipt;")"
+test "$late_pushed" = "3|reviewed|23|{handoff-git-push}"
+
+if PGPASSWORD=disposable psql -X -q -A -t -v ON_ERROR_STOP=1 -d "$(node_url claim_node_c)" -c \
+  "select * from symphony_staging.append_handoff_receipt('HANDOFF','$handoff_receipt_claim_id',$handoff_receipt_generation,'$node_c','$instance_c','aroakpm-svg/symphony','pushed','codex/aro-166-replacement','aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa','aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',null,'[{\"name\":\"make all\",\"status\":\"skipped\"}]'::jsonb);" \
+  >/dev/null 2>&1; then
+  echo "lower-ranked checkpoint with conflicting test results unexpectedly accepted" >&2; exit 1
+fi
+
+if PGPASSWORD=disposable psql -X -q -A -t -v ON_ERROR_STOP=1 -d "$(node_url claim_node_c)" -c \
+  "select * from symphony_staging.append_handoff_receipt('HANDOFF','$handoff_receipt_claim_id',$handoff_receipt_generation,'$node_c','$instance_c','aroakpm-svg/symphony','reviewed','codex/aro-166-replacement','aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa','aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',23,'[{\"name\":\"make all\",\"status\":\"skipped\"}]'::jsonb);" \
+  >/dev/null 2>&1; then
+  echo "same-checkpoint conflicting test results unexpectedly accepted" >&2; exit 1
+fi
+if PGPASSWORD=disposable psql -X -q -A -t -v ON_ERROR_STOP=1 -d "$(node_url claim_node_c)" -c \
+  "select * from symphony_staging.append_handoff_receipt('HANDOFF','$handoff_receipt_claim_id',$handoff_receipt_generation,'$node_c','$instance_c','aroakpm-svg/symphony','reviewed','codex/aro-166-replacement','aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa','aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',24,'[{\"name\":\"make all\",\"status\":\"passed\"}]'::jsonb);" \
+  >/dev/null 2>&1; then
+  echo "same-generation pull-request identity change unexpectedly accepted" >&2; exit 1
+fi
+
+if PGPASSWORD=disposable psql -X -q -A -t -v ON_ERROR_STOP=1 -d "$(node_url claim_node_c)" -c \
+  "select * from symphony_staging.append_handoff_receipt('HANDOFF','$handoff_receipt_claim_id',$handoff_receipt_generation,'$node_c','$instance_c','aroakpm-svg/symphony','pushed','codex/aro-166-replacement','bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb','bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',null,'[{\"name\":\"make all\",\"status\":\"passed\"}]'::jsonb);" \
+  >/dev/null 2>&1; then
+  echo "same-generation new head unexpectedly accepted" >&2; exit 1
+fi
 
 if PGPASSWORD=disposable psql -X -q -A -t -v ON_ERROR_STOP=1 -d "$(node_url claim_node_c)" -c \
   "insert into symphony_staging.handoff_receipts (receipt_schema_version, issue_id, repository, claim_id, generation, checkpoint_kind, branch, head_sha, tested_head_sha, pr_number, test_results) values (1,'HANDOFF','aroakpm-svg/symphony','$handoff_receipt_claim_id',$handoff_receipt_generation,'pushed','codex/aro-166-replacement','aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa','aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',null,'[{\"name\":\"make all\",\"status\":\"passed\"}]'::jsonb);" \
@@ -299,6 +538,8 @@ test "$routed_renewal" = "f"
 psql_admin -c "update symphony_staging.issue_claims set released_at = clock_timestamp() where issue_id = 'ROUTE-CHANGE';"
 
 claim claim_node_a CUSTOM-STATE "$node_a" "$instance_a" 'in review' >/dev/null
+psql_admin -f "$retry_rollback"
+test "$(psql_admin -A -t -c "select to_regclass('symphony_staging.effect_operations_issue_operation_idx') is null;")" = "t"
 psql_admin -f "$handoff_rollback"
 test "$(psql_admin -A -t -c "select to_regclass('symphony_staging.handoff_receipts') is null;")" = "t"
 test "$(psql_admin -A -t -c "select to_regclass('symphony_staging.effect_operations') is not null;")" = "t"

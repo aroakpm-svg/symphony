@@ -14,6 +14,38 @@ The V1 sequence is ordered by checkpoint identity:
 
 Each checkpoint remains a claim-bound observation. A later checkpoint does not make earlier evidence authoritative when the issue, identity, claim, remote head, review, or effects have changed.
 
+## Retry and regression contract
+
+The retry amendment is contract version 2. It keeps the V1 receipt shape and adds
+only deterministic same-generation append semantics:
+
+- A `(issue_id, claim_id, generation)` is bound to one repository, branch, and `head_sha`. A different head or branch must use a new claim generation and is rejected fail closed.
+- A logical checkpoint identity is `(issue_id, claim_id, generation, head_sha, checkpoint_kind, pr_number)`. `pr_number` is null for `pushed` and required for the other two kinds.
+- Repeating the same logical checkpoint with the same test results returns the original receipt and does not allocate a new sequence. Conflicting test results fail closed.
+- A late lower-ranked checkpoint (`pushed` < `pull_request` < `reviewed`) returns the already recorded higher-ranked receipt and does not insert a new row.
+- A same-generation pull-request identity cannot change after one has been recorded. Such a change requires a new generation.
+
+This makes database arrival order safe for the bounded V1 chain without adding a
+second retry ledger, caller-supplied sequence, timestamp ordering, or runtime
+workflow. New-head progression is intentionally a new generation boundary.
+
+The version-2 migration first checks for duplicate V1 checkpoint identities and
+conflicting repository, branch, head, or pull-request bindings within one
+legacy generation. If either condition exists, it stops before replacing the V1
+function or contract registration and asks for explicit human reconciliation.
+It does not delete or rewrite append-only receipt history. The append function
+also rejects all-whitespace branches and test-result names before persistence,
+matching the domain validator's fail-closed boundary.
+
+The upgrade is deliberately offline. Before applying V2, the operator must stop
+all V1 receipt writers, wait until every already-started V1 append has finished,
+and keep that freeze in place through the migration commit. Only the isolated
+migration session may set `symphony.handoff_v1_writes_drained=on`. Without that
+explicit attestation the migration aborts before changing any function, trigger,
+index, or contract registration. The setting is an assertion of externally
+verified quiescence, not a mechanism that drains callers by itself; setting it
+while V1 calls can still run violates this upgrade contract.
+
 ## Required fresh observation
 
 Before treating a receipt as useful evidence, collect a fresh observation of:
@@ -31,6 +63,9 @@ The observation must be internally consistent with the receipt. Missing or stale
 ## Storage boundary
 
 Staging access is function-only: callers append and read receipts through the handoff receipt functions while holding a matching active claim generation. The database derives the recorded effect-operation IDs from the effect ledger; callers cannot supply or rewrite that evidence. Direct table inserts, updates, and deletes are not part of the API. The rollback is scoped to the ARO-166 handoff receipt objects and contract registration, leaving the ARO-164 claim and ARO-165 effect boundaries intact.
+
+Contract version 2 adds the retry identity and checkpoint-rank rules above without
+adding a second storage path or changing the function-only access boundary.
 
 ## ARO-167 integration boundary
 
