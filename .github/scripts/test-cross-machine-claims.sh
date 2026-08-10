@@ -127,6 +127,41 @@ test "$new_generation" = 2
 psql_admin -f "$effect_migration"
 psql_admin -f "$handoff_migration"
 
+psql_admin -c "insert into symphony_staging.handoff_receipts (
+    checkpoint_sequence, receipt_schema_version, issue_id, repository, claim_id, generation,
+    checkpoint_kind, branch, head_sha, tested_head_sha, pr_number,
+    test_results, effect_operation_ids
+  ) overriding system value values (
+    8991, 1, 'MIGRATION-CONTENT-BRANCH', 'aroakpm-svg/symphony',
+    '40000000-0000-0000-0000-000000000005', 1,
+    'pushed', chr(9), repeat('a', 40), repeat('a', 40), null,
+    '[{\"name\":\"migration\",\"status\":\"passed\"}]'::jsonb, '{}'
+  );"
+content_preflight_output="$tmp_dir/content-preflight"
+if psql_admin -f "$retry_migration" >"$content_preflight_output" 2>&1; then
+  echo "retry migration unexpectedly accepted a whitespace-only legacy branch" >&2
+  exit 1
+fi
+grep -q "malformed legacy receipt content" "$content_preflight_output"
+psql_admin -c "delete from symphony_staging.handoff_receipts where issue_id = 'MIGRATION-CONTENT-BRANCH';"
+
+psql_admin -c "insert into symphony_staging.handoff_receipts (
+    checkpoint_sequence, receipt_schema_version, issue_id, repository, claim_id, generation,
+    checkpoint_kind, branch, head_sha, tested_head_sha, pr_number,
+    test_results, effect_operation_ids
+  ) overriding system value values (
+    8992, 1, 'MIGRATION-CONTENT-TEST', 'aroakpm-svg/symphony',
+    '40000000-0000-0000-0000-000000000006', 1,
+    'pushed', 'branch-a', repeat('a', 40), repeat('a', 40), null,
+    jsonb_build_array(jsonb_build_object('name', chr(10), 'status', 'passed')), '{}'
+  );"
+if psql_admin -f "$retry_migration" >"$content_preflight_output" 2>&1; then
+  echo "retry migration unexpectedly accepted a whitespace-only legacy test name" >&2
+  exit 1
+fi
+grep -q "malformed legacy receipt content" "$content_preflight_output"
+psql_admin -c "delete from symphony_staging.handoff_receipts where issue_id = 'MIGRATION-CONTENT-TEST';"
+
 psql_admin <<'SQL'
 insert into symphony_staging.handoff_receipts (
   checkpoint_sequence, receipt_schema_version, issue_id, repository, claim_id, generation,

@@ -12,6 +12,36 @@ begin
   if exists (
     select 1
     from symphony_staging.handoff_receipts receipts
+    where receipts.branch is null
+       or receipts.branch !~ '[^[:space:]]'
+       or receipts.test_results is null
+       or case
+         when jsonb_typeof(receipts.test_results) = 'array' then
+           jsonb_array_length(receipts.test_results) = 0
+           or exists (
+             select 1
+             from jsonb_array_elements(receipts.test_results) item
+             where jsonb_typeof(item) <> 'object'
+                or not (item ? 'name' and item ? 'status')
+                or item - 'name' - 'status' <> '{}'::jsonb
+                or jsonb_typeof(item -> 'name') <> 'string'
+                or jsonb_typeof(item -> 'status') <> 'string'
+                or item ->> 'name' is null
+                or item ->> 'status' is null
+                or item ->> 'name' !~ '[^[:space:]]'
+                or item ->> 'status' not in ('passed', 'skipped')
+           )
+         else true
+       end
+  ) then
+    raise exception using
+      errcode = '55000',
+      message = 'handoff retry migration requires valid receipt content; malformed legacy receipt content must be reconciled before contract version 2 can be installed';
+  end if;
+
+  if exists (
+    select 1
+    from symphony_staging.handoff_receipts receipts
     group by
       receipts.issue_id,
       receipts.claim_id,
@@ -90,21 +120,24 @@ begin
   end if;
 
   if new.test_results is null
-     or jsonb_typeof(new.test_results) <> 'array'
-     or jsonb_array_length(new.test_results) = 0
-     or exists (
-       select 1
-       from jsonb_array_elements(new.test_results) item
-       where jsonb_typeof(item) <> 'object'
-          or not (item ? 'name' and item ? 'status')
-          or item - 'name' - 'status' <> '{}'::jsonb
-          or jsonb_typeof(item -> 'name') <> 'string'
-          or jsonb_typeof(item -> 'status') <> 'string'
-          or item ->> 'name' is null
-          or item ->> 'status' is null
-          or item ->> 'name' !~ '[^[:space:]]'
-          or item ->> 'status' not in ('passed', 'skipped')
-     ) then
+     or case
+       when jsonb_typeof(new.test_results) = 'array' then
+         jsonb_array_length(new.test_results) = 0
+         or exists (
+           select 1
+           from jsonb_array_elements(new.test_results) item
+           where jsonb_typeof(item) <> 'object'
+              or not (item ? 'name' and item ? 'status')
+              or item - 'name' - 'status' <> '{}'::jsonb
+              or jsonb_typeof(item -> 'name') <> 'string'
+              or jsonb_typeof(item -> 'status') <> 'string'
+              or item ->> 'name' is null
+              or item ->> 'status' is null
+              or item ->> 'name' !~ '[^[:space:]]'
+              or item ->> 'status' not in ('passed', 'skipped')
+         )
+       else true
+     end then
     raise exception using
       errcode = '22023',
       message = 'test results must contain only passed or skipped named tests';

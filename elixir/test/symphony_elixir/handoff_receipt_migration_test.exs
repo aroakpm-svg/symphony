@@ -104,6 +104,7 @@ defmodule SymphonyElixir.HandoffReceiptMigrationTest do
 
     assert sql =~ "handoff retry migration requires unique checkpoint identities"
     assert sql =~ "legacy duplicate checkpoint identities"
+    assert sql =~ "malformed legacy receipt content"
     assert sql =~ "legacy generation bindings"
     claim_lock = "lock table symphony_staging.issue_claims in exclusive mode"
     receipt_lock = "lock table symphony_staging.handoff_receipts in share row exclusive mode"
@@ -128,6 +129,8 @@ defmodule SymphonyElixir.HandoffReceiptMigrationTest do
       String.split(trigger_and_rest, "create trigger enforce_handoff_receipt_v2_insert", parts: 2)
 
     refute preflight =~ "new."
+    assert preflight =~ "receipts.branch !~ '[^[:space:]]'"
+    assert preflight =~ "item ->> 'name' !~ '[^[:space:]]'"
     assert trigger_body =~ "new.branch !~ '[^[:space:]]'"
     assert trigger_body =~ "item ->> 'name' !~ '[^[:space:]]'"
     assert sql =~ "legacy checkpoint rank regressions"
