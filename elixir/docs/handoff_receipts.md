@@ -37,6 +37,15 @@ It does not delete or rewrite append-only receipt history. The append function
 also rejects all-whitespace branches and test-result names before persistence,
 matching the domain validator's fail-closed boundary.
 
+The upgrade is deliberately offline. Before applying V2, the operator must stop
+all V1 receipt writers, wait until every already-started V1 append has finished,
+and keep that freeze in place through the migration commit. Only the isolated
+migration session may set `symphony.handoff_v1_writes_drained=on`. Without that
+explicit attestation the migration aborts before changing any function, trigger,
+index, or contract registration. The setting is an assertion of externally
+verified quiescence, not a mechanism that drains callers by itself; setting it
+while V1 calls can still run violates this upgrade contract.
+
 ## Required fresh observation
 
 Before treating a receipt as useful evidence, collect a fresh observation of:

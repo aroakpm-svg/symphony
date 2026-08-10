@@ -137,6 +137,14 @@ branch and head; identical logical checkpoints are idempotent, late lower-ranked
 checkpoints do not become latest, and a new head requires a new generation. ARO-167
 runtime integration remains a separate contract and is not enabled by this migration.
 
+This is an offline upgrade contract, not a live V1-to-V2 cutover. Stop every
+handoff-receipt V1 writer and wait for all already-started V1 calls to finish.
+Keep that write freeze in place while applying the migration from an isolated
+session with `symphony.handoff_v1_writes_drained=on`. The migration fails closed
+when that explicit drain attestation is absent; setting it without actually
+quiescing writers violates the upgrade contract. Release the write freeze only
+after the V2 transaction commits successfully.
+
 ## Configuration
 
 Pass a custom workflow file path to `./bin/symphony` when starting the service:

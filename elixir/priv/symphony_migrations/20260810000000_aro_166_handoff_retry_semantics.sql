@@ -1,5 +1,15 @@
 begin;
 
+do $$
+begin
+  if current_setting('symphony.handoff_v1_writes_drained', true) is distinct from 'on' then
+    raise exception using
+      errcode = '55000',
+      message = 'handoff retry migration requires stopped and fully drained V1 receipt writers; set symphony.handoff_v1_writes_drained=on only in the isolated migration session after quiescence is verified';
+  end if;
+end
+$$;
+
 create or replace function symphony_staging.handoff_receipt_content_present(content text)
 returns boolean
 language sql

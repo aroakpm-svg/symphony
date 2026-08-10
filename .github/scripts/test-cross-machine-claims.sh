@@ -12,6 +12,10 @@ retry_migration="$root_dir/elixir/priv/symphony_migrations/20260810000000_aro_16
 retry_rollback="$root_dir/elixir/priv/symphony_migrations/20260810000000_aro_166_handoff_retry_semantics.down.sql"
 
 psql_admin() { psql -X -q -v ON_ERROR_STOP=1 -d "$database_url" "$@"; }
+psql_retry_admin() {
+  PGOPTIONS="${PGOPTIONS:-} -c symphony.handoff_v1_writes_drained=on" \
+    psql -X -q -v ON_ERROR_STOP=1 -d "$database_url" "$@"
+}
 node_url() { printf 'postgresql://%s:disposable@localhost:5432/postgres' "$1"; }
 uuid() {
   if [[ -r /proc/sys/kernel/random/uuid ]]; then
@@ -127,6 +131,13 @@ test "$new_generation" = 2
 psql_admin -f "$effect_migration"
 psql_admin -f "$handoff_migration"
 
+drain_guard_output="$tmp_dir/drain-guard"
+if psql_admin -f "$retry_migration" >"$drain_guard_output" 2>&1; then
+  echo "retry migration unexpectedly ran without a verified V1 writer drain" >&2
+  exit 1
+fi
+grep -q "requires stopped and fully drained V1 receipt writers" "$drain_guard_output"
+
 psql_admin -c "insert into symphony_staging.handoff_receipts (
     checkpoint_sequence, receipt_schema_version, issue_id, repository, claim_id, generation,
     checkpoint_kind, branch, head_sha, tested_head_sha, pr_number,
@@ -138,7 +149,7 @@ psql_admin -c "insert into symphony_staging.handoff_receipts (
     '[{\"name\":\"migration\",\"status\":\"passed\"}]'::jsonb, '{}'
   );"
 content_preflight_output="$tmp_dir/content-preflight"
-if psql_admin -f "$retry_migration" >"$content_preflight_output" 2>&1; then
+if psql_retry_admin -f "$retry_migration" >"$content_preflight_output" 2>&1; then
   echo "retry migration unexpectedly accepted a whitespace-only legacy branch" >&2
   exit 1
 fi
@@ -155,7 +166,7 @@ psql_admin -c "insert into symphony_staging.handoff_receipts (
     'pushed', 'branch-a', repeat('a', 40), repeat('a', 40), null,
     jsonb_build_array(jsonb_build_object('name', chr(8239), 'status', 'passed')), '{}'
   );"
-if psql_admin -f "$retry_migration" >"$content_preflight_output" 2>&1; then
+if psql_retry_admin -f "$retry_migration" >"$content_preflight_output" 2>&1; then
   echo "retry migration unexpectedly accepted a whitespace-only legacy test name" >&2
   exit 1
 fi
@@ -172,7 +183,7 @@ psql_admin -c "insert into symphony_staging.handoff_receipts (
     'pushed', 'branch-a', repeat('a', 40), repeat('a', 40), null,
     '[{\"name\":\"migration\",\"status\":\"passed\"}]'::jsonb, '{}'
   );"
-if psql_admin -f "$retry_migration" >"$content_preflight_output" 2>&1; then
+if psql_retry_admin -f "$retry_migration" >"$content_preflight_output" 2>&1; then
   echo "retry migration unexpectedly accepted a whitespace-only legacy issue ID" >&2
   exit 1
 fi
@@ -197,7 +208,7 @@ values
 SQL
 
 binding_preflight_output="$tmp_dir/binding-preflight"
-if psql_admin -f "$retry_migration" >"$binding_preflight_output" 2>&1; then
+if psql_retry_admin -f "$retry_migration" >"$binding_preflight_output" 2>&1; then
   echo "retry migration unexpectedly accepted incompatible legacy generation bindings" >&2
   exit 1
 fi
@@ -222,13 +233,13 @@ values
 SQL
 
 rank_preflight_output="$tmp_dir/rank-preflight"
-if psql_admin -f "$retry_migration" >"$rank_preflight_output" 2>&1; then
+if psql_retry_admin -f "$retry_migration" >"$rank_preflight_output" 2>&1; then
   echo "retry migration unexpectedly accepted a legacy checkpoint rank regression" >&2
   exit 1
 fi
 grep -q "legacy checkpoint rank regressions" "$rank_preflight_output"
 psql_admin -c "delete from symphony_staging.handoff_receipts where issue_id = 'MIGRATION-RANK';"
-psql_admin -f "$retry_migration"
+psql_retry_admin -f "$retry_migration"
 test "$(psql_admin -A -t -c "select to_regclass('symphony_staging.effect_operations_issue_operation_idx') is not null;")" = "t"
 
 psql_admin -c "insert into symphony_staging.handoff_receipts (

@@ -103,6 +103,8 @@ defmodule SymphonyElixir.HandoffReceiptMigrationTest do
     sql = File.read!(@retry_migration)
 
     assert sql =~ "handoff retry migration requires unique checkpoint identities"
+    assert sql =~ "current_setting('symphony.handoff_v1_writes_drained', true)"
+    assert sql =~ "requires stopped and fully drained V1 receipt writers"
     assert sql =~ "legacy duplicate checkpoint identities"
     assert sql =~ "malformed legacy receipt content"
     assert sql =~ "legacy generation bindings"
@@ -111,8 +113,16 @@ defmodule SymphonyElixir.HandoffReceiptMigrationTest do
 
     assert sql =~ claim_lock
     assert sql =~ receipt_lock
+    drain_guard = "current_setting('symphony.handoff_v1_writes_drained', true)"
+    content_helper = "create or replace function symphony_staging.handoff_receipt_content_present"
+
+    assert :binary.match(sql, drain_guard) < :binary.match(sql, content_helper)
+    assert :binary.match(sql, content_helper) < :binary.match(sql, claim_lock)
     assert :binary.match(sql, claim_lock) < :binary.match(sql, receipt_lock)
-    assert :binary.match(sql, receipt_lock) < :binary.match(sql, "do $$")
+
+    assert :binary.match(sql, receipt_lock) <
+             :binary.match(sql, "handoff retry migration requires valid receipt content")
+
     assert sql =~ "create or replace function symphony_staging.enforce_handoff_receipt_v2_insert()"
     assert sql =~ "create trigger enforce_handoff_receipt_v2_insert"
     assert sql =~ "before insert on symphony_staging.handoff_receipts"
