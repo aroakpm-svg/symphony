@@ -178,6 +178,33 @@ grep -q "legacy checkpoint rank regressions" "$rank_preflight_output"
 psql_admin -c "delete from symphony_staging.handoff_receipts where issue_id = 'MIGRATION-RANK';"
 psql_admin -f "$retry_migration"
 test "$(psql_admin -A -t -c "select to_regclass('symphony_staging.effect_operations_issue_operation_idx') is not null;")" = "t"
+
+psql_admin -c "insert into symphony_staging.handoff_receipts (
+    checkpoint_sequence, receipt_schema_version, issue_id, repository, claim_id, generation,
+    checkpoint_kind, branch, head_sha, tested_head_sha, pr_number,
+    test_results, effect_operation_ids
+  ) overriding system value values (
+    9021, 1, 'MIGRATION-STALE-BODY', 'aroakpm-svg/symphony',
+    '40000000-0000-0000-0000-000000000003', 1,
+    'reviewed', 'branch-a', repeat('a', 40), repeat('a', 40), 24,
+    '[{\"name\":\"migration\",\"status\":\"passed\"}]'::jsonb, '{}'
+  );"
+stale_body_output="$tmp_dir/stale-v1-body"
+if psql_admin -c "insert into symphony_staging.handoff_receipts (
+    checkpoint_sequence, receipt_schema_version, issue_id, repository, claim_id, generation,
+    checkpoint_kind, branch, head_sha, tested_head_sha, pr_number,
+    test_results, effect_operation_ids
+  ) overriding system value values (
+    9022, 1, 'MIGRATION-STALE-BODY', 'aroakpm-svg/symphony',
+    '40000000-0000-0000-0000-000000000003', 1,
+    'pushed', 'branch-a', repeat('a', 40), repeat('a', 40), null,
+    '[{\"name\":\"migration\",\"status\":\"passed\"}]'::jsonb, '{}'
+  );" >"$stale_body_output" 2>&1; then
+  echo "V2 insert enforcement unexpectedly accepted a distinct stale V1 checkpoint regression" >&2
+  exit 1
+fi
+grep -q "handoff receipt checkpoint rank cannot regress" "$stale_body_output"
+test "$(psql_admin -A -t -c "select count(*) from symphony_staging.handoff_receipts where issue_id = 'MIGRATION-STALE-BODY';")" = "1"
 test "$(PGPASSWORD=disposable psql -X -q -A -t -v ON_ERROR_STOP=1 -d "$(node_url claim_node_c)" -c \
   "select symphony_staging.effect_ledger_ready();")" = "t"
 
@@ -284,23 +311,6 @@ test "$pull_request" = "2|pull_request|23|{handoff-git-push}"
 reviewed="$(PGPASSWORD=disposable psql -X -q -A -t -v ON_ERROR_STOP=1 -d "$(node_url claim_node_c)" -c \
   "select receipt.checkpoint_sequence || '|' || receipt.checkpoint_kind || '|' || coalesce(receipt.pr_number::text, '') || '|' || receipt.effect_operation_ids::text from symphony_staging.append_handoff_receipt('HANDOFF','$handoff_receipt_claim_id',$handoff_receipt_generation,'$node_c','$instance_c','aroakpm-svg/symphony','reviewed','codex/aro-166-replacement','aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa','aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',23,'[{\"name\":\"make all\",\"status\":\"passed\"}]'::jsonb) receipt;")"
 test "$reviewed" = "3|reviewed|23|{handoff-git-push}"
-
-# Model an already-running V1 function body reaching INSERT only after V2 is
-# installed. The durable trigger must reject the stale lower-ranked write even
-# though it bypasses the V2 append function.
-if psql_admin -c "insert into symphony_staging.handoff_receipts (
-    receipt_schema_version, issue_id, repository, claim_id, generation,
-    checkpoint_kind, branch, head_sha, tested_head_sha, pr_number,
-    test_results, effect_operation_ids
-  ) values (
-    1, 'HANDOFF', 'aroakpm-svg/symphony', '$handoff_receipt_claim_id', $handoff_receipt_generation,
-    'pushed', 'codex/aro-166-replacement', repeat('a', 40), repeat('a', 40), null,
-    '[{\"name\":\"make all\",\"status\":\"passed\"}]'::jsonb, array['handoff-git-push']
-  );" >/dev/null 2>&1; then
-  echo "V2 insert enforcement unexpectedly accepted a stale V1 checkpoint regression" >&2
-  exit 1
-fi
-test "$(psql_admin -A -t -c "select count(*) from symphony_staging.handoff_receipts where issue_id = 'HANDOFF';")" = "3"
 
 psql_admin -c "update symphony_staging.issue_claims set released_at = clock_timestamp() where issue_id = 'PREFERRED';"
 whitespace_claim="$(claim claim_node_a HANDOFF-WHITESPACE "$node_a" "$instance_a")"
