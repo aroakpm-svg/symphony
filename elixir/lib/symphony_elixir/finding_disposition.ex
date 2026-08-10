@@ -764,12 +764,10 @@ defmodule SymphonyElixir.FindingDisposition do
         {:error, :invalid_source_head_sha}
 
       :ok ->
-        cond do
-          source != evaluated and not_true_value?(value(plan, :revalidated?)) ->
-            {:error, :source_head_requires_revalidation}
-
-          true ->
-            :ok
+        if source != evaluated and not_true_value?(value(plan, :revalidated?)) do
+          {:error, :source_head_requires_revalidation}
+        else
+          :ok
         end
     end
   end
