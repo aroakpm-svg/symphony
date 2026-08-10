@@ -18,6 +18,20 @@ begin
       errcode = '55000',
       message = 'handoff retry migration requires unique checkpoint identities; legacy duplicate checkpoint identities must be reconciled before contract version 2 can be installed';
   end if;
+
+  if exists (
+    select 1
+    from symphony_staging.handoff_receipts receipts
+    group by receipts.issue_id, receipts.claim_id, receipts.generation
+    having count(distinct receipts.repository) > 1
+       or count(distinct receipts.branch) > 1
+       or count(distinct receipts.head_sha) > 1
+       or count(distinct receipts.pr_number) filter (where receipts.pr_number is not null) > 1
+  ) then
+    raise exception using
+      errcode = '55000',
+      message = 'handoff retry migration requires valid generation bindings; legacy generation bindings must be reconciled before contract version 2 can be installed';
+  end if;
 end
 $$;
 
@@ -66,7 +80,7 @@ begin
      or requested_repository is null
      or btrim(requested_repository) = ''
      or requested_branch is null
-     or btrim(requested_branch) = ''
+     or requested_branch !~ '[^[:space:]]'
      or requested_checkpoint_kind is null
      or requested_head_sha is null
      or requested_tested_head_sha is null
@@ -116,7 +130,7 @@ begin
        or jsonb_typeof(item -> 'status') <> 'string'
        or item ->> 'name' is null
        or item ->> 'status' is null
-       or nullif(btrim(item ->> 'name'), '') is null
+       or item ->> 'name' !~ '[^[:space:]]'
        or item ->> 'status' not in ('passed', 'skipped')
   ) then
     raise exception using errcode = '22023', message = 'test results must contain only passed or skipped named tests';

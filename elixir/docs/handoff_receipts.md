@@ -29,10 +29,13 @@ This makes database arrival order safe for the bounded V1 chain without adding a
 second retry ledger, caller-supplied sequence, timestamp ordering, or runtime
 workflow. New-head progression is intentionally a new generation boundary.
 
-The version-2 migration first checks for duplicate V1 checkpoint identities. If
-legacy duplicates exist, it stops before replacing the V1 function or contract
-registration and asks for explicit human reconciliation. It does not delete or
-rewrite append-only receipt history.
+The version-2 migration first checks for duplicate V1 checkpoint identities and
+conflicting repository, branch, head, or pull-request bindings within one
+legacy generation. If either condition exists, it stops before replacing the V1
+function or contract registration and asks for explicit human reconciliation.
+It does not delete or rewrite append-only receipt history. The append function
+also rejects all-whitespace branches and test-result names before persistence,
+matching the domain validator's fail-closed boundary.
 
 ## Required fresh observation
 
