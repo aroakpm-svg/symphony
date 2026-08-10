@@ -166,5 +166,6 @@ set contract_version = excluded.contract_version,
     installed_at = clock_timestamp();
 
 drop index if exists symphony_staging.handoff_receipts_checkpoint_identity_idx;
+drop index if exists symphony_staging.effect_operations_issue_operation_idx;
 
 commit;

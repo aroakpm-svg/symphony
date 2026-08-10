@@ -151,7 +151,33 @@ if psql_admin -f "$retry_migration" >"$binding_preflight_output" 2>&1; then
 fi
 grep -q "legacy generation bindings" "$binding_preflight_output"
 psql_admin -c "delete from symphony_staging.handoff_receipts where issue_id = 'MIGRATION-BINDING';"
+
+psql_admin <<'SQL'
+insert into symphony_staging.handoff_receipts (
+  checkpoint_sequence, receipt_schema_version, issue_id, repository, claim_id, generation,
+  checkpoint_kind, branch, head_sha, tested_head_sha, pr_number,
+  test_results, effect_operation_ids
+) overriding system value
+values
+  (9011, 1, 'MIGRATION-RANK', 'aroakpm-svg/symphony',
+   '40000000-0000-0000-0000-000000000002', 1, 'reviewed',
+   'branch-a', repeat('a', 40), repeat('a', 40), 24,
+   '[{"name":"migration","status":"passed"}]', '{}'),
+  (9012, 1, 'MIGRATION-RANK', 'aroakpm-svg/symphony',
+   '40000000-0000-0000-0000-000000000002', 1, 'pushed',
+   'branch-a', repeat('a', 40), repeat('a', 40), null,
+   '[{"name":"migration","status":"passed"}]', '{}');
+SQL
+
+rank_preflight_output="$tmp_dir/rank-preflight"
+if psql_admin -f "$retry_migration" >"$rank_preflight_output" 2>&1; then
+  echo "retry migration unexpectedly accepted a legacy checkpoint rank regression" >&2
+  exit 1
+fi
+grep -q "legacy checkpoint rank regressions" "$rank_preflight_output"
+psql_admin -c "delete from symphony_staging.handoff_receipts where issue_id = 'MIGRATION-RANK';"
 psql_admin -f "$retry_migration"
+test "$(psql_admin -A -t -c "select to_regclass('symphony_staging.effect_operations_issue_operation_idx') is not null;")" = "t"
 test "$(PGPASSWORD=disposable psql -X -q -A -t -v ON_ERROR_STOP=1 -d "$(node_url claim_node_c)" -c \
   "select symphony_staging.effect_ledger_ready();")" = "t"
 
@@ -375,6 +401,7 @@ psql_admin -c "update symphony_staging.issue_claims set released_at = clock_time
 
 claim claim_node_a CUSTOM-STATE "$node_a" "$instance_a" 'in review' >/dev/null
 psql_admin -f "$retry_rollback"
+test "$(psql_admin -A -t -c "select to_regclass('symphony_staging.effect_operations_issue_operation_idx') is null;")" = "t"
 psql_admin -f "$handoff_rollback"
 test "$(psql_admin -A -t -c "select to_regclass('symphony_staging.handoff_receipts') is null;")" = "t"
 test "$(psql_admin -A -t -c "select to_regclass('symphony_staging.effect_operations') is not null;")" = "t"

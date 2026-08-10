@@ -1,5 +1,10 @@
 begin;
 
+-- Freeze V1 appends for the entire preflight/install transaction. Without this
+-- lock, a writer can introduce incompatible legacy history after validation
+-- but before the V2 function is installed.
+lock table symphony_staging.handoff_receipts in share row exclusive mode;
+
 do $$
 begin
   if exists (
@@ -32,6 +37,36 @@ begin
       errcode = '55000',
       message = 'handoff retry migration requires valid generation bindings; legacy generation bindings must be reconciled before contract version 2 can be installed';
   end if;
+
+  if exists (
+    select 1
+    from (
+      select
+        receipts.checkpoint_sequence,
+        case receipts.checkpoint_kind
+          when 'pushed' then 1
+          when 'pull_request' then 2
+          when 'reviewed' then 3
+        end as checkpoint_rank,
+        max(
+          case receipts.checkpoint_kind
+            when 'pushed' then 1
+            when 'pull_request' then 2
+            when 'reviewed' then 3
+          end
+        ) over (
+          partition by receipts.issue_id, receipts.claim_id, receipts.generation
+          order by receipts.checkpoint_sequence
+          rows between unbounded preceding and 1 preceding
+        ) as prior_checkpoint_rank
+      from symphony_staging.handoff_receipts receipts
+    ) ranked_receipts
+    where ranked_receipts.prior_checkpoint_rank > ranked_receipts.checkpoint_rank
+  ) then
+    raise exception using
+      errcode = '55000',
+      message = 'handoff retry migration requires monotonic checkpoint history; legacy checkpoint rank regressions must be reconciled before contract version 2 can be installed';
+  end if;
 end
 $$;
 
@@ -44,6 +79,9 @@ create unique index handoff_receipts_checkpoint_identity_idx
     head_sha,
     coalesce(pr_number, 0)
   );
+
+create index effect_operations_issue_operation_idx
+  on symphony_staging.effect_operations (issue_id, operation_id);
 
 create or replace function symphony_staging.append_handoff_receipt(
   requested_issue_id text,
