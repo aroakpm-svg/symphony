@@ -457,14 +457,14 @@ defmodule SymphonyElixir.FindingDisposition do
     settled = value(options, :settled)
 
     cond do
+      candidates == [] ->
+        :no_fresh_evidence
+
       not non_empty_string?(thread_id) or not is_map(settled) ->
         {:error, :resolved_thread_settlement_unverified}
 
       not Map.has_key?(settled, thread_id) ->
         {:error, :resolved_thread_settlement_unverified}
-
-      candidates == [] ->
-        :no_fresh_evidence
 
       true ->
         settlement = Map.get(settled, thread_id)
@@ -507,8 +507,8 @@ defmodule SymphonyElixir.FindingDisposition do
   defp logical_operation_identity(:github_comment, input) do
     with {:ok, _base_identity} <- required_identity(input, [:repository, :pull_request_number, :review_thread_id]),
          {:ok, finding_identity} <- required_finding_identity(input),
-         {:ok, message_kind} <- required_present(input, :message_kind),
-         {:ok, effect_type} <- required_present(input, :effect_type) do
+         {:ok, message_kind} <- logical_identity_field(input, :message_kind),
+         {:ok, effect_type} <- logical_identity_field(input, :effect_type) do
       identity = {review_identity(input), finding_identity, message_kind, effect_type}
 
       {:ok, identity}
@@ -517,8 +517,8 @@ defmodule SymphonyElixir.FindingDisposition do
 
   defp logical_operation_identity(:github_review_thread_resolve, input) do
     with {:ok, _base_identity} <- required_identity(input, [:repository, :pull_request_number, :review_thread_id]),
-         {:ok, lineage} <- required_present(input, :finding_lineage_key),
-         {:ok, effect_type} <- required_present(input, :effect_type) do
+         {:ok, lineage} <- logical_identity_field(input, :finding_lineage_key),
+         {:ok, effect_type} <- logical_identity_field(input, :effect_type) do
       identity = {review_identity(input), lineage, effect_type}
 
       {:ok, identity}
@@ -527,8 +527,8 @@ defmodule SymphonyElixir.FindingDisposition do
 
   defp required_finding_identity(input) do
     cond do
-      present?(input, :finding_key) -> required_present(input, :finding_key)
-      present?(input, :finding_lineage_key) -> required_present(input, :finding_lineage_key)
+      present?(input, :finding_key) -> logical_identity_field(input, :finding_key)
+      present?(input, :finding_lineage_key) -> logical_identity_field(input, :finding_lineage_key)
       true -> {:error, {:missing_field, :finding_key_or_lineage_key}}
     end
   end
@@ -538,7 +538,7 @@ defmodule SymphonyElixir.FindingDisposition do
 
   defp required_identity(input, fields) do
     Enum.reduce_while(fields, :ok, fn field, :ok ->
-      case required_present(input, field) do
+      case logical_identity_field(input, field) do
         {:ok, _value} -> {:cont, :ok}
         {:error, reason} -> {:halt, {:error, reason}}
       end
@@ -548,6 +548,47 @@ defmodule SymphonyElixir.FindingDisposition do
       error -> error
     end
   end
+
+  defp logical_identity_field(input, field) do
+    case required_present(input, field) do
+      {:error, reason} ->
+        {:error, reason}
+
+      {:ok, value} ->
+        if valid_logical_identity?(field, value),
+          do: {:ok, value},
+          else: {:error, {:invalid_logical_identity, field}}
+    end
+  end
+
+  defp valid_logical_identity?(:repository, value), do: valid_repository?(value)
+  defp valid_logical_identity?(:pull_request_number, value), do: is_integer(value) and value > 0
+  defp valid_logical_identity?(:evaluated_head_sha, value), do: validate_sha(value, :evaluated_head_sha) == :ok
+  defp valid_logical_identity?(:finding_set_digest, value), do: valid_digest?(value)
+  defp valid_logical_identity?(:authorization_identity, value), do: non_empty_string?(value)
+  defp valid_logical_identity?(:finding_key, value), do: valid_canonical_key_or_digest?(value, :finding_key)
+  defp valid_logical_identity?(:finding_lineage_key, value), do: valid_canonical_key_or_digest?(value, :finding_lineage_key)
+  defp valid_logical_identity?(:review_thread_id, value), do: non_empty_string?(value)
+  defp valid_logical_identity?(:destination, value), do: non_empty_string?(value)
+  defp valid_logical_identity?(:message_kind, value), do: is_atom(value) or non_empty_string?(value)
+  defp valid_logical_identity?(:effect_type, value), do: validate_effect_type(value) == :ok
+  defp valid_logical_identity?(_field, value), do: not is_nil(value)
+
+  defp valid_repository?(value) do
+    is_binary(value) and Regex.match?(~r/\A[^\/\s]+\/[^\/\s]+\z/, value)
+  end
+
+  defp valid_digest?(value) do
+    is_binary(value) and Regex.match?(~r/\A[0-9a-f]{64}\z/, value)
+  end
+
+  defp valid_canonical_key_or_digest?(value, :finding_key) when is_map(value),
+    do: match?({:ok, _key}, canonical_finding_key(value))
+
+  defp valid_canonical_key_or_digest?(value, :finding_lineage_key) when is_map(value),
+    do: match?({:ok, _key}, canonical_lineage_key(value))
+
+  defp valid_canonical_key_or_digest?(value, _key), do: valid_digest?(value)
 
   defp validate_effect_type(effect_type)
        when effect_type in [

@@ -274,6 +274,98 @@ defmodule SymphonyElixir.ReviewConvergenceTest do
     assert_receive {:autonomous_call, :release}
   end
 
+  test "autonomous readback loads the configured effect ledger before introspection" do
+    Application.put_env(
+      :symphony_elixir,
+      :review_snapshot,
+      {:ok, snapshot(%{finding_summary: %{decisions: [], requires_lifecycle?: false}})}
+    )
+
+    lazy_effect_ledger =
+      prepare_unloaded_module(
+        Module.concat(__MODULE__, RuntimeEffectLedger),
+        """
+        def list_operations(_connection, _claim_context) do
+          send(Application.fetch_env!(:symphony_elixir, :review_recipient), {:lazy_autonomous_call, :list_operations})
+          {:ok, []}
+        end
+        """
+      )
+
+    refute function_exported?(lazy_effect_ledger, :list_operations, 2)
+
+    state =
+      ReviewMonitor.run_with(
+        %{},
+        settings(),
+        ReviewClient,
+        Tracker,
+        %{
+          profile: :aroak_autonomous_v1,
+          claim_service: AutonomousClaimService,
+          effect_ledger: lazy_effect_ledger
+        }
+      )
+
+    assert state["issue-160"].global_blocker == nil
+    assert_receive {:lazy_autonomous_call, :list_operations}
+  end
+
+  test "autonomous owner API checks load configured modules before introspection" do
+    Application.put_env(
+      :symphony_elixir,
+      :review_snapshot,
+      {:ok,
+       snapshot(%{
+         finding_summary: %{
+           decisions: [%{finding_key_digest: "finding-1", disposition: :fix_in_current_pr}],
+           requires_lifecycle?: true
+         }
+       })}
+    )
+
+    lazy_effect_ledger =
+      prepare_unloaded_module(
+        Module.concat(__MODULE__, RuntimeOwnerEffectLedger),
+        """
+        def list_operations(_connection, _claim_context), do: {:ok, []}
+        """
+      )
+
+    lazy_authorization =
+      prepare_unloaded_module(
+        Module.concat(__MODULE__, RuntimePatchAuthorization),
+        """
+        def authorize(_issue, _finding, _patch, _head, _context), do: :ok
+        """
+      )
+
+    lazy_settlement =
+      prepare_unloaded_module(
+        Module.concat(__MODULE__, RuntimeReviewSettlement),
+        """
+        def settle(_finding, _context), do: :ok
+        """
+      )
+
+    state =
+      ReviewMonitor.run_with(
+        %{},
+        settings(),
+        ReviewClient,
+        Tracker,
+        %{
+          profile: :aroak_autonomous_v1,
+          claim_service: AutonomousClaimService,
+          effect_ledger: lazy_effect_ledger,
+          patch_authorization: lazy_authorization,
+          review_settlement: lazy_settlement
+        }
+      )
+
+    assert state["issue-160"].global_blocker == :autonomous_execution_requires_owner_contracts
+  end
+
   test "pending ledger effects block autonomous execution before owner APIs" do
     Application.put_env(
       :symphony_elixir,
@@ -2088,5 +2180,18 @@ defmodule SymphonyElixir.ReviewConvergenceTest do
         }
       }
     }
+  end
+
+  defp prepare_unloaded_module(module, body) do
+    source = "defmodule #{inspect(module)} do\n#{body}\nend\n"
+    [{^module, binary}] = Code.compile_string(source, "runtime_module_fixture.exs")
+    directory = Path.join(System.tmp_dir!(), "symphony-review-monitor-#{System.unique_integer([:positive])}")
+    File.mkdir_p!(directory)
+    beam_path = Path.join(directory, Atom.to_string(module) <> ".beam")
+    File.write!(beam_path, binary)
+    :code.add_patha(String.to_charlist(directory))
+    :code.purge(module)
+    :code.delete(module)
+    module
   end
 end

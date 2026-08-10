@@ -123,6 +123,16 @@ defmodule SymphonyElixir.FindingDispositionTest do
              )
   end
 
+  test "resolved threads with no trusted candidates produce no fresh evidence" do
+    thread = %{
+      id: "review-thread-untrusted",
+      resolved?: true,
+      comments: [managed_comment("managed", "agent handled this", 0)]
+    }
+
+    assert :no_fresh_evidence = FindingDisposition.select_review_comment(thread, %{settled: %{}})
+  end
+
   test "selection rejects malformed thread and connection order" do
     assert {:error, :invalid_review_thread} = FindingDisposition.select_review_comment(%{}, :bad)
 
@@ -379,7 +389,7 @@ defmodule SymphonyElixir.FindingDispositionTest do
       repository: "openai/symphony",
       pull_request_number: 21,
       evaluated_head_sha: full_sha("a"),
-      finding_set_digest: "finding-set",
+      finding_set_digest: String.duplicate("b", 64),
       authorization_identity: "slot-1",
       payload: "not part of logical identity"
     }
@@ -392,7 +402,7 @@ defmodule SymphonyElixir.FindingDispositionTest do
              FindingDisposition.operation_id(:linear_issue_create, %{
                repository: "openai/symphony",
                pull_request_number: 21,
-               finding_lineage_key: "lineage",
+               finding_lineage_key: String.duplicate("c", 64),
                destination: "Backlog",
                effect_type: :linear_issue_create
              })
@@ -402,7 +412,7 @@ defmodule SymphonyElixir.FindingDispositionTest do
                repository: "openai/symphony",
                pull_request_number: 21,
                review_thread_id: "thread-1",
-               finding_key: "finding",
+               finding_key: String.duplicate("d", 64),
                message_kind: :follow_up,
                effect_type: :github_comment
              })
@@ -412,7 +422,7 @@ defmodule SymphonyElixir.FindingDispositionTest do
                repository: "openai/symphony",
                pull_request_number: 21,
                review_thread_id: "thread-1",
-               finding_lineage_key: "lineage",
+               finding_lineage_key: String.duplicate("c", 64),
                effect_type: :github_review_thread_resolve
              })
 
@@ -426,7 +436,7 @@ defmodule SymphonyElixir.FindingDispositionTest do
              FindingDisposition.operation_id(:github_pr_update, [])
 
     missing_finding = %{
-      repository: "r",
+      repository: "owner/repo",
       pull_request_number: 1,
       review_thread_id: "t",
       message_kind: :m,
@@ -437,10 +447,10 @@ defmodule SymphonyElixir.FindingDispositionTest do
              FindingDisposition.operation_id(:github_comment, missing_finding)
 
     missing_message = %{
-      repository: "r",
+      repository: "owner/repo",
       pull_request_number: 1,
       review_thread_id: "t",
-      finding_key: "f",
+      finding_key: String.duplicate("e", 64),
       effect_type: :github_comment
     }
 
@@ -448,17 +458,17 @@ defmodule SymphonyElixir.FindingDispositionTest do
              FindingDisposition.operation_id(:github_comment, missing_message)
 
     missing_effect = %{
-      repository: "r",
+      repository: "owner/repo",
       pull_request_number: 1,
       review_thread_id: "t",
-      finding_lineage_key: "l"
+      finding_lineage_key: String.duplicate("f", 64)
     }
 
     assert {:error, {:missing_field, :effect_type}} =
              FindingDisposition.operation_id(:github_review_thread_resolve, missing_effect)
 
     missing_lineage = %{
-      repository: "r",
+      repository: "owner/repo",
       pull_request_number: 1,
       review_thread_id: "t",
       effect_type: :github_review_thread_resolve
@@ -466,6 +476,48 @@ defmodule SymphonyElixir.FindingDispositionTest do
 
     assert {:error, {:missing_field, :finding_lineage_key}} =
              FindingDisposition.operation_id(:github_review_thread_resolve, missing_lineage)
+  end
+
+  test "operation IDs reject malformed logical identity values before hashing" do
+    update_input = %{
+      repository: "owner/repo",
+      pull_request_number: 21,
+      evaluated_head_sha: full_sha("a"),
+      finding_set_digest: String.duplicate("b", 64),
+      authorization_identity: "slot-1"
+    }
+
+    invalid_updates = [
+      %{update_input | repository: nil},
+      %{update_input | pull_request_number: 0},
+      %{update_input | evaluated_head_sha: "not-a-sha"},
+      %{update_input | finding_set_digest: "not-a-digest"},
+      %{update_input | authorization_identity: nil}
+    ]
+
+    for input <- invalid_updates do
+      assert {:error, {:invalid_logical_identity, _field}} =
+               FindingDisposition.operation_id(:github_pr_update, input)
+    end
+
+    assert {:error, {:invalid_logical_identity, :finding_lineage_key}} =
+             FindingDisposition.operation_id(:linear_issue_create, %{
+               repository: "owner/repo",
+               pull_request_number: 21,
+               finding_lineage_key: nil,
+               destination: "Backlog",
+               effect_type: :linear_issue_create
+             })
+
+    assert {:error, {:invalid_logical_identity, :finding_key}} =
+             FindingDisposition.operation_id(:github_comment, %{
+               repository: "owner/repo",
+               pull_request_number: 21,
+               review_thread_id: "thread-1",
+               finding_key: "not-a-digest",
+               message_kind: :follow_up,
+               effect_type: :github_comment
+             })
   end
 
   test "request fingerprints round-trip the complete immutable intent" do

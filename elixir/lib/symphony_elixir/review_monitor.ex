@@ -194,7 +194,7 @@ defmodule SymphonyElixir.ReviewMonitor do
   defp list_effect_operations(options, connection, claim_context) do
     ledger = Map.get(options, :effect_ledger, EffectLedger)
 
-    if function_exported?(ledger, :list_operations, 2) do
+    if loaded_function_exported?(ledger, :list_operations, 2) do
       ledger.list_operations(connection, claim_context)
     else
       {:error, :effect_ledger_readback_unavailable}
@@ -335,9 +335,18 @@ defmodule SymphonyElixir.ReviewMonitor do
     authorization = Map.get(options, :patch_authorization)
     settlement = Map.get(options, :review_settlement)
 
-    is_atom(authorization) and function_exported?(authorization, :authorize, 5) and
-      is_atom(settlement) and function_exported?(settlement, :settle, 2)
+    loaded_function_exported?(authorization, :authorize, 5) and
+      loaded_function_exported?(settlement, :settle, 2)
   end
+
+  defp loaded_function_exported?(module, function, arity) when is_atom(module) do
+    case Code.ensure_loaded(module) do
+      {:module, ^module} -> function_exported?(module, function, arity)
+      _ -> false
+    end
+  end
+
+  defp loaded_function_exported?(_module, _function, _arity), do: false
 
   defp reconcile_issue(%Issue{} = issue, state, settings, review_client, tracker) do
     entry =
