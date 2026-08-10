@@ -212,7 +212,8 @@ defmodule SymphonyElixir.FindingDisposition do
 
     with :ok <- validate_fingerprint_fields(intent, required),
          :ok <- validate_disposition(value(intent, :disposition)),
-         :ok <- validate_sha(value(intent, :evaluated_head_sha), :evaluated_head_sha) do
+         :ok <- validate_sha(value(intent, :evaluated_head_sha), :evaluated_head_sha),
+         :ok <- validate_fingerprint_identity(intent) do
       encoded = :erlang.term_to_binary({:symphony_request_fingerprint_v1, intent}, [:deterministic])
 
       {:ok, "symphony_request_fingerprint_v1:" <> Base.url_encode64(encoded, padding: false)}
@@ -300,6 +301,8 @@ defmodule SymphonyElixir.FindingDisposition do
     with {:ok, _ownership} <- ownership_evidence(facts),
          true <- true_value?(value(facts, :safe_follow_up?)),
          true <- false_value?(value(facts, :in_scope?)),
+         true <- true_value?(value(facts, :still_applies?)),
+         true <- true_value?(value(facts, :root_cause_bounded?)),
          true <- non_empty_string?(value(facts, :follow_up_destination)),
          true <- false_value?(value(facts, :requires_new_decision?)) do
       true
@@ -756,18 +759,18 @@ defmodule SymphonyElixir.FindingDisposition do
     source = value(plan, :source_head_sha)
     evaluated = value(plan, :evaluated_head_sha)
 
-    cond do
-      is_nil(source) ->
-        :ok
-
-      not is_binary(source) ->
+    case validate_sha(source, :source_head_sha) do
+      {:error, _reason} ->
         {:error, :invalid_source_head_sha}
 
-      source != evaluated and not_true_value?(value(plan, :revalidated?)) ->
-        {:error, :source_head_requires_revalidation}
+      :ok ->
+        cond do
+          source != evaluated and not_true_value?(value(plan, :revalidated?)) ->
+            {:error, :source_head_requires_revalidation}
 
-      true ->
-        :ok
+          true ->
+            :ok
+        end
     end
   end
 

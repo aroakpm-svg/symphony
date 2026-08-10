@@ -34,7 +34,10 @@ defmodule SymphonyElixir.FindingDispositionTest do
 
   test "mutation-time head drift invalidates the old plan" do
     assert {:error, :current_head_drift} =
-             FindingDisposition.head_guard(%{evaluated_head_sha: full_sha("a")}, full_sha("b"))
+             FindingDisposition.head_guard(
+               %{source_head_sha: full_sha("a"), evaluated_head_sha: full_sha("a")},
+               full_sha("b")
+             )
   end
 
   test "FindingLineageKey contains only stable review identity" do
@@ -156,7 +159,9 @@ defmodule SymphonyElixir.FindingDispositionTest do
       safe_follow_up?: true,
       in_scope?: false,
       follow_up_destination: "Backlog",
-      requires_new_decision?: false
+      requires_new_decision?: false,
+      still_applies?: true,
+      root_cause_bounded?: true
     }
 
     assert {:ok, plan} =
@@ -258,6 +263,32 @@ defmodule SymphonyElixir.FindingDispositionTest do
     for facts <- [
           Map.delete(base, :introduced_by_pr?),
           Map.put(base, :introduced_by_pr?, :malformed)
+        ] do
+      assert {:ok, %{disposition: :blocked_unverified}} =
+               FindingDisposition.classify(facts, preflight_facts())
+    end
+  end
+
+  test "follow-up routing requires current applicability and a bounded root cause" do
+    base =
+      finding_facts("follow-up-safety", %{
+        introduced_by_pr?: false,
+        invariant_violation?: false,
+        safe_follow_up?: true,
+        in_scope?: false,
+        follow_up_destination: "Backlog",
+        requires_new_decision?: false,
+        still_applies?: true,
+        root_cause_bounded?: true
+      })
+
+    for facts <- [
+          Map.delete(base, :still_applies?),
+          Map.put(base, :still_applies?, false),
+          Map.put(base, :still_applies?, :unknown),
+          Map.delete(base, :root_cause_bounded?),
+          Map.put(base, :root_cause_bounded?, false),
+          Map.put(base, :root_cause_bounded?, "true")
         ] do
       assert {:ok, %{disposition: :blocked_unverified}} =
                FindingDisposition.classify(facts, preflight_facts())
@@ -485,6 +516,15 @@ defmodule SymphonyElixir.FindingDispositionTest do
       assert {:error, _reason} = FindingDisposition.decode_request_fingerprint(fingerprint_with_intent(invalid_intent))
     end
 
+    for invalid_intent <- [
+          %{intent | finding_key: nil},
+          %{intent | finding_lineage_key: nil},
+          %{intent | finding_key: Map.put(intent.finding_key, :digest, String.duplicate("f", 64))},
+          %{intent | finding_lineage_key: Map.put(intent.finding_lineage_key, :digest, String.duplicate("f", 64))}
+        ] do
+      assert {:error, _reason} = FindingDisposition.request_fingerprint(invalid_intent)
+    end
+
     {:ok, other_lineage} =
       FindingDisposition.build_lineage_key(finding_input(%{review_thread_id: "other-thread"}))
 
@@ -570,6 +610,15 @@ defmodule SymphonyElixir.FindingDispositionTest do
 
     assert {:error, :invalid_head_guard_input} = FindingDisposition.head_guard([], full_sha("a"))
     assert [] == FindingDisposition.execution_steps(:bad)
+  end
+
+  test "head guard rejects missing or malformed source head evidence" do
+    for plan <- [
+          %{evaluated_head_sha: full_sha("a"), revalidated?: true},
+          %{source_head_sha: "not-a-sha", evaluated_head_sha: full_sha("a"), revalidated?: true}
+        ] do
+      assert {:error, :invalid_source_head_sha} = FindingDisposition.head_guard(plan, full_sha("a"))
+    end
   end
 
   defp finding_input(overrides) do
