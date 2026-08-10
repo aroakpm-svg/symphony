@@ -447,8 +447,11 @@ defmodule SymphonyElixir.FindingDispositionTest do
     {:ok, other_lineage} =
       FindingDisposition.build_lineage_key(finding_input(%{review_thread_id: "other-thread"}))
 
+    mismatched_fingerprint =
+      fingerprint_with_intent(%{intent | finding_lineage_key: other_lineage})
+
     assert {:error, :finding_lineage_scope_mismatch} =
-             FindingDisposition.decode_request_fingerprint(fingerprint_with_intent(%{intent | finding_lineage_key: other_lineage}))
+             FindingDisposition.decode_request_fingerprint(mismatched_fingerprint)
   end
 
   test "lock reconciliation detects disposition and effect identity conflicts" do
