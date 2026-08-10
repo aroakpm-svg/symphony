@@ -1115,7 +1115,7 @@ defmodule SymphonyElixir.GitHubReviewClient do
 
   defp completed_transition_marker?(body) do
     case Regex.run(
-           ~r/\AReview Convergence Gate returned this issue to In Progress for latest-head repair\.\n\n- currentHeadSha: `[^`\r\n]+`\n- transition-operation: `completed`\n- transition-operation-id: `([^`\r\n]+)`\n- dedup-key: `([^`\r\n]+)`\z/,
+           ~r/\AReview Convergence Gate returned this issue to In Progress for latest-head repair\.\n\n- currentHeadSha: `[0-9a-f]{40}`\n- transition-operation: `completed`\n- transition-operation-id: `([0-9a-f]{64})`\n- dedup-key: `([0-9a-f]{64})`\z/,
            body,
            capture: :all_but_first
          ) do
@@ -1126,7 +1126,7 @@ defmodule SymphonyElixir.GitHubReviewClient do
 
   defp intent_transition_marker?(body) do
     case Regex.run(
-           ~r/\AReview Convergence Gate recorded a durable rework transition intent\.\n\n- currentHeadSha: `[^`\r\n]+`\n- target-state: `[^`\r\n]+`\n- transition-operation: `intent`\n- transition-operation-id: `([^`\r\n]+)`\n- dedup-key: `transition-intent:([^`\r\n]+)`\n\nThis operation is safe to resume after timeout or process restart; completion is recorded separately\.\z/,
+           ~r/\AReview Convergence Gate recorded a durable rework transition intent\.\n\n- currentHeadSha: `[0-9a-f]{40}`\n- target-state: `[^`\r\n]+`\n- transition-operation: `intent`\n- transition-operation-id: `([0-9a-f]{64})`\n- dedup-key: `transition-intent:([0-9a-f]{64})`\n\nThis operation is safe to resume after timeout or process restart; completion is recorded separately\.\z/,
            body,
            capture: :all_but_first
          ) do

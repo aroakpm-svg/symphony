@@ -1034,6 +1034,7 @@ defmodule SymphonyElixir.ReviewConvergenceTest do
 
   test "normalized provider facts distinguish managed and system comments" do
     head = String.duplicate("e", 40)
+    operation_id = String.duplicate("1", 64)
 
     pull_request = %{
       "headRefOid" => head,
@@ -1047,7 +1048,7 @@ defmodule SymphonyElixir.ReviewConvergenceTest do
                 review_event_comment("system", "P2 system", head, "2026-08-09T01:00:00Z", "User", 123),
                 review_event_comment(
                   "managed",
-                  transition_completed_body("operation", head)["body"],
+                  transition_completed_body(operation_id, head)["body"],
                   head,
                   "2026-08-09T01:01:00Z",
                   "Bot",
@@ -1164,15 +1165,23 @@ defmodule SymphonyElixir.ReviewConvergenceTest do
 
   test "settlement markers require the generated template and matching operation identity" do
     head = String.duplicate("b", 40)
-    completed = transition_completed_body("completed-op", head)["body"]
-    intent = transition_intent_body("intent-op", head)["body"]
+    completed_operation_id = String.duplicate("2", 64)
+    intent_operation_id = String.duplicate("3", 64)
+    other_completed_operation_id = String.duplicate("4", 64)
+    other_intent_operation_id = String.duplicate("5", 64)
+    completed = transition_completed_body(completed_operation_id, head)["body"]
+    intent = transition_intent_body(intent_operation_id, head)["body"]
 
     comments = [
       review_event_comment("completed", completed, head, "2026-08-09T01:00:00Z", "Bot", 199_175_422),
       review_event_comment("intent", intent, head, "2026-08-09T01:01:00Z", "Bot", 199_175_422),
       review_event_comment(
         "completed-mismatch",
-        String.replace(completed, "- dedup-key: `completed-op`", "- dedup-key: `other-op`"),
+        String.replace(
+          completed,
+          "- dedup-key: `#{completed_operation_id}`",
+          "- dedup-key: `#{other_completed_operation_id}`"
+        ),
         head,
         "2026-08-09T01:02:00Z",
         "Organization",
@@ -1180,7 +1189,11 @@ defmodule SymphonyElixir.ReviewConvergenceTest do
       ),
       review_event_comment(
         "intent-mismatch",
-        String.replace(intent, "- dedup-key: `transition-intent:intent-op`", "- dedup-key: `transition-intent:other-op`"),
+        String.replace(
+          intent,
+          "- dedup-key: `transition-intent:#{intent_operation_id}`",
+          "- dedup-key: `transition-intent:#{other_intent_operation_id}`"
+        ),
         head,
         "2026-08-09T01:03:00Z",
         "Organization",
@@ -1213,6 +1226,56 @@ defmodule SymphonyElixir.ReviewConvergenceTest do
       ).review_events
 
     assert Enum.map(event.comments, & &1.settlement_marker?) == [true, true, false, false]
+  end
+
+  test "settlement markers reject placeholder heads and operation identities" do
+    head = String.duplicate("d", 40)
+
+    comments = [
+      review_event_comment(
+        "completed-placeholder",
+        transition_completed_body("P2-example", head)["body"]
+        |> String.replace("- currentHeadSha: `#{head}`", "- currentHeadSha: `head`"),
+        head,
+        "2026-08-09T01:00:00Z",
+        "Organization",
+        261_883_814
+      ),
+      review_event_comment(
+        "intent-placeholder",
+        transition_intent_body("P2-example", head)["body"],
+        head,
+        "2026-08-09T01:01:00Z",
+        "Organization",
+        261_883_814
+      )
+    ]
+
+    pull_request = %{
+      "headRefOid" => head,
+      "reviewThreads" => %{
+        "nodes" => [
+          %{
+            "id" => "thread-marker-placeholder",
+            "isResolved" => false,
+            "comments" => %{
+              "nodes" => comments,
+              "pageInfo" => %{"hasNextPage" => false, "endCursor" => nil}
+            }
+          }
+        ]
+      }
+    }
+
+    [event] =
+      GitHubReviewClient.normalize_snapshot_for_test(
+        pull_request,
+        [],
+        %{required: false, result: :not_required},
+        []
+      ).review_events
+
+    assert Enum.map(event.comments, & &1.settlement_marker?) == [false, false]
   end
 
   test "resolved thread data is retained as a review event" do
