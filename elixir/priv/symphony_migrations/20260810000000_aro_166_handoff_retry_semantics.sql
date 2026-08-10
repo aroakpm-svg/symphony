@@ -1,5 +1,26 @@
 begin;
 
+do $$
+begin
+  if exists (
+    select 1
+    from symphony_staging.handoff_receipts receipts
+    group by
+      receipts.issue_id,
+      receipts.claim_id,
+      receipts.generation,
+      receipts.checkpoint_kind,
+      receipts.head_sha,
+      coalesce(receipts.pr_number, 0)
+    having count(*) > 1
+  ) then
+    raise exception using
+      errcode = '55000',
+      message = 'handoff retry migration requires unique checkpoint identities; legacy duplicate checkpoint identities must be reconciled before contract version 2 can be installed';
+  end if;
+end
+$$;
+
 create unique index handoff_receipts_checkpoint_identity_idx
   on symphony_staging.handoff_receipts (
     issue_id,
@@ -33,6 +54,7 @@ declare
   derived_effect_operation_ids text[];
   generation_receipt symphony_staging.handoff_receipts%rowtype;
   existing_receipt symphony_staging.handoff_receipts%rowtype;
+  existing_receipt_found boolean;
   latest_receipt symphony_staging.handoff_receipts%rowtype;
   existing_pr_number bigint;
   requested_checkpoint_rank integer;
@@ -164,6 +186,26 @@ begin
   end;
 
   select receipts.*
+  into existing_receipt
+  from symphony_staging.handoff_receipts receipts
+  where receipts.issue_id = requested_issue_id
+    and receipts.claim_id = requested_claim_id
+    and receipts.generation = requested_generation
+    and receipts.checkpoint_kind = requested_checkpoint_kind
+    and receipts.head_sha = requested_head_sha
+    and coalesce(receipts.pr_number, 0) = coalesce(requested_pr_number, 0)
+  order by receipts.checkpoint_sequence
+  limit 1;
+
+  existing_receipt_found := found;
+
+  if found then
+    if existing_receipt.test_results <> requested_test_results then
+      raise exception using errcode = '22023', message = 'handoff receipt retry identity has conflicting test results';
+    end if;
+  end if;
+
+  select receipts.*
   into latest_receipt
   from symphony_staging.handoff_receipts receipts
   where receipts.issue_id = requested_issue_id
@@ -190,23 +232,7 @@ begin
     end if;
   end if;
 
-  select receipts.*
-  into existing_receipt
-  from symphony_staging.handoff_receipts receipts
-  where receipts.issue_id = requested_issue_id
-    and receipts.claim_id = requested_claim_id
-    and receipts.generation = requested_generation
-    and receipts.checkpoint_kind = requested_checkpoint_kind
-    and receipts.head_sha = requested_head_sha
-    and coalesce(receipts.pr_number, 0) = coalesce(requested_pr_number, 0)
-  order by receipts.checkpoint_sequence
-  limit 1;
-
-  if found then
-    if existing_receipt.test_results <> requested_test_results then
-      raise exception using errcode = '22023', message = 'handoff receipt retry identity has conflicting test results';
-    end if;
-
+  if existing_receipt_found then
     return existing_receipt;
   end if;
 

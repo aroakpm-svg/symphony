@@ -29,6 +29,11 @@ This makes database arrival order safe for the bounded V1 chain without adding a
 second retry ledger, caller-supplied sequence, timestamp ordering, or runtime
 workflow. New-head progression is intentionally a new generation boundary.
 
+The version-2 migration first checks for duplicate V1 checkpoint identities. If
+legacy duplicates exist, it stops before replacing the V1 function or contract
+registration and asks for explicit human reconciliation. It does not delete or
+rewrite append-only receipt history.
+
 ## Required fresh observation
 
 Before treating a receipt as useful evidence, collect a fresh observation of:

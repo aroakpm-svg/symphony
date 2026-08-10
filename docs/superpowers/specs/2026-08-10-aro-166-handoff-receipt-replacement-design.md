@@ -126,8 +126,13 @@ semantics:
   recorded; that change requires a new generation.
 
 This amendment intentionally uses the existing claim lock and one unique
-checkpoint-identity index. It does not add a retry ledger, caller-supplied
-sequence, timestamp ordering, runtime workflow, or ARO-167 integration.
+checkpoint-identity index. Before creating that index, the forward migration
+performs a non-destructive preflight for duplicate V1 checkpoint identities. If
+legacy duplicates exist, the migration aborts before replacing the V1 function
+or contract registration and reports that the rows require explicit human
+reconciliation; it never deletes or rewrites append-only history. The
+amendment does not add a retry ledger, caller-supplied sequence, timestamp
+ordering, runtime workflow, or ARO-167 integration.
 
 ## 4. Domain API
 

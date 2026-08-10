@@ -102,6 +102,8 @@ defmodule SymphonyElixir.HandoffReceiptMigrationTest do
   test "retry migration binds a generation, deduplicates identities, and preserves rank" do
     sql = File.read!(@retry_migration)
 
+    assert sql =~ "handoff retry migration requires unique checkpoint identities"
+    assert sql =~ "legacy duplicate checkpoint identities"
     assert sql =~ "create unique index handoff_receipts_checkpoint_identity_idx"
     assert sql =~ "coalesce(pr_number, 0)"
     assert sql =~ "handoff receipt generation is bound to another repository, branch, or head"

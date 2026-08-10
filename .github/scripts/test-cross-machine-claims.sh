@@ -237,6 +237,12 @@ late_pushed="$(PGPASSWORD=disposable psql -X -q -A -t -v ON_ERROR_STOP=1 -d "$(n
 test "$late_pushed" = "3|reviewed|23|{handoff-git-push}"
 
 if PGPASSWORD=disposable psql -X -q -A -t -v ON_ERROR_STOP=1 -d "$(node_url claim_node_c)" -c \
+  "select * from symphony_staging.append_handoff_receipt('HANDOFF','$handoff_receipt_claim_id',$handoff_receipt_generation,'$node_c','$instance_c','aroakpm-svg/symphony','pushed','codex/aro-166-replacement','aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa','aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',null,'[{\"name\":\"make all\",\"status\":\"skipped\"}]'::jsonb);" \
+  >/dev/null 2>&1; then
+  echo "lower-ranked checkpoint with conflicting test results unexpectedly accepted" >&2; exit 1
+fi
+
+if PGPASSWORD=disposable psql -X -q -A -t -v ON_ERROR_STOP=1 -d "$(node_url claim_node_c)" -c \
   "select * from symphony_staging.append_handoff_receipt('HANDOFF','$handoff_receipt_claim_id',$handoff_receipt_generation,'$node_c','$instance_c','aroakpm-svg/symphony','reviewed','codex/aro-166-replacement','aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa','aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',23,'[{\"name\":\"make all\",\"status\":\"skipped\"}]'::jsonb);" \
   >/dev/null 2>&1; then
   echo "same-checkpoint conflicting test results unexpectedly accepted" >&2; exit 1
