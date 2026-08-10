@@ -195,6 +195,71 @@ defmodule SymphonyElixir.FindingDispositionTest do
     assert {:error, {:global_blocker, :invalid_preflight}} = FindingDisposition.classify_all([], :bad)
   end
 
+  test "responsibility proof uses OR and does not use scope as an ownership gate" do
+    introduced_only =
+      finding_facts("introduced-only", %{
+        introduced_by_pr?: true,
+        invariant_violation?: false,
+        in_scope?: false,
+        still_applies?: true,
+        root_cause_bounded?: true,
+        requires_new_decision?: false
+      })
+
+    invariant_only =
+      finding_facts("invariant-only", %{
+        introduced_by_pr?: false,
+        invariant_violation?: true,
+        in_scope?: false,
+        still_applies?: true,
+        root_cause_bounded?: true,
+        requires_new_decision?: false
+      })
+
+    assert {:ok, %{disposition: :fix_in_current_pr}} =
+             FindingDisposition.classify(introduced_only, preflight_facts())
+
+    assert {:ok, %{disposition: :fix_in_current_pr}} =
+             FindingDisposition.classify(invariant_only, preflight_facts())
+  end
+
+  test "incomplete, malformed, or conflicting responsibility evidence blocks" do
+    incomplete =
+      finding_facts("incomplete", %{
+        introduced_by_pr?: true,
+        in_scope?: true,
+        still_applies?: true,
+        root_cause_bounded?: true,
+        requires_new_decision?: false
+      })
+      |> Map.delete(:invariant_violation?)
+
+    malformed =
+      finding_facts("malformed", %{
+        introduced_by_pr?: true,
+        invariant_violation?: "true",
+        in_scope?: true,
+        still_applies?: true,
+        root_cause_bounded?: true,
+        requires_new_decision?: false
+      })
+
+    conflicting =
+      finding_facts("conflicting", %{
+        introduced_by_pr?: true,
+        invariant_violation?: false,
+        evidence_conflict?: true,
+        in_scope?: true,
+        still_applies?: true,
+        root_cause_bounded?: true,
+        requires_new_decision?: false
+      })
+
+    for facts <- [incomplete, malformed, conflicting] do
+      assert {:ok, %{disposition: :blocked_unverified}} = FindingDisposition.classify(facts, preflight_facts())
+    end
+  end
+
   test "empty plans retain every fixed execution step as no-op data" do
     assert {:ok, plan} = FindingDisposition.classify_all([], preflight_facts())
 
@@ -432,7 +497,8 @@ defmodule SymphonyElixir.FindingDispositionTest do
         source_head_sha: full_sha("1"),
         review_thread_id: "thread-1",
         selected_review_comment_id: "comment-1",
-        body: "P1 issue"
+        body: "P1 issue",
+        invariant_violation?: false
       },
       overrides
     )

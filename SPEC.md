@@ -373,16 +373,35 @@ Every evaluation MUST record the verified `source_head_sha`, the `evaluated_head
 observed current head. A head mismatch, missing head evidence, unverified base evidence, or an
 invalid scope contract MUST fail closed. The only dispositions are `fix_in_current_pr`,
 `follow_up_required`, and `blocked_unverified`. A classifier MAY select one of these dispositions
-only from verified evidence; severity alone MUST NOT create a rework decision.
+only from verified evidence; severity alone MUST NOT create a rework decision. Responsibility
+evidence is conjunctively validated for shape and validity, then uses OR semantics: an explicit
+`introduced_by_pr? == true` OR an explicit `invariant_violation? == true` is sufficient to prove
+current-PR responsibility. Safety conditions remain conjunctive: `still_applies? == true`,
+`root_cause_bounded? == true`, and `requires_new_decision? == false` are all required. Missing,
+malformed, or conflicting responsibility evidence MUST remain `blocked_unverified`; `in_scope?`
+MUST NOT erase either positive responsibility proof.
 
 Before any autonomous effect, the runtime MUST complete claim ownership and effect-ledger
-readback for the active issue, claim, node, instance, and generation. Pending, unknown, malformed,
-or conflicting ledger rows MUST stop the cycle before owner APIs or external writes. Request
-fingerprints are immutable: reusing an operation identity with a different fingerprint MUST fail
-closed, and lock reconciliation MUST be deterministic and in fixed order.
+readback for the active issue, claim, node, instance, and current generation. A current verified
+claim MAY read unresolved (`pending` or `unknown`) effect rows from older generations for the same
+issue, but an older claim, effect, or generation MUST NOT authorize a new current-generation
+mutation. Pending, unknown, malformed, or conflicting ledger rows MUST stop the cycle before owner
+APIs or external writes. A read-only monitor MUST distinguish a claim newly acquired by its own
+invocation from an existing worker claim and MUST NOT bind, release, or otherwise mutate the latter;
+a failed acquisition MUST NOT release a cached claim. Request fingerprints are immutable: after
+decoding, the runtime MUST rebuild and compare the canonical `FindingKey` and
+`FindingLineageKey`, including repository/pull-request scope and digests. Reusing an operation
+identity with a different fingerprint MUST fail closed, and lock reconciliation MUST be
+deterministic and in fixed order. The global preflight gate MUST require both `verified? == true`
+AND `valid? == true`; every other value, including missing flags, MUST fail closed.
+
+The readback function's execute privilege MUST be granted both to existing node principals and by
+the node-login enrollment hook for principals created or re-enrolled after the readback migration.
 
 Design 2 does not add another evaluator, settlement engine, claim path, ledger path, receipt path,
-or coordinator, and MUST NOT change the existing ClaimService lifecycle. Design 3 authorization
+or coordinator, and MUST preserve ClaimService's existing lease/renew/release lifecycle. It MAY
+carry explicit acquisition provenance in the existing claim record so monitor readback cannot
+release an existing worker claim. Design 3 authorization
 (`authorize/5`) and Design 4 settlement (`settle/2`) are owner contracts; when they are absent,
 the runtime MUST fail closed and MUST NOT add local stubs. `aroak_autonomous_v1` remains disabled
 by default; Design 2 validation MUST NOT start workers, use shared staging credentials, deploy, or

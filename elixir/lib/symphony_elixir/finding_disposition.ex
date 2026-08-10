@@ -280,18 +280,47 @@ defmodule SymphonyElixir.FindingDisposition do
   end
 
   defp fix_facts?(facts) do
-    true_value?(value(facts, :introduced_by_pr?)) and
+    responsibility_proven?(facts) and
       true_value?(value(facts, :still_applies?)) and
-      true_value?(value(facts, :in_scope?)) and
       true_value?(value(facts, :root_cause_bounded?)) and
       false_value?(value(facts, :requires_new_decision?))
   end
 
   defp follow_up_facts?(facts) do
-    true_value?(value(facts, :safe_follow_up?)) and
+    no_evidence_conflict?(facts) and
+      true_value?(value(facts, :safe_follow_up?)) and
       false_value?(value(facts, :in_scope?)) and
       non_empty_string?(value(facts, :follow_up_destination)) and
       false_value?(value(facts, :requires_new_decision?))
+  end
+
+  defp responsibility_proven?(facts) do
+    with {:ok, introduced_by_pr?} <- ownership_evidence_flag(facts, :introduced_by_pr?),
+         {:ok, invariant_violation?} <- ownership_evidence_flag(facts, :invariant_violation?),
+         true <- no_evidence_conflict?(facts) do
+      true_value?(introduced_by_pr?) or true_value?(invariant_violation?)
+    else
+      _ -> false
+    end
+  end
+
+  defp ownership_evidence_flag(facts, key) do
+    if present?(facts, key) do
+      case value(facts, key) do
+        value when is_boolean(value) or value == :unknown -> {:ok, value}
+        _ -> {:error, {:invalid_ownership_evidence, key}}
+      end
+    else
+      {:error, {:missing_ownership_evidence, key}}
+    end
+  end
+
+  defp no_evidence_conflict?(facts) do
+    case value(facts, :evidence_conflict?) do
+      nil -> true
+      value when is_boolean(value) -> not value
+      _ -> false
+    end
   end
 
   defp identity_for(facts) do

@@ -270,6 +270,7 @@ defmodule SymphonyElixir.ReviewMonitor do
             selected_review_comment_id: comment[:id],
             body: comment[:body],
             introduced_by_pr?: :unknown,
+            invariant_violation?: :unknown,
             still_applies?: :unknown,
             in_scope?: :unknown,
             root_cause_bounded?: :unknown,

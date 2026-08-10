@@ -78,14 +78,20 @@ Every result records the source head, `evaluated_head_sha`, and the observed cur
 stale, conflicting, or unverified evidence fails closed.
 
 The classifier can return only `fix_in_current_pr`, `follow_up_required`, or `blocked_unverified`.
-Severity alone is not ownership evidence. Before any autonomous effect, the runtime must verify
-the active claim and read back the effect ledger for the exact issue, claim, node, instance, and
-generation. Pending or unknown effects stop the cycle before an owner API or external write.
-Request fingerprints are immutable and lock reconciliation uses a deterministic fixed order.
+Responsibility proof is `introduced_by_pr? == true OR invariant_violation? == true`; all safety
+conditions remain AND-gated, and missing, malformed, or conflicting evidence stays blocked.
+`in_scope?` cannot erase either positive responsibility proof. Before any autonomous effect, the
+runtime authenticates the current claim and reads unresolved (`pending`/`unknown`) effects for the
+same issue across older generations. Historical effects are recovery evidence only and cannot
+authorize a current-generation mutation. A monitor invocation releases only a claim it newly
+acquired; an existing worker claim is left untouched. The global preflight requires explicit
+`verified? == true` and `valid? == true`. Request fingerprints are immutable: decoding rebuilds
+and compares canonical finding and lineage identities, including scope and digests; lock
+reconciliation uses a deterministic fixed order.
 
 Design 2 consumes the merged HandoffReceipt V1 dependency only. It does not add a second evaluator,
-settlement engine, claim/ledger/receipt path, or coordinator, and it does not change ClaimService's
-existing lifecycle. Design 3 `authorize/5` and Design 4 `settle/2` are owner contracts; when either
+settlement engine, claim/ledger/receipt path, or coordinator, and it preserves ClaimService's
+existing lease/renew/release lifecycle. Design 3 `authorize/5` and Design 4 `settle/2` are owner contracts; when either
 is unavailable, execution fails closed rather than using a local stub. `aroak_autonomous_v1` stays
 disabled by default, and this work does not start workers, use shared staging credentials, deploy,
 or touch Production.
