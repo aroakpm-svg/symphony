@@ -527,8 +527,8 @@ defmodule SymphonyElixir.FindingDispositionTest do
 
     assert {:ok, _comment_id} =
              FindingDisposition.operation_id(:github_comment, %{
-               repository: "owner/repo",
-               pull_request_number: 21,
+               repository: facts.repository,
+               pull_request_number: facts.pull_request_number,
                review_thread_id: "thread-1",
                finding_key: finding_key,
                message_kind: :follow_up,
@@ -537,8 +537,27 @@ defmodule SymphonyElixir.FindingDispositionTest do
 
     assert {:ok, _linear_id} =
              FindingDisposition.operation_id(:linear_issue_create, %{
-               repository: "owner/repo",
-               pull_request_number: 21,
+               repository: facts.repository,
+               pull_request_number: facts.pull_request_number,
+               finding_lineage_key: finding_lineage_key,
+               destination: "Backlog",
+               effect_type: :linear_issue_create
+             })
+
+    assert {:error, {:logical_identity_scope_mismatch, :finding_key}} =
+             FindingDisposition.operation_id(:github_comment, %{
+               repository: "other/repo",
+               pull_request_number: 22,
+               review_thread_id: "other-thread",
+               finding_key: finding_key,
+               message_kind: :follow_up,
+               effect_type: :github_comment
+             })
+
+    assert {:error, {:logical_identity_scope_mismatch, :finding_lineage_key}} =
+             FindingDisposition.operation_id(:linear_issue_create, %{
+               repository: "other/repo",
+               pull_request_number: 22,
                finding_lineage_key: finding_lineage_key,
                destination: "Backlog",
                effect_type: :linear_issue_create

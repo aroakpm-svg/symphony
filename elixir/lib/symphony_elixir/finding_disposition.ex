@@ -495,18 +495,28 @@ defmodule SymphonyElixir.FindingDisposition do
   end
 
   defp logical_operation_identity(:linear_issue_create, input) do
-    required_identity(input, [
-      :repository,
-      :pull_request_number,
-      :finding_lineage_key,
-      :destination,
-      :effect_type
-    ])
+    with {:ok, _base_identity} <- required_identity(input, [:repository, :pull_request_number]),
+         {:ok, lineage} <- logical_identity_field(input, :finding_lineage_key),
+         :ok <-
+           matching_operation_scope(input, lineage, :finding_lineage_key, [
+             :repository,
+             :pull_request_number
+           ]),
+         {:ok, destination} <- logical_identity_field(input, :destination),
+         {:ok, effect_type} <- logical_identity_field(input, :effect_type) do
+      {:ok, [value(input, :repository), value(input, :pull_request_number), lineage, destination, effect_type]}
+    end
   end
 
   defp logical_operation_identity(:github_comment, input) do
     with {:ok, _base_identity} <- required_identity(input, [:repository, :pull_request_number, :review_thread_id]),
          {:ok, finding_identity} <- required_finding_identity(input),
+         :ok <-
+           matching_operation_scope(input, finding_identity, :finding_key, [
+             :repository,
+             :pull_request_number,
+             :review_thread_id
+           ]),
          {:ok, message_kind} <- logical_identity_field(input, :message_kind),
          {:ok, effect_type} <- logical_identity_field(input, :effect_type) do
       identity = {review_identity(input), finding_identity, message_kind, effect_type}
@@ -518,6 +528,12 @@ defmodule SymphonyElixir.FindingDisposition do
   defp logical_operation_identity(:github_review_thread_resolve, input) do
     with {:ok, _base_identity} <- required_identity(input, [:repository, :pull_request_number, :review_thread_id]),
          {:ok, lineage} <- logical_identity_field(input, :finding_lineage_key),
+         :ok <-
+           matching_operation_scope(input, lineage, :finding_lineage_key, [
+             :repository,
+             :pull_request_number,
+             :review_thread_id
+           ]),
          {:ok, effect_type} <- logical_identity_field(input, :effect_type) do
       identity = {review_identity(input), lineage, effect_type}
 
@@ -532,6 +548,14 @@ defmodule SymphonyElixir.FindingDisposition do
       true -> {:error, {:missing_field, :finding_key_or_lineage_key}}
     end
   end
+
+  defp matching_operation_scope(input, identity, field, scope_fields) when is_map(identity) do
+    if Enum.all?(scope_fields, &(value(input, &1) == value(identity, &1))),
+      do: :ok,
+      else: {:error, {:logical_identity_scope_mismatch, field}}
+  end
+
+  defp matching_operation_scope(_input, _identity, _field, _scope_fields), do: :ok
 
   defp review_identity(input),
     do: {value(input, :repository), value(input, :pull_request_number), value(input, :review_thread_id)}

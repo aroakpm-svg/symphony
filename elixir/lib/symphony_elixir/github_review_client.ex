@@ -1107,7 +1107,9 @@ defmodule SymphonyElixir.GitHubReviewClient do
   defp managed_agent_author?(_author), do: false
 
   defp settlement_marker?(body) when is_binary(body) do
-    Regex.match?(~r/(?:settlement-marker|settlement-operation|transition-operation):/i, body)
+    Regex.match?(~r/^\s*-\s+transition-operation:\s+`(?:intent|completed)`\s*$/mi, body) and
+      Regex.match?(~r/^\s*-\s+transition-operation-id:\s+`[^`]+`\s*$/mi, body) and
+      Regex.match?(~r/^\s*-\s+dedup-key:\s+`[^`]+`\s*$/mi, body)
   end
 
   defp settlement_marker?(_body), do: false

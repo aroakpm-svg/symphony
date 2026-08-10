@@ -1047,7 +1047,7 @@ defmodule SymphonyElixir.ReviewConvergenceTest do
                 review_event_comment("system", "P2 system", head, "2026-08-09T01:00:00Z", "User", 123),
                 review_event_comment(
                   "managed",
-                  "transition-operation: `operation`",
+                  "- transition-operation: `completed`\n- transition-operation-id: `operation`\n- dedup-key: `operation`",
                   head,
                   "2026-08-09T01:01:00Z",
                   "Bot",
@@ -1075,6 +1075,48 @@ defmodule SymphonyElixir.ReviewConvergenceTest do
     assert managed.trusted_review_source? == true
     assert managed.managed_agent_reply? == true
     assert managed.settlement_marker? == true
+  end
+
+  test "ordinary review prose mentioning transition operations is not a settlement marker" do
+    head = String.duplicate("f", 40)
+
+    pull_request = %{
+      "headRefOid" => head,
+      "reviewThreads" => %{
+        "nodes" => [
+          %{
+            "id" => "thread-prose",
+            "isResolved" => false,
+            "comments" => %{
+              "nodes" => [
+                review_event_comment(
+                  "review-prose",
+                  "P2 review text discusses `transition-operation:` but is not a managed marker.",
+                  head,
+                  "2026-08-09T01:00:00Z",
+                  "Organization",
+                  261_883_814
+                )
+              ],
+              "pageInfo" => %{"hasNextPage" => false, "endCursor" => nil}
+            }
+          }
+        ]
+      }
+    }
+
+    [event] =
+      GitHubReviewClient.normalize_snapshot_for_test(
+        pull_request,
+        [],
+        %{required: false, result: :not_required},
+        []
+      ).review_events
+
+    [comment] = event.comments
+    assert comment.trusted_review_source? == true
+    assert comment.managed_agent_reply? == false
+    assert comment.settlement_marker? == false
   end
 
   test "resolved thread data is retained as a review event" do
