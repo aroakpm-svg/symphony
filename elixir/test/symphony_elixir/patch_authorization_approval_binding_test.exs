@@ -43,6 +43,22 @@ defmodule SymphonyElixir.PatchAuthorization.ApprovalBindingTest do
     assert {:error, :authorization_actor_unknown} =
              ApprovalBinding.bind(request(), approval(actor: "actor-42"), evidence())
 
+    assert {:error, :authorization_actor_unknown} =
+             ApprovalBinding.bind(request(), approval(actor: %{id: "", type: "User"}), evidence())
+
+    assert {:error, :authorization_actor_unknown} =
+             ApprovalBinding.bind(request(), approval(actor: %URI{}), evidence())
+
+    consistent_actor = %{
+      "id" => "actor-42",
+      "type" => "User",
+      id: "actor-42",
+      type: "User"
+    }
+
+    assert {:ok, _binding} =
+             ApprovalBinding.bind(request(), approval(actor: consistent_actor), evidence())
+
     assert {:error, :authorization_actor_mismatch} =
              ApprovalBinding.bind(
                request(),
@@ -55,6 +71,13 @@ defmodule SymphonyElixir.PatchAuthorization.ApprovalBindingTest do
                request(),
                approval(),
                evidence(authority_result: %{status: :authorized})
+             )
+
+    assert {:error, :authorization_actor_unknown} =
+             ApprovalBinding.bind(
+               request(),
+               approval(),
+               evidence(authority_result: %{status: :authorized, actor_id: ""})
              )
 
     for actor_type <- ["Bot", "App", "Organization"] do
@@ -75,6 +98,49 @@ defmodule SymphonyElixir.PatchAuthorization.ApprovalBindingTest do
                approval(),
                evidence(authority_result: %{status: :unknown, actor_id: "actor-42"})
              )
+  end
+
+  test "rejects contradictory atom and string actor identities" do
+    conflicting_actor = %{
+      "id" => "different-actor",
+      "type" => "Bot",
+      id: "actor-42",
+      type: "User"
+    }
+
+    assert {:error, :authorization_actor_conflict} =
+             ApprovalBinding.bind(request(), approval(actor: conflicting_actor), evidence())
+
+    conflicting_authority = %{
+      "actor_id" => "different-actor",
+      status: :authorized,
+      actor_id: "actor-42"
+    }
+
+    assert {:error, :authorization_actor_conflict} =
+             ApprovalBinding.bind(request(), approval(), evidence(authority_result: conflicting_authority))
+  end
+
+  test "requires approval provenance to match the immutable request scope" do
+    for overrides <- [
+          [request_id: "different-request"],
+          [repository: "other-owner/other-repo"],
+          [pull_request_number: 31],
+          [head_sha: "different-head"],
+          [finding_set_digest: "different-digest"]
+        ] do
+      assert {:error, :authorization_request_mismatch} =
+               ApprovalBinding.bind(request(), approval(provenance: provenance(overrides)), evidence())
+    end
+
+    assert {:error, :authorization_provenance_unknown} =
+             ApprovalBinding.bind(request(), approval(provenance: provenance(status: :unknown)), evidence())
+
+    assert {:error, :authorization_provenance_unknown} =
+             ApprovalBinding.bind(request(), approval(provenance: provenance(repository: "")), evidence())
+
+    assert {:error, :authorization_provenance_unknown} =
+             ApprovalBinding.bind(request(), approval(provenance: nil), evidence())
   end
 
   test "rejects reused approval comments and malformed evidence" do
@@ -111,6 +177,8 @@ defmodule SymphonyElixir.PatchAuthorization.ApprovalBindingTest do
   defp request do
     %{
       request_id: "request-1",
+      repository: "aroakpm-svg/symphony",
+      pull_request_number: 30,
       evaluated_head_sha: "head-1",
       eligible_finding_set_digest: "digest-1"
     }
@@ -120,7 +188,19 @@ defmodule SymphonyElixir.PatchAuthorization.ApprovalBindingTest do
     Enum.into(overrides, %{
       comment_id: "comment-1",
       body: "批准再修一輪",
-      actor: %{id: "actor-42", login: "maintainer", type: "User"}
+      actor: %{id: "actor-42", login: "maintainer", type: "User"},
+      provenance: provenance()
+    })
+  end
+
+  defp provenance(overrides \\ []) do
+    Enum.into(overrides, %{
+      status: :verified,
+      request_id: "request-1",
+      repository: "aroakpm-svg/symphony",
+      pull_request_number: 30,
+      head_sha: "head-1",
+      finding_set_digest: "digest-1"
     })
   end
 

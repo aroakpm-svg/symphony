@@ -21,6 +21,7 @@ defmodule SymphonyElixir.PatchAuthorization.ApprovalBinding do
          :ok <- validate_snapshot(request, evidence),
          :ok <- validate_command(approval),
          :ok <- validate_comment_id(approval),
+         :ok <- validate_approval_provenance(request, approval),
          {:ok, actor_id} <- verified_actor_id(approval),
          :ok <- validate_authority(evidence, actor_id),
          :ok <- validate_unused_comment(approval, evidence) do
@@ -37,6 +38,8 @@ defmodule SymphonyElixir.PatchAuthorization.ApprovalBinding do
 
   defp validate_request(request) do
     if non_empty_string?(request[:request_id]) and
+         non_empty_string?(request[:repository]) and
+         is_integer(request[:pull_request_number]) and request[:pull_request_number] > 0 and
          non_empty_string?(request[:evaluated_head_sha]) and
          non_empty_string?(request[:eligible_finding_set_digest]) do
       :ok
@@ -84,28 +87,140 @@ defmodule SymphonyElixir.PatchAuthorization.ApprovalBinding do
     end
   end
 
-  defp verified_actor_id(approval) do
-    actor = approval[:actor]
-    actor_id = actor_id(actor)
-    actor_type = actor_type(actor)
+  defp validate_approval_provenance(request, approval) do
+    provenance = approval[:provenance]
 
-    cond do
-      not plain_map?(actor) or not non_empty_string?(actor_id) or is_nil(actor_type) ->
-        {:error, :authorization_actor_unknown}
-
-      actor_type != "User" ->
-        {:error, :non_human_actor}
-
-      true ->
-        {:ok, actor_id}
+    if plain_map?(provenance) do
+      with {:ok, status} <-
+             required_field(
+               provenance,
+               :status,
+               :authorization_provenance_unknown,
+               :authorization_provenance_conflict
+             ),
+           :ok <- validate_provenance_status(status),
+           {:ok, request_id} <-
+             required_field(
+               provenance,
+               :request_id,
+               :authorization_provenance_unknown,
+               :authorization_provenance_conflict
+             ),
+           {:ok, repository} <-
+             required_field(
+               provenance,
+               :repository,
+               :authorization_provenance_unknown,
+               :authorization_provenance_conflict
+             ),
+           {:ok, pull_request_number} <-
+             required_field(
+               provenance,
+               :pull_request_number,
+               :authorization_provenance_unknown,
+               :authorization_provenance_conflict
+             ),
+           {:ok, head_sha} <-
+             required_field(
+               provenance,
+               :head_sha,
+               :authorization_provenance_unknown,
+               :authorization_provenance_conflict
+             ),
+           {:ok, finding_set_digest} <-
+             required_field(
+               provenance,
+               :finding_set_digest,
+               :authorization_provenance_unknown,
+               :authorization_provenance_conflict
+             ),
+           :ok <-
+             validate_provenance_values(
+               request_id,
+               repository,
+               pull_request_number,
+               head_sha,
+               finding_set_digest
+             ) do
+        compare_approval_provenance(
+          request,
+          request_id,
+          repository,
+          pull_request_number,
+          head_sha,
+          finding_set_digest
+        )
+      end
+    else
+      {:error, :authorization_provenance_unknown}
     end
   end
 
-  defp actor_id(actor) when is_map(actor), do: Map.get(actor, :id) || Map.get(actor, "id")
-  defp actor_id(_actor), do: nil
+  defp validate_provenance_status(:verified), do: :ok
+  defp validate_provenance_status(_status), do: {:error, :authorization_provenance_unknown}
 
-  defp actor_type(actor) when is_map(actor), do: Map.get(actor, :type) || Map.get(actor, "type")
-  defp actor_type(_actor), do: nil
+  defp validate_provenance_values(
+         request_id,
+         repository,
+         pull_request_number,
+         head_sha,
+         finding_set_digest
+       ) do
+    if non_empty_string?(request_id) and
+         non_empty_string?(repository) and
+         is_integer(pull_request_number) and pull_request_number > 0 and
+         non_empty_string?(head_sha) and
+         non_empty_string?(finding_set_digest) do
+      :ok
+    else
+      {:error, :authorization_provenance_unknown}
+    end
+  end
+
+  defp compare_approval_provenance(
+         request,
+         request_id,
+         repository,
+         pull_request_number,
+         head_sha,
+         finding_set_digest
+       ) do
+    if request_id == request[:request_id] and
+         repository == request[:repository] and
+         pull_request_number == request[:pull_request_number] and
+         head_sha == request[:evaluated_head_sha] and
+         finding_set_digest == request[:eligible_finding_set_digest] do
+      :ok
+    else
+      {:error, :authorization_request_mismatch}
+    end
+  end
+
+  defp verified_actor_id(approval) do
+    verify_actor_map(approval[:actor])
+  end
+
+  defp verify_actor_map(%{__struct__: _}), do: {:error, :authorization_actor_unknown}
+
+  defp verify_actor_map(actor) when is_map(actor) do
+    with {:ok, actor_id} <-
+           required_field(actor, :id, :authorization_actor_unknown, :authorization_actor_conflict),
+         {:ok, actor_type} <-
+           required_field(actor, :type, :authorization_actor_unknown, :authorization_actor_conflict) do
+      cond do
+        not non_empty_string?(actor_id) ->
+          {:error, :authorization_actor_unknown}
+
+        actor_type != "User" ->
+          {:error, :non_human_actor}
+
+        true ->
+          {:ok, actor_id}
+      end
+    end
+  end
+
+  defp verify_actor_map(_actor), do: {:error, :authorization_actor_unknown}
 
   defp validate_authority(evidence, actor_id) do
     authority_result = evidence[:authority_result]
@@ -118,12 +233,21 @@ defmodule SymphonyElixir.PatchAuthorization.ApprovalBinding do
   end
 
   defp validate_authority_result(%{status: :authorized} = result, actor_id) do
-    authority_actor_id = Map.get(result, :actor_id) || Map.get(result, "actor_id")
+    case required_field(result, :actor_id, :authorization_actor_unknown, :authorization_actor_conflict) do
+      {:ok, authority_actor_id} ->
+        cond do
+          not non_empty_string?(authority_actor_id) ->
+            {:error, :authorization_actor_unknown}
 
-    cond do
-      not non_empty_string?(authority_actor_id) -> {:error, :authorization_actor_unknown}
-      authority_actor_id != actor_id -> {:error, :authorization_actor_mismatch}
-      true -> :ok
+          authority_actor_id != actor_id ->
+            {:error, :authorization_actor_mismatch}
+
+          true ->
+            :ok
+        end
+
+      {:error, reason} ->
+        {:error, reason}
     end
   end
 
@@ -140,6 +264,36 @@ defmodule SymphonyElixir.PatchAuthorization.ApprovalBinding do
 
   defp valid_comment_ids?(%MapSet{map: map}) when is_map(map), do: true
   defp valid_comment_ids?(_comment_ids), do: false
+
+  defp required_field(map, key, missing_reason, conflict_reason) do
+    case consistent_field(map, key, conflict_reason) do
+      {:ok, nil} -> {:error, missing_reason}
+      {:ok, value} -> {:ok, value}
+      :missing -> {:error, missing_reason}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp consistent_field(map, key, conflict_reason) do
+    string_key = Atom.to_string(key)
+
+    case {Map.fetch(map, key), Map.fetch(map, string_key)} do
+      {{:ok, atom_value}, {:ok, string_value}} when atom_value == string_value ->
+        {:ok, atom_value}
+
+      {{:ok, _atom_value}, {:ok, _string_value}} ->
+        {:error, conflict_reason}
+
+      {{:ok, value}, :error} ->
+        {:ok, value}
+
+      {:error, {:ok, value}} ->
+        {:ok, value}
+
+      {:error, :error} ->
+        :missing
+    end
+  end
 
   defp plain_map?(value), do: is_map(value) and not is_struct(value)
 
