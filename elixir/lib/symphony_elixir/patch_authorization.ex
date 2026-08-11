@@ -297,10 +297,10 @@ defmodule SymphonyElixir.PatchAuthorization do
           {:cont, {:ok, %{projection | automatic: Map.put(automatic, slot, record)}}}
         end
 
-      %{slot: {:human, request_id, comment_id, actor_id}} = record, {:ok, %{human: human} = projection} ->
+      %{slot: {:human, _request_id, comment_id, _actor_id}} = record, {:ok, %{human: human} = projection} ->
         duplicate? =
-          Enum.any?(human, fn %{slot: {:human, existing_request, existing_comment, existing_actor}} ->
-            {existing_request, existing_comment, existing_actor} == {request_id, comment_id, actor_id}
+          Enum.any?(human, fn %{slot: {:human, _existing_request, existing_comment, _existing_actor}} ->
+            existing_comment == comment_id
           end)
 
         if duplicate? do
@@ -363,10 +363,10 @@ defmodule SymphonyElixir.PatchAuthorization do
   defp route_available_slot(input, finding_keys, records, human_slots, ledger_entries, evidence, design2) do
     case Map.get(records, :automatic_initial_v1) do
       nil ->
-        issue_automatic_grant(input, finding_keys, :automatic_initial_v1, design2)
+        issue_automatic_grant(input, finding_keys, :automatic_initial_v1, evidence, design2)
 
       %{state: :available} ->
-        issue_automatic_grant(input, finding_keys, :automatic_initial_v1, design2)
+        issue_automatic_grant(input, finding_keys, :automatic_initial_v1, evidence, design2)
 
       %{state: :consumed} ->
         route_correction_slot(input, records, human_slots, ledger_entries, evidence, design2)
@@ -377,9 +377,14 @@ defmodule SymphonyElixir.PatchAuthorization do
     with {:ok, correction_keys} <- verified_correction_keys(input, design2, evidence, ledger_entries),
          true <- correction_keys != [] do
       case Map.get(records, :automatic_correction_v1) do
-        nil -> issue_automatic_grant(input, correction_keys, :automatic_correction_v1, design2)
-        %{state: :available} -> issue_automatic_grant(input, correction_keys, :automatic_correction_v1, design2)
-        %{state: :consumed} -> {:blocked, {:human_authorization_required, human_slots}}
+        nil ->
+          issue_automatic_grant(input, correction_keys, :automatic_correction_v1, evidence, design2)
+
+        %{state: :available} ->
+          issue_automatic_grant(input, correction_keys, :automatic_correction_v1, evidence, design2)
+
+        %{state: :consumed} ->
+          {:blocked, {:human_authorization_required, human_slots}}
       end
     else
       false -> {:blocked, {:human_authorization_required, human_slots}}
@@ -425,7 +430,14 @@ defmodule SymphonyElixir.PatchAuthorization do
   defp verify_correction_finding(_finding, _design2, _native, _ledger_entries),
     do: {:error, :invalid_correction_evidence}
 
-  defp issue_automatic_grant(input, finding_keys, slot, design2) do
+  defp issue_automatic_grant(input, finding_keys, slot, evidence, design2) do
+    case current_native_head_matches?(input, evidence) do
+      :ok -> build_automatic_grant(input, finding_keys, slot, design2)
+      {:error, reason} -> {:blocked, reason}
+    end
+  end
+
+  defp build_automatic_grant(input, finding_keys, slot, design2) do
     context = %{
       repository: input.repository,
       pull_request_number: input.pull_request_number,
@@ -856,7 +868,8 @@ defmodule SymphonyElixir.PatchAuthorization do
              input,
              finding_keys,
              dependencies.design2
-           ) do
+           ),
+         :ok <- validate_expected_transition(request, identity) do
       slot = {:human, request.request_id, approval.comment_id, actor_id}
       expected_transition = Map.fetch!(identity, :expected_transition)
 
@@ -872,6 +885,12 @@ defmodule SymphonyElixir.PatchAuthorization do
       {:error, reason} -> {:blocked, reason}
     end
   end
+
+  defp validate_expected_transition(%{expected_transition: expected}, %{expected_transition: expected}),
+    do: :ok
+
+  defp validate_expected_transition(_request, _identity),
+    do: {:error, :authorization_transition_mismatch}
 
   defp validate_request_binding(request, input, finding_keys, finding_set_digest, policy_version)
        when is_map(request) do

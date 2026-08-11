@@ -32,10 +32,12 @@ defmodule SymphonyElixir.PatchAuthorizationTest do
     def managed_publish_identity(context) do
       send(self(), {:managed_identity_requested, context.slot})
 
+      transition_head = Process.get(:managed_transition_head, context.evaluated_head_sha)
+
       {:ok,
        %{
          opaque: {:managed_publish, context.slot, context.finding_keys},
-         expected_transition: %{head_sha: context.evaluated_head_sha}
+         expected_transition: %{head_sha: transition_head}
        }}
     end
 
@@ -477,12 +479,25 @@ defmodule SymphonyElixir.PatchAuthorizationTest do
     assert {:ok, %{slot: :automatic_correction_v1}} =
              authorize_with_projection(
                ledger_entries: [succeeded_initial_entry()],
-               evidence: evidence(%{native: %{current_head_sha: full_sha("b")}}),
+               evidence: evidence(%{native: %{current_head_sha: full_sha("a")}}),
                eligible_findings: [correction_finding()]
              )
 
     assert {:blocked, :managed_publish_native_conflict} =
              authorize_with_projection(ledger_entries: [{:conflict, :managed_publish_native_conflict}])
+  end
+
+  @tag :projection
+  test "automatic grants fail closed when the native head has advanced" do
+    assert {:blocked, :authorization_request_stale} =
+             authorize_with_projection(evidence: evidence(%{native: %{current_head_sha: full_sha("b")}}))
+
+    assert {:blocked, :authorization_request_stale} =
+             authorize_with_projection(
+               ledger_entries: [succeeded_initial_entry()],
+               evidence: evidence(%{native: %{current_head_sha: full_sha("b")}}),
+               eligible_findings: [correction_finding()]
+             )
   end
 
   @tag :projection
@@ -605,6 +620,19 @@ defmodule SymphonyElixir.PatchAuthorizationTest do
   end
 
   @tag :projection
+  test "two human slots cannot reuse one approval comment ID" do
+    assert {:blocked, :duplicate_managed_slot} =
+             edge_authorize(
+               ledger_entries: [
+                 {:managed, :automatic_initial_v1, :consumed, %{}},
+                 {:managed, :automatic_correction_v1, :consumed, %{}},
+                 {:managed, {:human, "request-1", "comment-1", "actor-1"}, :consumed, %{}},
+                 {:managed, {:human, "request-2", "comment-1", "actor-2"}, :consumed, %{}}
+               ]
+             )
+  end
+
+  @tag :projection
   test "available initial slot and missing Design 2 identity details fail closed" do
     assert {:ok, %{slot: :automatic_initial_v1}} =
              edge_authorize(ledger_entries: [{:managed, :automatic_initial_v1, :available, %{}}])
@@ -681,6 +709,14 @@ defmodule SymphonyElixir.PatchAuthorizationTest do
 
     assert {:blocked, :invalid_authorization_command} =
              authorize_with_approval(approval: approval(%{body: "可以，繼續修"}))
+  end
+
+  @tag :approval
+  test "human grant transition must match the request transition" do
+    assert {:blocked, :authorization_transition_mismatch} =
+             with_process(:managed_transition_head, full_sha("b"), fn ->
+               authorize_with_approval(%{})
+             end)
   end
 
   @tag :approval
