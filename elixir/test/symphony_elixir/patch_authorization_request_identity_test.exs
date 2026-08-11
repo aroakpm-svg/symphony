@@ -30,11 +30,15 @@ defmodule SymphonyElixir.PatchAuthorization.RequestIdentityTest do
   end
 
   test "rejects malformed or incomplete request identity input" do
+    assert {:error, :invalid_request_input} = RequestIdentity.build(:not_a_map)
+    assert {:error, :invalid_request_input} = RequestIdentity.validate(:not_a_map, input())
+
     for overrides <- [
           [profile: :other_profile],
           [repository: ""],
           [pull_request_number: 0],
           [evaluated_head_sha: ""],
+          [eligible_finding_keys: :not_a_list],
           [eligible_finding_keys: []],
           [eligible_finding_set_digest: ""],
           [policy_version: ""],
