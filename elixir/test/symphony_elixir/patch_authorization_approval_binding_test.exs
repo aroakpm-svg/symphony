@@ -1,3 +1,7 @@
+defmodule SymphonyElixir.PatchAuthorization.ApprovalBindingStruct do
+  defstruct [:request_id, :evaluated_head_sha, :eligible_finding_set_digest]
+end
+
 defmodule SymphonyElixir.PatchAuthorization.ApprovalBindingTest do
   use ExUnit.Case, async: true
 
@@ -25,7 +29,7 @@ defmodule SymphonyElixir.PatchAuthorization.ApprovalBindingTest do
     assert {:ok, _binding} =
              ApprovalBinding.bind(
                request(),
-               approval(actor: %{"id" => "actor-42"}),
+               approval(actor: %{"id" => "actor-42", "type" => "User"}),
                evidence()
              )
 
@@ -39,11 +43,38 @@ defmodule SymphonyElixir.PatchAuthorization.ApprovalBindingTest do
     assert {:error, :authorization_actor_unknown} =
              ApprovalBinding.bind(request(), approval(actor: "actor-42"), evidence())
 
+    assert {:error, :authorization_actor_mismatch} =
+             ApprovalBinding.bind(
+               request(),
+               approval(),
+               evidence(authority_result: %{status: :authorized, actor_id: "different-actor"})
+             )
+
+    assert {:error, :authorization_actor_unknown} =
+             ApprovalBinding.bind(
+               request(),
+               approval(),
+               evidence(authority_result: %{status: :authorized})
+             )
+
+    for actor_type <- ["Bot", "App", "Organization"] do
+      assert {:error, :non_human_actor} =
+               ApprovalBinding.bind(request(), approval(actor: %{id: "actor-42", type: actor_type}), evidence())
+    end
+
     assert {:error, :unauthorized_actor} =
-             ApprovalBinding.bind(request(), approval(), evidence(authority_result: :unauthorized))
+             ApprovalBinding.bind(
+               request(),
+               approval(),
+               evidence(authority_result: %{status: :unauthorized, actor_id: "actor-42"})
+             )
 
     assert {:error, :authorization_policy_unavailable} =
-             ApprovalBinding.bind(request(), approval(), evidence(authority_result: :unknown))
+             ApprovalBinding.bind(
+               request(),
+               approval(),
+               evidence(authority_result: %{status: :unknown, actor_id: "actor-42"})
+             )
   end
 
   test "rejects reused approval comments and malformed evidence" do
@@ -53,7 +84,28 @@ defmodule SymphonyElixir.PatchAuthorization.ApprovalBindingTest do
              ApprovalBinding.bind(request(), approval(), evidence(used_comment_ids: MapSet.new(["comment-1"])))
 
     assert {:error, :invalid_approval_evidence} =
+             ApprovalBinding.bind(request(), approval(comment_id: ""), evidence())
+
+    forged_map_set = Map.put(MapSet.new(), :map, :not_a_map)
+
+    assert {:error, :invalid_approval_evidence} =
+             ApprovalBinding.bind(request(), approval(), evidence(used_comment_ids: forged_map_set))
+
+    assert {:error, :invalid_approval_evidence} =
              ApprovalBinding.bind(request(), approval(), %{current_head_sha: "head-1"})
+  end
+
+  test "rejects struct-shaped request, approval, and evidence without raising" do
+    struct_record = %SymphonyElixir.PatchAuthorization.ApprovalBindingStruct{}
+
+    assert {:error, :invalid_approval_evidence} =
+             ApprovalBinding.bind(struct_record, approval(), evidence())
+
+    assert {:error, :invalid_approval_evidence} =
+             ApprovalBinding.bind(request(), struct_record, evidence())
+
+    assert {:error, :invalid_approval_evidence} =
+             ApprovalBinding.bind(request(), approval(), struct_record)
   end
 
   defp request do
@@ -76,7 +128,7 @@ defmodule SymphonyElixir.PatchAuthorization.ApprovalBindingTest do
     Enum.into(overrides, %{
       current_head_sha: "head-1",
       current_finding_set_digest: "digest-1",
-      authority_result: :authorized,
+      authority_result: %{status: :authorized, actor_id: "actor-42"},
       used_comment_ids: MapSet.new()
     })
   end
