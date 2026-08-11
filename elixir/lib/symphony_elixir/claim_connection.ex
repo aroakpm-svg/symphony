@@ -43,8 +43,7 @@ defmodule SymphonyElixir.ClaimConnection do
   defp authenticate(adapter, connection, settings) do
     sql = "select * from symphony_staging.authenticate_node($1::text::uuid, $2::text::uuid)"
 
-    adapter
-    |> apply(:query, [connection, sql, [settings.node_id, settings.node_instance_id], [timeout: 12_000]])
+    adapter.query(connection, sql, [settings.node_id, settings.node_instance_id], timeout: 12_000)
     |> authentication_result()
   end
 
