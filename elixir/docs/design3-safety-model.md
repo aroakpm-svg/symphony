@@ -94,6 +94,12 @@ The roles remain separate:
 Every machine with the same verified inputs must derive the same projection. Missing, stale,
 malformed, contradictory, or unverified evidence is not treated as an empty history.
 
+Managed authorization-request markers are not trusted merely because they contain a decodable
+payload. GitHub normalization must preserve the request comment ID, creation time, and author
+provenance. Design 3 passes that provenance to an injected request-provenance verifier; an absent,
+unknown, or unverified verifier result blocks the human path. The Codex review-attestation identity
+is not implicitly reused as the authorization-request identity.
+
 ## Five derived slot states
 
 Each slot has exactly one derived state:
@@ -142,6 +148,7 @@ Invalid transitions fail closed:
 - pending or unknown cannot become a fresh slot;
 - consumed cannot become available;
 - failed-no-effect cannot mint a second operation;
+- a correction or human slot without the required consumed predecessor evidence is a conflict;
 - a new worker or generation cannot reset a slot;
 - a new finding cannot be added to an existing authorization snapshot;
 - a changed head cannot inherit an old request or approval;
@@ -192,6 +199,11 @@ The request fingerprint is immutable and contains:
 - expected next transition;
 - request identity.
 
+The request identity uses the Design 2 FindingKey-set digest as the set identity. Design 3 does not
+re-serialize or order opaque FindingKeys into the request ID or fingerprint. GitHub comment ID,
+creation time, and author provenance are evidence metadata and are excluded from the immutable
+request fingerprint.
+
 Before accepting an approval, runtime must prove all of the following:
 
 1. The actor has verified authority under the injected policy.
@@ -200,7 +212,8 @@ Before accepting an approval, runtime must prove all of the following:
 4. The current Design 2 eligible FindingKey-set digest equals the request digest.
 5. The approval command matches exactly after outer whitespace trimming.
 6. The approval comment ID has never been used.
-7. The policy version and actor identity are present, verified, and consistent.
+7. The approval comment was created strictly after the matching request comment.
+8. The policy version and actor identity are present, verified, and consistent.
 
 Request evidence is not trusted merely because its marker decodes or its fields exist. Runtime
 reconstructs the canonical request ID and immutable request fingerprint from the verified request
@@ -208,15 +221,17 @@ fields and compares both values before using the request. A missing, extra, or c
 fingerprinted field, including the expected transition or human summary, is an identity conflict
 and fails closed.
 
-If the request head or FindingKey set changes before the matching intent is established, the old
-request and approval are stale. They cannot transfer to the new snapshot; runtime must stop and
-produce a new deduplicated request. If a matching intent already exists, only the expected
+If the request head, FindingKey set, or policy version changes before the matching intent is
+established, the old request and approval are stale. They cannot transfer to the new snapshot;
+runtime retires that stale evidence from the current routing decision and produces a new
+deduplicated request. A malformed request that otherwise claims the current snapshot is not
+retired; it blocks as an identity conflict. If a matching intent already exists, only the expected
 fingerprint-bound transition is accepted.
 
-Human policy absence, unknown policy result, missing actor identity, ambiguous active request,
-stale head, changed FindingKey set, reused approval comment, and fingerprint conflict all fail
-closed. None can fall back to display-only `human_owner` text or repository permissions inferred
-from prose.
+Human policy absence, unknown policy result, missing actor identity, missing request provenance,
+ambiguous active request, stale native head, changed FindingKey set, reused or pre-request approval
+comment, and fingerprint conflict all fail closed. None can fall back to display-only
+`human_owner` text or repository permissions inferred from prose.
 
 ## Operation and effect ownership
 
@@ -347,7 +362,9 @@ following remain hard gates for runtime integration:
 | Failed-no-effect cannot mint a batch | Same-operation continuation fixture |
 | Plain human command | Exact command test and free-text rejection |
 | Exact-head and FindingKey binding | Stale head and changed-set fixtures |
+| Managed request provenance | Author/time normalization and injected-verifier fail-closed fixture |
 | One approval comment, one human slot | Reuse test with same comment ID |
+| Approval/request association | Pre-request rejection and first-unused-after-request fixture |
 | Claim fence | Inactive claim integration test |
 | No merge or unrelated mutation authority | Capability-boundary source and runtime tests |
 | Missing Design 2 API fails closed | Dependency-gate test |

@@ -8,6 +8,9 @@ defmodule SymphonyElixir.PatchAuthorizationTest do
   end
 
   defmodule ProjectionDesign2Contract do
+    def finding_set_digest(finding_keys) when length(finding_keys) > 1,
+      do: {:ok, "finding-set-digest-2"}
+
     def finding_set_digest(_finding_keys), do: {:ok, "finding-set-digest"}
 
     def classify_managed_publish(:not_managed, _native), do: :not_managed
@@ -47,6 +50,13 @@ defmodule SymphonyElixir.PatchAuthorizationTest do
     def authorize_human_actor(_evidence), do: :unauthorized
   end
 
+  defmodule ManagedRequestProvenancePolicy do
+    def verify_managed_request(%{authorization_request_author: %{id: "integration-1"}}),
+      do: :verified
+
+    def verify_managed_request(_request), do: :unverified
+  end
+
   defmodule UnknownAuthorityPolicy do
     def version, do: :unknown
 
@@ -58,10 +68,17 @@ defmodule SymphonyElixir.PatchAuthorizationTest do
       send(self(), {:github_request_effect, context})
 
       case reconciler.() do
-        :not_found -> adapter.()
-        result -> result
+        :not_found -> consume_adapter(adapter.())
+        {:unknown, reason} -> {:error, {:reconciliation_unknown, reason}}
+        {:found, resource} -> {:ok, resource}
+        result -> {:error, {:invalid_reconciliation_result, result}}
       end
     end
+
+    defp consume_adapter({:ok, resource}), do: {:ok, resource}
+    defp consume_adapter({:error, :no_effect, reason}), do: {:error, {:failed_no_effect, reason}}
+    defp consume_adapter({:error, :unknown, reason}), do: {:error, {:effect_unknown, reason}}
+    defp consume_adapter(other), do: {:error, {:invalid_adapter_result, other}}
   end
 
   defmodule ApprovalGitHubClient do
@@ -157,24 +174,58 @@ defmodule SymphonyElixir.PatchAuthorizationTest do
   end
 
   defmodule EdgeEffectLedger do
-    def execute(_connection, :github_comment, _context, adapter, _reconciler) do
+    def execute(_connection, :github_comment, _context, adapter, reconciler) do
       case Process.get(:effect_mode, :ok) do
-        :ok -> adapter.()
-        :operation_conflict -> {:error, :operation_fingerprint_conflict}
-        :operation_conflict_tuple -> {:error, {:operation_fingerprint_conflict, :details}}
-        :error -> {:error, :effect_error}
-        :other -> :invalid
-        :raise -> raise("effect unavailable")
+        :ok ->
+          consume_adapter(adapter.())
+
+        :reconcile ->
+          case reconciler.() do
+            :not_found -> consume_adapter(adapter.())
+            {:unknown, reason} -> {:error, {:reconciliation_unknown, reason}}
+            {:found, resource} -> {:ok, resource}
+            result -> {:error, {:invalid_reconciliation_result, result}}
+          end
+
+        :operation_conflict ->
+          {:error, :operation_fingerprint_conflict}
+
+        :operation_conflict_tuple ->
+          {:error, {:operation_fingerprint_conflict, :details}}
+
+        :error ->
+          {:error, :effect_error}
+
+        :other ->
+          :invalid
+
+        :raise ->
+          raise("effect unavailable")
       end
     end
+
+    defp consume_adapter({:ok, resource}), do: {:ok, resource}
+    defp consume_adapter({:error, :no_effect, reason}), do: {:error, {:failed_no_effect, reason}}
+    defp consume_adapter({:error, :unknown, reason}), do: {:error, {:effect_unknown, reason}}
+    defp consume_adapter(other), do: {:error, {:invalid_adapter_result, other}}
   end
 
   defmodule EdgeGitHubClient do
-    def create_authorization_request(_repository, _pull_request_number, _request),
-      do: {:ok, %{comment_id: "request-comment-1"}}
+    def create_authorization_request(_repository, _pull_request_number, _request) do
+      case Process.get(:github_create_mode, :ok) do
+        :ok -> {:ok, %{comment_id: "request-comment-1"}}
+        :error -> {:error, :github_create_error}
+        :invalid -> :invalid
+      end
+    end
 
-    def find_authorization_request(_repository, _pull_request_number, _request),
-      do: :not_found
+    def find_authorization_request(_repository, _pull_request_number, _request) do
+      case Process.get(:github_find_mode, :not_found) do
+        :not_found -> :not_found
+        :error -> {:error, :github_find_error}
+        :invalid -> :invalid
+      end
+    end
   end
 
   defmodule UnavailableContract do
@@ -230,6 +281,18 @@ defmodule SymphonyElixir.PatchAuthorizationTest do
              {:blocked, reason} ==
                PatchAuthorization.authorize(override, [], evidence(), effect_scope(), dependencies())
            end)
+  end
+
+  @tag :contract
+  test "missing human summary fails closed before building an authorization request" do
+    assert {:blocked, :invalid_human_summary} =
+             PatchAuthorization.authorize(
+               Map.delete(input(), :human_summary),
+               [],
+               evidence(),
+               effect_scope(),
+               dependencies()
+             )
   end
 
   @tag :contract
@@ -502,6 +565,19 @@ defmodule SymphonyElixir.PatchAuthorizationTest do
   end
 
   @tag :projection
+  test "projection rejects correction history without its initial predecessor" do
+    assert {:blocked, :design3_slot_transition_conflict} =
+             edge_authorize(ledger_entries: [{:managed, :automatic_correction_v1, :consumed, %{}}])
+
+    assert {:blocked, :design3_slot_transition_conflict} =
+             edge_authorize(
+               ledger_entries: [
+                 {:managed, {:human, "request-1", "comment-1", "actor-1"}, :consumed, %{}}
+               ]
+             )
+  end
+
+  @tag :projection
   test "available initial slot and missing Design 2 identity details fail closed" do
     assert {:ok, %{slot: :automatic_initial_v1}} =
              edge_authorize(ledger_entries: [{:managed, :automatic_initial_v1, :available, %{}}])
@@ -650,6 +726,27 @@ defmodule SymphonyElixir.PatchAuthorizationTest do
                  )
                end)
     end
+
+    assert {:blocked, {:authorization_request_effect_failed, {:effect_unknown, :github_create_error}}} =
+             with_process(:github_create_mode, :error, fn ->
+               authorize_with_approval(
+                 active_requests: [],
+                 effect_ledger: EdgeEffectLedger,
+                 github: EdgeGitHubClient
+               )
+             end)
+
+    assert {:blocked, {:authorization_request_effect_failed, {:reconciliation_unknown, :github_find_error}}} =
+             with_process(:github_find_mode, :error, fn ->
+               with_process(:effect_mode, :reconcile, fn ->
+                 authorize_with_approval(
+                   active_requests: [],
+                   approval: nil,
+                   effect_ledger: EdgeEffectLedger,
+                   github: EdgeGitHubClient
+                 )
+               end)
+             end)
   end
 
   @tag :approval
@@ -663,7 +760,7 @@ defmodule SymphonyElixir.PatchAuthorizationTest do
     assert {:error, :authorization_evidence_unavailable} =
              human_authorization_for_test(evidence_overrides: %{comments: nil})
 
-    assert {:error, :invalid_authorization_command} =
+    assert {:error, :invalid_authorization_approval} =
              human_authorization_for_test(approval: %{})
 
     assert {:error, :authorization_approval_identity_unavailable} =
@@ -686,8 +783,13 @@ defmodule SymphonyElixir.PatchAuthorizationTest do
 
   @tag :approval
   test "human request binding rejects digest, identity, and dependency drift" do
-    assert {:blocked, :authorization_finding_set_changed} =
-             authorize_with_approval(active_request: request(%{eligible_finding_set_digest: "different-digest"}))
+    assert {:authorization_required, replacement} =
+             authorize_with_approval(
+               active_request: request(%{eligible_finding_set_digest: "different-digest"}),
+               approval: nil
+             )
+
+    assert replacement.eligible_finding_set_digest == "finding-set-digest"
 
     assert {:blocked, :authorization_evidence_unavailable} =
              authorize_with_approval(active_request: request(), evidence_overrides: %{comments: nil})
@@ -719,6 +821,102 @@ defmodule SymphonyElixir.PatchAuthorizationTest do
   end
 
   @tag :approval
+  test "managed request provenance must be verified before approval binding" do
+    assert {:blocked, :authorization_request_provenance_unverified} =
+             authorize_with_approval(
+               active_request:
+                 request(%{
+                   authorization_request_author: %{login: "attacker", id: "attacker-1", type: "User"}
+                 })
+             )
+  end
+
+  @tag :approval
+  test "native head is rechecked before binding a human approval" do
+    assert {:blocked, :authorization_request_stale} =
+             authorize_with_approval(
+               active_request: request(),
+               current_head_sha: full_sha("b")
+             )
+  end
+
+  @tag :approval
+  test "approval must be newer than the managed request and skip used approvals" do
+    assert {:blocked, :authorization_approval_pending} =
+             authorize_with_approval(
+               active_request: request(%{created_at: "2026-08-11T00:02:00Z"}),
+               approval: approval(%{created_at: "2026-08-11T00:01:00Z"})
+             )
+
+    assert {:ok, %{slot: {:human, _, "approval-2", "42"}}} =
+             authorize_with_approval(
+               approvals: [
+                 approval(%{comment_id: "approval-1", created_at: "2026-08-11T00:01:00Z"}),
+                 approval(%{comment_id: "approval-2", created_at: "2026-08-11T00:00:02Z"})
+               ],
+               used_approval_comment_ids: MapSet.new(["approval-1"]),
+               active_request: request(%{created_at: "2026-08-11T00:00:00Z"})
+             )
+  end
+
+  @tag :approval
+  test "a stale canonical request is retired so the current snapshot gets a replacement" do
+    stale_request =
+      request(%{
+        evaluated_head_sha: full_sha("b"),
+        expected_transition: %{head_sha: full_sha("b")}
+      })
+
+    assert {:authorization_required, replacement} =
+             authorize_with_approval(
+               active_request: stale_request,
+               active_requests: [stale_request],
+               approval: nil
+             )
+
+    assert replacement.evaluated_head_sha == full_sha("a")
+    refute replacement.request_id == stale_request.request_id
+  end
+
+  @tag :approval
+  test "missing authority policy key blocks without raising" do
+    dependencies_without_policy =
+      dependencies(
+        design2: ProjectionDesign2Contract,
+        authority_policy: AuthorityPolicy,
+        effect_ledger: ApprovalEffectLedger,
+        github: ApprovalGitHubClient
+      )
+      |> Map.delete(:authority_policy)
+
+    assert {:blocked, :authorization_policy_unavailable} =
+             authorize_with_approval(
+               active_requests: [],
+               dependencies: dependencies_without_policy
+             )
+  end
+
+  @tag :approval
+  test "finding key order does not change canonical request identity" do
+    assert {:authorization_required, first} =
+             authorize_with_approval(
+               active_requests: [],
+               approval: nil,
+               eligible_findings: [finding(), extra_finding()]
+             )
+
+    assert {:authorization_required, second} =
+             authorize_with_approval(
+               active_requests: [],
+               approval: nil,
+               eligible_findings: [extra_finding(), finding()]
+             )
+
+    assert first.request_id == second.request_id
+    assert first.request_fingerprint == second.request_fingerprint
+  end
+
+  @tag :approval
   test "unknown policy blocks human approval without transferring authority" do
     assert {:blocked, :authorization_policy_unavailable} =
              authorize_with_approval(authority_policy: UnknownAuthorityPolicy)
@@ -728,14 +926,18 @@ defmodule SymphonyElixir.PatchAuthorizationTest do
 
   @tag :approval
   test "changed head or FindingKey set cannot inherit approval" do
-    assert {:blocked, :authorization_request_stale} =
+    assert {:authorization_required, replacement} =
              authorize_with_approval(
                active_request: request(%{evaluated_head_sha: full_sha("b")}),
                current_head_sha: full_sha("a")
              )
 
-    assert {:blocked, :authorization_finding_set_changed} =
-             authorize_with_approval(extra_finding: true)
+    assert replacement.evaluated_head_sha == full_sha("a")
+
+    assert {:authorization_required, replacement} =
+             authorize_with_approval(extra_finding: true, approval: nil)
+
+    assert length(replacement.eligible_finding_keys) == 2
   end
 
   @tag :approval
@@ -752,7 +954,7 @@ defmodule SymphonyElixir.PatchAuthorizationTest do
     assert request.request_id != "request-1"
 
     assert {:blocked, :ambiguous_active_request} =
-             authorize_with_approval(active_requests: [request(), request(%{request_id: "request-2"})])
+             authorize_with_approval(active_requests: [request(), request()])
   end
 
   @tag :approval
@@ -811,13 +1013,21 @@ defmodule SymphonyElixir.PatchAuthorizationTest do
     overrides = Map.new(overrides)
     active_request = Map.get(overrides, :active_request, request())
     current_head_sha = Map.get(overrides, :current_head_sha, full_sha("a"))
-    eligible_findings = if Map.get(overrides, :extra_finding, false), do: [finding(), extra_finding()], else: [finding()]
+
+    eligible_findings =
+      Map.get(
+        overrides,
+        :eligible_findings,
+        if(Map.get(overrides, :extra_finding, false), do: [finding(), extra_finding()], else: [finding()])
+      )
+
+    comments = Map.get(overrides, :approvals, [Map.get(overrides, :approval, approval())])
 
     approval_evidence =
       Map.merge(
         evidence(%{
           native: %{current_head_sha: current_head_sha},
-          comments: [Map.get(overrides, :approval, approval())],
+          comments: comments,
           active_requests: Map.get(overrides, :active_requests, [active_request]),
           used_approval_comment_ids: Map.get(overrides, :used_approval_comment_ids, MapSet.new())
         }),
@@ -871,6 +1081,7 @@ defmodule SymphonyElixir.PatchAuthorizationTest do
           human_summary: "One scoped finding",
           expected_transition: %{head_sha: full_sha("a")},
           request_fingerprint: nil,
+          authorization_request_author: %{login: "symphony-integration", id: "integration-1", type: "Bot"},
           created_at: "2026-08-11T00:00:00Z"
         },
         overrides
@@ -893,13 +1104,20 @@ defmodule SymphonyElixir.PatchAuthorizationTest do
       request.pull_request_number,
       request.evaluated_head_sha,
       request.eligible_finding_set_digest,
-      request.eligible_finding_keys,
       request.policy_version
     })
   end
 
   defp canonical_request_fingerprint(request) do
-    request_without_fingerprint = Map.drop(request, [:request_fingerprint, :created_at])
+    request_without_fingerprint =
+      Map.drop(request, [
+        :request_fingerprint,
+        :created_at,
+        :eligible_finding_keys,
+        :authorization_request_author,
+        :authorization_request_comment_id,
+        :authorization_request_created_at
+      ])
 
     stable_digest({
       :symphony_authorization_request_fingerprint_v1,
@@ -964,6 +1182,7 @@ defmodule SymphonyElixir.PatchAuthorizationTest do
       %{
         design2: Design2Contract,
         authority_policy: nil,
+        managed_request_provenance: ManagedRequestProvenancePolicy,
         effect_ledger: nil,
         github: nil
       },

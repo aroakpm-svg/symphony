@@ -186,6 +186,11 @@ defmodule SymphonyElixir.GitHubReviewClient do
   @spec parse_authorization_request_for_test(String.t()) :: {:ok, map()} | {:error, term()}
   def parse_authorization_request_for_test(body), do: parse_authorization_request(body)
 
+  @doc false
+  @spec normalize_authorization_requests_for_test([map()]) :: {:ok, [map()]} | {:error, term()}
+  def normalize_authorization_requests_for_test(comments),
+    do: normalize_authorization_requests(comments)
+
   @spec publish_status(String.t(), String.t(), atom(), String.t(), String.t() | nil) :: :ok | {:error, term()}
   def publish_status(repository, head_sha, state, description, target_url \\ nil)
       when state in [:pending, :success, :failure, :error] do
@@ -435,9 +440,23 @@ defmodule SymphonyElixir.GitHubReviewClient do
     body = comment["body"]
 
     cond do
-      not is_binary(body) -> :ignore
-      not String.contains?(body, @authorization_marker) -> :ignore
-      true -> parse_authorization_request(body)
+      not is_binary(body) ->
+        :ignore
+
+      not String.contains?(body, @authorization_marker) ->
+        :ignore
+
+      true ->
+        with {:ok, request} <- parse_authorization_request(body),
+             {:ok, comment_id} <- comment_id(comment),
+             {:ok, created_at} <- normalize_created_at(comment["created_at"]) do
+          {:ok,
+           Map.merge(request, %{
+             authorization_request_comment_id: comment_id,
+             authorization_request_created_at: created_at,
+             authorization_request_author: normalize_comment_author(comment["user"])
+           })}
+        end
     end
   end
 
@@ -452,8 +471,30 @@ defmodule SymphonyElixir.GitHubReviewClient do
       |> :erlang.term_to_binary([:deterministic])
       |> Base.url_encode64(padding: false)
 
-    @authorization_marker <> "\nrequest-payload: " <> payload
+    summary = request[:human_summary] |> normalize_human_summary_for_display()
+
+    Enum.join(
+      [
+        @authorization_marker,
+        "Design 3 patch authorization request",
+        "Repository: #{request[:repository]}",
+        "Pull request: ##{request[:pull_request_number]}",
+        "Head: #{request[:evaluated_head_sha]}",
+        "Findings: #{summary}",
+        "To approve this bounded patch, comment exactly: `#{@authorization_command}`",
+        "request-payload: #{payload}"
+      ],
+      "\n"
+    )
   end
+
+  defp normalize_human_summary_for_display(summary) when is_binary(summary) do
+    summary
+    |> String.replace(~r/[\r\n]+/, " ")
+    |> String.trim()
+  end
+
+  defp normalize_human_summary_for_display(_summary), do: "unavailable"
 
   defp parse_authorization_request(body) when is_binary(body) do
     with true <- String.contains?(body, @authorization_marker),
@@ -509,6 +550,16 @@ defmodule SymphonyElixir.GitHubReviewClient do
   defp normalize_optional_id(value) when is_integer(value), do: Integer.to_string(value)
   defp normalize_optional_id(value) when is_binary(value), do: value
   defp normalize_optional_id(_value), do: nil
+
+  defp normalize_comment_author(user) when is_map(user) do
+    %{
+      login: normalize_optional_string(user["login"]),
+      id: normalize_optional_id(user["id"]),
+      type: normalize_optional_string(user["type"])
+    }
+  end
+
+  defp normalize_comment_author(_user), do: %{login: nil, id: nil, type: nil}
 
   defp required_checks(repository, pull_request) do
     head_sha = pull_request["headRefOid"]

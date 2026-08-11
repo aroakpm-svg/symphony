@@ -69,6 +69,67 @@ defmodule SymphonyElixir.PatchAuthorizationGitHubTest do
   end
 
   @tag :github_authorization
+  test "managed request body includes bounded human instructions and summary" do
+    request = %{
+      request_id: "request-1",
+      repository: "aroakpm-svg/symphony",
+      pull_request_number: 27,
+      evaluated_head_sha: String.duplicate("b", 40),
+      eligible_finding_set_digest: "digest-1",
+      eligible_finding_keys: [{:review_thread, "thread-1"}],
+      policy_version: "policy-v1",
+      human_summary: "P1 stale approval binding",
+      expected_transition: %{head_sha: String.duplicate("b", 40)},
+      request_fingerprint: "fingerprint-1"
+    }
+
+    body = GitHubReviewClient.authorization_request_body_for_test(request)
+
+    assert body =~ "Pull request: #27"
+    assert body =~ "Head: #{String.duplicate("b", 40)}"
+    assert body =~ "Findings: P1 stale approval binding"
+    assert body =~ "批准再修一輪"
+  end
+
+  @tag :github_authorization
+  test "managed request normalization preserves comment provenance metadata" do
+    request = %{
+      request_id: "request-1",
+      repository: "aroakpm-svg/symphony",
+      pull_request_number: 27,
+      evaluated_head_sha: String.duplicate("b", 40),
+      eligible_finding_set_digest: "digest-1",
+      eligible_finding_keys: [{:review_thread, "thread-1"}],
+      policy_version: "policy-v1",
+      human_summary: "P1 stale approval binding",
+      expected_transition: %{head_sha: String.duplicate("b", 40)},
+      request_fingerprint: "fingerprint-1"
+    }
+
+    body = GitHubReviewClient.authorization_request_body_for_test(request)
+
+    assert {:ok, [normalized]} =
+             GitHubReviewClient.normalize_authorization_requests_for_test([
+               %{
+                 "id" => 707,
+                 "body" => body,
+                 "created_at" => "2026-08-11T00:00:00Z",
+                 "user" => %{"login" => "symphony-integration", "id" => 1, "type" => "Bot"}
+               }
+             ])
+
+    assert normalized.authorization_request_comment_id == "707"
+    assert normalized.authorization_request_created_at == "2026-08-11T00:00:00Z"
+    assert normalized.authorization_request_author == %{login: "symphony-integration", id: "1", type: "Bot"}
+
+    assert Map.drop(normalized, [
+             :authorization_request_comment_id,
+             :authorization_request_created_at,
+             :authorization_request_author
+           ]) == request
+  end
+
+  @tag :github_authorization
   test "malformed managed request marker is rejected instead of becoming active evidence" do
     assert {:error, :invalid_authorization_request_marker} =
              GitHubReviewClient.parse_authorization_request_for_test("<!-- symphony-managed-patch-authorization:v1 -->\nrequest-payload: not-base64")
