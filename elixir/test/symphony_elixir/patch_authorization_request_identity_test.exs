@@ -85,6 +85,14 @@ defmodule SymphonyElixir.PatchAuthorization.RequestIdentityTest do
              RequestIdentity.build(input(expected_transition: %{payload: [1 | 2]}))
   end
 
+  test "rejects top-level structs before field access" do
+    malformed = ~D[2026-01-01]
+
+    assert {:error, :invalid_request_input} = RequestIdentity.build(malformed)
+    assert {:error, :invalid_request_input} = RequestIdentity.validate(malformed, input())
+    assert {:error, :invalid_request_input} = RequestIdentity.validate(input(), malformed)
+  end
+
   defp input(overrides \\ []) do
     Enum.into(overrides, %{
       profile: :aroak_autonomous_v1,

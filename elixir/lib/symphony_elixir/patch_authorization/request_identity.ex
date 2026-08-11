@@ -28,7 +28,7 @@ defmodule SymphonyElixir.PatchAuthorization.RequestIdentity do
         }
 
   @spec build(map()) :: {:ok, request()} | {:error, atom()}
-  def build(input) when is_map(input) do
+  def build(input) when is_map(input) and not is_struct(input) do
     with :ok <- validate_input(input) do
       normalized = normalize_input(input)
       digest = digest(normalized)
@@ -44,7 +44,9 @@ defmodule SymphonyElixir.PatchAuthorization.RequestIdentity do
   def build(_input), do: {:error, :invalid_request_input}
 
   @spec validate(request(), map()) :: :ok | {:error, atom()}
-  def validate(request, current_input) when is_map(request) and is_map(current_input) do
+  def validate(request, current_input)
+      when is_map(request) and is_map(current_input) and
+             not is_struct(request) and not is_struct(current_input) do
     with {:ok, stored} <- build(Map.take(request, @identity_fields)),
          {:ok, current} <- build(current_input),
          :ok <- validate_stored_fingerprint(request, stored) do
