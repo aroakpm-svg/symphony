@@ -76,9 +76,8 @@ defmodule SymphonyElixir.PatchAuthorization do
          :ok <- validate_repository(input),
          :ok <- validate_pull_request_number(input),
          :ok <- validate_evaluated_head(input),
-         :ok <- validate_claim_scope(input, effect_scope),
-         :ok <- validate_findings(input) do
-      :ok
+         :ok <- validate_claim_scope(input, effect_scope) do
+      validate_findings(input)
     end
   end
 
@@ -116,21 +115,12 @@ defmodule SymphonyElixir.PatchAuthorization do
   defp validate_findings(%{eligible_findings: findings, evaluated_head_sha: evaluated_head})
        when is_list(findings) and findings != [] do
     Enum.reduce_while(findings, MapSet.new(), fn finding, finding_keys ->
-      if is_map(finding) do
-        with {:ok, finding_key} <- Map.fetch(finding, :finding_key),
-             :ok <- validate_finding_disposition(finding),
-             :ok <- validate_finding_head(finding, evaluated_head) do
-          if MapSet.member?(finding_keys, finding_key) do
-            {:halt, {:error, :duplicate_finding_key}}
-          else
-            {:cont, MapSet.put(finding_keys, finding_key)}
-          end
-        else
-          :error -> {:halt, {:error, :missing_finding_key}}
-          {:error, reason} -> {:halt, {:error, reason}}
-        end
-      else
-        {:halt, {:error, :invalid_finding_shape}}
+      case validate_finding(finding, evaluated_head) do
+        {:ok, finding_key} ->
+          add_finding_key(finding_keys, finding_key)
+
+        {:error, reason} ->
+          {:halt, {:error, reason}}
       end
     end)
     |> case do
@@ -140,6 +130,25 @@ defmodule SymphonyElixir.PatchAuthorization do
   end
 
   defp validate_findings(_input), do: {:error, :missing_eligible_findings}
+
+  defp validate_finding(finding, evaluated_head) when is_map(finding) do
+    with {:ok, finding_key} <- Map.fetch(finding, :finding_key),
+         :ok <- validate_finding_disposition(finding),
+         :ok <- validate_finding_head(finding, evaluated_head) do
+      {:ok, finding_key}
+    else
+      :error -> {:error, :missing_finding_key}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp validate_finding(_finding, _evaluated_head), do: {:error, :invalid_finding_shape}
+
+  defp add_finding_key(finding_keys, finding_key) do
+    if MapSet.member?(finding_keys, finding_key),
+      do: {:halt, {:error, :duplicate_finding_key}},
+      else: {:cont, MapSet.put(finding_keys, finding_key)}
+  end
 
   defp validate_finding_disposition(%{disposition: :fix_in_current_pr}), do: :ok
 
@@ -165,9 +174,7 @@ defmodule SymphonyElixir.PatchAuthorization do
   defp validate_finding_head(_finding, _evaluated_head), do: {:error, :invalid_finding_head_evidence}
 
   defp finding_keys(%{eligible_findings: findings}) do
-    {:ok, Enum.map(findings, &Map.fetch!(&1, :finding_key))}
-  rescue
-    KeyError -> {:error, :missing_finding_key}
+    {:ok, Enum.map(findings, & &1[:finding_key])}
   end
 
   defp validate_design2_digest(design2, finding_keys) do
@@ -225,25 +232,30 @@ defmodule SymphonyElixir.PatchAuthorization do
     native = Map.get(evidence, :native, %{})
 
     Enum.reduce_while(ledger_entries, {:ok, []}, fn entry, {:ok, classified} ->
-      case safe_callback(design2, :classify_managed_publish, [entry, native]) do
-        :not_managed ->
-          {:cont, {:ok, classified}}
-
-        {:ok, record} ->
-          case validate_slot_record(record) do
-            :ok -> {:cont, {:ok, [record | classified]}}
-            {:error, reason} -> {:halt, {:error, reason}}
-          end
-
-        {:error, reason} ->
-          {:halt, {:error, reason}}
-
-        _other ->
-          {:halt, {:error, :design2_projection_invalid}}
+      case classify_ledger_entry(design2, entry, native) do
+        :not_managed -> {:cont, {:ok, classified}}
+        {:ok, record} -> {:cont, {:ok, [record | classified]}}
+        {:error, reason} -> {:halt, {:error, reason}}
       end
     end)
     |> case do
       {:ok, classified} -> {:ok, Enum.reverse(classified)}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp classify_ledger_entry(design2, entry, native) do
+    case safe_callback(design2, :classify_managed_publish, [entry, native]) do
+      :not_managed -> :not_managed
+      {:ok, record} -> validate_classified_record(record)
+      {:error, reason} -> {:error, reason}
+      _other -> {:error, :design2_projection_invalid}
+    end
+  end
+
+  defp validate_classified_record(record) do
+    case validate_slot_record(record) do
+      :ok -> {:ok, record}
       {:error, reason} -> {:error, reason}
     end
   end
@@ -328,9 +340,6 @@ defmodule SymphonyElixir.PatchAuthorization do
 
       %{state: :consumed} ->
         route_correction_slot(input, records, human_slots, ledger_entries, evidence, design2)
-
-      %{state: state} ->
-        {:blocked, {:unsupported_initial_slot_state, state}}
     end
   end
 
@@ -341,7 +350,6 @@ defmodule SymphonyElixir.PatchAuthorization do
         nil -> issue_automatic_grant(input, correction_keys, :automatic_correction_v1, design2)
         %{state: :available} -> issue_automatic_grant(input, correction_keys, :automatic_correction_v1, design2)
         %{state: :consumed} -> {:blocked, {:human_authorization_required, human_slots}}
-        %{state: state} -> {:blocked, {:unsupported_correction_slot_state, state}}
       end
     else
       false -> {:blocked, {:human_authorization_required, human_slots}}
@@ -353,21 +361,10 @@ defmodule SymphonyElixir.PatchAuthorization do
     native = Map.get(evidence, :native, %{})
 
     Enum.reduce_while(input[:eligible_findings], {:ok, []}, fn finding, {:ok, keys} ->
-      case Map.get(finding, :correction_evidence) do
-        nil ->
-          {:cont, {:ok, keys}}
-
-        correction_evidence when is_map(correction_evidence) ->
-          case safe_callback(design2, :verify_correction, [finding, correction_evidence, native, ledger_entries]) do
-            :ok -> {:cont, {:ok, [finding.finding_key | keys]}}
-            {:error, {:conflict, reason}} -> {:halt, {:error, reason}}
-            {:error, :correction_conflict} -> {:halt, {:error, :correction_conflict}}
-            {:error, _reason} -> {:cont, {:ok, keys}}
-            _other -> {:halt, {:error, :design2_correction_verification_invalid}}
-          end
-
-        _malformed ->
-          {:halt, {:error, :invalid_correction_evidence}}
+      case verify_correction_finding(finding, design2, native, ledger_entries) do
+        :not_candidate -> {:cont, {:ok, keys}}
+        {:ok, finding_key} -> {:cont, {:ok, [finding_key | keys]}}
+        {:error, reason} -> {:halt, {:error, reason}}
       end
     end)
     |> case do
@@ -375,6 +372,28 @@ defmodule SymphonyElixir.PatchAuthorization do
       {:error, reason} -> {:error, reason}
     end
   end
+
+  defp verify_correction_finding(%{correction_evidence: nil}, _design2, _native, _ledger_entries),
+    do: :not_candidate
+
+  defp verify_correction_finding(
+         %{correction_evidence: correction_evidence} = finding,
+         design2,
+         native,
+         ledger_entries
+       )
+       when is_map(correction_evidence) do
+    case safe_callback(design2, :verify_correction, [finding, correction_evidence, native, ledger_entries]) do
+      :ok -> {:ok, finding.finding_key}
+      {:error, {:conflict, reason}} -> {:error, reason}
+      {:error, :correction_conflict} -> {:error, :correction_conflict}
+      {:error, _reason} -> :not_candidate
+      _other -> {:error, :design2_correction_verification_invalid}
+    end
+  end
+
+  defp verify_correction_finding(_finding, _design2, _native, _ledger_entries),
+    do: {:error, :invalid_correction_evidence}
 
   defp issue_automatic_grant(input, finding_keys, slot, design2) do
     context = %{
@@ -425,9 +444,8 @@ defmodule SymphonyElixir.PatchAuthorization do
          effect_scope,
          dependencies
        ) do
-    evidence = prune_historical_human_evidence(evidence, human_slots)
-
-    with {:ok, policy_version} <- authority_policy_version(dependencies.authority_policy),
+    with {:ok, evidence} <- prune_historical_human_evidence(evidence, human_slots),
+         {:ok, policy_version} <- authority_policy_version(dependencies.authority_policy),
          {:ok, active_request} <- active_request(evidence) do
       case active_request do
         nil ->
@@ -457,26 +475,6 @@ defmodule SymphonyElixir.PatchAuthorization do
     end
   end
 
-  defp route_human_authorization(
-         {:blocked, :human_authorization_required},
-         input,
-         finding_keys,
-         finding_set_digest,
-         evidence,
-         effect_scope,
-         dependencies
-       ) do
-    route_human_authorization(
-      {:blocked, {:human_authorization_required, []}},
-      input,
-      finding_keys,
-      finding_set_digest,
-      evidence,
-      effect_scope,
-      dependencies
-    )
-  end
-
   defp route_human_authorization(result, _input, _finding_keys, _digest, _evidence, _scope, _dependencies),
     do: result
 
@@ -502,34 +500,32 @@ defmodule SymphonyElixir.PatchAuthorization do
     end
   end
 
-  defp active_request(_evidence), do: {:error, :authorization_evidence_unavailable}
-
   defp prune_historical_human_evidence(evidence, human_slots) do
-    historical_request_ids =
-      human_slots
-      |> Enum.map(fn %{slot: {:human, request_id, _comment_id, _actor_id}} -> request_id end)
-      |> MapSet.new()
+    with {:ok, active_requests} <- fetch_active_requests(evidence),
+         {:ok, used_approval_comment_ids} <- fetch_used_approval_ids(evidence) do
+      historical_request_ids =
+        human_slots
+        |> Enum.map(fn %{slot: {:human, request_id, _comment_id, _actor_id}} -> request_id end)
+        |> MapSet.new()
 
-    used_comment_ids =
-      Enum.reduce(human_slots, MapSet.new(), fn
-        %{slot: {:human, _request_id, comment_id, _actor_id}}, used_ids ->
-          MapSet.put(used_ids, comment_id)
-      end)
+      used_comment_ids =
+        Enum.reduce(human_slots, MapSet.new(), fn
+          %{slot: {:human, _request_id, comment_id, _actor_id}}, used_ids ->
+            MapSet.put(used_ids, comment_id)
+        end)
 
-    active_requests =
-      evidence
-      |> Map.get(:active_requests, [])
-      |> Enum.reject(&MapSet.member?(historical_request_ids, &1[:request_id]))
-
-    used_approval_comment_ids =
-      evidence
-      |> Map.get(:used_approval_comment_ids, MapSet.new())
-      |> MapSet.union(used_comment_ids)
-
-    evidence
-    |> Map.put(:active_requests, active_requests)
-    |> Map.put(:used_approval_comment_ids, used_approval_comment_ids)
+      {:ok,
+       evidence
+       |> Map.put(:active_requests, Enum.reject(active_requests, &MapSet.member?(historical_request_ids, &1[:request_id])))
+       |> Map.put(:used_approval_comment_ids, MapSet.union(used_approval_comment_ids, used_comment_ids))}
+    end
   end
+
+  defp fetch_active_requests(%{active_requests: requests}) when is_list(requests), do: {:ok, requests}
+  defp fetch_active_requests(_evidence), do: {:error, :authorization_evidence_unavailable}
+
+  defp fetch_used_approval_ids(%{used_approval_comment_ids: ids}) when is_struct(ids, MapSet), do: {:ok, ids}
+  defp fetch_used_approval_ids(_evidence), do: {:error, :authorization_evidence_unavailable}
 
   defp create_authorization_request(
          input,
@@ -660,9 +656,6 @@ defmodule SymphonyElixir.PatchAuthorization do
     end
   end
 
-  defp authorization_effect_context(_request, _effect_scope),
-    do: {:error, :authorization_claim_context_unavailable}
-
   defp validate_effect_dependencies(%{effect_ledger: effect_ledger, github: github}) do
     if is_atom(effect_ledger) and is_atom(github) and
          Code.ensure_loaded?(effect_ledger) and Code.ensure_loaded?(github) and
@@ -692,7 +685,15 @@ defmodule SymphonyElixir.PatchAuthorization do
          {:ok, actor_id} <- approval_actor_id(approval),
          :ok <- validate_unused_approval(evidence, approval),
          :ok <- authorize_human_actor(dependencies.authority_policy, request, approval, actor_id),
-         {:ok, identity} <- request_human_identity(request, approval, actor_id, input, finding_keys, dependencies.design2) do
+         {:ok, identity} <-
+           request_human_identity(
+             request,
+             approval,
+             actor_id,
+             input,
+             finding_keys,
+             dependencies.design2
+           ) do
       slot = {:human, request.request_id, approval.comment_id, actor_id}
       expected_transition = Map.fetch!(identity, :expected_transition)
 
@@ -733,9 +734,6 @@ defmodule SymphonyElixir.PatchAuthorization do
         :ok
     end
   end
-
-  defp validate_request_binding(_request, _input, _finding_keys, _digest, _policy_version),
-    do: {:error, :invalid_authorization_request}
 
   defp valid_request_shape?(request) do
     Enum.all?(

@@ -374,17 +374,7 @@ defmodule SymphonyElixir.GitHubReviewClient do
   defp normalize_authorization_comments(comments) when is_list(comments) do
     normalized =
       comments
-      |> Enum.flat_map(fn comment ->
-        case normalize_authorization_comment(comment) do
-          {:ok, normalized_comment} ->
-            if String.trim(normalized_comment.body) == @authorization_command,
-              do: [normalized_comment],
-              else: []
-
-          {:error, _reason} ->
-            []
-        end
-      end)
+      |> Enum.flat_map(&approval_comment/1)
 
     {:ok, normalized}
   end
@@ -415,22 +405,24 @@ defmodule SymphonyElixir.GitHubReviewClient do
   defp normalize_authorization_comment(_comment),
     do: {:error, :invalid_authorization_comment}
 
+  defp approval_comment(comment) do
+    case normalize_authorization_comment(comment) do
+      {:ok, normalized_comment} ->
+        if String.trim(normalized_comment.body) == @authorization_command,
+          do: [normalized_comment],
+          else: []
+
+      {:error, _reason} ->
+        []
+    end
+  end
+
   defp normalize_authorization_requests(comments) when is_list(comments) do
     Enum.reduce_while(comments, {:ok, []}, fn comment, {:ok, requests} ->
-      body = if is_map(comment), do: comment["body"], else: nil
-
-      cond do
-        not is_binary(body) ->
-          {:cont, {:ok, requests}}
-
-        String.contains?(body, @authorization_marker) ->
-          case parse_authorization_request(body) do
-            {:ok, request} -> {:cont, {:ok, [request | requests]}}
-            {:error, reason} -> {:halt, {:error, reason}}
-          end
-
-        true ->
-          {:cont, {:ok, requests}}
+      case authorization_request_comment(comment) do
+        :ignore -> {:cont, {:ok, requests}}
+        {:ok, request} -> {:cont, {:ok, [request | requests]}}
+        {:error, reason} -> {:halt, {:error, reason}}
       end
     end)
     |> case do
@@ -439,8 +431,17 @@ defmodule SymphonyElixir.GitHubReviewClient do
     end
   end
 
-  defp normalize_authorization_requests(_comments),
-    do: {:error, :invalid_authorization_comments}
+  defp authorization_request_comment(comment) when is_map(comment) do
+    body = comment["body"]
+
+    cond do
+      not is_binary(body) -> :ignore
+      not String.contains?(body, @authorization_marker) -> :ignore
+      true -> parse_authorization_request(body)
+    end
+  end
+
+  defp authorization_request_comment(_comment), do: :ignore
 
   defp comment_id(%{"id" => id}), do: normalize_comment_id(id)
   defp comment_id(_comment), do: {:error, :invalid_authorization_comment_id}
