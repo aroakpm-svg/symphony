@@ -555,9 +555,6 @@ defmodule SymphonyElixir.PatchAuthorization do
     end
   end
 
-  defp active_request(_evidence, _input, _finding_set_digest, _policy_version, _provenance_policy),
-    do: {:error, :authorization_evidence_unavailable}
-
   defp current_requests(requests, input, finding_set_digest, policy_version, provenance_policy) do
     Enum.reduce_while(requests, {:ok, []}, fn request, {:ok, current} ->
       case active_request_status(request, input, finding_set_digest, policy_version, provenance_policy) do
@@ -598,9 +595,6 @@ defmodule SymphonyElixir.PatchAuthorization do
     end
   end
 
-  defp active_request_status(_request, _input, _finding_set_digest, _policy_version, _provenance_policy),
-    do: {:error, :invalid_authorization_request}
-
   defp verify_managed_request_provenance(policy, request) when is_atom(policy) do
     if Code.ensure_loaded?(policy) and function_exported?(policy, :verify_managed_request, 1) do
       case safe_external_callback(policy, :verify_managed_request, [request]) do
@@ -630,12 +624,37 @@ defmodule SymphonyElixir.PatchAuthorization do
             MapSet.put(used_ids, comment_id)
         end)
 
-      {:ok,
-       evidence
-       |> Map.put(:active_requests, Enum.reject(active_requests, &MapSet.member?(historical_request_ids, &1[:request_id])))
-       |> Map.put(:used_approval_comment_ids, MapSet.union(used_approval_comment_ids, used_comment_ids))}
+      with {:ok, active_requests} <-
+             remove_historical_requests(active_requests, historical_request_ids) do
+        {:ok,
+         evidence
+         |> Map.put(:active_requests, active_requests)
+         |> Map.put(:used_approval_comment_ids, MapSet.union(used_approval_comment_ids, used_comment_ids))}
+      end
     end
   end
+
+  defp remove_historical_requests(active_requests, historical_request_ids) do
+    Enum.reduce_while(active_requests, {:ok, []}, fn request, {:ok, kept} ->
+      case retain_active_request(request, historical_request_ids, kept) do
+        {:ok, kept} -> {:cont, {:ok, kept}}
+        {:error, reason} -> {:halt, {:error, reason}}
+      end
+    end)
+    |> case do
+      {:ok, kept} -> {:ok, Enum.reverse(kept)}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp retain_active_request(request, historical_request_ids, kept) when is_map(request) do
+    if MapSet.member?(historical_request_ids, request[:request_id]),
+      do: {:ok, kept},
+      else: {:ok, [request | kept]}
+  end
+
+  defp retain_active_request(_request, _historical_request_ids, _kept),
+    do: {:error, :invalid_authorization_request}
 
   defp fetch_active_requests(%{active_requests: requests}) when is_list(requests), do: {:ok, requests}
   defp fetch_active_requests(_evidence), do: {:error, :authorization_evidence_unavailable}
@@ -1016,8 +1035,6 @@ defmodule SymphonyElixir.PatchAuthorization do
       do: :ok,
       else: {:error, :invalid_authorization_command}
   end
-
-  defp validate_approval_command(_approval), do: {:error, :invalid_authorization_command}
 
   defp approval_actor_id(%{actor: %{id: actor_id}}) when is_binary(actor_id) and byte_size(actor_id) > 0,
     do: {:ok, actor_id}

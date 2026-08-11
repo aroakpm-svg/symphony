@@ -57,6 +57,10 @@ defmodule SymphonyElixir.PatchAuthorizationTest do
     def verify_managed_request(_request), do: :unverified
   end
 
+  defmodule UnknownManagedRequestProvenancePolicy do
+    def verify_managed_request(_request), do: :unknown
+  end
+
   defmodule UnknownAuthorityPolicy do
     def version, do: :unknown
 
@@ -219,6 +223,8 @@ defmodule SymphonyElixir.PatchAuthorizationTest do
       case Process.get(:github_create_mode, :ok) do
         :ok -> {:ok, %{comment_id: "request-comment-1"}}
         :error -> {:error, :github_create_error}
+        :no_effect -> {:error, :no_effect, :github_no_effect}
+        :unknown -> {:error, :unknown, :github_unknown}
         :invalid -> :invalid
       end
     end
@@ -226,6 +232,8 @@ defmodule SymphonyElixir.PatchAuthorizationTest do
     def find_authorization_request(_repository, _pull_request_number, _request) do
       case Process.get(:github_find_mode, :not_found) do
         :not_found -> :not_found
+        :found -> {:found, %{comment_id: "request-comment-1"}}
+        :unknown -> {:unknown, :github_unknown}
         :error -> {:error, :github_find_error}
         :invalid -> :invalid
       end
@@ -297,6 +305,21 @@ defmodule SymphonyElixir.PatchAuthorizationTest do
                effect_scope(),
                dependencies()
              )
+  end
+
+  @tag :contract
+  test "malformed active request and missing provenance verifier fail closed" do
+    assert {:blocked, :invalid_authorization_request} =
+             authorize_with_approval(active_requests: [:malformed])
+
+    assert {:blocked, :authorization_request_provenance_unavailable} =
+             authorize_with_approval(managed_request_provenance: nil)
+
+    assert {:blocked, :authorization_request_provenance_unavailable} =
+             authorize_with_approval(managed_request_provenance: "not-a-policy")
+
+    assert {:blocked, :authorization_request_provenance_unavailable} =
+             authorize_with_approval(managed_request_provenance: UnknownManagedRequestProvenancePolicy)
   end
 
   @tag :contract
@@ -751,6 +774,51 @@ defmodule SymphonyElixir.PatchAuthorizationTest do
                  )
                end)
              end)
+
+    for {mode, expected} <- [
+          {:no_effect, {:failed_no_effect, :github_no_effect}},
+          {:unknown, {:effect_unknown, :github_unknown}},
+          {:invalid, {:effect_unknown, {:invalid_adapter_result, :invalid}}}
+        ] do
+      assert {:blocked, {:authorization_request_effect_failed, ^expected}} =
+               with_process(:github_create_mode, mode, fn ->
+                 authorize_with_approval(
+                   active_requests: [],
+                   approval: nil,
+                   effect_ledger: EdgeEffectLedger,
+                   github: EdgeGitHubClient
+                 )
+               end)
+    end
+
+    assert {:authorization_required, _request} =
+             with_process(:github_find_mode, :found, fn ->
+               with_process(:effect_mode, :reconcile, fn ->
+                 authorize_with_approval(
+                   active_requests: [],
+                   approval: nil,
+                   effect_ledger: EdgeEffectLedger,
+                   github: EdgeGitHubClient
+                 )
+               end)
+             end)
+
+    for {mode, expected} <- [
+          {:unknown, {:reconciliation_unknown, :github_unknown}},
+          {:invalid, {:reconciliation_unknown, {:invalid_reconciler_result, :invalid}}}
+        ] do
+      assert {:blocked, {:authorization_request_effect_failed, ^expected}} =
+               with_process(:github_find_mode, mode, fn ->
+                 with_process(:effect_mode, :reconcile, fn ->
+                   authorize_with_approval(
+                     active_requests: [],
+                     approval: nil,
+                     effect_ledger: EdgeEffectLedger,
+                     github: EdgeGitHubClient
+                   )
+                 end)
+               end)
+    end
   end
 
   @tag :approval
@@ -783,6 +851,33 @@ defmodule SymphonyElixir.PatchAuthorizationTest do
                  authority_policy: EdgeAuthorityPolicy
                )
              end)
+
+    assert {:error, :authorization_request_provenance_unavailable} =
+             human_authorization_for_test(
+               active_request: request(%{created_at: nil}),
+               approval: approval()
+             )
+
+    assert {:error, :authorization_request_provenance_unavailable} =
+             human_authorization_for_test(
+               active_request: request(%{created_at: "not-a-timestamp"}),
+               approval: approval()
+             )
+
+    assert {:error, :authorization_request_provenance_unavailable} =
+             human_authorization_for_test(
+               active_request: Map.delete(request(), :created_at),
+               approval: approval()
+             )
+
+    assert {:ok, %{slot: {:human, _, "approval-1", "42"}}} =
+             human_authorization_for_test(
+               active_request:
+                 request(%{
+                   authorization_request_created_at: "2026-08-11T00:00:00Z"
+                 }),
+               approval: approval(%{created_at: "2026-08-11T00:01:00Z"})
+             )
   end
 
   @tag :approval
@@ -1042,6 +1137,7 @@ defmodule SymphonyElixir.PatchAuthorizationTest do
       dependencies(
         design2: Map.get(overrides, :design2, ProjectionDesign2Contract),
         authority_policy: Map.get(overrides, :authority_policy, AuthorityPolicy),
+        managed_request_provenance: Map.get(overrides, :managed_request_provenance, ManagedRequestProvenancePolicy),
         effect_ledger: Map.get(overrides, :effect_ledger, ApprovalEffectLedger),
         github: Map.get(overrides, :github, ApprovalGitHubClient)
       )
