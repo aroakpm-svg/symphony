@@ -148,7 +148,9 @@ Invalid transitions fail closed:
 - pending or unknown cannot become a fresh slot;
 - consumed cannot become available;
 - failed-no-effect cannot mint a second operation;
-- a correction or human slot without the required consumed predecessor evidence is a conflict;
+- a correction slot requires a consumed initial slot, while a human slot requires a consumed
+  initial slot and may follow either an ineligible/absent correction slot or a consumed correction;
+- a human slot cannot be reconstructed from contradictory or unresolved correction history;
 - a new worker or generation cannot reset a slot;
 - a new finding cannot be added to an existing authorization snapshot;
 - a changed head cannot inherit an old request or approval;
@@ -171,6 +173,11 @@ Correction evidence must bind the initial operation, initial resulting head, ini
 head, current evaluated head, initial FindingKey-set digest, acceptance criterion when applicable,
 and a stable evidence reference. A new feature, new security decision, new permission or secret
 decision, opportunistic improvement, or unbounded review request cannot consume this slot.
+
+Only an explicit Design 2 `{:error, :not_candidate}` result makes the correction slot unavailable.
+Verifier errors, unavailable native or ledger evidence, malformed results, and exceptions remain
+blocked; they must never be reinterpreted as an ordinary non-candidate and escalated to human
+authorization.
 
 The absence of a human authority policy does not block an eligible automatic slot. Human policy is
 loaded only when the human request or approval path is reached.
@@ -208,12 +215,15 @@ Before accepting an approval, runtime must prove all of the following:
 
 1. The actor has verified authority under the injected policy.
 2. Exactly one active managed request matches the request identity.
-3. The current head equals the request head.
+3. A fresh provider-native head read at the grant boundary equals the request head and the
+   evaluated head; the earlier snapshot must agree as well.
 4. The current Design 2 eligible FindingKey-set digest equals the request digest.
 5. The approval command matches exactly after outer whitespace trimming.
 6. The approval comment ID has never been used.
 7. The approval comment was created strictly after the matching request comment.
 8. The policy version and actor identity are present, verified, and consistent.
+9. Ineligible approvals are skipped before selection; an unknown policy result or unavailable
+   actor evidence remains blocked.
 
 Request evidence is not trusted merely because its marker decodes or its fields exist. Runtime
 reconstructs the canonical request ID and immutable request fingerprint from the verified request
@@ -229,8 +239,9 @@ retired; it blocks as an identity conflict. If a matching intent already exists,
 fingerprint-bound transition is accepted.
 
 Human policy absence, unknown policy result, missing actor identity, missing request provenance,
-ambiguous active request, stale native head, changed FindingKey set, reused or pre-request approval
-comment, and fingerprint conflict all fail closed. None can fall back to display-only
+ambiguous active request, stale or unrefreshable native head, changed FindingKey set, reused or
+pre-request approval comment, and fingerprint conflict all fail closed. An untrusted reconciled
+request is never returned as a successful effect. None can fall back to display-only
 `human_owner` text or repository permissions inferred from prose.
 
 ## Operation and effect ownership
@@ -291,6 +302,7 @@ reset slots or change the request snapshot.
 | Non-`fix_in_current_pr` finding supplied | `{:blocked, {:invalid_finding_disposition, value}}` | None |
 | Finding evaluated on another head | `{:blocked, :finding_evaluated_head_mismatch}` | None |
 | No matching intent and eligible automatic slot | `{:ok, grant}` | One Design 2 intent/publish handoff |
+| Native head cannot be freshly read or differs from the evaluated/request head | `{:blocked, :authorization_current_head_unavailable}` or `{:blocked, :authorization_request_stale}` | None |
 | Pending or unknown intent | `{:reconcile, evidence}` | Same-operation reconciliation only |
 | Contradictory identity, fingerprint, or native evidence | `{:blocked, :operation_fingerprint_conflict}` or specific conflict | None |
 | Automatic slots unavailable, no active request | `{:authorization_required, request}` | One idempotent request comment |
@@ -299,6 +311,9 @@ reset slots or change the request snapshot.
 | Request head changed | `{:blocked, :authorization_request_stale}` | None; new request required |
 | FindingKey set changed | `{:blocked, :authorization_finding_set_changed}` | None; new request required |
 | Approval comment already used | `{:blocked, :approval_comment_already_used}` | None |
+| Earlier approval is unauthorized but a later one is eligible | Later eligible approval is selected | Bind only the verified later approval |
+| Reconciled request lacks verified managed provenance | `{:blocked, {:authorization_request_effect_failed, ...}}` | No successful ledger completion |
+| Correction verifier returns an operational/unknown error | `{:blocked, {:design2_correction_verification_failed, ...}}` | No human escalation |
 | Human policy absent or unknown | `{:blocked, :authorization_policy_unavailable}` | None on human path |
 
 The table is normative for implementation and tests. A new branch must be assigned to an existing
@@ -322,8 +337,13 @@ Before runtime integration, tests must cover at least:
 - exact command succeeds; free-text synonym fails;
 - missing, unknown, and unauthorized actor fail closed;
 - stale request head fails closed;
+- grant paths perform a fresh native-head read at the boundary;
 - changed FindingKey set fails closed;
 - reused approval comment fails closed;
+- unauthorized earlier approval does not hide a later eligible approval;
+- untrusted reconciled request remains unknown rather than becoming a successful effect;
+- correction verifier operational failure does not become human authorization;
+- reserved payload text in the human summary cannot change machine-payload parsing;
 - missing policy blocks human path but does not block an eligible automatic slot;
 - inactive claim prevents ledger, GitHub, request, and publish calls;
 - reconciliation never creates a second operation;
@@ -347,7 +367,11 @@ following remain hard gates for runtime integration:
 4. Design 1 is not required to implement the pure authorization policy wrapper, but it later owns
    activation of `aroak_autonomous_v1` and selection/verification of the production human authority
    policy.
-5. Until these gates pass, missing Design 2 owner APIs return blocked and no worker, shared staging,
+5. The authorization boundary requires an injected `native_head_reader.current_head/2` for every
+   grant or request-effect boundary. The production adapter is the existing GitHub review client;
+   a missing or non-verifying reader blocks, and tests must not be mistaken for a production
+   native-read implementation.
+6. Until these gates pass, missing Design 2 owner APIs return blocked and no worker, shared staging,
    deployment, or Production action is allowed.
 
 ## Acceptance mapping

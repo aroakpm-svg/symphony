@@ -59,6 +59,24 @@ defmodule SymphonyElixir.PatchAuthorizationTest do
     def verify_managed_request(_request), do: :unverified
   end
 
+  defmodule NativeHeadReader do
+    def current_head(repository, pull_request_number) do
+      send(self(), {:native_head_read, repository, pull_request_number})
+      {:ok, Process.get(:native_reader_head, String.duplicate("a", 40))}
+    end
+  end
+
+  defmodule InvalidNativeHeadReader do
+    def current_head(_repository, _pull_request_number), do: {:ok, :invalid}
+  end
+
+  defmodule MissingNativeHeadReader do
+  end
+
+  defmodule TrustedManagedRequestProvenancePolicy do
+    def verify_managed_request(_request), do: :verified
+  end
+
   defmodule UnknownManagedRequestProvenancePolicy do
     def verify_managed_request(_request), do: :unknown
   end
@@ -152,6 +170,8 @@ defmodule SymphonyElixir.PatchAuthorizationTest do
         :ok -> :ok
         :conflict -> {:error, {:conflict, :correction_conflict}}
         :correction_conflict -> {:error, :correction_conflict}
+        :not_candidate -> {:error, :not_candidate}
+        :not_candidate_tuple -> {:error, {:not_candidate, :not_eligible}}
         :not_verified -> {:error, :not_verified}
         :other -> :invalid
         :raise -> raise("correction unavailable")
@@ -384,7 +404,7 @@ defmodule SymphonyElixir.PatchAuthorizationTest do
              )
 
     assert {:authorization_required, _request} =
-             with_process(:design2_correction_mode, :not_verified, fn ->
+             with_process(:design2_correction_mode, :not_candidate, fn ->
                edge_authorize(
                  ledger_entries: [{:managed, :automatic_initial_v1, :consumed, %{}}],
                  eligible_findings: [correction_finding()]
@@ -488,6 +508,31 @@ defmodule SymphonyElixir.PatchAuthorizationTest do
   end
 
   @tag :projection
+  test "human history may follow an absent correction slot" do
+    assert {:authorization_required, _request} =
+             authorize_with_approval(
+               ledger_entries: [
+                 managed_entry(:automatic_initial_v1, :consumed),
+                 managed_entry({:human, "request-1", "comment-1", "actor-1"}, :consumed)
+               ],
+               active_requests: []
+             )
+  end
+
+  @tag :projection
+  test "human history with unresolved correction evidence blocks as a transition conflict" do
+    assert {:blocked, :design3_slot_transition_conflict} =
+             authorize_with_approval(
+               ledger_entries: [
+                 managed_entry(:automatic_initial_v1, :consumed),
+                 managed_entry(:automatic_correction_v1, :blocked_conflict),
+                 managed_entry({:human, "request-1", "comment-1", "actor-1"}, :consumed)
+               ],
+               active_requests: []
+             )
+  end
+
+  @tag :projection
   test "automatic grants fail closed when the native head has advanced" do
     assert {:blocked, :authorization_request_stale} =
              authorize_with_projection(evidence: evidence(%{native: %{current_head_sha: full_sha("b")}}))
@@ -498,6 +543,30 @@ defmodule SymphonyElixir.PatchAuthorizationTest do
                evidence: evidence(%{native: %{current_head_sha: full_sha("b")}}),
                eligible_findings: [correction_finding()]
              )
+  end
+
+  @tag :projection
+  test "automatic grant refreshes native head evidence at the grant boundary" do
+    assert {:blocked, :authorization_request_stale} =
+             with_process(:native_reader_head, full_sha("b"), fn ->
+               authorize_with_projection(evidence: evidence(%{native: %{current_head_sha: full_sha("a")}}))
+             end)
+
+    assert_received {:native_head_read, "aroakpm-svg/symphony", 25}
+  end
+
+  @tag :projection
+  test "missing or malformed native head reader blocks the grant boundary" do
+    for reader <- [InvalidNativeHeadReader, MissingNativeHeadReader, "not-a-reader"] do
+      assert {:blocked, :authorization_current_head_unavailable} =
+               PatchAuthorization.authorize(
+                 input(),
+                 [],
+                 evidence(),
+                 effect_scope(),
+                 dependencies(design2: ProjectionDesign2Contract, native_head_reader: reader)
+               )
+    end
   end
 
   @tag :projection
@@ -695,11 +764,30 @@ defmodule SymphonyElixir.PatchAuthorizationTest do
                )
              end)
 
+    assert {:authorization_required, _request} =
+             with_process(:design2_correction_mode, :not_candidate_tuple, fn ->
+               edge_authorize(
+                 ledger_entries: [{:managed, :automatic_initial_v1, :consumed, %{}}],
+                 eligible_findings: [correction_finding()]
+               )
+             end)
+
     assert {:blocked, :invalid_correction_evidence} =
              edge_authorize(
                ledger_entries: [{:managed, :automatic_initial_v1, :consumed, %{}}],
                eligible_findings: [Map.put(finding(), :correction_evidence, :malformed)]
              )
+  end
+
+  @tag :projection
+  test "correction verifier operational failure does not escalate to human authorization" do
+    assert {:blocked, {:design2_correction_verification_failed, :not_verified}} =
+             with_process(:design2_correction_mode, :not_verified, fn ->
+               edge_authorize(
+                 ledger_entries: [{:managed, :automatic_initial_v1, :consumed, %{}}],
+                 eligible_findings: [correction_finding()]
+               )
+             end)
   end
 
   @tag :approval
@@ -749,6 +837,9 @@ defmodule SymphonyElixir.PatchAuthorizationTest do
 
   @tag :approval
   test "human authorization evidence and effect failures fail closed" do
+    reconciliation_provenance_error =
+      {:authorization_request_effect_failed, {:reconciliation_unknown, :authorization_request_provenance_unverified}}
+
     assert {:blocked, :authorization_policy_unavailable} =
              authorize_with_approval(authority_policy: "not-a-policy")
 
@@ -827,7 +918,7 @@ defmodule SymphonyElixir.PatchAuthorizationTest do
                end)
     end
 
-    assert {:authorization_required, _request} =
+    assert {:blocked, ^reconciliation_provenance_error} =
              with_process(:github_find_mode, :found, fn ->
                with_process(:effect_mode, :reconcile, fn ->
                  authorize_with_approval(
@@ -932,7 +1023,11 @@ defmodule SymphonyElixir.PatchAuthorizationTest do
     assert {:blocked, :authorization_effect_unavailable} =
              authorize_with_approval(
                active_requests: [],
-               dependencies: %{design2: ProjectionDesign2Contract, authority_policy: AuthorityPolicy}
+               dependencies: %{
+                 design2: ProjectionDesign2Contract,
+                 authority_policy: AuthorityPolicy,
+                 native_head_reader: NativeHeadReader
+               }
              )
 
     for mode <- [:error, :other] do
@@ -976,6 +1071,16 @@ defmodule SymphonyElixir.PatchAuthorizationTest do
   end
 
   @tag :approval
+  test "human grant refreshes native head evidence at the grant boundary" do
+    assert {:blocked, :authorization_request_stale} =
+             with_process(:native_reader_head, full_sha("b"), fn ->
+               authorize_with_approval(active_request: request())
+             end)
+
+    assert_received {:native_head_read, "aroakpm-svg/symphony", 25}
+  end
+
+  @tag :approval
   test "approval must be newer than the managed request and skip used approvals" do
     assert {:blocked, :authorization_approval_pending} =
              authorize_with_approval(
@@ -992,6 +1097,52 @@ defmodule SymphonyElixir.PatchAuthorizationTest do
                used_approval_comment_ids: MapSet.new(["approval-1"]),
                active_request: request(%{created_at: "2026-08-11T00:00:00Z"})
              )
+  end
+
+  @tag :approval
+  test "ineligible approval is skipped so a later eligible approval can bind" do
+    assert {:ok, %{slot: {:human, _, "approval-2", "42"}}} =
+             authorize_with_approval(
+               approvals: [
+                 approval(%{comment_id: "approval-unauthorized", actor: %{login: "other", id: "99", type: "User"}}),
+                 approval(%{comment_id: "approval-2"})
+               ],
+               active_request: request()
+             )
+  end
+
+  @tag :approval
+  test "unverified reconciled request is not recorded as a successful effect" do
+    reconciliation_provenance_error =
+      {:authorization_request_effect_failed, {:reconciliation_unknown, :authorization_request_provenance_unverified}}
+
+    assert {:blocked, ^reconciliation_provenance_error} =
+             with_process(:effect_mode, :reconcile, fn ->
+               with_process(:github_find_mode, :found, fn ->
+                 authorize_with_approval(
+                   active_requests: [],
+                   approval: nil,
+                   effect_ledger: EdgeEffectLedger,
+                   github: EdgeGitHubClient
+                 )
+               end)
+             end)
+  end
+
+  @tag :approval
+  test "verified reconciled request remains a successful existing effect" do
+    assert {:authorization_required, _request} =
+             with_process(:effect_mode, :reconcile, fn ->
+               with_process(:github_find_mode, :found, fn ->
+                 authorize_with_approval(
+                   active_requests: [],
+                   approval: nil,
+                   managed_request_provenance: TrustedManagedRequestProvenancePolicy,
+                   effect_ledger: EdgeEffectLedger,
+                   github: EdgeGitHubClient
+                 )
+               end)
+             end)
   end
 
   @tag :approval
@@ -1319,6 +1470,7 @@ defmodule SymphonyElixir.PatchAuthorizationTest do
         design2: Design2Contract,
         authority_policy: nil,
         managed_request_provenance: ManagedRequestProvenancePolicy,
+        native_head_reader: NativeHeadReader,
         effect_ledger: nil,
         github: nil
       },

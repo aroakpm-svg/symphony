@@ -214,7 +214,8 @@ defmodule SymphonyElixir.PatchAuthorization do
             projection.human,
             ledger_entries,
             evidence,
-            design2
+            design2,
+            dependencies
           )
       end
     else
@@ -322,7 +323,7 @@ defmodule SymphonyElixir.PatchAuthorization do
       human != [] and not consumed_slot?(initial) ->
         {:error, :design3_slot_transition_conflict}
 
-      human != [] and not consumed_slot?(correction) ->
+      human != [] and not human_correction_history_allowed?(correction) ->
         {:error, :design3_slot_transition_conflict}
 
       true ->
@@ -332,6 +333,13 @@ defmodule SymphonyElixir.PatchAuthorization do
 
   defp consumed_slot?(%{state: :consumed}), do: true
   defp consumed_slot?(_slot), do: false
+
+  defp human_correction_history_allowed?(nil), do: true
+
+  defp human_correction_history_allowed?(%{state: state}) when state in [:available, :consumed],
+    do: true
+
+  defp human_correction_history_allowed?(_slot), do: false
 
   defp reject_conflicts(%{automatic: automatic, human: human}) do
     if Enum.any?(Map.values(automatic) ++ human, &(&1.state == :blocked_conflict)) do
@@ -360,28 +368,37 @@ defmodule SymphonyElixir.PatchAuthorization do
     |> Map.put(:slot_state, state)
   end
 
-  defp route_available_slot(input, finding_keys, records, human_slots, ledger_entries, evidence, design2) do
+  defp route_available_slot(
+         input,
+         finding_keys,
+         records,
+         human_slots,
+         ledger_entries,
+         evidence,
+         design2,
+         dependencies
+       ) do
     case Map.get(records, :automatic_initial_v1) do
       nil ->
-        issue_automatic_grant(input, finding_keys, :automatic_initial_v1, evidence, design2)
+        issue_automatic_grant(input, finding_keys, :automatic_initial_v1, evidence, design2, dependencies)
 
       %{state: :available} ->
-        issue_automatic_grant(input, finding_keys, :automatic_initial_v1, evidence, design2)
+        issue_automatic_grant(input, finding_keys, :automatic_initial_v1, evidence, design2, dependencies)
 
       %{state: :consumed} ->
-        route_correction_slot(input, records, human_slots, ledger_entries, evidence, design2)
+        route_correction_slot(input, records, human_slots, ledger_entries, evidence, design2, dependencies)
     end
   end
 
-  defp route_correction_slot(input, records, human_slots, ledger_entries, evidence, design2) do
+  defp route_correction_slot(input, records, human_slots, ledger_entries, evidence, design2, dependencies) do
     with {:ok, correction_keys} <- verified_correction_keys(input, design2, evidence, ledger_entries),
          true <- correction_keys != [] do
       case Map.get(records, :automatic_correction_v1) do
         nil ->
-          issue_automatic_grant(input, correction_keys, :automatic_correction_v1, evidence, design2)
+          issue_automatic_grant(input, correction_keys, :automatic_correction_v1, evidence, design2, dependencies)
 
         %{state: :available} ->
-          issue_automatic_grant(input, correction_keys, :automatic_correction_v1, evidence, design2)
+          issue_automatic_grant(input, correction_keys, :automatic_correction_v1, evidence, design2, dependencies)
 
         %{state: :consumed} ->
           {:blocked, {:human_authorization_required, human_slots}}
@@ -422,7 +439,9 @@ defmodule SymphonyElixir.PatchAuthorization do
       :ok -> {:ok, finding.finding_key}
       {:error, {:conflict, reason}} -> {:error, reason}
       {:error, :correction_conflict} -> {:error, :correction_conflict}
-      {:error, _reason} -> :not_candidate
+      {:error, :not_candidate} -> :not_candidate
+      {:error, {:not_candidate, _reason}} -> :not_candidate
+      {:error, reason} -> {:error, {:design2_correction_verification_failed, reason}}
       _other -> {:error, :design2_correction_verification_invalid}
     end
   end
@@ -430,8 +449,8 @@ defmodule SymphonyElixir.PatchAuthorization do
   defp verify_correction_finding(_finding, _design2, _native, _ledger_entries),
     do: {:error, :invalid_correction_evidence}
 
-  defp issue_automatic_grant(input, finding_keys, slot, evidence, design2) do
-    case current_native_head_matches?(input, evidence) do
+  defp issue_automatic_grant(input, finding_keys, slot, evidence, design2, dependencies) do
+    case current_native_head_matches?(input, evidence, dependencies) do
       :ok -> build_automatic_grant(input, finding_keys, slot, design2)
       {:error, reason} -> {:blocked, reason}
     end
@@ -685,7 +704,7 @@ defmodule SymphonyElixir.PatchAuthorization do
        ) do
     request = build_authorization_request(input, finding_keys, finding_set_digest, policy_version)
 
-    with :ok <- current_native_head_matches?(input, evidence),
+    with :ok <- current_native_head_matches?(input, evidence, dependencies),
          :ok <- execute_authorization_request_effect(request, effect_scope, dependencies) do
       {:authorization_required, request}
     else
@@ -737,17 +756,45 @@ defmodule SymphonyElixir.PatchAuthorization do
     ])
   end
 
-  defp current_native_head_matches?(input, %{native: %{current_head_sha: head_sha}})
-       when is_binary(head_sha) do
-    cond do
-      not valid_head_sha?(head_sha) -> {:error, :authorization_current_head_unavailable}
-      head_sha != input.evaluated_head_sha -> {:error, :authorization_request_stale}
-      true -> :ok
+  defp current_native_head_matches?(input, %{native: %{current_head_sha: evidence_head}}, dependencies)
+       when is_binary(evidence_head) do
+    with :ok <- validate_native_head(evidence_head),
+         {:ok, current_head} <- read_current_native_head(input, dependencies) do
+      cond do
+        current_head != input.evaluated_head_sha -> {:error, :authorization_request_stale}
+        evidence_head != input.evaluated_head_sha -> {:error, :authorization_request_stale}
+        true -> :ok
+      end
     end
   end
 
-  defp current_native_head_matches?(_input, _evidence),
+  defp current_native_head_matches?(_input, _evidence, _dependencies),
     do: {:error, :authorization_current_head_unavailable}
+
+  defp validate_native_head(head) when is_binary(head) do
+    if valid_head_sha?(head), do: :ok, else: {:error, :authorization_current_head_unavailable}
+  end
+
+  defp validate_native_head(_head), do: {:error, :authorization_current_head_unavailable}
+
+  defp read_current_native_head(input, %{native_head_reader: reader}) when is_atom(reader) do
+    with :ok <- validate_native_head_reader(reader),
+         {:ok, head} <- safe_external_callback(reader, :current_head, [input.repository, input.pull_request_number]),
+         :ok <- validate_native_head(head) do
+      {:ok, head}
+    else
+      _error -> {:error, :authorization_current_head_unavailable}
+    end
+  end
+
+  defp read_current_native_head(_input, _dependencies),
+    do: {:error, :authorization_current_head_unavailable}
+
+  defp validate_native_head_reader(reader) do
+    if Code.ensure_loaded?(reader) and function_exported?(reader, :current_head, 2),
+      do: :ok,
+      else: {:error, :authorization_current_head_unavailable}
+  end
 
   defp execute_authorization_request_effect(request, effect_scope, dependencies) do
     with {:ok, context} <- authorization_effect_context(request, effect_scope),
@@ -755,6 +802,7 @@ defmodule SymphonyElixir.PatchAuthorization do
       effect_ledger = dependencies.effect_ledger
       github = dependencies.github
       connection = effect_scope.connection
+      managed_request_provenance = Map.get(dependencies, :managed_request_provenance)
 
       result =
         safe_external_callback(effect_ledger, :execute, [
@@ -775,7 +823,7 @@ defmodule SymphonyElixir.PatchAuthorization do
               :find_authorization_request,
               [request.repository, request.pull_request_number, request]
             )
-            |> normalize_effect_reconciler_result()
+            |> normalize_effect_reconciler_result(managed_request_provenance)
           end
         ])
 
@@ -838,11 +886,23 @@ defmodule SymphonyElixir.PatchAuthorization do
   defp normalize_effect_adapter_result({:error, reason}), do: {:error, :unknown, reason}
   defp normalize_effect_adapter_result(other), do: {:error, :unknown, {:invalid_adapter_result, other}}
 
-  defp normalize_effect_reconciler_result(:not_found), do: :not_found
-  defp normalize_effect_reconciler_result({:found, resource}), do: {:found, resource}
-  defp normalize_effect_reconciler_result({:unknown, reason}), do: {:unknown, reason}
-  defp normalize_effect_reconciler_result({:error, reason}), do: {:unknown, reason}
-  defp normalize_effect_reconciler_result(other), do: {:unknown, {:invalid_reconciler_result, other}}
+  defp normalize_effect_reconciler_result(:not_found, _provenance_policy), do: :not_found
+
+  defp normalize_effect_reconciler_result({:found, resource}, provenance_policy) do
+    case verify_managed_request_provenance(provenance_policy, resource) do
+      :ok -> {:found, resource}
+      {:error, reason} -> {:unknown, reason}
+    end
+  end
+
+  defp normalize_effect_reconciler_result({:unknown, reason}, _provenance_policy),
+    do: {:unknown, reason}
+
+  defp normalize_effect_reconciler_result({:error, reason}, _provenance_policy),
+    do: {:unknown, reason}
+
+  defp normalize_effect_reconciler_result(other, _provenance_policy),
+    do: {:unknown, {:invalid_reconciler_result, other}}
 
   defp bind_human_approval(
          request,
@@ -854,8 +914,9 @@ defmodule SymphonyElixir.PatchAuthorization do
          dependencies
        ) do
     with :ok <- validate_request_binding(request, input, finding_keys, finding_set_digest, policy_version),
-         :ok <- current_native_head_matches?(input, evidence),
-         {:ok, approval} <- find_approval(evidence, request),
+         :ok <- current_native_head_matches?(input, evidence, dependencies),
+         {:ok, approval} <-
+           find_approval(evidence, request, Map.get(dependencies, :authority_policy)),
          :ok <- validate_approval_command(approval),
          {:ok, actor_id} <- approval_actor_id(approval),
          :ok <- validate_unused_approval(evidence, approval),
@@ -971,7 +1032,7 @@ defmodule SymphonyElixir.PatchAuthorization do
     request.request_id == expected_request_id and request.request_fingerprint == expected_fingerprint
   end
 
-  defp find_approval(%{comments: comments, used_approval_comment_ids: used_ids}, request)
+  defp find_approval(%{comments: comments, used_approval_comment_ids: used_ids}, request, policy)
        when is_list(comments) and is_struct(used_ids, MapSet) do
     with {:ok, request_created_at} <- request_created_at(request),
          {:ok, candidates} <- approvals_after_request(comments, request_created_at) do
@@ -980,19 +1041,60 @@ defmodule SymphonyElixir.PatchAuthorization do
           {:error, :authorization_approval_pending}
 
         candidates ->
-          select_unused_approval(candidates, used_ids)
+          select_eligible_approval(candidates, used_ids, policy, request)
       end
     end
   end
 
-  defp find_approval(_evidence, _request), do: {:error, :authorization_evidence_unavailable}
+  defp find_approval(_evidence, _request, _policy), do: {:error, :authorization_evidence_unavailable}
 
-  defp select_unused_approval(candidates, used_ids) do
-    case Enum.find(candidates, &unused_approval?(&1, used_ids)) do
-      nil -> {:error, :approval_comment_already_used}
-      approval -> {:ok, approval}
+  defp select_eligible_approval(candidates, used_ids, policy, request) do
+    candidates
+    |> Enum.reduce_while({:ok, false}, fn approval, state ->
+      reduce_approval_candidate(approval, state, used_ids, policy, request)
+    end)
+    |> finalize_approval_selection()
+  end
+
+  defp reduce_approval_candidate(approval, state, used_ids, policy, request) do
+    case evaluate_approval_candidate(approval, used_ids, policy, request) do
+      :used -> {:cont, state}
+      :unauthorized -> {:cont, mark_unauthorized(state)}
+      {:selected, selected} -> {:halt, {:selected, selected}}
+      {:error, reason} -> {:halt, {:error, reason}}
     end
   end
+
+  defp finalize_approval_selection(result) do
+    case result do
+      {:selected, approval} -> {:ok, approval}
+      {:error, reason} -> {:error, reason}
+      {:ok, true} -> {:error, :unauthorized_actor}
+      {:ok, false} -> {:error, :approval_comment_already_used}
+    end
+  end
+
+  defp evaluate_approval_candidate(approval, used_ids, policy, request) do
+    if unused_approval?(approval, used_ids),
+      do: authorize_approval_candidate(approval, policy, request),
+      else: :used
+  end
+
+  defp authorize_approval_candidate(approval, policy, request) do
+    case approval_actor_id(approval) do
+      {:ok, actor_id} ->
+        case authorize_human_actor(policy, request, approval, actor_id) do
+          :ok -> {:selected, approval}
+          {:error, :unauthorized_actor} -> :unauthorized
+          {:error, reason} -> {:error, reason}
+        end
+
+      {:error, _reason} ->
+        {:error, :authorization_actor_unknown}
+    end
+  end
+
+  defp mark_unauthorized({:ok, _unauthorized_seen?}), do: {:ok, true}
 
   defp unused_approval?(%{comment_id: comment_id}, used_ids) when is_binary(comment_id),
     do: not MapSet.member?(used_ids, comment_id)

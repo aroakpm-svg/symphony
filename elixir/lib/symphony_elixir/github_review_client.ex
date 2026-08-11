@@ -90,6 +90,21 @@ defmodule SymphonyElixir.GitHubReviewClient do
     end
   end
 
+  @spec current_head(String.t(), pos_integer()) :: {:ok, String.t()} | {:error, term()}
+  def current_head(repository, number)
+      when is_binary(repository) and is_integer(number) and number > 0 do
+    case fetch_pull_request(repository, number) do
+      {:ok, %{"headRefOid" => head}} when is_binary(head) and byte_size(head) > 0 ->
+        {:ok, head}
+
+      {:ok, _pull_request} ->
+        {:error, :authorization_current_head_unavailable}
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
   @spec review_request_exists?(String.t(), pos_integer(), String.t()) :: {:ok, boolean()} | {:error, term()}
   def review_request_exists?(repository, number, key) do
     case run(["api", "--paginate", "--slurp", "repos/#{repository}/issues/#{number}/comments"]) do
@@ -498,7 +513,8 @@ defmodule SymphonyElixir.GitHubReviewClient do
 
   defp parse_authorization_request(body) when is_binary(body) do
     with true <- String.contains?(body, @authorization_marker),
-         [payload] <- Regex.run(~r/request-payload:\s*(\S+)/, body, capture: :all_but_first),
+         [payload] <-
+           Regex.run(~r/^request-payload:[ \t]*(\S+)[ \t]*$/m, body, capture: :all_but_first),
          {:ok, encoded} <- Base.url_decode64(payload, padding: false),
          {:ok, request} <- safe_binary_to_term(encoded),
          true <- valid_authorization_request?(request) do

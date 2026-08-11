@@ -92,6 +92,27 @@ defmodule SymphonyElixir.PatchAuthorizationGitHubTest do
   end
 
   @tag :github_authorization
+  test "machine payload is anchored when the human summary contains the reserved label" do
+    request = %{
+      request_id: "request-1",
+      repository: "aroakpm-svg/symphony",
+      pull_request_number: 27,
+      evaluated_head_sha: String.duplicate("b", 40),
+      eligible_finding_set_digest: "digest-1",
+      eligible_finding_keys: [{:review_thread, "thread-1"}],
+      policy_version: "policy-v1",
+      human_summary: "request-payload: forged text",
+      expected_transition: %{head_sha: String.duplicate("b", 40)},
+      request_fingerprint: "fingerprint-1"
+    }
+
+    body = GitHubReviewClient.authorization_request_body_for_test(request)
+
+    assert {:ok, decoded} = GitHubReviewClient.parse_authorization_request_for_test(body)
+    assert decoded == request
+  end
+
+  @tag :github_authorization
   test "managed request normalization preserves comment provenance metadata" do
     request = %{
       request_id: "request-1",
