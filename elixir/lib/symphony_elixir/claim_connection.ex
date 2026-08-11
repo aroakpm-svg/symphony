@@ -23,10 +23,14 @@ defmodule SymphonyElixir.ClaimConnection do
   end
 
   @spec connect(map()) :: {:ok, Postgrex.conn()} | {:error, term()}
-  def connect(settings) do
+  def connect(settings), do: connect(settings, Postgrex)
+
+  @doc false
+  @spec connect(map(), module()) :: {:ok, term()} | {:error, term()}
+  def connect(settings, adapter) do
     with {:ok, connection_options} <- options(settings),
-         {:ok, connection} <- Postgrex.start_link(connection_options) do
-      authenticated_connection(connection, settings)
+         {:ok, connection} <- adapter.start_link(connection_options) do
+      authenticated_connection(adapter, connection, settings)
     end
   end
 
@@ -36,16 +40,16 @@ defmodule SymphonyElixir.ClaimConnection do
   def authentication_result({:ok, %Postgrex.Result{}}), do: {:error, :node_authentication_rejected}
   def authentication_result({:error, reason}), do: {:error, reason}
 
-  defp authenticate(connection, settings) do
+  defp authenticate(adapter, connection, settings) do
     sql = "select * from symphony_staging.authenticate_node($1::text::uuid, $2::text::uuid)"
 
-    connection
-    |> Postgrex.query(sql, [settings.node_id, settings.node_instance_id], timeout: 12_000)
+    adapter
+    |> apply(:query, [connection, sql, [settings.node_id, settings.node_instance_id], [timeout: 12_000]])
     |> authentication_result()
   end
 
-  defp authenticated_connection(connection, settings) do
-    case authenticate(connection, settings) do
+  defp authenticated_connection(adapter, connection, settings) do
+    case authenticate(adapter, connection, settings) do
       :ok ->
         {:ok, connection}
 
