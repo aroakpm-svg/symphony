@@ -158,13 +158,25 @@ defmodule SymphonyElixir.PatchAuthorization.RequestIdentity do
     |> then(&{:map, &1})
   end
 
-  defp canonical_term(value) when is_list(value), do: {:list, Enum.map(value, &canonical_term/1)}
+  defp canonical_term(value) when is_list(value), do: canonical_list(value)
 
   defp canonical_term(value) when is_tuple(value) do
     {:tuple, value |> Tuple.to_list() |> Enum.map(&canonical_term/1)}
   end
 
   defp canonical_term(value), do: value
+
+  defp canonical_list(value), do: canonical_list(value, [])
+
+  defp canonical_list([], acc), do: {:list, Enum.reverse(acc)}
+
+  defp canonical_list([head | tail], acc) do
+    canonical_list(tail, [canonical_term(head) | acc])
+  end
+
+  defp canonical_list(tail, acc) do
+    {:improper_list, Enum.reverse(acc), canonical_term(tail)}
+  end
 
   defp non_empty_string?(value), do: is_binary(value) and String.trim(value) != ""
 end

@@ -75,6 +75,16 @@ defmodule SymphonyElixir.PatchAuthorization.RequestIdentityTest do
              RequestIdentity.build(input(eligible_finding_keys: [date], expected_transition: date))
   end
 
+  test "canonicalizes improper lists nested inside opaque finding keys" do
+    assert {:ok, _request} =
+             RequestIdentity.build(input(eligible_finding_keys: [[1 | 2]]))
+  end
+
+  test "canonicalizes improper lists nested inside expected transition data" do
+    assert {:ok, _request} =
+             RequestIdentity.build(input(expected_transition: %{payload: [1 | 2]}))
+  end
+
   defp input(overrides \\ []) do
     Enum.into(overrides, %{
       profile: :aroak_autonomous_v1,
