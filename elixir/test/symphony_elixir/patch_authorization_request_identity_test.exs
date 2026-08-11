@@ -56,6 +56,25 @@ defmodule SymphonyElixir.PatchAuthorization.RequestIdentityTest do
     assert {:error, :request_fingerprint_mismatch} = RequestIdentity.validate(tampered, input())
   end
 
+  test "treats integer and float finding keys as different opaque identities" do
+    assert {:ok, request} = RequestIdentity.build(input(eligible_finding_keys: [{:finding, 1}]))
+
+    assert {:error, :authorization_finding_set_changed} =
+             RequestIdentity.validate(request, input(eligible_finding_keys: [{:finding, 1.0}]))
+  end
+
+  test "rejects an improper finding-key list without raising" do
+    assert {:error, :invalid_finding_keys} =
+             RequestIdentity.build(input(eligible_finding_keys: [:finding | :bad_tail]))
+  end
+
+  test "canonicalizes map-shaped opaque terms without Enumerable protocol dispatch" do
+    date = ~D[2026-08-12]
+
+    assert {:ok, _request} =
+             RequestIdentity.build(input(eligible_finding_keys: [date], expected_transition: date))
+  end
+
   defp input(overrides \\ []) do
     Enum.into(overrides, %{
       profile: :aroak_autonomous_v1,

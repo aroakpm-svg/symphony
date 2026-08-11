@@ -117,7 +117,7 @@ defmodule SymphonyElixir.PatchAuthorization.RequestIdentity do
         {:error, :authorization_request_stale}
 
       stored.eligible_finding_set_digest != current.eligible_finding_set_digest or
-          stored.eligible_finding_keys != current.eligible_finding_keys ->
+          stored.eligible_finding_keys !== current.eligible_finding_keys ->
         {:error, :authorization_finding_set_changed}
 
       stored != current ->
@@ -129,10 +129,14 @@ defmodule SymphonyElixir.PatchAuthorization.RequestIdentity do
   end
 
   defp valid_finding_keys?(keys) when is_list(keys) do
-    keys != [] and length(Enum.uniq(keys)) == length(keys)
+    proper_list?(keys) and keys != [] and length(Enum.uniq(keys)) == length(keys)
   end
 
   defp valid_finding_keys?(_keys), do: false
+
+  defp proper_list?([]), do: true
+  defp proper_list?([_head | tail]), do: proper_list?(tail)
+  defp proper_list?(_tail), do: false
 
   defp sort_finding_keys(keys) do
     Enum.sort_by(keys, fn key -> :erlang.term_to_binary(canonical_term(key)) end)
@@ -148,6 +152,7 @@ defmodule SymphonyElixir.PatchAuthorization.RequestIdentity do
 
   defp canonical_term(value) when is_map(value) do
     value
+    |> Map.to_list()
     |> Enum.map(fn {key, item} -> {canonical_term(key), canonical_term(item)} end)
     |> Enum.sort_by(fn {key, _item} -> :erlang.term_to_binary(key) end)
     |> then(&{:map, &1})
