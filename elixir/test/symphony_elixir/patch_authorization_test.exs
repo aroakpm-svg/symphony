@@ -90,6 +90,18 @@ defmodule SymphonyElixir.PatchAuthorizationTest do
   end
 
   @tag :contract
+  test "valid input fails closed when Design 2 projection callbacks are not present" do
+    assert {:blocked, :design2_projection_contract_unavailable} =
+             PatchAuthorization.authorize(
+               input(),
+               [],
+               evidence(),
+               effect_scope(),
+               dependencies()
+             )
+  end
+
+  @tag :contract
   test "authorize rejects a non-current disposition without importing Design 2 types" do
     bad =
       put_in(
