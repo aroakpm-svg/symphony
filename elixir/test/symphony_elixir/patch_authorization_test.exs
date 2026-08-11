@@ -710,6 +710,15 @@ defmodule SymphonyElixir.PatchAuthorizationTest do
   end
 
   @tag :approval
+  test "tampered managed request identity fails closed" do
+    assert {:blocked, :authorization_request_identity_mismatch} =
+             authorize_with_approval(active_request: request(%{request_fingerprint: "tampered-fingerprint"}))
+
+    assert {:blocked, :authorization_request_identity_mismatch} =
+             authorize_with_approval(active_request: request(%{request_id: "tampered-request"}))
+  end
+
+  @tag :approval
   test "unknown policy blocks human approval without transferring authority" do
     assert {:blocked, :authorization_policy_unavailable} =
              authorize_with_approval(authority_policy: UnknownAuthorityPolicy)
@@ -756,7 +765,7 @@ defmodule SymphonyElixir.PatchAuthorizationTest do
                  managed_entry({:human, "request-1", "comment-1", "actor-1"}, :consumed),
                  managed_entry({:human, "request-2", "comment-2", "actor-1"}, :consumed)
                ],
-               active_requests: [request()]
+               active_requests: []
              )
 
     refute request.request_id in ["request-1", "request-2"]
@@ -849,22 +858,58 @@ defmodule SymphonyElixir.PatchAuthorizationTest do
   end
 
   defp request(overrides \\ %{}) do
-    Map.merge(
-      %{
-        request_id: "request-1",
-        repository: "aroakpm-svg/symphony",
-        pull_request_number: 25,
-        evaluated_head_sha: full_sha("a"),
-        eligible_finding_set_digest: "finding-set-digest",
-        eligible_finding_keys: [{:review_thread, "thread-1"}],
-        policy_version: "policy-v1",
-        human_summary: "One scoped finding",
-        expected_transition: %{head_sha: full_sha("a")},
-        request_fingerprint: "request-fingerprint",
-        created_at: "2026-08-11T00:00:00Z"
-      },
-      overrides
-    )
+    request =
+      Map.merge(
+        %{
+          request_id: nil,
+          repository: "aroakpm-svg/symphony",
+          pull_request_number: 25,
+          evaluated_head_sha: full_sha("a"),
+          eligible_finding_set_digest: "finding-set-digest",
+          eligible_finding_keys: [{:review_thread, "thread-1"}],
+          policy_version: "policy-v1",
+          human_summary: "One scoped finding",
+          expected_transition: %{head_sha: full_sha("a")},
+          request_fingerprint: nil,
+          created_at: "2026-08-11T00:00:00Z"
+        },
+        overrides
+      )
+
+    request =
+      if Map.has_key?(overrides, :request_id),
+        do: request,
+        else: Map.put(request, :request_id, canonical_request_id(request))
+
+    if Map.has_key?(overrides, :request_fingerprint),
+      do: request,
+      else: Map.put(request, :request_fingerprint, canonical_request_fingerprint(request))
+  end
+
+  defp canonical_request_id(request) do
+    stable_digest({
+      :symphony_authorization_request_v1,
+      request.repository,
+      request.pull_request_number,
+      request.evaluated_head_sha,
+      request.eligible_finding_set_digest,
+      request.eligible_finding_keys,
+      request.policy_version
+    })
+  end
+
+  defp canonical_request_fingerprint(request) do
+    request_without_fingerprint = Map.drop(request, [:request_fingerprint, :created_at])
+
+    stable_digest({
+      :symphony_authorization_request_fingerprint_v1,
+      request_without_fingerprint
+    })
+  end
+
+  defp stable_digest(term) do
+    :crypto.hash(:sha256, :erlang.term_to_binary(term, [:deterministic]))
+    |> Base.encode16(case: :lower)
   end
 
   defp approval(overrides \\ %{}) do

@@ -712,27 +712,49 @@ defmodule SymphonyElixir.PatchAuthorization do
 
   defp validate_request_binding(request, input, finding_keys, finding_set_digest, policy_version)
        when is_map(request) do
-    cond do
-      request[:repository] != input.repository or
-          request[:pull_request_number] != input.pull_request_number ->
-        {:error, :authorization_request_scope_mismatch}
-
-      request[:evaluated_head_sha] != input.evaluated_head_sha ->
-        {:error, :authorization_request_stale}
-
-      request[:eligible_finding_set_digest] != finding_set_digest or
-          request[:eligible_finding_keys] != finding_keys ->
-        {:error, :authorization_finding_set_changed}
-
-      request[:policy_version] != policy_version ->
-        {:error, :authorization_policy_unavailable}
-
-      not valid_request_shape?(request) ->
-        {:error, :invalid_authorization_request}
-
-      true ->
-        :ok
+    with :ok <- validate_request_scope(request, input),
+         :ok <- validate_request_head(request, input),
+         :ok <- validate_request_finding_set(request, finding_keys, finding_set_digest),
+         :ok <- validate_request_policy(request, policy_version),
+         :ok <- validate_request_shape(request) do
+      validate_canonical_request_identity(request)
     end
+  end
+
+  defp validate_request_scope(request, input) do
+    if request[:repository] == input.repository and
+         request[:pull_request_number] == input.pull_request_number do
+      :ok
+    else
+      {:error, :authorization_request_scope_mismatch}
+    end
+  end
+
+  defp validate_request_head(request, input) do
+    if request[:evaluated_head_sha] == input.evaluated_head_sha,
+      do: :ok,
+      else: {:error, :authorization_request_stale}
+  end
+
+  defp validate_request_finding_set(request, finding_keys, finding_set_digest) do
+    if request[:eligible_finding_set_digest] == finding_set_digest and
+         request[:eligible_finding_keys] == finding_keys do
+      :ok
+    else
+      {:error, :authorization_finding_set_changed}
+    end
+  end
+
+  defp validate_request_policy(request, policy_version) do
+    if request[:policy_version] == policy_version,
+      do: :ok,
+      else: {:error, :authorization_policy_unavailable}
+  end
+
+  defp validate_request_shape(request) do
+    if valid_request_shape?(request),
+      do: :ok,
+      else: {:error, :invalid_authorization_request}
   end
 
   defp valid_request_shape?(request) do
@@ -740,6 +762,35 @@ defmodule SymphonyElixir.PatchAuthorization do
       [:request_id, :request_fingerprint, :policy_version, :eligible_finding_keys],
       &(is_binary(request[&1]) or (is_list(request[&1]) and request[&1] != []))
     )
+  end
+
+  defp validate_canonical_request_identity(request) do
+    if canonical_request_identity?(request),
+      do: :ok,
+      else: {:error, :authorization_request_identity_mismatch}
+  end
+
+  defp canonical_request_identity?(request) do
+    expected_request_id =
+      stable_digest({
+        :symphony_authorization_request_v1,
+        request.repository,
+        request.pull_request_number,
+        request.evaluated_head_sha,
+        request.eligible_finding_set_digest,
+        request.eligible_finding_keys,
+        request.policy_version
+      })
+
+    request_without_fingerprint = Map.drop(request, [:request_fingerprint, :created_at])
+
+    expected_fingerprint =
+      stable_digest({
+        :symphony_authorization_request_fingerprint_v1,
+        request_without_fingerprint
+      })
+
+    request.request_id == expected_request_id and request.request_fingerprint == expected_fingerprint
   end
 
   defp find_approval(%{comments: comments}) when is_list(comments) do

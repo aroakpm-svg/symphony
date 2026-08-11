@@ -202,6 +202,12 @@ Before accepting an approval, runtime must prove all of the following:
 6. The approval comment ID has never been used.
 7. The policy version and actor identity are present, verified, and consistent.
 
+Request evidence is not trusted merely because its marker decodes or its fields exist. Runtime
+reconstructs the canonical request ID and immutable request fingerprint from the verified request
+fields and compares both values before using the request. A missing, extra, or changed
+fingerprinted field, including the expected transition or human summary, is an identity conflict
+and fails closed.
+
 If the request head or FindingKey set changes before the matching intent is established, the old
 request and approval are stale. They cannot transfer to the new snapshot; runtime must stop and
 produce a new deduplicated request. If a matching intent already exists, only the expected
