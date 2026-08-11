@@ -450,8 +450,12 @@ defmodule SymphonyElixir.PatchAuthorization do
     do: {:error, :invalid_correction_evidence}
 
   defp issue_automatic_grant(input, finding_keys, slot, evidence, design2, dependencies) do
-    case current_native_head_matches?(input, evidence, dependencies) do
-      :ok -> build_automatic_grant(input, finding_keys, slot, design2)
+    with :ok <- current_native_head_matches?(input, evidence, dependencies),
+         {:ok, grant} <- build_automatic_grant(input, finding_keys, slot, design2),
+         :ok <- current_native_head_matches?(input, evidence, dependencies) do
+      {:ok, grant}
+    else
+      {:blocked, reason} -> {:blocked, reason}
       {:error, reason} -> {:blocked, reason}
     end
   end
@@ -494,6 +498,8 @@ defmodule SymphonyElixir.PatchAuthorization do
     apply(module, function, arguments)
   rescue
     _error -> {:error, :design2_callback_failed}
+  catch
+    :exit, _reason -> {:error, :design2_callback_failed}
   end
 
   defp route_human_authorization(
@@ -603,27 +609,31 @@ defmodule SymphonyElixir.PatchAuthorization do
   defp active_request_status(request, input, finding_set_digest, policy_version, provenance_policy)
        when is_map(request) do
     with :ok <- verify_managed_request_provenance(provenance_policy, request) do
-      current_snapshot? =
-        request[:repository] == input.repository and
-          request[:pull_request_number] == input.pull_request_number and
-          request[:evaluated_head_sha] == input.evaluated_head_sha and
-          request[:eligible_finding_set_digest] == finding_set_digest and
-          request[:policy_version] == policy_version
+      current_snapshot? = current_request_snapshot?(request, input, finding_set_digest, policy_version)
 
       cond do
-        not current_snapshot? ->
-          :stale
-
         not valid_request_shape?(request) ->
           {:error, :invalid_authorization_request}
 
         not canonical_request_identity?(request) ->
           {:error, :authorization_request_identity_mismatch}
 
+        not current_snapshot? ->
+          :stale
+
         true ->
           {:current, request}
       end
     end
+  end
+
+  defp current_request_snapshot?(request, input, finding_set_digest, policy_version) do
+    request[:repository] == input.repository and
+      request[:pull_request_number] == input.pull_request_number and
+      request[:evaluated_head_sha] == input.evaluated_head_sha and
+      request[:eligible_finding_set_digest] == finding_set_digest and
+      request[:policy_version] == policy_version and
+      request[:human_summary] == input.human_summary
   end
 
   defp verify_managed_request_provenance(policy, request) when is_atom(policy) do
@@ -715,12 +725,13 @@ defmodule SymphonyElixir.PatchAuthorization do
   defp build_authorization_request(input, finding_keys, finding_set_digest, policy_version) do
     request_id =
       stable_digest({
-        :symphony_authorization_request_v1,
+        :symphony_authorization_request_v2,
         input.repository,
         input.pull_request_number,
         input.evaluated_head_sha,
         finding_set_digest,
-        policy_version
+        policy_version,
+        input.human_summary
       })
 
     request_without_fingerprint = %{
@@ -853,7 +864,7 @@ defmodule SymphonyElixir.PatchAuthorization do
     if Enum.all?(required, &Map.has_key?(claim_context, &1)) do
       {:ok,
        %{
-         operation_id: "symphony_authorization_request_v1:" <> request.request_id,
+         operation_id: "symphony_authorization_request_v2:" <> request.request_id,
          request_fingerprint: request.request_fingerprint,
          issue_id: claim_context.issue_id,
          claim_id: claim_context.claim_id,
@@ -930,7 +941,8 @@ defmodule SymphonyElixir.PatchAuthorization do
              finding_keys,
              dependencies.design2
            ),
-         :ok <- validate_expected_transition(request, identity) do
+         :ok <- validate_expected_transition(request, identity),
+         :ok <- current_native_head_matches?(input, evidence, dependencies) do
       slot = {:human, request.request_id, approval.comment_id, actor_id}
       expected_transition = Map.fetch!(identity, :expected_transition)
 
@@ -959,6 +971,7 @@ defmodule SymphonyElixir.PatchAuthorization do
          :ok <- validate_request_head(request, input),
          :ok <- validate_request_finding_set(request, finding_keys, finding_set_digest),
          :ok <- validate_request_policy(request, policy_version),
+         :ok <- validate_request_summary(request, input),
          :ok <- validate_request_shape(request) do
       validate_canonical_request_identity(request)
     end
@@ -993,6 +1006,12 @@ defmodule SymphonyElixir.PatchAuthorization do
       else: {:error, :authorization_policy_unavailable}
   end
 
+  defp validate_request_summary(request, input) do
+    if request[:human_summary] == input.human_summary,
+      do: :ok,
+      else: {:error, :authorization_request_summary_changed}
+  end
+
   defp validate_request_shape(request) do
     if valid_request_shape?(request),
       do: :ok,
@@ -1001,9 +1020,9 @@ defmodule SymphonyElixir.PatchAuthorization do
 
   defp valid_request_shape?(request) do
     Enum.all?(
-      [:request_id, :request_fingerprint, :policy_version, :eligible_finding_keys],
+      [:request_id, :request_fingerprint, :policy_version, :eligible_finding_keys, :human_summary],
       &(is_binary(request[&1]) or (is_list(request[&1]) and request[&1] != []))
-    )
+    ) and is_binary(request[:human_summary]) and String.trim(request[:human_summary]) != ""
   end
 
   defp validate_canonical_request_identity(request) do
@@ -1015,12 +1034,13 @@ defmodule SymphonyElixir.PatchAuthorization do
   defp canonical_request_identity?(request) do
     expected_request_id =
       stable_digest({
-        :symphony_authorization_request_v1,
+        :symphony_authorization_request_v2,
         request[:repository],
         request[:pull_request_number],
         request[:evaluated_head_sha],
         request[:eligible_finding_set_digest],
-        request[:policy_version]
+        request[:policy_version],
+        request[:human_summary]
       })
 
     expected_fingerprint =
@@ -1216,6 +1236,8 @@ defmodule SymphonyElixir.PatchAuthorization do
     apply(module, function, arguments)
   rescue
     _error -> {:error, :external_callback_failed}
+  catch
+    :exit, _reason -> {:error, :external_callback_failed}
   end
 
   defp stable_digest(term) do

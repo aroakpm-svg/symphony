@@ -206,17 +206,20 @@ The request fingerprint is immutable and contains:
 - expected next transition;
 - request identity.
 
-The request identity uses the Design 2 FindingKey-set digest as the set identity. Design 3 does not
-re-serialize or order opaque FindingKeys into the request ID or fingerprint. GitHub comment ID,
-creation time, and author provenance are evidence metadata and are excluded from the immutable
-request fingerprint.
+The request identity uses the Design 2 FindingKey-set digest as the set identity and also binds the
+human-readable summary. Design 3 does not re-serialize or order opaque FindingKeys into the request
+ID or fingerprint. A summary change therefore retires the old request and creates a distinct
+operation identity instead of reusing an EffectLedger operation with a different fingerprint.
+GitHub comment ID, creation time, and author provenance are evidence metadata and are excluded from
+the immutable request fingerprint.
 
 Before accepting an approval, runtime must prove all of the following:
 
 1. The actor has verified authority under the injected policy.
 2. Exactly one active managed request matches the request identity.
-3. A fresh provider-native head read at the grant boundary equals the request head and the
-   evaluated head; the earlier snapshot must agree as well.
+3. A fresh provider-native head read immediately before returning a grant equals the request head
+   and the evaluated head; the earlier snapshot must agree as well. This final read occurs after
+   approval-policy and managed-identity callbacks.
 4. The current Design 2 eligible FindingKey-set digest equals the request digest.
 5. The approval command matches exactly after outer whitespace trimming.
 6. The approval comment ID has never been used.
@@ -231,7 +234,7 @@ fields and compares both values before using the request. A missing, extra, or c
 fingerprinted field, including the expected transition or human summary, is an identity conflict
 and fails closed.
 
-If the request head, FindingKey set, or policy version changes before the matching intent is
+If the request head, FindingKey set, policy version, or human summary changes before the matching intent is
 established, the old request and approval are stale. They cannot transfer to the new snapshot;
 runtime retires that stale evidence from the current routing decision and produces a new
 deduplicated request. A malformed request that otherwise claims the current snapshot is not
@@ -239,9 +242,9 @@ retired; it blocks as an identity conflict. If a matching intent already exists,
 fingerprint-bound transition is accepted.
 
 Human policy absence, unknown policy result, missing actor identity, missing request provenance,
-ambiguous active request, stale or unrefreshable native head, changed FindingKey set, reused or
-pre-request approval comment, and fingerprint conflict all fail closed. An untrusted reconciled
-request is never returned as a successful effect. None can fall back to display-only
+ambiguous active request, stale or unrefreshable native head, changed FindingKey set, changed human
+summary, reused or pre-request approval comment, callback exit, and fingerprint conflict all fail
+closed. An untrusted reconciled request is never returned as a successful effect. None can fall back to display-only
 `human_owner` text or repository permissions inferred from prose.
 
 ## Operation and effect ownership
@@ -310,6 +313,7 @@ reset slots or change the request snapshot.
 | Actor missing, unknown, or unauthorized | `{:blocked, reason}` | None |
 | Request head changed | `{:blocked, :authorization_request_stale}` | None; new request required |
 | FindingKey set changed | `{:blocked, :authorization_finding_set_changed}` | None; new request required |
+| Human summary changed | stale request is retired and a distinct request is created | None until the new request is authorized |
 | Approval comment already used | `{:blocked, :approval_comment_already_used}` | None |
 | Earlier approval is unauthorized but a later one is eligible | Later eligible approval is selected | Bind only the verified later approval |
 | Reconciled request lacks verified managed provenance | `{:blocked, {:authorization_request_effect_failed, ...}}` | No successful ledger completion |
@@ -338,11 +342,14 @@ Before runtime integration, tests must cover at least:
 - missing, unknown, and unauthorized actor fail closed;
 - stale request head fails closed;
 - grant paths perform a fresh native-head read at the boundary;
+- grant paths perform the final native-head read after policy and identity callbacks;
 - changed FindingKey set fails closed;
+- changed human summary cannot reuse the old request identity;
 - reused approval comment fails closed;
 - unauthorized earlier approval does not hide a later eligible approval;
 - untrusted reconciled request remains unknown rather than becoming a successful effect;
 - correction verifier operational failure does not become human authorization;
+- external callback exits become blocked results rather than crashing authorization;
 - reserved payload text in the human summary cannot change machine-payload parsing;
 - missing policy blocks human path but does not block an eligible automatic slot;
 - inactive claim prevents ledger, GitHub, request, and publish calls;

@@ -32,6 +32,10 @@ defmodule SymphonyElixir.PatchAuthorizationTest do
     def managed_publish_identity(context) do
       send(self(), {:managed_identity_requested, context.slot})
 
+      if Process.get(:advance_native_head_after_identity, false) do
+        Process.put(:native_reader_head, String.duplicate("b", 40))
+      end
+
       transition_head = Process.get(:managed_transition_head, context.evaluated_head_sha)
 
       {:ok,
@@ -52,6 +56,19 @@ defmodule SymphonyElixir.PatchAuthorizationTest do
     def authorize_human_actor(_evidence), do: :unauthorized
   end
 
+  defmodule ExitAuthorityPolicy do
+    def version, do: exit(:timeout)
+
+    def authorize_human_actor(_evidence), do: :authorized
+  end
+
+  defmodule ExitDesign2Contract do
+    def finding_set_digest(_finding_keys), do: {:ok, "finding-set-digest"}
+    def classify_managed_publish(_entry, _native), do: :not_managed
+    def verify_correction(_finding, _evidence, _native, _ledger_entries), do: {:error, :not_candidate}
+    def managed_publish_identity(_context), do: exit(:timeout)
+  end
+
   defmodule ManagedRequestProvenancePolicy do
     def verify_managed_request(%{authorization_request_author: %{id: "integration-1"}}),
       do: :verified
@@ -64,6 +81,10 @@ defmodule SymphonyElixir.PatchAuthorizationTest do
       send(self(), {:native_head_read, repository, pull_request_number})
       {:ok, Process.get(:native_reader_head, String.duplicate("a", 40))}
     end
+  end
+
+  defmodule ExitNativeHeadReader do
+    def current_head(_repository, _pull_request_number), do: exit(:timeout)
   end
 
   defmodule InvalidNativeHeadReader do
@@ -334,6 +355,9 @@ defmodule SymphonyElixir.PatchAuthorizationTest do
     assert {:blocked, :invalid_authorization_request} =
              authorize_with_approval(active_requests: [:malformed])
 
+    assert {:blocked, :invalid_authorization_request} =
+             authorize_with_approval(active_requests: [Map.delete(request(), :human_summary)])
+
     assert {:blocked, :authorization_request_provenance_unavailable} =
              authorize_with_approval(managed_request_provenance: nil)
 
@@ -553,6 +577,16 @@ defmodule SymphonyElixir.PatchAuthorizationTest do
              end)
 
     assert_received {:native_head_read, "aroakpm-svg/symphony", 25}
+  end
+
+  @tag :projection
+  test "automatic grant rechecks native head after grant-building callbacks" do
+    assert {:blocked, :authorization_request_stale} =
+             with_process(:native_reader_head, full_sha("a"), fn ->
+               with_process(:advance_native_head_after_identity, true, fn ->
+                 authorize_with_projection(evidence: evidence(%{native: %{current_head_sha: full_sha("a")}}))
+               end)
+             end)
   end
 
   @tag :projection
@@ -831,7 +865,7 @@ defmodule SymphonyElixir.PatchAuthorizationTest do
              authorize_with_approval(active_requests: [], approval: nil)
 
     assert_received {:github_request_effect, %{operation_id: operation_id}}
-    assert String.starts_with?(operation_id, "symphony_authorization_request_v1:")
+    assert String.starts_with?(operation_id, "symphony_authorization_request_v2:")
     assert_received {:github_request_create, "aroakpm-svg/symphony", 25, _request}
   end
 
@@ -1081,6 +1115,43 @@ defmodule SymphonyElixir.PatchAuthorizationTest do
   end
 
   @tag :approval
+  test "human grant rechecks native head after grant-building callbacks" do
+    assert {:blocked, :authorization_request_stale} =
+             with_process(:native_reader_head, full_sha("a"), fn ->
+               with_process(:advance_native_head_after_identity, true, fn ->
+                 authorize_with_approval(active_request: request())
+               end)
+             end)
+  end
+
+  @tag :approval
+  test "summary drift retires the old request and creates a distinct replacement" do
+    stale_summary_request = request(%{human_summary: "Old summary"})
+
+    assert {:authorization_required, replacement} =
+             authorize_with_approval(
+               active_request: stale_summary_request,
+               approval: approval()
+             )
+
+    assert replacement.human_summary == "One scoped finding"
+    refute replacement.request_id == stale_summary_request.request_id
+    refute replacement.request_fingerprint == stale_summary_request.request_fingerprint
+  end
+
+  @tag :contract
+  test "external callback exits are normalized to fail-closed results" do
+    assert {:blocked, :authorization_policy_unavailable} =
+             authorize_with_approval(authority_policy: ExitAuthorityPolicy)
+
+    assert {:blocked, :authorization_current_head_unavailable} =
+             authorize_with_approval(native_head_reader: ExitNativeHeadReader)
+
+    assert {:blocked, :design2_callback_failed} =
+             authorize_with_approval(design2: ExitDesign2Contract)
+  end
+
+  @tag :approval
   test "approval must be newer than the managed request and skip used approvals" do
     assert {:blocked, :authorization_approval_pending} =
              authorize_with_approval(
@@ -1325,6 +1396,7 @@ defmodule SymphonyElixir.PatchAuthorizationTest do
         design2: Map.get(overrides, :design2, ProjectionDesign2Contract),
         authority_policy: Map.get(overrides, :authority_policy, AuthorityPolicy),
         managed_request_provenance: Map.get(overrides, :managed_request_provenance, ManagedRequestProvenancePolicy),
+        native_head_reader: Map.get(overrides, :native_head_reader, NativeHeadReader),
         effect_ledger: Map.get(overrides, :effect_ledger, ApprovalEffectLedger),
         github: Map.get(overrides, :github, ApprovalGitHubClient)
       )
@@ -1386,12 +1458,13 @@ defmodule SymphonyElixir.PatchAuthorizationTest do
 
   defp canonical_request_id(request) do
     stable_digest({
-      :symphony_authorization_request_v1,
+      :symphony_authorization_request_v2,
       request.repository,
       request.pull_request_number,
       request.evaluated_head_sha,
       request.eligible_finding_set_digest,
-      request.policy_version
+      request.policy_version,
+      request.human_summary
     })
   end
 
