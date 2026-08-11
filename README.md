@@ -34,6 +34,17 @@ help with the setup:
 > Set up Symphony for my repository based on
 > https://github.com/openai/symphony/blob/main/elixir/README.md
 
+#### Distributed claim safety
+
+Multi-worker deployments use the database-backed claim service to ensure that only one enrolled
+node owns an issue at a time. When `claim.enabled` is `true`, operators must provide the approved
+PostgreSQL connection, an absolute path to the official CA certificate, and the enrolled node and
+instance identities through machine-local configuration. The claim service verifies the TLS peer
+and hostname, authenticates the node before accepting work, and fails closed when any required
+connection or identity input is missing or invalid. See the
+[Elixir claim configuration](elixir/README.md#configuration) for the complete
+runtime contract and environment variables.
+
 ---
 
 ## License
