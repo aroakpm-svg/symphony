@@ -9,6 +9,7 @@ defmodule SymphonyElixir.ClaimService do
 
   use GenServer
 
+  alias SymphonyElixir.ClaimConnection
   alias SymphonyElixir.Config
   alias SymphonyElixir.Linear.Issue
 
@@ -100,7 +101,7 @@ defmodule SymphonyElixir.ClaimService do
   def init(settings) do
     Process.flag(:trap_exit, true)
 
-    with {:ok, connection} <- Postgrex.start_link(url: settings.database_url) do
+    with {:ok, connection} <- ClaimConnection.connect(settings) do
       {:ok, schedule_heartbeat(%__MODULE__{connection: connection, settings: settings})}
     end
   end

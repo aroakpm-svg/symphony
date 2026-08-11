@@ -171,6 +171,7 @@ node enrollment are complete:
 claim:
   enabled: true
   database_url: "$SYMPHONY_CLAIM_DATABASE_URL"
+  ca_cert_file: "$SYMPHONY_CLAIM_CA_CERT_FILE"
   node_id: "$SYMPHONY_NODE_ID"
   node_instance_id: "$SYMPHONY_NODE_INSTANCE_ID"
   lease_ms: 60000
@@ -178,7 +179,11 @@ claim:
   fallback_grace_ms: 30000
 ```
 
-Keep the database URL and node identity values outside the repository. The enrolled node login may
+Keep the database URL, CA path, and node identity values outside the repository. Long-lived Supabase
+connections should use the official Session Pooler endpoint on port 5432. The CA file must be an
+absolute path to the certificate downloaded from the project's Dashboard. Claim connections always
+use peer verification, SNI, and HTTPS hostname matching; missing or invalid TLS inputs fail closed,
+and there is no `verify_none` fallback. The enrolled node login may
 call the claim functions but cannot directly read or mutate claim tables. Symphony obtains a claim
 before starting a worker, renews it using the database clock, and stops the worker if renewal can no
 longer prove ownership. Leave `claim.enabled: false` for single-machine operation or until shared
