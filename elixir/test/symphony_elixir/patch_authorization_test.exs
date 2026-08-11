@@ -180,12 +180,7 @@ defmodule SymphonyElixir.PatchAuthorizationTest do
           consume_adapter(adapter.())
 
         :reconcile ->
-          case reconciler.() do
-            :not_found -> consume_adapter(adapter.())
-            {:unknown, reason} -> {:error, {:reconciliation_unknown, reason}}
-            {:found, resource} -> {:ok, resource}
-            result -> {:error, {:invalid_reconciliation_result, result}}
-          end
+          reconcile(reconciler, adapter)
 
         :operation_conflict ->
           {:error, :operation_fingerprint_conflict}
@@ -201,6 +196,15 @@ defmodule SymphonyElixir.PatchAuthorizationTest do
 
         :raise ->
           raise("effect unavailable")
+      end
+    end
+
+    defp reconcile(reconciler, adapter) do
+      case reconciler.() do
+        :not_found -> consume_adapter(adapter.())
+        {:unknown, reason} -> {:error, {:reconciliation_unknown, reason}}
+        {:found, resource} -> {:ok, resource}
+        result -> {:error, {:invalid_reconciliation_result, result}}
       end
     end
 

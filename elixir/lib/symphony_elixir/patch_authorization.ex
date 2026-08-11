@@ -942,20 +942,24 @@ defmodule SymphonyElixir.PatchAuthorization do
           {:error, :authorization_approval_pending}
 
         candidates ->
-          case Enum.find(candidates, fn candidate ->
-                 case candidate[:comment_id] do
-                   comment_id when is_binary(comment_id) -> not MapSet.member?(used_ids, comment_id)
-                   _missing -> true
-                 end
-               end) do
-            nil -> {:error, :approval_comment_already_used}
-            approval -> {:ok, approval}
-          end
+          select_unused_approval(candidates, used_ids)
       end
     end
   end
 
   defp find_approval(_evidence, _request), do: {:error, :authorization_evidence_unavailable}
+
+  defp select_unused_approval(candidates, used_ids) do
+    case Enum.find(candidates, &unused_approval?(&1, used_ids)) do
+      nil -> {:error, :approval_comment_already_used}
+      approval -> {:ok, approval}
+    end
+  end
+
+  defp unused_approval?(%{comment_id: comment_id}, used_ids) when is_binary(comment_id),
+    do: not MapSet.member?(used_ids, comment_id)
+
+  defp unused_approval?(_approval, _used_ids), do: true
 
   defp request_created_at(%{authorization_request_created_at: created_at}),
     do: parse_timestamp(created_at, :authorization_request_provenance_unavailable)
