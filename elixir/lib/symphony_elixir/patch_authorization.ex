@@ -40,8 +40,19 @@ defmodule SymphonyElixir.PatchAuthorization do
     with :ok <- validate_design2_contract(dependencies),
          :ok <- validate_input(input, effect_scope),
          {:ok, finding_keys} <- finding_keys(input),
-         :ok <- validate_design2_digest(dependencies.design2, finding_keys) do
-      project_authorization(input, finding_keys, ledger_entries, evidence, dependencies)
+         {:ok, finding_set_digest} <- validate_design2_digest(dependencies.design2, finding_keys) do
+      project_authorization_result =
+        project_authorization(input, finding_keys, ledger_entries, evidence, dependencies)
+
+      route_human_authorization(
+        project_authorization_result,
+        input,
+        finding_keys,
+        finding_set_digest,
+        evidence,
+        effect_scope,
+        dependencies
+      )
     else
       {:error, reason} -> {:blocked, reason}
     end
@@ -161,7 +172,7 @@ defmodule SymphonyElixir.PatchAuthorization do
 
   defp validate_design2_digest(design2, finding_keys) do
     case design2.finding_set_digest(finding_keys) do
-      {:ok, digest} when is_binary(digest) and byte_size(digest) > 0 -> :ok
+      {:ok, digest} when is_binary(digest) and byte_size(digest) > 0 -> {:ok, digest}
       _ -> {:error, :design2_finding_set_digest_unavailable}
     end
   rescue
@@ -173,12 +184,23 @@ defmodule SymphonyElixir.PatchAuthorization do
 
     with :ok <- validate_projection_contract(design2),
          {:ok, classified} <- classify_ledger_entries(design2, ledger_entries, evidence),
-         {:ok, records} <- index_automatic_slots(classified),
-         :ok <- reject_conflicts(records),
-         {:ok, reconciliation} <- pending_reconciliation(records) do
+         {:ok, projection} <- index_slots(classified),
+         :ok <- reject_conflicts(projection),
+         {:ok, reconciliation} <- pending_reconciliation(projection) do
       case reconciliation do
-        {:some, evidence} -> {:reconcile, evidence}
-        :none -> route_available_slot(input, finding_keys, records, ledger_entries, evidence, design2)
+        {:some, evidence} ->
+          {:reconcile, evidence}
+
+        :none ->
+          route_available_slot(
+            input,
+            finding_keys,
+            projection.automatic,
+            projection.human,
+            ledger_entries,
+            evidence,
+            design2
+          )
       end
     else
       {:error, reason} -> {:blocked, reason}
@@ -246,37 +268,47 @@ defmodule SymphonyElixir.PatchAuthorization do
 
   defp valid_human_slot?(_slot), do: false
 
-  defp index_automatic_slots(records) do
-    Enum.reduce_while(records, {:ok, %{}}, fn
-      %{slot: slot} = record, {:ok, slots} when slot in @automatic_slots ->
-        if Map.has_key?(slots, slot) do
+  defp index_slots(records) do
+    Enum.reduce_while(records, {:ok, %{automatic: %{}, human: []}}, fn
+      %{slot: slot} = record, {:ok, %{automatic: automatic} = projection} when slot in @automatic_slots ->
+        if Map.has_key?(automatic, slot) do
           {:halt, {:error, :duplicate_managed_slot}}
         else
-          {:cont, {:ok, Map.put(slots, slot, record)}}
+          {:cont, {:ok, %{projection | automatic: Map.put(automatic, slot, record)}}}
         end
 
-      _human_record, {:ok, slots} ->
-        {:cont, {:ok, slots}}
+      %{slot: {:human, request_id, comment_id, actor_id}} = record, {:ok, %{human: human} = projection} ->
+        duplicate? =
+          Enum.any?(human, fn %{slot: {:human, existing_request, existing_comment, existing_actor}} ->
+            {existing_request, existing_comment, existing_actor} == {request_id, comment_id, actor_id}
+          end)
+
+        if duplicate? do
+          {:halt, {:error, :duplicate_managed_slot}}
+        else
+          {:cont, {:ok, %{projection | human: human ++ [record]}}}
+        end
     end)
   end
 
-  defp reject_conflicts(records) do
-    if Enum.any?(Map.values(records), &(&1.state == :blocked_conflict)) do
+  defp reject_conflicts(%{automatic: automatic, human: human}) do
+    if Enum.any?(Map.values(automatic) ++ human, &(&1.state == :blocked_conflict)) do
       {:error, :managed_publish_conflict}
     else
       :ok
     end
   end
 
-  defp pending_reconciliation(records) do
-    case Enum.find([:automatic_initial_v1, :automatic_correction_v1], fn slot ->
-           case Map.get(records, slot) do
-             %{state: state} when state in [:reserved_unresolved, :reserved_failed_no_effect] -> true
-             _record -> false
-           end
+  defp pending_reconciliation(%{automatic: automatic, human: human}) do
+    candidates =
+      Enum.map([:automatic_initial_v1, :automatic_correction_v1], &Map.get(automatic, &1)) ++ human
+
+    case Enum.find(candidates, fn
+           %{state: state} when state in [:reserved_unresolved, :reserved_failed_no_effect] -> true
+           _record -> false
          end) do
       nil -> {:ok, :none}
-      slot -> {:ok, {:some, reconciliation_evidence(records[slot], slot)}}
+      %{slot: slot} = record -> {:ok, {:some, reconciliation_evidence(record, slot)}}
     end
   end
 
@@ -286,7 +318,7 @@ defmodule SymphonyElixir.PatchAuthorization do
     |> Map.put(:slot_state, state)
   end
 
-  defp route_available_slot(input, finding_keys, records, ledger_entries, evidence, design2) do
+  defp route_available_slot(input, finding_keys, records, human_slots, ledger_entries, evidence, design2) do
     case Map.get(records, :automatic_initial_v1) do
       nil ->
         issue_automatic_grant(input, finding_keys, :automatic_initial_v1, design2)
@@ -295,24 +327,24 @@ defmodule SymphonyElixir.PatchAuthorization do
         issue_automatic_grant(input, finding_keys, :automatic_initial_v1, design2)
 
       %{state: :consumed} ->
-        route_correction_slot(input, records, ledger_entries, evidence, design2)
+        route_correction_slot(input, records, human_slots, ledger_entries, evidence, design2)
 
       %{state: state} ->
         {:blocked, {:unsupported_initial_slot_state, state}}
     end
   end
 
-  defp route_correction_slot(input, records, ledger_entries, evidence, design2) do
+  defp route_correction_slot(input, records, human_slots, ledger_entries, evidence, design2) do
     with {:ok, correction_keys} <- verified_correction_keys(input, design2, evidence, ledger_entries),
          true <- correction_keys != [] do
       case Map.get(records, :automatic_correction_v1) do
         nil -> issue_automatic_grant(input, correction_keys, :automatic_correction_v1, design2)
         %{state: :available} -> issue_automatic_grant(input, correction_keys, :automatic_correction_v1, design2)
-        %{state: :consumed} -> {:blocked, :human_authorization_required}
+        %{state: :consumed} -> {:blocked, {:human_authorization_required, human_slots}}
         %{state: state} -> {:blocked, {:unsupported_correction_slot_state, state}}
       end
     else
-      false -> {:blocked, :human_authorization_required}
+      false -> {:blocked, {:human_authorization_required, human_slots}}
       {:error, reason} -> {:blocked, reason}
     end
   end
@@ -382,6 +414,418 @@ defmodule SymphonyElixir.PatchAuthorization do
     apply(module, function, arguments)
   rescue
     _error -> {:error, :design2_callback_failed}
+  end
+
+  defp route_human_authorization(
+         {:blocked, {:human_authorization_required, human_slots}},
+         input,
+         finding_keys,
+         finding_set_digest,
+         evidence,
+         effect_scope,
+         dependencies
+       ) do
+    evidence = prune_historical_human_evidence(evidence, human_slots)
+
+    with {:ok, policy_version} <- authority_policy_version(dependencies.authority_policy),
+         {:ok, active_request} <- active_request(evidence) do
+      case active_request do
+        nil ->
+          create_authorization_request(
+            input,
+            finding_keys,
+            finding_set_digest,
+            policy_version,
+            evidence,
+            effect_scope,
+            dependencies
+          )
+
+        request ->
+          bind_human_approval(
+            request,
+            input,
+            finding_keys,
+            finding_set_digest,
+            policy_version,
+            evidence,
+            dependencies
+          )
+      end
+    else
+      {:error, reason} -> {:blocked, reason}
+    end
+  end
+
+  defp route_human_authorization(
+         {:blocked, :human_authorization_required},
+         input,
+         finding_keys,
+         finding_set_digest,
+         evidence,
+         effect_scope,
+         dependencies
+       ) do
+    route_human_authorization(
+      {:blocked, {:human_authorization_required, []}},
+      input,
+      finding_keys,
+      finding_set_digest,
+      evidence,
+      effect_scope,
+      dependencies
+    )
+  end
+
+  defp route_human_authorization(result, _input, _finding_keys, _digest, _evidence, _scope, _dependencies),
+    do: result
+
+  defp authority_policy_version(policy) when is_atom(policy) do
+    if Code.ensure_loaded?(policy) and function_exported?(policy, :version, 0) and
+         function_exported?(policy, :authorize_human_actor, 1) do
+      case safe_external_callback(policy, :version, []) do
+        {:ok, version} when is_binary(version) and byte_size(version) > 0 -> {:ok, version}
+        _other -> {:error, :authorization_policy_unavailable}
+      end
+    else
+      {:error, :authorization_policy_unavailable}
+    end
+  end
+
+  defp authority_policy_version(_policy), do: {:error, :authorization_policy_unavailable}
+
+  defp active_request(%{active_requests: requests}) when is_list(requests) do
+    case requests do
+      [] -> {:ok, nil}
+      [request] when is_map(request) -> {:ok, request}
+      [_ | _] -> {:error, :ambiguous_active_request}
+    end
+  end
+
+  defp active_request(_evidence), do: {:error, :authorization_evidence_unavailable}
+
+  defp prune_historical_human_evidence(evidence, human_slots) do
+    historical_request_ids =
+      human_slots
+      |> Enum.map(fn %{slot: {:human, request_id, _comment_id, _actor_id}} -> request_id end)
+      |> MapSet.new()
+
+    used_comment_ids =
+      Enum.reduce(human_slots, MapSet.new(), fn
+        %{slot: {:human, _request_id, comment_id, _actor_id}}, used_ids ->
+          MapSet.put(used_ids, comment_id)
+      end)
+
+    active_requests =
+      evidence
+      |> Map.get(:active_requests, [])
+      |> Enum.reject(&MapSet.member?(historical_request_ids, &1[:request_id]))
+
+    used_approval_comment_ids =
+      evidence
+      |> Map.get(:used_approval_comment_ids, MapSet.new())
+      |> MapSet.union(used_comment_ids)
+
+    evidence
+    |> Map.put(:active_requests, active_requests)
+    |> Map.put(:used_approval_comment_ids, used_approval_comment_ids)
+  end
+
+  defp create_authorization_request(
+         input,
+         finding_keys,
+         finding_set_digest,
+         policy_version,
+         evidence,
+         effect_scope,
+         dependencies
+       ) do
+    request = build_authorization_request(input, finding_keys, finding_set_digest, policy_version)
+
+    with :ok <- current_native_head_matches?(input, evidence),
+         :ok <- execute_authorization_request_effect(request, effect_scope, dependencies) do
+      {:authorization_required, request}
+    else
+      {:error, reason} -> {:blocked, reason}
+    end
+  end
+
+  defp build_authorization_request(input, finding_keys, finding_set_digest, policy_version) do
+    request_id =
+      stable_digest({
+        :symphony_authorization_request_v1,
+        input.repository,
+        input.pull_request_number,
+        input.evaluated_head_sha,
+        finding_set_digest,
+        finding_keys,
+        policy_version
+      })
+
+    request_without_fingerprint = %{
+      request_id: request_id,
+      repository: input.repository,
+      pull_request_number: input.pull_request_number,
+      evaluated_head_sha: input.evaluated_head_sha,
+      eligible_finding_set_digest: finding_set_digest,
+      eligible_finding_keys: finding_keys,
+      policy_version: policy_version,
+      human_summary: input.human_summary,
+      expected_transition: %{head_sha: input.evaluated_head_sha}
+    }
+
+    Map.put(
+      request_without_fingerprint,
+      :request_fingerprint,
+      stable_digest({:symphony_authorization_request_fingerprint_v1, request_without_fingerprint})
+    )
+  end
+
+  defp current_native_head_matches?(input, %{native: %{current_head_sha: head_sha}})
+       when is_binary(head_sha) do
+    cond do
+      not valid_head_sha?(head_sha) -> {:error, :authorization_current_head_unavailable}
+      head_sha != input.evaluated_head_sha -> {:error, :authorization_request_stale}
+      true -> :ok
+    end
+  end
+
+  defp current_native_head_matches?(_input, _evidence),
+    do: {:error, :authorization_current_head_unavailable}
+
+  defp execute_authorization_request_effect(request, effect_scope, dependencies) do
+    with {:ok, context} <- authorization_effect_context(request, effect_scope),
+         :ok <- validate_effect_dependencies(dependencies) do
+      effect_ledger = dependencies.effect_ledger
+      github = dependencies.github
+      connection = effect_scope.connection
+
+      result =
+        safe_external_callback(effect_ledger, :execute, [
+          connection,
+          :github_comment,
+          context,
+          fn ->
+            safe_external_callback(
+              github,
+              :create_authorization_request,
+              [request.repository, request.pull_request_number, request]
+            )
+          end,
+          fn ->
+            safe_external_callback(
+              github,
+              :find_authorization_request,
+              [request.repository, request.pull_request_number, request]
+            )
+          end
+        ])
+
+      case result do
+        {:ok, _resource} ->
+          :ok
+
+        {:error, :operation_fingerprint_conflict} ->
+          {:error, :operation_fingerprint_conflict}
+
+        {:error, {:operation_fingerprint_conflict, _details}} ->
+          {:error, :operation_fingerprint_conflict}
+
+        {:error, reason} ->
+          {:error, {:authorization_request_effect_failed, reason}}
+
+        _other ->
+          {:error, :authorization_request_effect_invalid}
+      end
+    end
+  end
+
+  defp authorization_effect_context(request, %{connection: _connection, claim_context: claim_context})
+       when is_map(claim_context) do
+    required = [:issue_id, :claim_id, :generation, :node_id, :node_instance_id]
+
+    if Enum.all?(required, &Map.has_key?(claim_context, &1)) do
+      {:ok,
+       %{
+         operation_id: "symphony_authorization_request_v1:" <> request.request_id,
+         request_fingerprint: request.request_fingerprint,
+         issue_id: claim_context.issue_id,
+         claim_id: claim_context.claim_id,
+         generation: claim_context.generation,
+         node_id: claim_context.node_id,
+         node_instance_id: claim_context.node_instance_id
+       }}
+    else
+      {:error, :authorization_claim_context_unavailable}
+    end
+  end
+
+  defp authorization_effect_context(_request, _effect_scope),
+    do: {:error, :authorization_claim_context_unavailable}
+
+  defp validate_effect_dependencies(%{effect_ledger: effect_ledger, github: github}) do
+    if is_atom(effect_ledger) and is_atom(github) and
+         Code.ensure_loaded?(effect_ledger) and Code.ensure_loaded?(github) and
+         function_exported?(effect_ledger, :execute, 5) and
+         function_exported?(github, :create_authorization_request, 3) and
+         function_exported?(github, :find_authorization_request, 3) do
+      :ok
+    else
+      {:error, :authorization_effect_unavailable}
+    end
+  end
+
+  defp validate_effect_dependencies(_dependencies), do: {:error, :authorization_effect_unavailable}
+
+  defp bind_human_approval(
+         request,
+         input,
+         finding_keys,
+         finding_set_digest,
+         policy_version,
+         evidence,
+         dependencies
+       ) do
+    with :ok <- validate_request_binding(request, input, finding_keys, finding_set_digest, policy_version),
+         {:ok, approval} <- find_approval(evidence),
+         :ok <- validate_approval_command(approval),
+         {:ok, actor_id} <- approval_actor_id(approval),
+         :ok <- validate_unused_approval(evidence, approval),
+         :ok <- authorize_human_actor(dependencies.authority_policy, request, approval, actor_id),
+         {:ok, identity} <- request_human_identity(request, approval, actor_id, input, finding_keys, dependencies.design2) do
+      slot = {:human, request.request_id, approval.comment_id, actor_id}
+      expected_transition = Map.fetch!(identity, :expected_transition)
+
+      {:ok,
+       %{
+         slot: slot,
+         request: request,
+         finding_keys: finding_keys,
+         managed_publish_identity: identity,
+         expected_transition: expected_transition
+       }}
+    else
+      {:error, reason} -> {:blocked, reason}
+    end
+  end
+
+  defp validate_request_binding(request, input, finding_keys, finding_set_digest, policy_version)
+       when is_map(request) do
+    cond do
+      request[:repository] != input.repository or
+          request[:pull_request_number] != input.pull_request_number ->
+        {:error, :authorization_request_scope_mismatch}
+
+      request[:evaluated_head_sha] != input.evaluated_head_sha ->
+        {:error, :authorization_request_stale}
+
+      request[:eligible_finding_set_digest] != finding_set_digest or
+          request[:eligible_finding_keys] != finding_keys ->
+        {:error, :authorization_finding_set_changed}
+
+      request[:policy_version] != policy_version ->
+        {:error, :authorization_policy_unavailable}
+
+      not valid_request_shape?(request) ->
+        {:error, :invalid_authorization_request}
+
+      true ->
+        :ok
+    end
+  end
+
+  defp validate_request_binding(_request, _input, _finding_keys, _digest, _policy_version),
+    do: {:error, :invalid_authorization_request}
+
+  defp valid_request_shape?(request) do
+    Enum.all?(
+      [:request_id, :request_fingerprint, :policy_version, :eligible_finding_keys],
+      &(is_binary(request[&1]) or (is_list(request[&1]) and request[&1] != []))
+    )
+  end
+
+  defp find_approval(%{comments: comments}) when is_list(comments) do
+    case comments do
+      [] -> {:error, :authorization_approval_pending}
+      [approval | _] when is_map(approval) -> {:ok, approval}
+      _comments -> {:error, :invalid_authorization_approval}
+    end
+  end
+
+  defp find_approval(_evidence), do: {:error, :authorization_evidence_unavailable}
+
+  defp validate_approval_command(%{body: body}) when is_binary(body) do
+    if String.trim(body) == "批准再修一輪",
+      do: :ok,
+      else: {:error, :invalid_authorization_command}
+  end
+
+  defp validate_approval_command(_approval), do: {:error, :invalid_authorization_command}
+
+  defp approval_actor_id(%{actor: %{id: actor_id}}) when is_binary(actor_id) and byte_size(actor_id) > 0,
+    do: {:ok, actor_id}
+
+  defp approval_actor_id(_approval), do: {:error, :authorization_actor_unknown}
+
+  defp validate_unused_approval(%{used_approval_comment_ids: used_ids}, %{comment_id: comment_id})
+       when is_struct(used_ids, MapSet) and is_binary(comment_id) do
+    if MapSet.member?(used_ids, comment_id),
+      do: {:error, :approval_comment_already_used},
+      else: :ok
+  end
+
+  defp validate_unused_approval(_evidence, _approval),
+    do: {:error, :authorization_approval_identity_unavailable}
+
+  defp authorize_human_actor(policy, request, approval, actor_id) do
+    case safe_external_callback(policy, :authorize_human_actor, [
+           %{request: request, approval: approval, actor_id: actor_id}
+         ]) do
+      :authorized -> :ok
+      :unauthorized -> {:error, :unauthorized_actor}
+      _other -> {:error, :authorization_policy_unavailable}
+    end
+  end
+
+  defp request_human_identity(request, approval, actor_id, input, finding_keys, design2) do
+    authorization_identity =
+      stable_digest({:symphony_human_authorization_v1, request.request_id, approval.comment_id, actor_id})
+
+    context = %{
+      repository: input.repository,
+      pull_request_number: input.pull_request_number,
+      evaluated_head_sha: input.evaluated_head_sha,
+      finding_keys: finding_keys,
+      slot: {:human, request.request_id, approval.comment_id, actor_id},
+      authorization_identity: authorization_identity,
+      request_id: request.request_id,
+      approval_comment_id: approval.comment_id,
+      actor_id: actor_id
+    }
+
+    case safe_callback(design2, :managed_publish_identity, [context]) do
+      {:ok, identity} when is_map(identity) ->
+        if is_map(identity[:expected_transition]),
+          do: {:ok, identity},
+          else: {:error, :design2_managed_publish_identity_unavailable}
+
+      {:error, reason} ->
+        {:error, reason}
+
+      _other ->
+        {:error, :design2_managed_publish_identity_unavailable}
+    end
+  end
+
+  defp safe_external_callback(module, function, arguments) do
+    apply(module, function, arguments)
+  rescue
+    _error -> {:error, :external_callback_failed}
+  end
+
+  defp stable_digest(term) do
+    :crypto.hash(:sha256, :erlang.term_to_binary(term, [:deterministic]))
+    |> Base.encode16(case: :lower)
   end
 
   defp valid_head_sha?(head), do: Regex.match?(~r/\A[0-9a-f]{40}\z/, head)

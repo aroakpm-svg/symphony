@@ -40,6 +40,40 @@ defmodule SymphonyElixir.PatchAuthorizationTest do
     def verify_correction(_finding, _evidence, _native, _ledger_entries), do: {:error, :not_verified}
   end
 
+  defmodule AuthorityPolicy do
+    def version, do: {:ok, "policy-v1"}
+
+    def authorize_human_actor(%{approval: %{actor: %{id: "42"}}}), do: :authorized
+    def authorize_human_actor(_evidence), do: :unauthorized
+  end
+
+  defmodule UnknownAuthorityPolicy do
+    def version, do: :unknown
+
+    def authorize_human_actor(_evidence), do: :unknown
+  end
+
+  defmodule ApprovalEffectLedger do
+    def execute(_connection, :github_comment, context, adapter, reconciler) do
+      send(self(), {:github_request_effect, context})
+
+      case reconciler.() do
+        :not_found -> adapter.()
+        result -> result
+      end
+    end
+  end
+
+  defmodule ApprovalGitHubClient do
+    def create_authorization_request(repository, pull_request_number, request) do
+      send(self(), {:github_request_create, repository, pull_request_number, request})
+      {:ok, %{comment_id: "request-comment-1"}}
+    end
+
+    def find_authorization_request(_repository, _pull_request_number, _request),
+      do: :not_found
+  end
+
   defmodule UnavailableContract do
   end
 
@@ -199,6 +233,96 @@ defmodule SymphonyElixir.PatchAuthorizationTest do
     )
   end
 
+  @tag :approval
+  test "only the fixed command after outer whitespace is accepted" do
+    assert {:ok, %{slot: {:human, _, "approval-1", "42"}}} =
+             authorize_with_approval(approval: approval(%{body: "  批准再修一輪  "}))
+
+    assert {:blocked, :invalid_authorization_command} =
+             authorize_with_approval(approval: approval(%{body: "可以，繼續修"}))
+  end
+
+  @tag :approval
+  test "missing actor identity or explicit unauthorized result fails closed" do
+    assert {:blocked, :authorization_actor_unknown} =
+             authorize_with_approval(approval: approval(%{actor: %{login: "maintainer", id: nil}}))
+
+    assert {:blocked, :unauthorized_actor} =
+             authorize_with_approval(approval: approval(%{actor: %{login: "untrusted", id: "99"}}))
+  end
+
+  @tag :approval
+  test "missing policy blocks only the human request path" do
+    assert {:blocked, :authorization_policy_unavailable} =
+             authorize_with_approval(authority_policy: nil, active_requests: [])
+
+    refute_received {:github_request_effect, _}
+    refute_received {:github_request_create, _, _, _}
+  end
+
+  @tag :approval
+  test "authorization request uses one existing github_comment effect path" do
+    assert {:authorization_required, _request} =
+             authorize_with_approval(active_requests: [], approval: nil)
+
+    assert_received {:github_request_effect, %{operation_id: operation_id}}
+    assert String.starts_with?(operation_id, "symphony_authorization_request_v1:")
+    assert_received {:github_request_create, "aroakpm-svg/symphony", 25, _request}
+  end
+
+  @tag :approval
+  test "unknown policy blocks human approval without transferring authority" do
+    assert {:blocked, :authorization_policy_unavailable} =
+             authorize_with_approval(authority_policy: UnknownAuthorityPolicy)
+
+    refute_received {:managed_identity_requested, {:human, _}}
+  end
+
+  @tag :approval
+  test "changed head or FindingKey set cannot inherit approval" do
+    assert {:blocked, :authorization_request_stale} =
+             authorize_with_approval(
+               active_request: request(%{evaluated_head_sha: full_sha("b")}),
+               current_head_sha: full_sha("a")
+             )
+
+    assert {:blocked, :authorization_finding_set_changed} =
+             authorize_with_approval(extra_finding: true)
+  end
+
+  @tag :approval
+  test "one approval comment ID cannot authorize two human slots" do
+    assert {:blocked, :approval_comment_already_used} =
+             authorize_with_approval(used_approval_comment_ids: MapSet.new(["approval-1"]))
+  end
+
+  @tag :approval
+  test "zero or duplicate managed request markers fail deterministically" do
+    assert {:authorization_required, request} =
+             authorize_with_approval(active_requests: [])
+
+    assert request.request_id != "request-1"
+
+    assert {:blocked, :ambiguous_active_request} =
+             authorize_with_approval(active_requests: [request(), request(%{request_id: "request-2"})])
+  end
+
+  @tag :approval
+  test "zero or more historical human slots do not cap future requests" do
+    assert {:authorization_required, request} =
+             authorize_with_approval(
+               ledger_entries: [
+                 managed_entry(:automatic_initial_v1, :consumed),
+                 managed_entry(:automatic_correction_v1, :consumed),
+                 managed_entry({:human, "request-1", "comment-1", "actor-1"}, :consumed),
+                 managed_entry({:human, "request-2", "comment-2", "actor-1"}, :consumed)
+               ],
+               active_requests: [request()]
+             )
+
+    refute request.request_id in ["request-1", "request-2"]
+  end
+
   defp authorize_with_projection(overrides) do
     overrides = Map.new(overrides)
 
@@ -208,6 +332,34 @@ defmodule SymphonyElixir.PatchAuthorizationTest do
       Map.get(overrides, :evidence, evidence()),
       effect_scope(),
       dependencies(design2: ProjectionDesign2Contract)
+    )
+  end
+
+  defp authorize_with_approval(overrides) do
+    overrides = Map.new(overrides)
+    active_request = Map.get(overrides, :active_request, request())
+    current_head_sha = Map.get(overrides, :current_head_sha, full_sha("a"))
+    eligible_findings = if Map.get(overrides, :extra_finding, false), do: [finding(), extra_finding()], else: [finding()]
+
+    approval_evidence =
+      evidence(%{
+        native: %{current_head_sha: current_head_sha},
+        comments: [Map.get(overrides, :approval, approval())],
+        active_requests: Map.get(overrides, :active_requests, [active_request]),
+        used_approval_comment_ids: Map.get(overrides, :used_approval_comment_ids, MapSet.new())
+      })
+
+    PatchAuthorization.authorize(
+      input(%{eligible_findings: eligible_findings}),
+      Map.get(overrides, :ledger_entries, [succeeded_initial_entry()]),
+      approval_evidence,
+      effect_scope(),
+      dependencies(
+        design2: ProjectionDesign2Contract,
+        authority_policy: Map.get(overrides, :authority_policy, AuthorityPolicy),
+        effect_ledger: ApprovalEffectLedger,
+        github: ApprovalGitHubClient
+      )
     )
   end
 
@@ -221,6 +373,41 @@ defmodule SymphonyElixir.PatchAuthorizationTest do
 
   defp correction_finding do
     Map.put(finding(), :correction_evidence, %{verified: true})
+  end
+
+  defp extra_finding do
+    Map.merge(finding(), %{finding_key: {:review_thread, "thread-2"}, summary: "Second finding"})
+  end
+
+  defp request(overrides \\ %{}) do
+    Map.merge(
+      %{
+        request_id: "request-1",
+        repository: "aroakpm-svg/symphony",
+        pull_request_number: 25,
+        evaluated_head_sha: full_sha("a"),
+        eligible_finding_set_digest: "finding-set-digest",
+        eligible_finding_keys: [{:review_thread, "thread-1"}],
+        policy_version: "policy-v1",
+        human_summary: "One scoped finding",
+        expected_transition: %{head_sha: full_sha("a")},
+        request_fingerprint: "request-fingerprint",
+        created_at: "2026-08-11T00:00:00Z"
+      },
+      overrides
+    )
+  end
+
+  defp approval(overrides \\ %{}) do
+    Map.merge(
+      %{
+        comment_id: "approval-1",
+        body: "批准再修一輪",
+        actor: %{login: "maintainer", id: "42", type: "User"},
+        created_at: "2026-08-11T00:01:00Z"
+      },
+      overrides
+    )
   end
 
   defp finding do
@@ -240,6 +427,11 @@ defmodule SymphonyElixir.PatchAuthorizationTest do
     %{
       connection: nil,
       claim_context: %{
+        issue_id: "issue-25",
+        claim_id: "claim-25",
+        generation: 1,
+        node_id: "node-25",
+        node_instance_id: "node-instance-25",
         repository: "aroakpm-svg/symphony",
         pull_request_number: 25
       }

@@ -62,6 +62,8 @@ defmodule SymphonyElixir.GitHubReviewClient do
     %{name: "make-all", app_slug: "github-actions", app_id: 15_368},
     %{name: "validate-pr-description", app_slug: "github-actions", app_id: 15_368}
   ]
+  @authorization_marker "<!-- symphony-managed-patch-authorization:v1 -->"
+  @authorization_command "批准再修一輪"
 
   @spec snapshot(String.t(), String.t()) :: {:ok, map()} | {:error, term()}
   def snapshot(repository, branch) when is_binary(repository) and is_binary(branch) do
@@ -110,6 +112,79 @@ defmodule SymphonyElixir.GitHubReviewClient do
         {:error, reason}
     end
   end
+
+  @spec authorization_evidence(String.t(), pos_integer()) :: {:ok, map()} | {:error, term()}
+  def authorization_evidence(repository, number)
+      when is_binary(repository) and is_integer(number) and number > 0 do
+    with {:ok, pull_request} <- fetch_pull_request(repository, number),
+         {:ok, issue_comments} <- fetch_issue_comments(repository, number),
+         {:ok, comments} <- normalize_authorization_comments(issue_comments),
+         {:ok, active_requests} <- normalize_authorization_requests(issue_comments) do
+      {:ok,
+       %{
+         native: %{current_head_sha: pull_request["headRefOid"]},
+         comments: comments,
+         active_requests: active_requests,
+         used_approval_comment_ids: MapSet.new()
+       }}
+    end
+  end
+
+  @spec create_authorization_request(String.t(), pos_integer(), map()) ::
+          {:ok, map()} | {:error, term()}
+  def create_authorization_request(repository, number, request)
+      when is_binary(repository) and is_integer(number) and number > 0 and is_map(request) do
+    args = [
+      "api",
+      "repos/#{repository}/issues/#{number}/comments",
+      "--method",
+      "POST",
+      "-f",
+      "body=#{authorization_request_body(request)}"
+    ]
+
+    with {:ok, output} <- run(args),
+         {:ok, comment} when is_map(comment) <- Jason.decode(output),
+         {:ok, comment_id} <- comment_id(comment) do
+      {:ok, %{comment_id: comment_id}}
+    else
+      {:ok, unexpected} -> {:error, {:invalid_authorization_comment_response, unexpected}}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  @spec find_authorization_request(String.t(), pos_integer(), map()) ::
+          :not_found | {:found, map()} | {:unknown, term()} | {:error, term()}
+  def find_authorization_request(repository, number, request)
+      when is_binary(repository) and is_integer(number) and number > 0 and is_map(request) do
+    with {:ok, issue_comments} <- fetch_issue_comments(repository, number),
+         {:ok, requests} <- normalize_authorization_requests(issue_comments) do
+      matching =
+        Enum.filter(requests, fn candidate ->
+          candidate.request_id == request[:request_id] and
+            candidate.request_fingerprint == request[:request_fingerprint]
+        end)
+
+      case matching do
+        [] -> :not_found
+        [candidate] -> {:found, candidate}
+        _many -> {:unknown, :ambiguous_managed_request}
+      end
+    end
+  end
+
+  @doc false
+  @spec normalize_authorization_comments_for_test([map()]) :: {:ok, [map()]} | {:error, term()}
+  def normalize_authorization_comments_for_test(comments),
+    do: normalize_authorization_comments(comments)
+
+  @doc false
+  @spec authorization_request_body_for_test(map()) :: String.t()
+  def authorization_request_body_for_test(request), do: authorization_request_body(request)
+
+  @doc false
+  @spec parse_authorization_request_for_test(String.t()) :: {:ok, map()} | {:error, term()}
+  def parse_authorization_request_for_test(body), do: parse_authorization_request(body)
 
   @spec publish_status(String.t(), String.t(), atom(), String.t(), String.t() | nil) :: :ok | {:error, term()}
   def publish_status(repository, head_sha, state, description, target_url \\ nil)
@@ -295,6 +370,144 @@ defmodule SymphonyElixir.GitHubReviewClient do
         {:error, reason}
     end
   end
+
+  defp normalize_authorization_comments(comments) when is_list(comments) do
+    normalized =
+      comments
+      |> Enum.flat_map(fn comment ->
+        case normalize_authorization_comment(comment) do
+          {:ok, normalized_comment} ->
+            if String.trim(normalized_comment.body) == @authorization_command,
+              do: [normalized_comment],
+              else: []
+
+          {:error, _reason} ->
+            []
+        end
+      end)
+
+    {:ok, normalized}
+  end
+
+  defp normalize_authorization_comments(_comments),
+    do: {:error, :invalid_authorization_comments}
+
+  defp normalize_authorization_comment(%{"id" => id, "body" => body} = comment)
+       when is_binary(body) do
+    with {:ok, comment_id} <- normalize_comment_id(id),
+         {:ok, created_at} <- normalize_created_at(comment["created_at"]) do
+      user = if is_map(comment["user"]), do: comment["user"], else: %{}
+
+      {:ok,
+       %{
+         comment_id: comment_id,
+         body: body,
+         actor: %{
+           login: normalize_optional_string(user["login"]),
+           id: normalize_optional_id(user["id"]),
+           type: normalize_optional_string(user["type"])
+         },
+         created_at: created_at
+       }}
+    end
+  end
+
+  defp normalize_authorization_comment(_comment),
+    do: {:error, :invalid_authorization_comment}
+
+  defp normalize_authorization_requests(comments) when is_list(comments) do
+    Enum.reduce_while(comments, {:ok, []}, fn comment, {:ok, requests} ->
+      body = if is_map(comment), do: comment["body"], else: nil
+
+      cond do
+        not is_binary(body) ->
+          {:cont, {:ok, requests}}
+
+        String.contains?(body, @authorization_marker) ->
+          case parse_authorization_request(body) do
+            {:ok, request} -> {:cont, {:ok, [request | requests]}}
+            {:error, reason} -> {:halt, {:error, reason}}
+          end
+
+        true ->
+          {:cont, {:ok, requests}}
+      end
+    end)
+    |> case do
+      {:ok, requests} -> {:ok, Enum.reverse(requests)}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp normalize_authorization_requests(_comments),
+    do: {:error, :invalid_authorization_comments}
+
+  defp comment_id(%{"id" => id}), do: normalize_comment_id(id)
+  defp comment_id(_comment), do: {:error, :invalid_authorization_comment_id}
+
+  defp authorization_request_body(request) do
+    payload =
+      request
+      |> :erlang.term_to_binary([:deterministic])
+      |> Base.url_encode64(padding: false)
+
+    @authorization_marker <> "\nrequest-payload: " <> payload
+  end
+
+  defp parse_authorization_request(body) when is_binary(body) do
+    with true <- String.contains?(body, @authorization_marker),
+         [payload] <- Regex.run(~r/request-payload:\s*(\S+)/, body, capture: :all_but_first),
+         {:ok, encoded} <- Base.url_decode64(payload, padding: false),
+         {:ok, request} <- safe_binary_to_term(encoded),
+         true <- valid_authorization_request?(request) do
+      {:ok, request}
+    else
+      _ -> {:error, :invalid_authorization_request_marker}
+    end
+  end
+
+  defp parse_authorization_request(_body),
+    do: {:error, :invalid_authorization_request_marker}
+
+  defp safe_binary_to_term(encoded) do
+    {:ok, :erlang.binary_to_term(encoded, [:safe])}
+  rescue
+    _error -> {:error, :invalid_authorization_request_marker}
+  end
+
+  defp valid_authorization_request?(request) when is_map(request) do
+    Enum.all?(
+      [
+        :request_id,
+        :repository,
+        :pull_request_number,
+        :evaluated_head_sha,
+        :eligible_finding_set_digest,
+        :eligible_finding_keys,
+        :policy_version,
+        :human_summary,
+        :expected_transition,
+        :request_fingerprint
+      ],
+      &Map.has_key?(request, &1)
+    )
+  end
+
+  defp valid_authorization_request?(_request), do: false
+
+  defp normalize_comment_id(id) when is_integer(id), do: {:ok, Integer.to_string(id)}
+  defp normalize_comment_id(id) when is_binary(id) and byte_size(id) > 0, do: {:ok, id}
+  defp normalize_comment_id(_id), do: {:error, :invalid_authorization_comment_id}
+
+  defp normalize_created_at(value) when is_binary(value) and byte_size(value) > 0, do: {:ok, value}
+  defp normalize_created_at(_value), do: {:error, :invalid_authorization_comment_time}
+
+  defp normalize_optional_string(value) when is_binary(value), do: value
+  defp normalize_optional_string(_value), do: nil
+
+  defp normalize_optional_id(value) when is_integer(value), do: Integer.to_string(value)
+  defp normalize_optional_id(value) when is_binary(value), do: value
+  defp normalize_optional_id(_value), do: nil
 
   defp required_checks(repository, pull_request) do
     head_sha = pull_request["headRefOid"]
