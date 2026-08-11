@@ -1,7 +1,12 @@
+defmodule SymphonyElixir.PatchAuthorization.SlotProjectionStructRecord do
+  defstruct [:slot, :state, :identity, :reconciliation]
+end
+
 defmodule SymphonyElixir.PatchAuthorization.SlotProjectionTest do
   use ExUnit.Case, async: true
 
   alias SymphonyElixir.PatchAuthorization.SlotProjection
+  alias SymphonyElixir.PatchAuthorization.SlotProjectionStructRecord
 
   @automatic_initial :automatic_initial_v1
   @automatic_correction :automatic_correction_v1
@@ -110,6 +115,17 @@ defmodule SymphonyElixir.PatchAuthorization.SlotProjectionTest do
 
     assert {:error, :invalid_projection_reconciliation} =
              SlotProjection.project([%{slot: @automatic_initial, state: :available, identity: %{}}])
+  end
+
+  test "fails closed for struct-shaped records" do
+    record = %SlotProjectionStructRecord{
+      slot: @automatic_initial,
+      state: :available,
+      identity: %{},
+      reconciliation: %{}
+    }
+
+    assert {:error, :invalid_projection_record} = SlotProjection.project([record])
   end
 
   defp record(slot, state) do

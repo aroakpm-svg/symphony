@@ -53,6 +53,8 @@ defmodule SymphonyElixir.PatchAuthorization.SlotProjection do
     end
   end
 
+  defp validate_record(record) when is_struct(record), do: {:error, :invalid_projection_record}
+
   defp validate_record(%{slot: slot, state: state} = record) when is_map(record) do
     cond do
       not valid_slot?(slot) -> {:error, :invalid_slot}
