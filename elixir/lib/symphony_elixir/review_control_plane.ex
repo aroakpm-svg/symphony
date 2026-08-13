@@ -128,9 +128,9 @@ defmodule SymphonyElixir.ReviewControlPlane do
     if request_key in entry.requested_review_keys do
       :ok
     else
-      case review_client.review_request_exists?(target.repository, target.pull_request_number, request_key) do
+      case review_client.review_request_exists_for_target?(target, request_key) do
         {:ok, true} -> :ok
-        {:ok, false} -> review_client.request_review(target.repository, target.pull_request_number, request_key)
+        {:ok, false} -> review_client.request_review_for_target(target, request_key)
         {:error, reason} -> {:error, reason}
       end
     end

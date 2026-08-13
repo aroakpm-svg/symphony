@@ -6,6 +6,7 @@ defmodule SymphonyElixir.ReviewConvergenceTest do
   alias SymphonyElixir.Linear.{Adapter, Issue}
   alias SymphonyElixir.ReviewConvergence
   alias SymphonyElixir.ReviewMonitor
+  alias SymphonyElixir.ReviewTarget
 
   defmodule ReviewClient do
     @spec snapshot(String.t(), String.t()) :: {:ok, map()} | {:error, term()}
@@ -571,6 +572,36 @@ defmodule SymphonyElixir.ReviewConvergenceTest do
     refute GitHubReviewClient.accepted_comment_attestation_for_test(
              [request, clean_attestation_comment("bbbbbbbbbb")],
              head
+           )
+  end
+
+  test "target-scoped review request persists its current head for issue-comment attestation" do
+    head = String.duplicate("a", 40)
+
+    {:ok, target} =
+      ReviewTarget.new(%{
+        repository: "aroakpm-svg/symphony",
+        pull_request_number: 25,
+        head_sha: head
+      })
+
+    key = ReviewTarget.dedup_key(target, :review_request, :codex)
+
+    request = %{
+      "body" => GitHubReviewClient.review_request_body_for_test(key, target.head_sha),
+      "created_at" => "2026-07-22T01:00:00Z"
+    }
+
+    clean = clean_attestation_comment(String.slice(head, 0, 10))
+
+    assert GitHubReviewClient.accepted_comment_attestation_for_test([request, clean], head) == clean
+
+    assert GitHubReviewClient.review_request_matches_target_for_test?(request, head, key)
+
+    refute GitHubReviewClient.review_request_matches_target_for_test?(
+             %{request | "body" => "@codex review\n\ndedup-key: `#{key}`"},
+             head,
+             key
            )
   end
 

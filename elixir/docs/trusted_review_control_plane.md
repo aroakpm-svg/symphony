@@ -35,6 +35,12 @@ aroakpm-svg/symphony#25@<head-b>
 Before any status is published, the fresh GitHub snapshot must match all three
 identity fields. A mismatch fails closed and publishes no status.
 
+Target-scoped issue-comment review requests persist the pinned head explicitly
+as `currentHeadSha` alongside the opaque `dedup-key`. The target-aware
+existence check requires both values, so an older hash-only request cannot
+suppress a corrected request for the same target. The ordinary issue-scoped
+request path remains compatible with the legacy body shape.
+
 ## Trust boundary
 
 `SYMPHONY_REVIEW_TARGETS` is loaded by the trusted runtime environment, not

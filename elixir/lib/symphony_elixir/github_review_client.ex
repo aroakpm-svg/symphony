@@ -115,12 +115,46 @@ defmodule SymphonyElixir.GitHubReviewClient do
 
   @spec request_review(String.t(), pos_integer(), String.t()) :: :ok | {:error, term()}
   def request_review(repository, number, key) do
-    body = "@codex review\n\ndedup-key: `#{key}`"
+    post_review_request(repository, number, request_review_body(key, nil))
+  end
 
+  @spec request_review_for_target(ReviewTarget.t(), String.t()) :: :ok | {:error, term()}
+  def request_review_for_target(%ReviewTarget{} = target, key) do
+    post_review_request(target.repository, target.pull_request_number, request_review_body(key, target.head_sha))
+  end
+
+  @spec review_request_exists_for_target?(ReviewTarget.t(), String.t()) ::
+          {:ok, boolean()} | {:error, term()}
+  def review_request_exists_for_target?(%ReviewTarget{} = target, key) do
+    case fetch_issue_comments(target.repository, target.pull_request_number) do
+      {:ok, comments} ->
+        {:ok, Enum.any?(comments, &review_request_matches_target?(&1, target.head_sha, key))}
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  @doc false
+  @spec review_request_body_for_test(String.t(), String.t()) :: String.t()
+  def review_request_body_for_test(key, head_sha), do: request_review_body(key, head_sha)
+
+  @doc false
+  @spec review_request_matches_target_for_test?(map(), String.t(), String.t()) :: boolean()
+  def review_request_matches_target_for_test?(comment, head_sha, key),
+    do: review_request_matches_target?(comment, head_sha, key)
+
+  defp post_review_request(repository, number, body) do
     case run(["pr", "comment", Integer.to_string(number), "--repo", repository, "--body", body]) do
       {:ok, _output} -> :ok
       {:error, reason} -> {:error, reason}
     end
+  end
+
+  defp request_review_body(key, nil), do: "@codex review\n\ndedup-key: `#{key}`"
+
+  defp request_review_body(key, head_sha) do
+    "@codex review\n\ncurrentHeadSha: `#{head_sha}`\ndedup-key: `#{key}`"
   end
 
   @spec review_request_exists?(String.t(), pos_integer(), String.t()) :: {:ok, boolean()} | {:error, term()}
@@ -1081,6 +1115,11 @@ defmodule SymphonyElixir.GitHubReviewClient do
     Regex.match?(~r/^@codex review(?:\r?\n|$)/, body) and
       String.contains?(body, "dedup-key:") and
       String.contains?(body, head_sha)
+  end
+
+  defp review_request_matches_target?(comment, head_sha, key) do
+    current_head_review_request?(comment, head_sha) and
+      String.contains?(comment["body"] || "", "dedup-key: `#{key}`")
   end
 
   defp clean_comment_attestation?(comment, head_sha, request_time) do

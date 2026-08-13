@@ -21,12 +21,16 @@ defmodule SymphonyElixir.ReviewControlPlaneTest do
       :ok
     end
 
-    @spec review_request_exists?(String.t(), pos_integer(), String.t()) :: {:ok, boolean()}
-    def review_request_exists?(_repository, _number, _key), do: {:ok, false}
+    @spec review_request_exists_for_target?(ReviewTarget.t(), String.t()) :: {:ok, boolean()}
+    def review_request_exists_for_target?(_target, _key), do: {:ok, false}
 
-    @spec request_review(String.t(), pos_integer(), String.t()) :: :ok
-    def request_review(repository, number, key) do
-      send(Application.fetch_env!(:symphony_elixir, :control_plane_recipient), {:request, repository, number, key})
+    @spec request_review_for_target(ReviewTarget.t(), String.t()) :: :ok
+    def request_review_for_target(target, key) do
+      send(
+        Application.fetch_env!(:symphony_elixir, :control_plane_recipient),
+        {:request, target.repository, target.pull_request_number, target.head_sha, key}
+      )
+
       :ok
     end
   end
@@ -113,7 +117,8 @@ defmodule SymphonyElixir.ReviewControlPlaneTest do
     Application.put_env(:symphony_elixir, :control_plane_snapshots, %{ReviewTarget.key(target) => pending_snapshot})
 
     assert {:ok, state, [%{status: :pending}]} = ReviewControlPlane.run([target], %{}, ReviewClient, 3)
-    assert_receive {:request, "aroakpm-svg/symphony", 25, request_key}
+    assert_receive {:request, "aroakpm-svg/symphony", 25, head_sha, request_key}
+    assert head_sha == target.head_sha
     assert request_key == ReviewTarget.dedup_key(target, :review_request, :codex)
 
     assert {:ok, _state, [%{status: :pending}]} = ReviewControlPlane.run([target], state, ReviewClient, 3)
