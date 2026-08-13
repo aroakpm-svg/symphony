@@ -129,8 +129,18 @@ defmodule SymphonyElixir.ReviewMonitor do
     end
   end
 
+  # The claim is held back only while it is the one thing that can carry the next
+  # step: an unconsumed grant, or a managed effect that still needs reconciliation.
+  # Releasing an unresolved effect strands it, because a later generation reads the
+  # same row and takes this branch again.
   defp releasable_result?({:ok, %{terminal_result: {:grant, _grants}}}), do: false
+  defp releasable_result?({:blocked, :pending_effects, _entry}), do: false
   defp releasable_result?(_result), do: true
+
+  defp retained_claim?(%{retained_claim: %{claim_id: claim_id, generation: generation}}, claim)
+       when is_binary(claim_id) and claim_id != "" and is_integer(generation) do
+    claim[:owner] == self() and claim[:claim_id] == claim_id and claim[:generation] == generation
+  end
 
   defp retained_claim?(%{terminal_result: {:grant, grants}}, claim) when is_map(grants) do
     claim[:owner] == self() and
@@ -140,6 +150,10 @@ defmodule SymphonyElixir.ReviewMonitor do
   end
 
   defp retained_claim?(_entry, _claim), do: false
+
+  defp claim_identity(claim_context) do
+    %{claim_id: claim_context[:claim_id], generation: claim_context[:generation]}
+  end
 
   defp reconcile_new_claim(entry, issue, snapshot, claim, settings, options) do
     with {:ok, connection, claim_context} <- claimed_context(options, issue, claim),
@@ -174,6 +188,7 @@ defmodule SymphonyElixir.ReviewMonitor do
         causal_attempts: [],
         pending_causal_attempts: [],
         global_blocker: nil,
+        retained_claim: nil,
         terminal_result: nil
       },
       entry
@@ -344,10 +359,11 @@ defmodule SymphonyElixir.ReviewMonitor do
       |> Map.put(:decisions, decisions_by_digest(summary[:decisions] || []))
       |> Map.put(:pending_effect_ids, pending_effect_ids)
       |> Map.put(:global_blocker, nil)
+      |> Map.put(:retained_claim, nil)
 
     cond do
       pending_effect_ids != [] ->
-        {:blocked, :pending_effects, updated}
+        {:blocked, :pending_effects, Map.put(updated, :retained_claim, claim_identity(claim_context))}
 
       summary[:decisions] == [] ->
         {:ok,
