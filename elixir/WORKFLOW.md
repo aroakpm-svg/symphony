@@ -456,6 +456,15 @@ deduplicated `@codex review` request.
 The runtime publishes `Review Convergence Gate` as a commit status for ruleset enforcement. That
 status is an output of the gate and is excluded from its prerequisite required-check set.
 
+For external review of more than one repository, use the separate trusted
+multi-target control-plane task. Its `SYMPHONY_REVIEW_TARGETS` registry is
+runtime-supplied and must contain repository, pull request number, and full
+head SHA for every target. It is not read from a target PR's `WORKFLOW.md` or
+branch. The task validates the complete identity before status publication and
+keeps each target's state and deduplication namespace separate. Run it only
+from an already trusted Symphony checkout; a target PR must never review its
+own modified reviewer code. See `docs/trusted_review_control_plane.md`.
+
 Actionable P1-P4 findings move the issue back to In Progress once per head/finding fingerprint and
 reuse the same branch and PR. Waiting for staging, permissions, or human product/safety decisions
 keeps the issue In Review and pauses retries without repeating a full review. Technical convergence

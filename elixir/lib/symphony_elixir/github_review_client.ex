@@ -1,6 +1,8 @@
 defmodule SymphonyElixir.GitHubReviewClient do
   @moduledoc "Reads latest-head review evidence and requests Codex reviews through `gh`."
 
+  alias SymphonyElixir.ReviewTarget
+
   @graphql """
   query SymphonyReviewConvergence($owner: String!, $name: String!, $number: Int!, $endCursor: String) {
     repository(owner: $owner, name: $name) {
@@ -98,16 +100,16 @@ defmodule SymphonyElixir.GitHubReviewClient do
 
   @spec snapshot(String.t(), String.t()) :: {:ok, map()} | {:error, term()}
   def snapshot(repository, branch) when is_binary(repository) and is_binary(branch) do
-    with {:ok, number} <- find_pull_request(repository, branch),
-         {:ok, pull_request} <- fetch_pull_request(repository, number),
-         {:ok, issue_comments} <- fetch_issue_comments(repository, number),
-         {:ok, checks} <- required_checks(repository, pull_request),
-         {:ok, base_verification} <- verify_base_claims(repository, pull_request) do
-      {:ok,
-       pull_request
-       |> normalize_snapshot(checks, base_verification, issue_comments)
-       |> Map.put(:repository, repository)
-       |> Map.put(:pull_request_number, number)}
+    with {:ok, number} <- find_pull_request(repository, branch) do
+      snapshot_pull_request(repository, number)
+    end
+  end
+
+  @spec snapshot_target(ReviewTarget.t()) :: {:ok, map()} | {:error, term()}
+  def snapshot_target(%ReviewTarget{} = target) do
+    with {:ok, snapshot} <- snapshot_pull_request(target.repository, target.pull_request_number),
+         :ok <- ReviewTarget.assert_snapshot(target, snapshot) do
+      {:ok, snapshot}
     end
   end
 
@@ -159,6 +161,19 @@ defmodule SymphonyElixir.GitHubReviewClient do
     case run(args) do
       {:ok, _output} -> :ok
       {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp snapshot_pull_request(repository, number) do
+    with {:ok, pull_request} <- fetch_pull_request(repository, number),
+         {:ok, issue_comments} <- fetch_issue_comments(repository, number),
+         {:ok, checks} <- required_checks(repository, pull_request),
+         {:ok, base_verification} <- verify_base_claims(repository, pull_request) do
+      {:ok,
+       pull_request
+       |> normalize_snapshot(checks, base_verification, issue_comments)
+       |> Map.put(:repository, repository)
+       |> Map.put(:pull_request_number, number)}
     end
   end
 

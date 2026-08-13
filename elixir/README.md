@@ -108,6 +108,25 @@ or touch Production.
 A technical pass, finding disposition, or `MergeReadyCandidate` does not authorize merge. Merge,
 deployment, Linear `Done`, and Landing remain human/owner actions outside Design 2.
 
+## Trusted multi-target review control plane
+
+The issue-scoped monitor above remains a single-workflow integration. For an
+external runtime that must review pull requests in more than one repository,
+use the separate target-scoped control plane:
+
+```bash
+export SYMPHONY_REVIEW_TARGETS='[{"repository":"aroakpm-svg/symphony","pull_request_number":25,"head_sha":"<full-lowercase-head-sha>"}]'
+mix review.control_plane
+```
+
+Run it only from an already trusted Symphony `main` or release checkout. The
+registry is supplied by the runtime environment rather than target-repository
+configuration, and the target PR is queried through GitHub without loading its
+reviewer code. The task validates the target identity before publishing
+`Review Convergence Gate` to that exact repository and head. See
+[`docs/trusted_review_control_plane.md`](docs/trusted_review_control_plane.md)
+for the bootstrap contract and multi-target examples.
+
 ## How to use it
 
 1. Make sure your codebase is set up to work well with agents: see

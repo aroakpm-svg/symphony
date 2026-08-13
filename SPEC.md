@@ -145,6 +145,22 @@ Symphony is easiest to port when kept in these layers:
 - Coding-agent executable that supports the targeted Codex app-server mode.
 - Host environment authentication for the issue tracker and coding agent.
 
+### 3.4 Trusted Multi-Target Review Control Plane (Implementation Extension)
+
+The Elixir implementation MAY run a separate trusted Review Convergence
+control plane for an explicit set of pull-request targets. Each target is
+identified by repository, pull-request number, and the full lowercase head
+commit SHA. The allowlist is supplied by the trusted runtime environment, not
+by a target repository's workflow file.
+
+The control plane MUST evaluate each target independently, scope review-request
+deduplication and state to the complete target identity, and fail closed when
+the observed repository, pull-request number, or head SHA does not match the
+allowlisted target. It MAY publish a `Review Convergence Gate` commit status,
+but it MUST NOT merge, land, settle, or change tracker state. `ReviewConvergence`
+remains the single policy evaluator; the control plane only coordinates target
+identity, evidence retrieval, deduplication, and status publication.
+
 ## 4. Core Domain Model
 
 ### 4.1 Entities

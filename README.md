@@ -45,6 +45,16 @@ connection or identity input is missing or invalid. See the
 [Elixir claim configuration](elixir/README.md#configuration) for the complete
 runtime contract and environment variables.
 
+#### Trusted multi-target review control plane
+
+The Elixir runtime also contains a separate status-only control-plane slice for
+reviewing explicitly allowlisted pull requests across repositories. It keeps
+`repository`, pull request number, and exact head SHA together as one immutable
+target identity, while preserving `ReviewConvergence` as the only policy
+evaluator. It must run from a trusted Symphony checkout; a target PR cannot
+modify the allowlist or review itself. See the
+[trusted review control-plane guide](elixir/docs/trusted_review_control_plane.md).
+
 ---
 
 ## License
