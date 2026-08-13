@@ -141,7 +141,13 @@ defmodule Mix.Tasks.Workspace.BeforeRemove do
   end
 
   defp find_executable(command) do
-    finder = Application.get_env(:symphony_elixir, :workspace_before_remove_executable_finder, &System.find_executable/1)
+    finder =
+      Application.get_env(
+        :symphony_elixir,
+        :workspace_before_remove_executable_finder,
+        &System.find_executable/1
+      )
+
     finder.(command)
   end
 end
