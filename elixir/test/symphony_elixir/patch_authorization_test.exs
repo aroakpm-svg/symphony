@@ -296,6 +296,17 @@ defmodule SymphonyElixir.PatchAuthorizationTest do
                effects,
                runtime
              )
+
+    for history <- [%{}, [:malformed]] do
+      assert {:blocked, :malformed_causal_history} =
+               PatchAuthorization.authorize(
+                 decision,
+                 receipt,
+                 claim,
+                 effects,
+                 %{runtime | prior_attempts: history}
+               )
+    end
   end
 
   defp valid_inputs do

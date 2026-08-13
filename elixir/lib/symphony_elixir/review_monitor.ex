@@ -172,6 +172,7 @@ defmodule SymphonyElixir.ReviewMonitor do
         authorization_attempts: %{},
         authorization_results: %{},
         causal_attempts: [],
+        pending_causal_attempts: [],
         global_blocker: nil,
         terminal_result: nil
       },
@@ -419,7 +420,8 @@ defmodule SymphonyElixir.ReviewMonitor do
       digest,
       receipt && receipt[:causal_evidence_digest],
       claim_context[:claim_id],
-      claim_context[:generation]
+      claim_context[:generation],
+      runtime[:circuit_breaker]
     }
 
     authorize_decision_once(
@@ -504,8 +506,8 @@ defmodule SymphonyElixir.ReviewMonitor do
       generation: grant.generation
     }
 
-    attempts = Enum.uniq_by([attempt | entry.causal_attempts], &causal_attempt_identity/1)
-    {:cont, {:ok, %{entry | causal_attempts: attempts}}}
+    pending = Enum.uniq_by([attempt | entry.pending_causal_attempts], &causal_attempt_identity/1)
+    {:cont, {:ok, %{entry | pending_causal_attempts: pending}}}
   end
 
   defp authorization_reduction({:reconcile, evidence}, entry),
@@ -529,23 +531,40 @@ defmodule SymphonyElixir.ReviewMonitor do
     current_results = Map.take(entry.authorization_results, MapSet.to_list(current_digests))
     grants = Map.new(current_results, fn {digest, {:ok, grant}} -> {digest, grant} end)
 
+    attempts =
+      Enum.uniq_by(entry.pending_causal_attempts ++ entry.causal_attempts, &causal_attempt_identity/1)
+
     {:ok,
      %{
        entry
        | authorization_required: true,
          authorization_results: current_results,
+         causal_attempts: attempts,
+         pending_causal_attempts: [],
          terminal_result: {:grant, grants},
          global_blocker: nil
      }}
   end
 
   defp authorization_result({:reconcile, evidence, entry}, _current_digests) do
-    updated = %{entry | authorization_required: false, terminal_result: {:reconcile, evidence}}
+    updated = %{
+      entry
+      | authorization_required: false,
+        pending_causal_attempts: [],
+        terminal_result: {:reconcile, evidence}
+    }
+
     {:blocked, :authorization_reconciliation_required, updated}
   end
 
   defp authorization_result({:blocked, reason, entry}, _current_digests) do
-    {:blocked, reason, %{entry | authorization_required: false, terminal_result: {:blocked, reason}}}
+    {:blocked, reason,
+     %{
+       entry
+       | authorization_required: false,
+         pending_causal_attempts: [],
+         terminal_result: {:blocked, reason}
+     }}
   end
 
   defp loaded_function_exported?(module, function, arity) when is_atom(module) do

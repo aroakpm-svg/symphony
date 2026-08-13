@@ -455,6 +455,19 @@ defmodule SymphonyElixir.ReviewConvergenceTest do
     refute_received {:comment, _, _}
     refute_received {:state, _, _}
     refute_received {:status, _, _, _, _}
+
+    stopped =
+      ReviewMonitor.run_with(
+        state,
+        settings(),
+        ReviewClient,
+        Tracker,
+        put_in(options, [:authorization_runtime, :circuit_breaker], :open)
+      )
+
+    assert stopped["issue-160"].global_blocker == :safety_stopped
+    assert_receive {:autonomous_call, :authorize}
+    assert_receive {:autonomous_call, :release}
   end
 
   test "retained grants continue only under the exact owning claim and release after consumption" do

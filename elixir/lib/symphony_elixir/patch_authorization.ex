@@ -151,7 +151,8 @@ defmodule SymphonyElixir.PatchAuthorization do
     fingerprint = receipt.causal_attempt_fingerprint
     evidence_digest = receipt[:causal_evidence_digest]
 
-    with {:ok, evidence_digest} <- digest(evidence_digest) do
+    with :ok <- validate_prior_attempts(prior_attempts),
+         {:ok, evidence_digest} <- digest(evidence_digest) do
       repeated? =
         Enum.any?(prior_attempts, fn attempt ->
           attempt[:finding_lineage_digest] == lineage_digest and
@@ -162,6 +163,12 @@ defmodule SymphonyElixir.PatchAuthorization do
       if repeated?, do: {:error, :non_progress_blocked}, else: :ok
     end
   end
+
+  defp validate_prior_attempts(attempts) when is_list(attempts) do
+    if Enum.all?(attempts, &is_map/1), do: :ok, else: {:error, :malformed_causal_history}
+  end
+
+  defp validate_prior_attempts(_attempts), do: {:error, :malformed_causal_history}
 
   defp validate_effects(effects, claim) do
     Enum.reduce_while(effects, :ok, fn effect, :ok ->
