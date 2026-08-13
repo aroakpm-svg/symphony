@@ -69,7 +69,8 @@ defmodule SymphonyElixir.PatchAuthorization do
       :earliest_incorrect_boundary,
       :boundary_group,
       :causal_progress_reference,
-      :receipt_provenance
+      :receipt_provenance,
+      :mutation_intent_reference
     ]
 
     cond do
@@ -208,6 +209,7 @@ defmodule SymphonyElixir.PatchAuthorization do
       evaluated_head_sha: receipt.evaluated_head_sha,
       authorized_head_sha: receipt.authorized_head_sha,
       causal_progress_reference: receipt.causal_progress_reference,
+      causal_evidence_digest: receipt.causal_evidence_digest,
       boundary_group: receipt.boundary_group,
       recurrence_count: receipt.recurrence_count,
       claim_id: claim.claim_id,

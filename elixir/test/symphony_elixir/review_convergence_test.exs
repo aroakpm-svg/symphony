@@ -423,20 +423,112 @@ defmodule SymphonyElixir.ReviewConvergenceTest do
       authorization_runtime: %{circuit_breaker: :clear, prior_attempts: []}
     }
 
-    state = ReviewMonitor.run_with(%{}, settings(), ReviewClient, Tracker, options)
+    initial_state = %{
+      "issue-160" => %{
+        authorization_results: %{"removed-finding" => {:blocked, :stale_result}}
+      }
+    }
+
+    state = ReviewMonitor.run_with(initial_state, settings(), ReviewClient, Tracker, options)
 
     digest = finding_key.digest
     assert {:grant, %{^digest => grant}} = state["issue-160"].terminal_result
     assert grant.authorization == :bounded_managed_mutation
     assert state["issue-160"].authorization_required
+    assert Map.keys(state["issue-160"].authorization_results) == [digest]
+    assert [attempt] = state["issue-160"].causal_attempts
+    assert attempt.finding_lineage_digest == lineage_key.digest
+    assert attempt.causal_attempt_fingerprint == receipt.causal_attempt_fingerprint
+    assert attempt.causal_evidence_digest == receipt.causal_evidence_digest
     assert_receive {:autonomous_call, :authorize}
+    refute_received {:autonomous_call, :release}
 
     state = ReviewMonitor.run_with(state, settings(), ReviewClient, Tracker, options)
     assert {:grant, _grants} = state["issue-160"].terminal_result
+    assert length(state["issue-160"].causal_attempts) == 1
     refute_receive {:autonomous_call, :authorize}
+    refute_received {:autonomous_call, :release}
     refute_received {:comment, _, _}
     refute_received {:state, _, _}
     refute_received {:status, _, _, _, _}
+  end
+
+  test "a new head alone cannot reauthorize the same causal attempt" do
+    old_head = String.duplicate("a", 40)
+    new_head = String.duplicate("b", 40)
+
+    facts = %{
+      repository: "aroakpm-svg/repo",
+      pull_request_number: 42,
+      source_head_sha: old_head,
+      review_thread_id: "thread-design-3-repeat",
+      selected_review_comment_id: "comment-design-3-repeat",
+      body: "P1 repeated causal failure"
+    }
+
+    {:ok, finding_key} = SymphonyElixir.FindingDisposition.build_finding_key(facts)
+    {:ok, lineage_key} = SymphonyElixir.FindingDisposition.build_lineage_key(facts)
+
+    decision = %{
+      disposition: :fix_in_current_pr,
+      finding_key: finding_key,
+      finding_lineage_key: lineage_key,
+      finding_key_digest: finding_key.digest
+    }
+
+    old_receipt = design3_receipt(finding_key, lineage_key, old_head)
+
+    options = %{
+      profile: :aroak_autonomous_v1,
+      claim_service: AutonomousClaimService,
+      effect_ledger: AutonomousEffectLedger,
+      patch_authorization: CountingPatchAuthorization,
+      review_settlement: ReviewSettlementOwner,
+      root_cause_receipts: %{finding_key.digest => old_receipt},
+      authorization_runtime: %{circuit_breaker: :clear, prior_attempts: []}
+    }
+
+    Application.put_env(
+      :symphony_elixir,
+      :review_snapshot,
+      {:ok,
+       snapshot(%{
+         current_head_sha: old_head,
+         finding_summary: %{decisions: [decision], requires_lifecycle?: true}
+       })}
+    )
+
+    state = ReviewMonitor.run_with(%{}, settings(), ReviewClient, Tracker, options)
+    assert {:grant, _grants} = state["issue-160"].terminal_result
+
+    new_receipt =
+      old_receipt
+      |> Map.put(:evaluated_head_sha, new_head)
+      |> Map.put(:authorized_head_sha, new_head)
+      |> put_in([:pre_mutation_regression, :head_sha], new_head)
+
+    Application.put_env(
+      :symphony_elixir,
+      :review_snapshot,
+      {:ok,
+       snapshot(%{
+         current_head_sha: new_head,
+         finding_summary: %{decisions: [decision], requires_lifecycle?: true}
+       })}
+    )
+
+    blocked =
+      ReviewMonitor.run_with(
+        state,
+        settings(),
+        ReviewClient,
+        Tracker,
+        put_in(options, [:root_cause_receipts, finding_key.digest], new_receipt)
+      )
+
+    assert blocked["issue-160"].global_blocker == :non_progress_blocked
+    assert blocked["issue-160"].terminal_result == {:blocked, :non_progress_blocked}
+    assert_receive {:autonomous_call, :release}
   end
 
   test "pending ledger effects block autonomous execution before owner APIs" do

@@ -105,7 +105,7 @@ defmodule SymphonyElixir.ReviewMonitor do
         {:error, reason} -> {{:blocked, reason}, :none}
       end
 
-    if acquisition == :new, do: release_claim(options, issue.id)
+    if acquisition == :new and releasable_result?(result), do: release_claim(options, issue.id)
 
     case result do
       {:ok, updated_entry} -> Map.put(state, issue.id, updated_entry)
@@ -113,6 +113,9 @@ defmodule SymphonyElixir.ReviewMonitor do
       {:blocked, reason} -> Map.put(state, issue.id, autonomous_blocker(entry, reason))
     end
   end
+
+  defp releasable_result?({:ok, %{terminal_result: {:grant, _grants}}}), do: false
+  defp releasable_result?(_result), do: true
 
   defp reconcile_new_claim(entry, issue, snapshot, claim, settings, options) do
     with {:ok, connection, claim_context} <- claimed_context(options, issue, claim),
@@ -144,6 +147,7 @@ defmodule SymphonyElixir.ReviewMonitor do
         authorization_required: false,
         authorization_attempts: %{},
         authorization_results: %{},
+        causal_attempts: [],
         global_blocker: nil,
         terminal_result: nil
       },
@@ -366,12 +370,14 @@ defmodule SymphonyElixir.ReviewMonitor do
   end
 
   defp reduce_authorizations(entry, decisions, operations, snapshot, claim_context, authorization, receipts, runtime) do
-    decisions
-    |> FindingDisposition.sort_decisions()
+    sorted_decisions = FindingDisposition.sort_decisions(decisions)
+    current_digests = MapSet.new(sorted_decisions, & &1.finding_key_digest)
+
+    sorted_decisions
     |> Enum.reduce_while({:ok, entry}, fn decision, {:ok, acc} ->
       authorize_decision(acc, decision, operations, snapshot, claim_context, authorization, receipts, runtime)
     end)
-    |> authorization_result()
+    |> authorization_result(current_digests)
   end
 
   defp authorize_decision(entry, decision, operations, snapshot, claim_context, authorization, receipts, runtime) do
@@ -439,15 +445,31 @@ defmodule SymphonyElixir.ReviewMonitor do
   end
 
   defp authorization_runtime(runtime, snapshot, claim_context, entry) do
+    prior_attempts =
+      Enum.uniq_by(
+        (runtime[:prior_attempts] || []) ++ entry.causal_attempts,
+        &causal_attempt_identity/1
+      )
+
     Map.merge(runtime, %{
       current_head_sha: snapshot[:current_head_sha],
       active_claim_id: claim_context[:claim_id],
       active_generation: claim_context[:generation],
-      prior_attempts: runtime[:prior_attempts] || entry[:causal_attempts] || []
+      prior_attempts: prior_attempts
     })
   end
 
-  defp authorization_reduction({:ok, _grant}, entry), do: {:cont, {:ok, entry}}
+  defp authorization_reduction({:ok, grant}, entry) do
+    attempt = %{
+      finding_lineage_digest: grant.finding_lineage_key.digest,
+      causal_attempt_fingerprint: grant.causal_attempt_fingerprint,
+      causal_evidence_digest: grant.causal_evidence_digest,
+      generation: grant.generation
+    }
+
+    attempts = Enum.uniq_by([attempt | entry.causal_attempts], &causal_attempt_identity/1)
+    {:cont, {:ok, %{entry | causal_attempts: attempts}}}
+  end
 
   defp authorization_reduction({:reconcile, evidence}, entry),
     do: {:halt, {:reconcile, evidence, entry}}
@@ -458,18 +480,34 @@ defmodule SymphonyElixir.ReviewMonitor do
   defp authorization_reduction(_invalid, entry),
     do: {:halt, {:blocked, :invalid_patch_authorization_result, entry}}
 
-  defp authorization_result({:ok, entry}) do
-    grants = Map.new(entry.authorization_results, fn {digest, {:ok, grant}} -> {digest, grant} end)
-
-    {:ok, %{entry | authorization_required: true, terminal_result: {:grant, grants}, global_blocker: nil}}
+  defp causal_attempt_identity(attempt) do
+    {
+      attempt[:finding_lineage_digest],
+      attempt[:causal_attempt_fingerprint],
+      attempt[:causal_evidence_digest]
+    }
   end
 
-  defp authorization_result({:reconcile, evidence, entry}) do
+  defp authorization_result({:ok, entry}, current_digests) do
+    current_results = Map.take(entry.authorization_results, MapSet.to_list(current_digests))
+    grants = Map.new(current_results, fn {digest, {:ok, grant}} -> {digest, grant} end)
+
+    {:ok,
+     %{
+       entry
+       | authorization_required: true,
+         authorization_results: current_results,
+         terminal_result: {:grant, grants},
+         global_blocker: nil
+     }}
+  end
+
+  defp authorization_result({:reconcile, evidence, entry}, _current_digests) do
     updated = %{entry | authorization_required: false, terminal_result: {:reconcile, evidence}}
     {:blocked, :authorization_reconciliation_required, updated}
   end
 
-  defp authorization_result({:blocked, reason, entry}) do
+  defp authorization_result({:blocked, reason, entry}, _current_digests) do
     {:blocked, reason, %{entry | authorization_required: false, terminal_result: {:blocked, reason}}}
   end
 

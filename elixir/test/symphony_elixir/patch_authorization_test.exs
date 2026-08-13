@@ -287,6 +287,15 @@ defmodule SymphonyElixir.PatchAuthorizationTest do
                effects,
                runtime
              )
+
+    assert {:blocked, :receipt_malformed} =
+             PatchAuthorization.authorize(
+               decision,
+               %{receipt | mutation_intent_reference: ""},
+               claim,
+               effects,
+               runtime
+             )
   end
 
   defp valid_inputs do
