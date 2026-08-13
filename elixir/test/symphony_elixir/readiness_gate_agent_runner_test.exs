@@ -124,10 +124,23 @@ defmodule SymphonyElixir.ReadinessGateAgentRunnerTest do
     System.put_env("SOURCE_REPO_URL", shell_path(fixture.remote))
 
     issue = issue("ARO-202", "codex/aro-202")
+    before_run_marker = Path.join(fixture.root, "before-run.marker")
+    app_server_marker = Path.join(fixture.root, "app-server.marker")
+    previous_before_marker = System.get_env("SYMP_TEST_READINESS_BEFORE_MARKER")
+    previous_app_marker = System.get_env("SYMP_TEST_READINESS_APP_MARKER")
+
+    on_exit(fn ->
+      restore_env("SYMP_TEST_READINESS_BEFORE_MARKER", previous_before_marker)
+      restore_env("SYMP_TEST_READINESS_APP_MARKER", previous_app_marker)
+    end)
+
+    System.put_env("SYMP_TEST_READINESS_BEFORE_MARKER", before_run_marker)
+    System.put_env("SYMP_TEST_READINESS_APP_MARKER", app_server_marker)
     fake_codex = shell_path(Path.join(fixture.root, "fake-codex"))
 
     File.write!(fake_codex, """
     #!/bin/sh
+    printf launched > "$SYMP_TEST_READINESS_APP_MARKER"
     count=0
     while IFS= read -r line; do
       count=$((count + 1))
@@ -149,7 +162,7 @@ defmodule SymphonyElixir.ReadinessGateAgentRunnerTest do
     write_workflow_file!(Workflow.workflow_file_path(),
       workspace_root: fixture.workspace_root,
       hook_after_create: "git clone #{shell_escape(shell_path(fixture.remote))} .",
-      hook_before_run: "printf before > before-run.marker",
+      hook_before_run: ~s(printf before > "$SYMP_TEST_READINESS_BEFORE_MARKER"),
       codex_command: "#{fake_codex} app-server"
     )
 
@@ -176,6 +189,8 @@ defmodule SymphonyElixir.ReadinessGateAgentRunnerTest do
     assert :ok =
              AgentRunner.run(issue, self(), issue_state_fetcher: state_fetcher)
 
+    assert File.exists?(before_run_marker)
+    assert File.exists?(app_server_marker)
     assert git!(workspace, ["branch", "--show-current"]) == issue.branch_name
     assert git!(workspace, ["rev-parse", "HEAD"]) == continuation_sha
   end
