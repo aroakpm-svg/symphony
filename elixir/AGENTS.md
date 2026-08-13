@@ -61,19 +61,28 @@ Applies to any change that grants, caches, retains, or releases authority — gr
 claims, generations, leases, once-only markers. Satisfy every item before requesting
 review; each one has produced a P1 finding in this repository.
 
-- **Cache lifetime.** A cached decision must not outlive the shortest-lived entity it
-  references. Key it on that entity's identity, not only on head and evidence. When
-  the entity is lost and reacquired, the cache must miss.
+- **Cache identity is total, or the grant is revalidated.** Enumerating fields into a
+  cache key does not converge; each round of review finds one more input that was
+  left out. Either the key covers every authorization-relevant input, or a cached
+  grant is revalidated before it is replayed. Store the cached result under the full
+  transition key too, not under a narrower identifier that a later transition can
+  overwrite.
 - **Cycle snapshot.** State accumulated across poll cycles must be filtered to the
   current cycle's decisions before it is read. Never fold a historical entry into a
   current result, and never assume a stored entry still matches the clause shape that
   reads it.
-- **Persist before return.** A successful attempt must be written to the same history
-  that later attempts consult, before the success is returned. A new head alone is
-  not progress.
-- **Retention implies a release path.** If a claim is retained past its normal release
-  point, the next poll must have a defined arm that consumes or releases it. A
-  retained claim with no consumption path is a leak, not a safeguard.
+- **Persist atomically before return.** A successful attempt must reach the history
+  that later attempts consult before the success is returned, but only once the whole
+  batch grants. Committing one decision while a sibling blocks poisons the next poll
+  with a grant that was never delivered. A new head alone is not progress.
+- **Validate at the boundary, before any traversal.** Externally supplied collections
+  must be shape-checked before `++`, `Enum`, or key access touches them. Raising
+  inside preprocessing is not failing closed; it aborts the poll. Checking `is_map/1`
+  on an element is not validation — check the fields the decision actually reads.
+- **Retention needs an exit.** If a claim is retained past its normal release point,
+  there must be an arm that consumes or releases it under unchanged inputs. Prove it
+  with consecutive polls, not one: a single follow-up poll passes even when the claim
+  renews forever.
 - **Spec-required means validated.** Any field that `../SPEC.md` or the change plan
   names as required must fail closed when absent. Never let it default to `nil`.
 
