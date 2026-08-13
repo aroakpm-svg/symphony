@@ -55,6 +55,39 @@ Validation command:
 mix specs.check
 ```
 
+## Authority Change Gate
+
+Applies to any change that grants, caches, retains, or releases authority — grants,
+claims, generations, leases, once-only markers. Satisfy every item before requesting
+review; each one has produced a P1 finding in this repository.
+
+- **Cache lifetime.** A cached decision must not outlive the shortest-lived entity it
+  references. Key it on that entity's identity, not only on head and evidence. When
+  the entity is lost and reacquired, the cache must miss.
+- **Cycle snapshot.** State accumulated across poll cycles must be filtered to the
+  current cycle's decisions before it is read. Never fold a historical entry into a
+  current result, and never assume a stored entry still matches the clause shape that
+  reads it.
+- **Persist before return.** A successful attempt must be written to the same history
+  that later attempts consult, before the success is returned. A new head alone is
+  not progress.
+- **Retention implies a release path.** If a claim is retained past its normal release
+  point, the next poll must have a defined arm that consumes or releases it. A
+  retained claim with no consumption path is a leak, not a safeguard.
+- **Spec-required means validated.** Any field that `../SPEC.md` or the change plan
+  names as required must fail closed when absent. Never let it default to `nil`.
+
+Exercise the full sequence in `test/symphony_elixir/review_convergence_test.exs`, not
+only the transition being changed:
+
+```
+acquire -> grant -> next poll with claim already owned -> claim lost or expired
+        -> re-acquire at the same head with the same receipt
+```
+
+Unit tests over pure authorization functions do not cover this gate; the failures it
+guards live at the cross-poll boundary.
+
 ## PR Requirements
 
 - PR body must follow `../.github/pull_request_template.md` exactly.
