@@ -8,13 +8,20 @@ defmodule SymphonyElixir.ReviewTarget do
   control-plane run.
   """
 
-  @enforce_keys [:repository, :pull_request_number, :head_sha]
-  defstruct [:repository, :pull_request_number, :head_sha]
+  @enforce_keys [:repository, :pull_request_number, :head_sha, :required_checks]
+  defstruct [:repository, :pull_request_number, :head_sha, :required_checks]
+
+  @type required_check :: %{
+          name: String.t(),
+          app_slug: String.t(),
+          app_id: pos_integer()
+        }
 
   @type t :: %__MODULE__{
           repository: String.t(),
           pull_request_number: pos_integer(),
-          head_sha: String.t()
+          head_sha: String.t(),
+          required_checks: [required_check()]
         }
 
   @repository_format ~r/\A[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+\z/
@@ -28,12 +35,14 @@ defmodule SymphonyElixir.ReviewTarget do
          :ok <- validate_repository(repository),
          {:ok, pull_request_number} <- required_positive_integer(attrs, :pull_request_number),
          {:ok, head_sha} <- required_binary(attrs, :head_sha),
-         :ok <- validate_head_sha(head_sha) do
+         :ok <- validate_head_sha(head_sha),
+         {:ok, required_checks} <- required_checks_from_attrs(attrs) do
       {:ok,
        %__MODULE__{
          repository: repository,
          pull_request_number: pull_request_number,
-         head_sha: head_sha
+         head_sha: head_sha,
+         required_checks: required_checks
        }}
     end
   end
@@ -83,7 +92,8 @@ defmodule SymphonyElixir.ReviewTarget do
   @spec validate_all([map() | t()]) :: {:ok, [t()]} | {:error, term()}
   def validate_all(targets) when is_list(targets) and targets != [] do
     with {:ok, parsed} <- parse_all(targets),
-         :ok <- reject_duplicate_targets(parsed) do
+         :ok <- reject_duplicate_targets(parsed),
+         :ok <- reject_duplicate_status_destinations(parsed) do
       {:ok, parsed}
     end
   end
@@ -94,7 +104,9 @@ defmodule SymphonyElixir.ReviewTarget do
   defp validate(%__MODULE__{} = target) do
     with :ok <- validate_repository(target.repository),
          :ok <- validate_positive_integer(target.pull_request_number),
-         :ok <- validate_head_sha(target.head_sha) do
+         :ok <- validate_head_sha(target.head_sha),
+         {:ok, required_checks} <- validate_required_checks(target.required_checks) do
+      target = %{target | required_checks: required_checks}
       {:ok, target}
     end
   end
@@ -118,6 +130,61 @@ defmodule SymphonyElixir.ReviewTarget do
     case Enum.find(Enum.frequencies(keys), fn {_key, count} -> count > 1 end) do
       nil -> :ok
       {duplicate, _count} -> {:error, {:duplicate_target, duplicate}}
+    end
+  end
+
+  defp reject_duplicate_status_destinations(targets) do
+    destinations = Enum.map(targets, &status_destination/1)
+
+    case Enum.find(Enum.frequencies(destinations), fn {_destination, count} -> count > 1 end) do
+      nil -> :ok
+      {duplicate, _count} -> {:error, {:duplicate_status_destination, duplicate}}
+    end
+  end
+
+  defp status_destination(%__MODULE__{repository: repository, head_sha: head_sha}),
+    do: "#{repository}@#{head_sha}"
+
+  defp required_checks_from_attrs(attrs) do
+    case Map.get(attrs, :required_checks) || Map.get(attrs, "required_checks") do
+      checks when is_list(checks) -> validate_required_checks(checks)
+      _ -> {:error, {:missing_or_invalid, :required_checks}}
+    end
+  end
+
+  defp validate_required_checks(checks) when is_list(checks) and checks != [] do
+    with {:ok, normalized} <- normalize_required_checks(checks),
+         normalized <- Enum.reverse(normalized),
+         :ok <- reject_duplicate_required_check_names(normalized) do
+      {:ok, normalized}
+    end
+  end
+
+  defp validate_required_checks(_checks), do: {:error, {:missing_or_invalid, :required_checks}}
+
+  defp normalize_required_checks(checks) do
+    Enum.reduce_while(checks, {:ok, []}, fn check, {:ok, acc} ->
+      case normalize_required_check(check) do
+        {:ok, normalized_check} -> {:cont, {:ok, [normalized_check | acc]}}
+        {:error, reason} -> {:halt, {:error, reason}}
+      end
+    end)
+  end
+
+  defp normalize_required_check(check) when is_map(check) do
+    with {:ok, name} <- required_binary(check, :name),
+         {:ok, app_slug} <- required_binary(check, :app_slug),
+         {:ok, app_id} <- required_positive_integer(check, :app_id) do
+      {:ok, %{name: name, app_slug: app_slug, app_id: app_id}}
+    end
+  end
+
+  defp normalize_required_check(_check), do: {:error, :invalid_required_check}
+
+  defp reject_duplicate_required_check_names(checks) do
+    case Enum.find(Enum.frequencies(Enum.map(checks, & &1.name)), fn {_name, count} -> count > 1 end) do
+      nil -> :ok
+      {duplicate, _count} -> {:error, {:duplicate_required_check, duplicate}}
     end
   end
 

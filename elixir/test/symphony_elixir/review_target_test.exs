@@ -5,13 +5,17 @@ defmodule SymphonyElixir.ReviewTargetTest do
 
   @head_sha String.duplicate("a", 40)
   @other_head_sha String.duplicate("b", 40)
+  @required_checks [
+    %{name: "ci", app_slug: "github-actions", app_id: 15_368}
+  ]
 
   test "target identity includes repository, pull request number, and head sha" do
     assert {:ok, target} =
              ReviewTarget.new(%{
                repository: "aroakpm-svg/symphony",
                pull_request_number: 25,
-               head_sha: @head_sha
+               head_sha: @head_sha,
+               required_checks: @required_checks
              })
 
     assert ReviewTarget.identity(target) == %{
@@ -28,14 +32,16 @@ defmodule SymphonyElixir.ReviewTargetTest do
              ReviewTarget.new(%{
                repository: "aroakpm-svg/symphony",
                pull_request_number: 25,
-               head_sha: @head_sha
+               head_sha: @head_sha,
+               required_checks: @required_checks
              })
 
     assert {:ok, central_brain_target} =
              ReviewTarget.new(%{
                repository: "aroakpm-svg/aroak-central-brain",
                pull_request_number: 25,
-               head_sha: @head_sha
+               head_sha: @head_sha,
+               required_checks: @required_checks
              })
 
     refute ReviewTarget.key(symphony_target) == ReviewTarget.key(central_brain_target)
@@ -49,14 +55,16 @@ defmodule SymphonyElixir.ReviewTargetTest do
              ReviewTarget.new(%{
                repository: "aroakpm-svg/symphony",
                pull_request_number: 25,
-               head_sha: @head_sha
+               head_sha: @head_sha,
+               required_checks: @required_checks
              })
 
     assert {:ok, new_target} =
              ReviewTarget.new(%{
                repository: "aroakpm-svg/symphony",
                pull_request_number: 25,
-               head_sha: @other_head_sha
+               head_sha: @other_head_sha,
+               required_checks: @required_checks
              })
 
     refute ReviewTarget.key(old_target) == ReviewTarget.key(new_target)
@@ -83,7 +91,8 @@ defmodule SymphonyElixir.ReviewTargetTest do
              ReviewTarget.new(%{
                repository: "aroakpm-svg/symphony",
                pull_request_number: 25,
-               head_sha: @head_sha
+               head_sha: @head_sha,
+               required_checks: @required_checks
              })
 
     assert :ok =
@@ -110,22 +119,72 @@ defmodule SymphonyElixir.ReviewTargetTest do
     assert {:error, :invalid_review_snapshot} = ReviewTarget.assert_snapshot(target, :not_a_map)
   end
 
+  test "targets with the same repository and head cannot share a status destination" do
+    first = %{
+      repository: "aroakpm-svg/symphony",
+      pull_request_number: 25,
+      head_sha: @head_sha,
+      required_checks: @required_checks
+    }
+
+    second = %{first | pull_request_number: 26}
+
+    assert {:error, {:duplicate_status_destination, "aroakpm-svg/symphony@#{@head_sha}"}} =
+             ReviewTarget.validate_all([first, second])
+  end
+
+  test "required-check policies fail closed for missing, malformed, and duplicate entries" do
+    base = %{
+      repository: "aroakpm-svg/symphony",
+      pull_request_number: 25,
+      head_sha: @head_sha
+    }
+
+    assert {:error, {:missing_or_invalid, :required_checks}} = ReviewTarget.new(base)
+
+    assert {:error, {:missing_or_invalid, :required_checks}} =
+             ReviewTarget.new(%ReviewTarget{
+               repository: base.repository,
+               pull_request_number: base.pull_request_number,
+               head_sha: base.head_sha,
+               required_checks: []
+             })
+
+    assert {:error, :invalid_required_check} =
+             ReviewTarget.new(Map.put(base, :required_checks, [:not_a_map]))
+
+    assert {:error, {:duplicate_required_check, "ci"}} =
+             ReviewTarget.new(
+               Map.put(base, :required_checks, [
+                 %{name: "ci", app_slug: "github-actions", app_id: 15_368},
+                 %{name: "ci", app_slug: "github-actions", app_id: 15_368}
+               ])
+             )
+  end
+
   test "struct validation fails closed for non-binary identity fields" do
     assert {:error, {:invalid_repository, 42}} =
-             ReviewTarget.new(%ReviewTarget{repository: 42, pull_request_number: 25, head_sha: @head_sha})
+             ReviewTarget.new(%ReviewTarget{
+               repository: 42,
+               pull_request_number: 25,
+               head_sha: @head_sha,
+               required_checks: @required_checks
+             })
 
     assert {:error, {:invalid_pull_request_number, "25"}} =
              ReviewTarget.new(%ReviewTarget{
                repository: "aroakpm-svg/symphony",
                pull_request_number: "25",
-               head_sha: @head_sha
+               head_sha: @head_sha,
+               required_checks: @required_checks
              })
 
     assert {:error, {:invalid_head_sha, 42}} =
              ReviewTarget.new(%ReviewTarget{
                repository: "aroakpm-svg/symphony",
                pull_request_number: 25,
-               head_sha: 42
+               head_sha: 42,
+               required_checks: @required_checks
              })
   end
 end

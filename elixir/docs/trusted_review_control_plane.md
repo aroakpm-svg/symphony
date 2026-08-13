@@ -32,8 +32,30 @@ aroakpm-svg/symphony#25@<head-a>
 aroakpm-svg/symphony#25@<head-b>
 ```
 
+Each target also carries an explicit required-check policy. The policy is not
+part of target identity, but it is required for the target-scoped path and must
+name the expected check plus its trusted GitHub App slug and numeric ID.
+
+Example:
+
+{
+  "name": "make-all",
+  "app_slug": "github-actions",
+  "app_id": 15368
+}
+
+The target policy is the source of truth for checks that are not supplied by
+the target repository's ruleset or branch protection. Observed check runs are
+never inferred to be required merely because they exist. Protected contexts
+are still added when available.
+
 Before any status is published, the fresh GitHub snapshot must match all three
 identity fields. A mismatch fails closed and publishes no status.
+
+Because commit statuses are addressed by repository and commit SHA, two
+allowlisted targets may not share the same repository/head destination, even if
+their pull-request numbers differ. The registry rejects that configuration
+before any GitHub reads or writes.
 
 Target-scoped issue-comment review requests persist the pinned head explicitly
 as `currentHeadSha` alongside the opaque `dedup-key`. The target-aware
@@ -45,6 +67,10 @@ After a target has published a status, a later run that cannot re-verify its
 evidence publishes `error` on that same pinned head before returning a blocked
 outcome. A deliberate identity mismatch is the exception: it fails closed and
 does not overwrite any existing status.
+
+The CLI intentionally keeps state ephemeral between invocations. The immutable
+target head is the revocation address, so a fresh invocation can still
+supersede a stale success without a local state file.
 
 ## Trust boundary
 
@@ -69,7 +95,15 @@ review result:
 
 ```bash
 export SYMPHONY_REVIEW_TARGETS='[
-  {"repository":"aroakpm-svg/symphony","pull_request_number":25,"head_sha":"<full-lowercase-head-sha>"}
+  {
+    "repository":"aroakpm-svg/symphony",
+    "pull_request_number":25,
+    "head_sha":"<full-lowercase-head-sha>",
+    "required_checks":[
+      {"name":"make-all","app_slug":"github-actions","app_id":15368},
+      {"name":"validate-pr-description","app_slug":"github-actions","app_id":15368}
+    ]
+  }
 ]'
 
 mix review.control_plane

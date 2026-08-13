@@ -71,7 +71,7 @@ defmodule SymphonyElixir.ReviewControlPlane do
         |> Map.put(:last_status, status)
         |> Map.put(:last_decision, decision_name(decision))
         |> maybe_record_review_request(target, decision, status)
-        |> append_history(target, snapshot, decision, status)
+        |> maybe_append_history(entry, target, snapshot, decision, status)
 
       {:ok, updated_entry,
        %{
@@ -95,7 +95,7 @@ defmodule SymphonyElixir.ReviewControlPlane do
            status: blocked_status(reason),
            decision: nil,
            reason: normalize_reason(error_reason),
-           head_sha: Map.get(entry, :last_head_sha)
+           head_sha: target.head_sha
          }}
     end
   end
@@ -111,75 +111,100 @@ defmodule SymphonyElixir.ReviewControlPlane do
        do: :ok
 
   defp revoke_stale_status(review_client, target, entry, _reason) do
-    last_status = Map.get(entry, :last_status)
-
-    head_sha =
-      case Map.get(entry, :last_head_sha) do
-        head_sha when is_binary(head_sha) and head_sha != "" -> head_sha
-        _ when last_status == :success -> target.head_sha
-        _ -> nil
-      end
-
-    if is_binary(head_sha) do
+    if unchanged_status?(entry, target.head_sha, nil, :error) do
+      :ok
+    else
       review_client.publish_status(
         target.repository,
-        head_sha,
+        target.head_sha,
         :error,
         "Review evidence unavailable; previous status revoked",
         nil
       )
-    else
-      :ok
     end
   end
 
-  defp apply_decision(target, snapshot, {:converged, _evidence}, _entry, review_client) do
-    publish(review_client, target, snapshot, :success, "Latest head technically converged; human merge required")
-  end
-
-  defp apply_decision(target, snapshot, {:request_review, _evidence}, entry, review_client) do
-    request_key = ReviewTarget.dedup_key(target, :review_request, :codex)
-
-    with :ok <- ensure_review_requested(review_client, target, entry, request_key) do
-      publish(review_client, target, snapshot, :pending, "Waiting for a formal latest-head review")
-    end
-  end
-
-  defp apply_decision(target, snapshot, {:rework, _evidence}, _entry, review_client) do
-    publish(review_client, target, snapshot, :failure, "Unresolved actionable P1-P4 review findings")
-  end
-
-  defp apply_decision(target, snapshot, {:wait, evidence}, _entry, review_client) do
+  defp apply_decision(target, snapshot, {:converged, _evidence} = decision, entry, review_client) do
     publish(
       review_client,
       target,
       snapshot,
+      entry,
+      decision,
+      :success,
+      "Latest head technically converged; human merge required"
+    )
+  end
+
+  defp apply_decision(target, snapshot, {:request_review, _evidence} = decision, entry, review_client) do
+    request_key = ReviewTarget.dedup_key(target, :review_request, :codex)
+
+    with :ok <- ensure_review_requested(review_client, target, entry, request_key) do
+      publish(
+        review_client,
+        target,
+        snapshot,
+        entry,
+        decision,
+        :pending,
+        "Waiting for a formal latest-head review"
+      )
+    end
+  end
+
+  defp apply_decision(target, snapshot, {:rework, _evidence} = decision, entry, review_client) do
+    publish(
+      review_client,
+      target,
+      snapshot,
+      entry,
+      decision,
+      :failure,
+      "Unresolved actionable P1-P4 review findings"
+    )
+  end
+
+  defp apply_decision(target, snapshot, {:wait, evidence} = decision, entry, review_client) do
+    publish(
+      review_client,
+      target,
+      snapshot,
+      entry,
+      decision,
       :pending,
       "Waiting for required evidence or human judgment (#{inspect(evidence[:reason] || :unknown)})"
     )
   end
 
-  defp apply_decision(target, snapshot, {:escalate, _evidence}, _entry, review_client) do
-    publish(review_client, target, snapshot, :failure, "Review did not converge; human decision required")
+  defp apply_decision(target, snapshot, {:escalate, _evidence} = decision, entry, review_client) do
+    publish(
+      review_client,
+      target,
+      snapshot,
+      entry,
+      decision,
+      :failure,
+      "Review did not converge; human decision required"
+    )
   end
 
-  defp ensure_review_requested(review_client, target, entry, request_key) do
-    if request_key in entry.requested_review_keys do
-      :ok
-    else
-      case review_client.review_request_exists_for_target?(target, request_key) do
-        {:ok, true} -> :ok
-        {:ok, false} -> review_client.request_review_for_target(target, request_key)
-        {:error, reason} -> {:error, reason}
-      end
+  defp ensure_review_requested(review_client, target, _entry, request_key) do
+    case review_client.review_request_exists_for_target?(target, request_key) do
+      {:ok, true} -> :ok
+      {:ok, false} -> review_client.request_review_for_target(target, request_key)
+      {:error, reason} -> {:error, reason}
     end
   end
 
-  defp publish(review_client, target, snapshot, status, description) do
-    review_client.publish_status(target.repository, snapshot.current_head_sha, status, description, nil)
-    |> case do
-      :ok -> {:ok, status}
-      {:error, reason} -> {:error, reason}
+  defp publish(review_client, target, snapshot, entry, decision, status, description) do
+    if unchanged_status?(entry, snapshot.current_head_sha, decision_name(decision), status) do
+      {:ok, status}
+    else
+      review_client.publish_status(target.repository, snapshot.current_head_sha, status, description, nil)
+      |> case do
+        :ok -> {:ok, status}
+        {:error, reason} -> {:error, reason}
+      end
     end
   end
 
@@ -213,22 +238,41 @@ defmodule SymphonyElixir.ReviewControlPlane do
   defp validate_entry_identity(_target, _entry), do: {:error, :target_state_invalid}
 
   defp blocked_entry(entry, target, reason) do
+    status = if error_status_published?(reason), do: :error, else: :blocked
+    last_head_sha = if status == :error, do: target.head_sha, else: Map.get(entry, :last_head_sha)
+
     entry
     |> Map.put(:target_identity, ReviewTarget.identity(target))
-    |> Map.put(:last_status, :blocked)
+    |> Map.put(:last_head_sha, last_head_sha)
+    |> Map.put(:last_status, status)
     |> Map.put(:last_decision, nil)
     |> Map.put(:last_error, reason)
   end
 
-  defp append_history(entry, target, snapshot, decision, status) do
-    history_entry = %{
-      target_identity: ReviewTarget.identity(target),
-      head_sha: snapshot.current_head_sha,
-      decision: decision_name(decision),
-      status: status
-    }
+  defp error_status_published?({:status_publication_failed, _reason, _status_reason}), do: false
+  defp error_status_published?(:target_state_identity_mismatch), do: false
+  defp error_status_published?({:target_identity_mismatch, _field, _expected, _actual}), do: false
+  defp error_status_published?(_reason), do: true
 
-    Map.update!(entry, :history, &[history_entry | &1])
+  defp maybe_append_history(entry, previous_entry, target, snapshot, decision, status) do
+    if unchanged_status?(previous_entry, snapshot.current_head_sha, decision_name(decision), status) do
+      entry
+    else
+      history_entry = %{
+        target_identity: ReviewTarget.identity(target),
+        head_sha: snapshot.current_head_sha,
+        decision: decision_name(decision),
+        status: status
+      }
+
+      Map.update!(entry, :history, &[history_entry | &1])
+    end
+  end
+
+  defp unchanged_status?(entry, head_sha, decision, status) do
+    Map.get(entry, :last_head_sha) == head_sha and
+      Map.get(entry, :last_decision) == decision and
+      Map.get(entry, :last_status) == status
   end
 
   defp maybe_record_review_request(entry, target, {:request_review, _evidence}, :pending) do

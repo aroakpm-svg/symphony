@@ -115,7 +115,17 @@ external runtime that must review pull requests in more than one repository,
 use the separate target-scoped control plane:
 
 ```bash
-export SYMPHONY_REVIEW_TARGETS='[{"repository":"aroakpm-svg/symphony","pull_request_number":25,"head_sha":"<full-lowercase-head-sha>"}]'
+export SYMPHONY_REVIEW_TARGETS='[
+  {
+    "repository":"aroakpm-svg/symphony",
+    "pull_request_number":25,
+    "head_sha":"<full-lowercase-head-sha>",
+    "required_checks":[
+      {"name":"make-all","app_slug":"github-actions","app_id":15368},
+      {"name":"validate-pr-description","app_slug":"github-actions","app_id":15368}
+    ]
+  }
+]'
 mix review.control_plane
 ```
 
@@ -126,6 +136,9 @@ reviewer code. The task validates the target identity before publishing
 `Review Convergence Gate` to that exact repository and head. See
 [`docs/trusted_review_control_plane.md`](docs/trusted_review_control_plane.md)
 for the bootstrap contract and multi-target examples.
+
+Each target must declare its trusted required checks, and two targets may not
+share one repository/head status destination.
 
 ## How to use it
 

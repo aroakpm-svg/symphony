@@ -101,13 +101,14 @@ defmodule SymphonyElixir.GitHubReviewClient do
   @spec snapshot(String.t(), String.t()) :: {:ok, map()} | {:error, term()}
   def snapshot(repository, branch) when is_binary(repository) and is_binary(branch) do
     with {:ok, number} <- find_pull_request(repository, branch) do
-      snapshot_pull_request(repository, number)
+      snapshot_pull_request(repository, number, @expected_checks)
     end
   end
 
   @spec snapshot_target(ReviewTarget.t()) :: {:ok, map()} | {:error, term()}
   def snapshot_target(%ReviewTarget{} = target) do
-    with {:ok, snapshot} <- snapshot_pull_request(target.repository, target.pull_request_number),
+    with {:ok, snapshot} <-
+           snapshot_pull_request(target.repository, target.pull_request_number, target.required_checks),
          :ok <- ReviewTarget.assert_snapshot(target, snapshot) do
       {:ok, snapshot}
     end
@@ -198,10 +199,10 @@ defmodule SymphonyElixir.GitHubReviewClient do
     end
   end
 
-  defp snapshot_pull_request(repository, number) do
+  defp snapshot_pull_request(repository, number, expected_checks) do
     with {:ok, pull_request} <- fetch_pull_request(repository, number),
          {:ok, issue_comments} <- fetch_issue_comments(repository, number),
-         {:ok, checks} <- required_checks(repository, pull_request),
+         {:ok, checks} <- required_checks(repository, pull_request, expected_checks),
          {:ok, base_verification} <- verify_base_claims(repository, pull_request) do
       {:ok,
        pull_request
@@ -221,7 +222,13 @@ defmodule SymphonyElixir.GitHubReviewClient do
 
   @doc false
   @spec normalize_expected_checks_for_test(map()) :: {:ok, [map()]} | {:error, term()}
-  def normalize_expected_checks_for_test(payload), do: normalize_expected_checks(payload)
+  def normalize_expected_checks_for_test(payload),
+    do: normalize_expected_checks(payload, @expected_checks)
+
+  @doc false
+  @spec normalize_target_expected_checks_for_test(map(), [map()]) :: {:ok, [map()]} | {:error, term()}
+  def normalize_target_expected_checks_for_test(payload, expected_checks),
+    do: normalize_expected_checks(payload, expected_checks)
 
   @doc false
   @spec merge_required_checks_for_test([map()], [map()]) :: [map()]
@@ -378,7 +385,7 @@ defmodule SymphonyElixir.GitHubReviewClient do
     end
   end
 
-  defp required_checks(repository, pull_request) do
+  defp required_checks(repository, pull_request, expected_checks) do
     head_sha = pull_request["headRefOid"]
 
     with {:ok, output} <-
@@ -393,7 +400,7 @@ defmodule SymphonyElixir.GitHubReviewClient do
          {:ok, pages} when is_list(pages) <- Jason.decode(output),
          {:ok, payload} <- merge_check_run_pages(pages),
          {:ok, statuses} <- commit_statuses(repository, head_sha),
-         {:ok, expected} <- normalize_expected_checks(payload),
+         {:ok, expected} <- normalize_expected_checks(payload, expected_checks),
          {:ok, contexts} <- required_contexts(repository, pull_request["baseRefName"]),
          {:ok, protected} <- match_required_contexts(contexts, payload, statuses) do
       {:ok, merge_required_checks(expected, protected)}
@@ -574,9 +581,10 @@ defmodule SymphonyElixir.GitHubReviewClient do
   defp check_state_rank(:success), do: 0
   defp check_state_rank(_state), do: 5
 
-  defp normalize_expected_checks(%{"check_runs" => runs}) when is_list(runs) do
+  defp normalize_expected_checks(%{"check_runs" => runs}, expected_checks)
+       when is_list(runs) and is_list(expected_checks) do
     checks =
-      Enum.map(@expected_checks, fn expected ->
+      Enum.map(expected_checks, fn expected ->
         run =
           runs
           |> Enum.filter(fn candidate ->
@@ -596,7 +604,8 @@ defmodule SymphonyElixir.GitHubReviewClient do
     {:ok, checks}
   end
 
-  defp normalize_expected_checks(payload), do: {:error, {:invalid_check_runs, payload}}
+  defp normalize_expected_checks(payload, _expected_checks),
+    do: {:error, {:invalid_check_runs, payload}}
 
   defp merge_check_run_pages(pages) when is_list(pages) do
     Enum.reduce_while(pages, {:ok, []}, fn

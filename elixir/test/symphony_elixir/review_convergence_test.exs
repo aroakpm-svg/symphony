@@ -448,6 +448,31 @@ defmodule SymphonyElixir.ReviewConvergenceTest do
             ]} = GitHubReviewClient.normalize_expected_checks_for_test(payload)
   end
 
+  test "target-specific expected checks do not inherit Symphony check names" do
+    payload = %{
+      "check_runs" => [
+        %{
+          "name" => "ci",
+          "status" => "completed",
+          "conclusion" => "success",
+          "details_url" => "url/ci",
+          "app" => %{"slug" => "github-actions", "id" => 42}
+        },
+        %{
+          "name" => "make-all",
+          "status" => "completed",
+          "conclusion" => "success",
+          "app" => %{"slug" => "github-actions", "id" => 15_368}
+        }
+      ]
+    }
+
+    expected = [%{name: "ci", app_slug: "github-actions", app_id: 42}]
+
+    assert {:ok, [%{name: "ci", state: :success, link: "url/ci"}]} =
+             GitHubReviewClient.normalize_target_expected_checks_for_test(payload, expected)
+  end
+
   test "check-run REST pages are all merged before expected checks are selected" do
     first = %{"check_runs" => [%{"name" => "unrelated"}]}
 
@@ -582,7 +607,8 @@ defmodule SymphonyElixir.ReviewConvergenceTest do
       ReviewTarget.new(%{
         repository: "aroakpm-svg/symphony",
         pull_request_number: 25,
-        head_sha: head
+        head_sha: head,
+        required_checks: [%{name: "ci", app_slug: "github-actions", app_id: 42}]
       })
 
     key = ReviewTarget.dedup_key(target, :review_request, :codex)

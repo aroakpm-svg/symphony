@@ -465,6 +465,11 @@ keeps each target's state and deduplication namespace separate. Run it only
 from an already trusted Symphony checkout; a target PR must never review its
 own modified reviewer code. See `docs/trusted_review_control_plane.md`.
 
+The target registry also carries an explicit required-check policy naming each
+check's trusted App identity. The task rejects shared repository/head status
+destinations before publication; it does not infer required checks from
+observed runs alone.
+
 Actionable P1-P4 findings move the issue back to In Progress once per head/finding fingerprint and
 reuse the same branch and PR. Waiting for staging, permissions, or human product/safety decisions
 keeps the issue In Review and pauses retries without repeating a full review. Technical convergence

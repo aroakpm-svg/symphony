@@ -4,6 +4,13 @@ defmodule SymphonyElixir.ReviewTargetRegistryTest do
   alias SymphonyElixir.ReviewTargetRegistry
 
   @head_sha String.duplicate("a", 40)
+  @required_checks [
+    %{
+      "name" => "ci",
+      "app_slug" => "github-actions",
+      "app_id" => 15_368
+    }
+  ]
 
   test "parses an explicit allowlist of independently identified targets" do
     assert {:ok, targets} =
@@ -11,12 +18,14 @@ defmodule SymphonyElixir.ReviewTargetRegistryTest do
                %{
                  "repository" => "aroakpm-svg/aroak-central-brain",
                  "pull_request_number" => 25,
-                 "head_sha" => @head_sha
+                 "head_sha" => @head_sha,
+                 "required_checks" => @required_checks
                },
                %{
                  "repository" => "aroakpm-svg/symphony",
                  "pull_request_number" => 25,
-                 "head_sha" => @head_sha
+                 "head_sha" => @head_sha,
+                 "required_checks" => @required_checks
                }
              ])
 
@@ -27,10 +36,25 @@ defmodule SymphonyElixir.ReviewTargetRegistryTest do
     target = %{
       "repository" => "aroakpm-svg/symphony",
       "pull_request_number" => 25,
-      "head_sha" => @head_sha
+      "head_sha" => @head_sha,
+      "required_checks" => @required_checks
     }
 
     assert {:error, {:duplicate_target, _key}} = ReviewTargetRegistry.parse([target, target])
+  end
+
+  test "targets that share a repository head are rejected before evaluation" do
+    first = %{
+      "repository" => "aroakpm-svg/symphony",
+      "pull_request_number" => 25,
+      "head_sha" => @head_sha,
+      "required_checks" => @required_checks
+    }
+
+    second = %{first | "pull_request_number" => 26}
+
+    assert {:error, {:duplicate_status_destination, "aroakpm-svg/symphony@#{@head_sha}"}} =
+             ReviewTargetRegistry.parse([first, second])
   end
 
   test "missing or malformed environment registry fails closed" do

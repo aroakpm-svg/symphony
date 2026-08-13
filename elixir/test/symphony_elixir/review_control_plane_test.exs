@@ -17,21 +17,36 @@ defmodule SymphonyElixir.ReviewControlPlaneTest do
       end
     end
 
-    @spec publish_status(String.t(), String.t(), atom(), String.t(), String.t() | nil) :: :ok
+    @spec publish_status(String.t(), String.t(), atom(), String.t(), String.t() | nil) ::
+            :ok | {:error, term()}
     def publish_status(repository, head_sha, state, description, _target_url) do
-      send(
-        Application.fetch_env!(:symphony_elixir, :control_plane_recipient),
-        {:status, repository, head_sha, state, description}
-      )
+      case Application.get_env(:symphony_elixir, :control_plane_publish_error) do
+        {:error, _reason} = error ->
+          error
 
-      :ok
+        nil ->
+          send(
+            Application.fetch_env!(:symphony_elixir, :control_plane_recipient),
+            {:status, repository, head_sha, state, description}
+          )
+
+          :ok
+      end
     end
 
     @spec review_request_exists_for_target?(ReviewTarget.t(), String.t()) :: {:ok, boolean()}
-    def review_request_exists_for_target?(_target, _key), do: {:ok, false}
+    def review_request_exists_for_target?(_target, key) do
+      {:ok, MapSet.member?(Process.get(:control_plane_remote_request_keys, MapSet.new()), key)}
+    end
 
     @spec request_review_for_target(ReviewTarget.t(), String.t()) :: :ok
     def request_review_for_target(target, key) do
+      remote_request_keys =
+        Process.get(:control_plane_remote_request_keys, MapSet.new())
+        |> MapSet.put(key)
+
+      Process.put(:control_plane_remote_request_keys, remote_request_keys)
+
       send(
         Application.fetch_env!(:symphony_elixir, :control_plane_recipient),
         {:request, target.repository, target.pull_request_number, target.head_sha, key}
@@ -43,11 +58,14 @@ defmodule SymphonyElixir.ReviewControlPlaneTest do
 
   setup do
     Application.put_env(:symphony_elixir, :control_plane_recipient, self())
+    Process.put(:control_plane_remote_request_keys, MapSet.new())
 
     on_exit(fn ->
       Application.delete_env(:symphony_elixir, :control_plane_recipient)
       Application.delete_env(:symphony_elixir, :control_plane_snapshots)
       Application.delete_env(:symphony_elixir, :control_plane_snapshot_error)
+      Application.delete_env(:symphony_elixir, :control_plane_publish_error)
+      Process.delete(:control_plane_remote_request_keys)
     end)
   end
 
@@ -130,6 +148,30 @@ defmodule SymphonyElixir.ReviewControlPlaneTest do
 
     assert {:ok, _state, [%{status: :pending}]} = ReviewControlPlane.run([target], state, ReviewClient, 3)
     refute_receive {:request, _, _, _, _}
+
+    Process.put(:control_plane_remote_request_keys, MapSet.new())
+
+    assert {:ok, _state, [%{status: :pending}]} = ReviewControlPlane.run([target], state, ReviewClient, 3)
+    assert_receive {:request, "aroakpm-svg/symphony", 25, ^head_sha, ^request_key}
+  end
+
+  test "fresh control-plane runs revoke the pinned target head when evidence is unavailable" do
+    target = target("aroakpm-svg/symphony", 25, "a")
+
+    Application.put_env(:symphony_elixir, :control_plane_snapshot_error, {:error, :github_unavailable})
+
+    assert {:ok, state, [%{status: :error, reason: :external_evidence_unavailable}]} =
+             ReviewControlPlane.run([target], %{}, ReviewClient, 3)
+
+    assert_receive {:status, "aroakpm-svg/symphony", head_sha, :error, description}
+    assert head_sha == target.head_sha
+    assert description =~ "evidence"
+
+    assert {:ok, repeated_state, [%{status: :error, reason: :external_evidence_unavailable}]} =
+             ReviewControlPlane.run([target], state, ReviewClient, 3)
+
+    refute_receive {:status, _, _, _, _}
+    assert repeated_state[ReviewTarget.key(target)].last_status == :error
   end
 
   test "publishes an error on the last head when later evidence becomes unavailable" do
@@ -181,7 +223,41 @@ defmodule SymphonyElixir.ReviewControlPlaneTest do
     refute_receive {:status, "aroakpm-svg/symphony", _, _, _}
   end
 
-  test "malformed persisted state is blocked without publishing a status" do
+  test "does not publish when persisted target state identity mismatches" do
+    target = target("aroakpm-svg/symphony", 25, "a")
+
+    mismatched_state = %{
+      ReviewTarget.key(target) => %{
+        target_identity: %{ReviewTarget.identity(target) | pull_request_number: 26},
+        last_head_sha: nil,
+        last_status: :not_evaluated,
+        last_decision: nil,
+        requested_review_keys: MapSet.new(),
+        history: []
+      }
+    }
+
+    assert {:ok, state, [%{status: :error, reason: :target_state_identity_mismatch}]} =
+             ReviewControlPlane.run([target], mismatched_state, ReviewClient, 3)
+
+    assert state[ReviewTarget.key(target)].last_status == :blocked
+    refute_receive {:status, _, _, _, _}
+  end
+
+  test "does not claim error status was published when the revoke call fails" do
+    target = target("aroakpm-svg/symphony", 25, "a")
+
+    Application.put_env(:symphony_elixir, :control_plane_snapshot_error, {:error, :github_unavailable})
+    Application.put_env(:symphony_elixir, :control_plane_publish_error, {:error, :forbidden})
+
+    assert {:ok, state, [%{status: :error}]} =
+             ReviewControlPlane.run([target], %{}, ReviewClient, 3)
+
+    assert state[ReviewTarget.key(target)].last_status == :blocked
+    refute_receive {:status, _, _, _, _}
+  end
+
+  test "malformed persisted state publishes an error on the pinned target head" do
     target = target("aroakpm-svg/symphony", 25, "a")
 
     Application.put_env(
@@ -195,8 +271,30 @@ defmodule SymphonyElixir.ReviewControlPlaneTest do
     assert {:ok, state, [outcome]} = ReviewControlPlane.run([target], malformed_state, ReviewClient, 3)
     assert outcome.status == :error
     assert outcome.reason == :external_evidence_unavailable
-    assert state[ReviewTarget.key(target)].last_status == :blocked
-    refute_received {:status, _, _, _, _}
+    assert state[ReviewTarget.key(target)].last_status == :error
+    head_sha = target.head_sha
+    assert_receive {:status, "aroakpm-svg/symphony", ^head_sha, :error, _}
+  end
+
+  test "unchanged target decisions do not republish status or append history" do
+    target = target("aroakpm-svg/symphony", 25, "a")
+
+    Application.put_env(
+      :symphony_elixir,
+      :control_plane_snapshots,
+      %{ReviewTarget.key(target) => converged_snapshot(target)}
+    )
+
+    assert {:ok, state, [%{status: :success}]} = ReviewControlPlane.run([target], %{}, ReviewClient, 3)
+    head_sha = target.head_sha
+    assert_receive {:status, "aroakpm-svg/symphony", ^head_sha, :success, _}
+    assert length(state[ReviewTarget.key(target)].history) == 1
+
+    assert {:ok, unchanged_state, [%{status: :success}]} =
+             ReviewControlPlane.run([target], state, ReviewClient, 3)
+
+    refute_receive {:status, _, _, _, _}
+    assert length(unchanged_state[ReviewTarget.key(target)].history) == 1
   end
 
   defp target(repository, number, letter) do
@@ -204,7 +302,8 @@ defmodule SymphonyElixir.ReviewControlPlaneTest do
       ReviewTarget.new(%{
         repository: repository,
         pull_request_number: number,
-        head_sha: String.duplicate(letter, 40)
+        head_sha: String.duplicate(letter, 40),
+        required_checks: required_checks()
       })
 
     target
@@ -225,5 +324,12 @@ defmodule SymphonyElixir.ReviewControlPlaneTest do
       finding_summary: %{decisions: [], requires_lifecycle?: false},
       structural_risk: false
     }
+  end
+
+  defp required_checks do
+    [
+      %{name: "make-all", app_slug: "github-actions", app_id: 15_368},
+      %{name: "validate-pr-description", app_slug: "github-actions", app_id: 15_368}
+    ]
   end
 end
