@@ -609,6 +609,52 @@ defmodule SymphonyElixir.FindingDispositionTest do
              })
   end
 
+  test "operation IDs fail closed when embedded effect types do not match the operation" do
+    cases = [
+      {:linear_issue_create,
+       %{
+         repository: "owner/repo",
+         pull_request_number: 21,
+         finding_lineage_key: String.duplicate("c", 64),
+         destination: "Backlog",
+         effect_type: :linear_issue_create
+       }},
+      {:github_comment,
+       %{
+         repository: "owner/repo",
+         pull_request_number: 21,
+         review_thread_id: "thread-1",
+         finding_key: String.duplicate("d", 64),
+         message_kind: :follow_up,
+         effect_type: :github_comment
+       }},
+      {:github_review_thread_resolve,
+       %{
+         repository: "owner/repo",
+         pull_request_number: 21,
+         review_thread_id: "thread-1",
+         finding_lineage_key: String.duplicate("c", 64),
+         effect_type: :github_review_thread_resolve
+       }}
+    ]
+
+    for {operation_type, input} <- cases do
+      assert {:ok, operation_id} = FindingDisposition.operation_id(operation_type, input)
+      assert {:ok, ^operation_id} = FindingDisposition.operation_id(operation_type, input)
+
+      assert {:error, {:missing_field, :effect_type}} =
+               FindingDisposition.operation_id(operation_type, Map.delete(input, :effect_type))
+
+      assert {:error, {:effect_type_mismatch, ^operation_type, :github_pr_update}} =
+               FindingDisposition.operation_id(operation_type, %{input | effect_type: :github_pr_update})
+
+      for invalid <- [nil, true, false, "#{operation_type}", :unsupported] do
+        assert {:error, {:invalid_logical_identity, :effect_type}} =
+                 FindingDisposition.operation_id(operation_type, %{input | effect_type: invalid})
+      end
+    end
+  end
+
   test "request fingerprints round-trip the complete immutable intent" do
     intent = fingerprint_intent()
     assert {:ok, fingerprint} = FindingDisposition.request_fingerprint(intent)
