@@ -3,7 +3,8 @@ defmodule SymphonyElixir.SSH do
 
   @spec run(String.t(), String.t(), keyword()) :: {:ok, {String.t(), non_neg_integer()}} | {:error, term()}
   def run(host, command, opts \\ []) when is_binary(host) and is_binary(command) do
-    {command_runner, command_opts} = Keyword.pop(opts, :command_runner, &System.cmd/3)
+    default_runner = Application.get_env(:symphony_elixir, :ssh_command_runner, &System.cmd/3)
+    {command_runner, command_opts} = Keyword.pop(opts, :command_runner, default_runner)
 
     with {:ok, executable} <- ssh_executable() do
       {:ok, command_runner.(executable, ssh_args(host, command), command_opts)}
@@ -12,7 +13,8 @@ defmodule SymphonyElixir.SSH do
 
   @spec start_port(String.t(), String.t(), keyword()) :: {:ok, port()} | {:error, term()}
   def start_port(host, command, opts \\ []) when is_binary(host) and is_binary(command) do
-    {port_opener, opts} = Keyword.pop(opts, :port_opener, &Port.open/2)
+    default_opener = Application.get_env(:symphony_elixir, :ssh_port_opener, &Port.open/2)
+    {port_opener, opts} = Keyword.pop(opts, :port_opener, default_opener)
 
     with {:ok, executable} <- ssh_executable() do
       line_bytes = Keyword.get(opts, :line)
