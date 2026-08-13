@@ -83,14 +83,53 @@ defmodule SymphonyElixir.ReviewControlPlane do
        }}
     else
       {:error, reason} ->
-        {:error, reason, entry,
+        error_reason =
+          case revoke_stale_status(review_client, target, entry, reason) do
+            :ok -> reason
+            {:error, status_reason} -> {:status_publication_failed, reason, status_reason}
+          end
+
+        {:error, error_reason, entry,
          %{
            target: ReviewTarget.identity(target),
            status: blocked_status(reason),
            decision: nil,
-           reason: normalize_reason(reason),
+           reason: normalize_reason(error_reason),
            head_sha: Map.get(entry, :last_head_sha)
          }}
+    end
+  end
+
+  defp revoke_stale_status(_review_client, _target, _entry, :target_state_identity_mismatch), do: :ok
+
+  defp revoke_stale_status(
+         _review_client,
+         _target,
+         _entry,
+         {:target_identity_mismatch, _field, _expected, _actual}
+       ),
+       do: :ok
+
+  defp revoke_stale_status(review_client, target, entry, _reason) do
+    last_status = Map.get(entry, :last_status)
+
+    head_sha =
+      case Map.get(entry, :last_head_sha) do
+        head_sha when is_binary(head_sha) and head_sha != "" -> head_sha
+        _ when last_status == :success -> target.head_sha
+        _ -> nil
+      end
+
+    if is_binary(head_sha) do
+      review_client.publish_status(
+        target.repository,
+        head_sha,
+        :error,
+        "Review evidence unavailable; previous status revoked",
+        nil
+      )
+    else
+      :ok
     end
   end
 

@@ -7,8 +7,14 @@ defmodule SymphonyElixir.ReviewControlPlaneTest do
   defmodule ReviewClient do
     @spec snapshot_target(ReviewTarget.t()) :: {:ok, map()} | {:error, term()}
     def snapshot_target(target) do
-      snapshots = Application.fetch_env!(:symphony_elixir, :control_plane_snapshots)
-      {:ok, Map.fetch!(snapshots, ReviewTarget.key(target))}
+      case Application.get_env(:symphony_elixir, :control_plane_snapshot_error) do
+        {:error, _reason} = error ->
+          error
+
+        nil ->
+          snapshots = Application.fetch_env!(:symphony_elixir, :control_plane_snapshots)
+          {:ok, Map.fetch!(snapshots, ReviewTarget.key(target))}
+      end
     end
 
     @spec publish_status(String.t(), String.t(), atom(), String.t(), String.t() | nil) :: :ok
@@ -41,6 +47,7 @@ defmodule SymphonyElixir.ReviewControlPlaneTest do
     on_exit(fn ->
       Application.delete_env(:symphony_elixir, :control_plane_recipient)
       Application.delete_env(:symphony_elixir, :control_plane_snapshots)
+      Application.delete_env(:symphony_elixir, :control_plane_snapshot_error)
     end)
   end
 
@@ -122,7 +129,56 @@ defmodule SymphonyElixir.ReviewControlPlaneTest do
     assert request_key == ReviewTarget.dedup_key(target, :review_request, :codex)
 
     assert {:ok, _state, [%{status: :pending}]} = ReviewControlPlane.run([target], state, ReviewClient, 3)
-    refute_receive {:request, _, _, _}
+    refute_receive {:request, _, _, _, _}
+  end
+
+  test "publishes an error on the last head when later evidence becomes unavailable" do
+    target = target("aroakpm-svg/symphony", 25, "a")
+
+    Application.put_env(
+      :symphony_elixir,
+      :control_plane_snapshots,
+      %{ReviewTarget.key(target) => converged_snapshot(target)}
+    )
+
+    assert {:ok, state, [%{status: :success}]} = ReviewControlPlane.run([target], %{}, ReviewClient, 3)
+    assert_receive {:status, "aroakpm-svg/symphony", head_sha, :success, _}
+    assert head_sha == target.head_sha
+
+    Application.put_env(:symphony_elixir, :control_plane_snapshot_error, {:error, :github_unavailable})
+
+    assert {:ok, _blocked_state, [%{status: :error, reason: :external_evidence_unavailable}]} =
+             ReviewControlPlane.run([target], state, ReviewClient, 3)
+
+    assert_receive {:status, "aroakpm-svg/symphony", ^head_sha, :error, description}
+    assert description =~ "evidence"
+  end
+
+  test "does not overwrite a prior status on an identity mismatch" do
+    target = target("aroakpm-svg/symphony", 25, "a")
+
+    Application.put_env(
+      :symphony_elixir,
+      :control_plane_snapshots,
+      %{ReviewTarget.key(target) => converged_snapshot(target)}
+    )
+
+    assert {:ok, state, [%{status: :success}]} = ReviewControlPlane.run([target], %{}, ReviewClient, 3)
+    head_sha = target.head_sha
+    assert_receive {:status, "aroakpm-svg/symphony", ^head_sha, :success, _}
+
+    mismatched_snapshot = %{converged_snapshot(target) | current_head_sha: String.duplicate("b", 40)}
+
+    Application.put_env(
+      :symphony_elixir,
+      :control_plane_snapshots,
+      %{ReviewTarget.key(target) => mismatched_snapshot}
+    )
+
+    assert {:ok, _blocked_state, [%{status: :blocked, reason: :target_identity_mismatch}]} =
+             ReviewControlPlane.run([target], state, ReviewClient, 3)
+
+    refute_receive {:status, "aroakpm-svg/symphony", _, _, _}
   end
 
   test "malformed persisted state is blocked without publishing a status" do

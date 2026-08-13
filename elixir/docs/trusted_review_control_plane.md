@@ -41,6 +41,11 @@ existence check requires both values, so an older hash-only request cannot
 suppress a corrected request for the same target. The ordinary issue-scoped
 request path remains compatible with the legacy body shape.
 
+After a target has published a status, a later run that cannot re-verify its
+evidence publishes `error` on that same pinned head before returning a blocked
+outcome. A deliberate identity mismatch is the exception: it fails closed and
+does not overwrite any existing status.
+
 ## Trust boundary
 
 `SYMPHONY_REVIEW_TARGETS` is loaded by the trusted runtime environment, not

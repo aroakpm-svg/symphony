@@ -593,16 +593,14 @@ defmodule SymphonyElixir.ReviewConvergenceTest do
     }
 
     clean = clean_attestation_comment(String.slice(head, 0, 10))
+    legacy_request = %{request | "body" => "@codex review\n\ndedup-key: `#{key}`"}
 
     assert GitHubReviewClient.accepted_comment_attestation_for_test([request, clean], head) == clean
 
     assert GitHubReviewClient.review_request_matches_target_for_test?(request, head, key)
 
-    refute GitHubReviewClient.review_request_matches_target_for_test?(
-             %{request | "body" => "@codex review\n\ndedup-key: `#{key}`"},
-             head,
-             key
-           )
+    refute GitHubReviewClient.review_request_matches_target_for_test?(legacy_request, head, key)
+    refute GitHubReviewClient.accepted_comment_attestation_for_test([legacy_request, clean], head)
   end
 
   test "comment attestation rejects duplicate requests and invalidates on a new head" do
