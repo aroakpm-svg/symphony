@@ -95,11 +95,17 @@ defmodule SymphonyElixir.SSHTest do
 
   test "run/3 uses the configured default command runner" do
     previous_runner = Application.get_env(:symphony_elixir, :ssh_command_runner)
+    previous_finder = Application.get_env(:symphony_elixir, :ssh_executable_finder)
     Application.put_env(:symphony_elixir, :ssh_command_runner, command_runner(self()))
-    on_exit(fn -> restore_app_env(:ssh_command_runner, previous_runner) end)
+    Application.put_env(:symphony_elixir, :ssh_executable_finder, fn "ssh" -> "test-ssh" end)
+
+    on_exit(fn ->
+      restore_app_env(:ssh_command_runner, previous_runner)
+      restore_app_env(:ssh_executable_finder, previous_finder)
+    end)
 
     assert {:ok, {"", 0}} = SSH.run("localhost", "printf ok")
-    assert_received {:ssh_command, _executable, ["-T", "localhost", "bash -lc 'printf ok'"], []}
+    assert_received {:ssh_command, "test-ssh", ["-T", "localhost", "bash -lc 'printf ok'"], []}
   end
 
   test "start_port/3 uses the configured default port opener" do

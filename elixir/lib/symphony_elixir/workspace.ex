@@ -1275,6 +1275,9 @@ defmodule SymphonyElixir.Workspace do
   defp normalize_windows_local_repo_path("\\\\" <> _rest = path),
     do: String.replace(path, "\\", "/")
 
+  defp normalize_windows_local_repo_path("//" <> _rest = path),
+    do: String.replace(path, "\\", "/")
+
   defp normalize_windows_local_repo_path(url), do: url
 
   defp sanitize_hook_output_for_log(output, max_bytes \\ 2_048) do

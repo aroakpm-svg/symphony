@@ -104,6 +104,26 @@ defmodule SymphonyElixir.WorkspacePreflightBlockerTest do
     end
   end
 
+  test "workspace preflight folds separators for forward-slash UNC remotes" do
+    previous_source_repo_url = System.get_env("SOURCE_REPO_URL")
+    on_exit(fn -> restore_env("SOURCE_REPO_URL", previous_source_repo_url) end)
+    System.put_env("SOURCE_REPO_URL", "//server/share/repo.git")
+
+    workspace_root = Path.join(System.tmp_dir!(), "symphony-preflight-unc-#{System.unique_integer([:positive])}")
+    workspace = Path.join(workspace_root, "MT-UNC")
+
+    try do
+      File.mkdir_p!(workspace)
+      System.cmd("git", ["-C", workspace, "init"], stderr_to_stdout: true)
+      System.cmd("git", ["-C", workspace, "remote", "add", "origin", "//server\\share\\repo.git"], stderr_to_stdout: true)
+
+      assert {:error, {:workspace_preflight_failed, :git_fetch_failed, _command, _status, _output}} =
+               Workspace.preflight(workspace, "MT-UNC")
+    after
+      File.rm_rf(workspace_root)
+    end
+  end
+
   test "workspace preflight compares stored remote before URL rewrites" do
     previous_source_repo_url = System.get_env("SOURCE_REPO_URL")
     on_exit(fn -> restore_env("SOURCE_REPO_URL", previous_source_repo_url) end)

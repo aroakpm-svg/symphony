@@ -38,7 +38,9 @@ defmodule SymphonyElixir.SSH do
   end
 
   defp ssh_executable do
-    case System.find_executable("ssh") do
+    finder = Application.get_env(:symphony_elixir, :ssh_executable_finder, &System.find_executable/1)
+
+    case finder.("ssh") do
       nil -> {:error, :ssh_not_found}
       executable -> {:ok, executable}
     end
