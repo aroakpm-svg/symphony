@@ -7,7 +7,7 @@ defmodule SymphonyElixir.ReadinessGateAgentRunnerTest do
 
     previous_source_repo_url = System.get_env("SOURCE_REPO_URL")
     on_exit(fn -> restore_env("SOURCE_REPO_URL", previous_source_repo_url) end)
-    System.put_env("SOURCE_REPO_URL", fixture.remote)
+    System.put_env("SOURCE_REPO_URL", shell_path(fixture.remote))
 
     issue = issue("ARO-201", "codex/aro-201")
     stale_sha = fixture.initial_sha
@@ -69,7 +69,7 @@ defmodule SymphonyElixir.ReadinessGateAgentRunnerTest do
 
     previous_source_repo_url = System.get_env("SOURCE_REPO_URL")
     on_exit(fn -> restore_env("SOURCE_REPO_URL", previous_source_repo_url) end)
-    System.put_env("SOURCE_REPO_URL", fixture.remote)
+    System.put_env("SOURCE_REPO_URL", shell_path(fixture.remote))
 
     issue = issue("ARO-203", "main")
     before_run_marker = Path.join(fixture.root, "before-default-run.marker")
@@ -121,7 +121,7 @@ defmodule SymphonyElixir.ReadinessGateAgentRunnerTest do
 
     previous_source_repo_url = System.get_env("SOURCE_REPO_URL")
     on_exit(fn -> restore_env("SOURCE_REPO_URL", previous_source_repo_url) end)
-    System.put_env("SOURCE_REPO_URL", fixture.remote)
+    System.put_env("SOURCE_REPO_URL", shell_path(fixture.remote))
 
     issue = issue("ARO-202", "codex/aro-202")
     fake_codex = shell_path(Path.join(fixture.root, "fake-codex"))

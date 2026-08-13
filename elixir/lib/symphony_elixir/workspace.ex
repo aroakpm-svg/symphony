@@ -1259,6 +1259,7 @@ defmodule SymphonyElixir.Workspace do
   defp normalized_repo_url(url) when is_binary(url) do
     url
     |> String.trim()
+    |> String.replace("\\", "/")
     |> String.trim_trailing("/")
     |> String.trim_trailing(".git")
   end
