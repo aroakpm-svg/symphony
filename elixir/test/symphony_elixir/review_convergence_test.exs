@@ -81,15 +81,16 @@ defmodule SymphonyElixir.ReviewConvergenceTest do
 
   defmodule AutonomousClaimService do
     @spec claim(Issue.t(), pid()) :: {:ok, map()}
-    def claim(issue, _owner) do
+    def claim(issue, owner) do
       send(Application.fetch_env!(:symphony_elixir, :review_recipient), {:autonomous_call, :claim})
 
       {:ok,
        %{
          issue_id: issue.id,
          claim_id: "11111111-1111-4111-8111-111111111111",
-         generation: 1,
-         acquisition: :new
+         generation: Application.get_env(:symphony_elixir, :claim_generation, 1),
+         acquisition: Application.get_env(:symphony_elixir, :claim_acquisition, :new),
+         owner: owner
        }}
     end
 
@@ -115,7 +116,7 @@ defmodule SymphonyElixir.ReviewConvergenceTest do
       %{
         issue_id: "issue-160",
         claim_id: "11111111-1111-4111-8111-111111111111",
-        generation: 1,
+        generation: Application.get_env(:symphony_elixir, :claim_generation, 1),
         node_id: "22222222-2222-4222-8222-222222222222",
         node_instance_id: "33333333-3333-4333-8333-333333333333"
       }
@@ -157,6 +158,8 @@ defmodule SymphonyElixir.ReviewConvergenceTest do
       Application.delete_env(:symphony_elixir, :review_state_result)
       Application.delete_env(:symphony_elixir, :verified_issue_state)
       Application.delete_env(:symphony_elixir, :autonomous_operations)
+      Application.delete_env(:symphony_elixir, :claim_acquisition)
+      Application.delete_env(:symphony_elixir, :claim_generation)
     end)
   end
 
@@ -443,6 +446,7 @@ defmodule SymphonyElixir.ReviewConvergenceTest do
     assert_receive {:autonomous_call, :authorize}
     refute_received {:autonomous_call, :release}
 
+    Application.put_env(:symphony_elixir, :claim_acquisition, :existing)
     state = ReviewMonitor.run_with(state, settings(), ReviewClient, Tracker, options)
     assert {:grant, _grants} = state["issue-160"].terminal_result
     assert length(state["issue-160"].causal_attempts) == 1
@@ -451,6 +455,46 @@ defmodule SymphonyElixir.ReviewConvergenceTest do
     refute_received {:comment, _, _}
     refute_received {:state, _, _}
     refute_received {:status, _, _, _, _}
+  end
+
+  test "retained grants continue only under the exact owning claim and release after consumption" do
+    head = String.duplicate("a", 40)
+    grant = %{claim_id: "11111111-1111-4111-8111-111111111111", generation: 1}
+
+    Application.put_env(:symphony_elixir, :claim_acquisition, :existing)
+
+    Application.put_env(
+      :symphony_elixir,
+      :review_snapshot,
+      {:ok, snapshot(%{current_head_sha: head, finding_summary: %{decisions: [], requires_lifecycle?: false}})}
+    )
+
+    state = %{
+      "issue-160" => %{
+        authorization_required: true,
+        terminal_result: {:grant, %{"finding" => grant}}
+      }
+    }
+
+    options = %{
+      profile: :aroak_autonomous_v1,
+      claim_service: AutonomousClaimService,
+      effect_ledger: AutonomousEffectLedger
+    }
+
+    continued = ReviewMonitor.run_with(state, settings(), ReviewClient, Tracker, options)
+    assert continued["issue-160"].global_blocker == nil
+    assert_receive {:autonomous_call, :release}
+
+    foreign =
+      put_in(
+        state,
+        ["issue-160", :terminal_result],
+        {:grant, %{"finding" => %{grant | generation: 2}}}
+      )
+
+    blocked = ReviewMonitor.run_with(foreign, settings(), ReviewClient, Tracker, options)
+    assert blocked["issue-160"].global_blocker == :claim_already_owned
   end
 
   test "a new head alone cannot reauthorize the same causal attempt" do
@@ -529,6 +573,56 @@ defmodule SymphonyElixir.ReviewConvergenceTest do
     assert blocked["issue-160"].global_blocker == :non_progress_blocked
     assert blocked["issue-160"].terminal_result == {:blocked, :non_progress_blocked}
     assert_receive {:autonomous_call, :release}
+  end
+
+  test "authorization cache never replays a grant under a new claim generation" do
+    head = String.duplicate("a", 40)
+
+    facts = %{
+      repository: "aroakpm-svg/repo",
+      pull_request_number: 42,
+      source_head_sha: head,
+      review_thread_id: "thread-new-claim",
+      selected_review_comment_id: "comment-new-claim",
+      body: "P1 claim transition"
+    }
+
+    {:ok, finding_key} = SymphonyElixir.FindingDisposition.build_finding_key(facts)
+    {:ok, lineage_key} = SymphonyElixir.FindingDisposition.build_lineage_key(facts)
+
+    decision = %{
+      disposition: :fix_in_current_pr,
+      finding_key: finding_key,
+      finding_lineage_key: lineage_key,
+      finding_key_digest: finding_key.digest
+    }
+
+    receipt = design3_receipt(finding_key, lineage_key, head)
+
+    Application.put_env(
+      :symphony_elixir,
+      :review_snapshot,
+      {:ok, snapshot(%{current_head_sha: head, finding_summary: %{decisions: [decision], requires_lifecycle?: true}})}
+    )
+
+    options = %{
+      profile: :aroak_autonomous_v1,
+      claim_service: AutonomousClaimService,
+      effect_ledger: AutonomousEffectLedger,
+      patch_authorization: CountingPatchAuthorization,
+      review_settlement: ReviewSettlementOwner,
+      root_cause_receipts: %{finding_key.digest => receipt},
+      authorization_runtime: %{circuit_breaker: :clear, prior_attempts: []}
+    }
+
+    state = ReviewMonitor.run_with(%{}, settings(), ReviewClient, Tracker, options)
+    assert_receive {:autonomous_call, :authorize}
+
+    Application.put_env(:symphony_elixir, :claim_generation, 2)
+    transitioned = ReviewMonitor.run_with(state, settings(), ReviewClient, Tracker, options)
+
+    assert_receive {:autonomous_call, :authorize}
+    assert transitioned["issue-160"].global_blocker == :non_progress_blocked
   end
 
   test "pending ledger effects block autonomous execution before owner APIs" do

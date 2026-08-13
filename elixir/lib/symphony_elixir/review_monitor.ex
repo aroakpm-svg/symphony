@@ -92,20 +92,23 @@ defmodule SymphonyElixir.ReviewMonitor do
       with branch when is_binary(branch) and branch != "" <- issue.branch_name,
            {:ok, snapshot} <- review_client.snapshot(settings.repository, branch),
            {:ok, claim, claim_acquisition} <- claim_for(options, issue) do
-        case claim_acquisition do
-          :new ->
-            {reconcile_new_claim(entry, issue, snapshot, claim, settings, options), :new}
-
-          :existing ->
-            {{:blocked, :claim_already_owned}, :existing}
-        end
+        reconcile_acquired_claim(
+          claim_acquisition,
+          entry,
+          issue,
+          snapshot,
+          claim,
+          settings,
+          options
+        )
       else
         nil -> {{:blocked, :missing_branch_name}, :none}
         "" -> {{:blocked, :missing_branch_name}, :none}
         {:error, reason} -> {{:blocked, reason}, :none}
       end
 
-    if acquisition == :new and releasable_result?(result), do: release_claim(options, issue.id)
+    if acquisition in [:new, :retained] and releasable_result?(result),
+      do: release_claim(options, issue.id)
 
     case result do
       {:ok, updated_entry} -> Map.put(state, issue.id, updated_entry)
@@ -114,8 +117,29 @@ defmodule SymphonyElixir.ReviewMonitor do
     end
   end
 
+  defp reconcile_acquired_claim(:new, entry, issue, snapshot, claim, settings, options) do
+    {reconcile_new_claim(entry, issue, snapshot, claim, settings, options), :new}
+  end
+
+  defp reconcile_acquired_claim(:existing, entry, issue, snapshot, claim, settings, options) do
+    if retained_claim?(entry, claim) do
+      {reconcile_new_claim(entry, issue, snapshot, claim, settings, options), :retained}
+    else
+      {{:blocked, :claim_already_owned}, :existing}
+    end
+  end
+
   defp releasable_result?({:ok, %{terminal_result: {:grant, _grants}}}), do: false
   defp releasable_result?(_result), do: true
+
+  defp retained_claim?(%{terminal_result: {:grant, grants}}, claim) when is_map(grants) do
+    claim[:owner] == self() and
+      Enum.any?(grants, fn {_digest, grant} ->
+        grant[:claim_id] == claim[:claim_id] and grant[:generation] == claim[:generation]
+      end)
+  end
+
+  defp retained_claim?(_entry, _claim), do: false
 
   defp reconcile_new_claim(entry, issue, snapshot, claim, settings, options) do
     with {:ok, connection, claim_context} <- claimed_context(options, issue, claim),
@@ -325,7 +349,13 @@ defmodule SymphonyElixir.ReviewMonitor do
         {:blocked, :pending_effects, updated}
 
       summary[:decisions] == [] ->
-        {:ok, updated}
+        {:ok,
+         %{
+           updated
+           | authorization_required: false,
+             authorization_results: %{},
+             terminal_result: nil
+         }}
 
       not owner_apis_available?(options) ->
         {:blocked, :owner_api_unavailable, updated}
@@ -383,7 +413,14 @@ defmodule SymphonyElixir.ReviewMonitor do
   defp authorize_decision(entry, decision, operations, snapshot, claim_context, authorization, receipts, runtime) do
     digest = decision[:finding_key_digest]
     receipt = receipts[digest]
-    key = {snapshot[:current_head_sha], digest, receipt && receipt[:causal_evidence_digest]}
+
+    key = {
+      snapshot[:current_head_sha],
+      digest,
+      receipt && receipt[:causal_evidence_digest],
+      claim_context[:claim_id],
+      claim_context[:generation]
+    }
 
     authorize_decision_once(
       entry.authorization_attempts[key],
