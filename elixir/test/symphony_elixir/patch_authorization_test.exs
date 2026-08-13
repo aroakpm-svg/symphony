@@ -297,7 +297,19 @@ defmodule SymphonyElixir.PatchAuthorizationTest do
                runtime
              )
 
-    for history <- [%{}, [:malformed]] do
+    for history <- [
+          %{},
+          [:malformed],
+          [%{}],
+          [
+            %{
+              finding_lineage_digest: "bad",
+              causal_attempt_fingerprint: String.duplicate("c", 64),
+              causal_evidence_digest: String.duplicate("d", 64),
+              generation: 1
+            }
+          ]
+        ] do
       assert {:blocked, :malformed_causal_history} =
                PatchAuthorization.authorize(
                  decision,

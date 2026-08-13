@@ -165,10 +165,21 @@ defmodule SymphonyElixir.PatchAuthorization do
   end
 
   defp validate_prior_attempts(attempts) when is_list(attempts) do
-    if Enum.all?(attempts, &is_map/1), do: :ok, else: {:error, :malformed_causal_history}
+    if Enum.all?(attempts, &valid_prior_attempt?/1),
+      do: :ok,
+      else: {:error, :malformed_causal_history}
   end
 
   defp validate_prior_attempts(_attempts), do: {:error, :malformed_causal_history}
+
+  defp valid_prior_attempt?(attempt) when is_map(attempt) do
+    match?({:ok, _digest}, digest(attempt[:finding_lineage_digest])) and
+      match?({:ok, _digest}, digest(attempt[:causal_attempt_fingerprint])) and
+      match?({:ok, _digest}, digest(attempt[:causal_evidence_digest])) and
+      positive_integer?(attempt[:generation])
+  end
+
+  defp valid_prior_attempt?(_attempt), do: false
 
   defp validate_effects(effects, claim) do
     Enum.reduce_while(effects, :ok, fn effect, :ok ->

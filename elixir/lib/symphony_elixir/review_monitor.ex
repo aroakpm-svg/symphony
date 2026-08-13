@@ -403,6 +403,7 @@ defmodule SymphonyElixir.ReviewMonitor do
   defp reduce_authorizations(entry, decisions, operations, snapshot, claim_context, authorization, receipts, runtime) do
     sorted_decisions = FindingDisposition.sort_decisions(decisions)
     current_digests = MapSet.new(sorted_decisions, & &1.finding_key_digest)
+    entry = %{entry | authorization_results: %{}}
 
     sorted_decisions
     |> Enum.reduce_while({:ok, entry}, fn decision, {:ok, acc} ->
@@ -415,17 +416,10 @@ defmodule SymphonyElixir.ReviewMonitor do
     digest = decision[:finding_key_digest]
     receipt = receipts[digest]
 
-    key = {
-      snapshot[:current_head_sha],
-      digest,
-      receipt && receipt[:causal_evidence_digest],
-      claim_context[:claim_id],
-      claim_context[:generation],
-      runtime[:circuit_breaker]
-    }
+    key = authorization_transition_key(decision, receipt, operations, snapshot, claim_context, runtime)
 
     authorize_decision_once(
-      entry.authorization_attempts[key],
+      Map.get(entry.authorization_attempts, key),
       entry,
       key,
       digest,
@@ -452,7 +446,7 @@ defmodule SymphonyElixir.ReviewMonitor do
 
     updated =
       entry
-      |> put_in([:authorization_attempts, key], true)
+      |> put_in([:authorization_attempts, key], result)
       |> put_in([:authorization_results, digest], result)
 
     authorization_reduction(result, updated)
@@ -460,7 +454,7 @@ defmodule SymphonyElixir.ReviewMonitor do
 
   # credo:disable-for-next-line Credo.Check.Refactor.FunctionArity
   defp authorize_decision_once(
-         _already_attempted,
+         cached_result,
          entry,
          _key,
          digest,
@@ -472,7 +466,22 @@ defmodule SymphonyElixir.ReviewMonitor do
          _authorization,
          _runtime
        ) do
-    authorization_reduction(entry.authorization_results[digest], entry)
+    updated = put_in(entry, [:authorization_results, digest], cached_result)
+    authorization_reduction(cached_result, updated)
+  end
+
+  defp authorization_transition_key(decision, receipt, operations, snapshot, claim_context, runtime) do
+    payload = {
+      decision,
+      receipt,
+      operations,
+      snapshot[:current_head_sha],
+      claim_context[:claim_id],
+      claim_context[:generation],
+      runtime
+    }
+
+    :crypto.hash(:sha256, :erlang.term_to_binary(payload))
   end
 
   defp authorization_claim(claim_context) do
@@ -484,11 +493,7 @@ defmodule SymphonyElixir.ReviewMonitor do
   end
 
   defp authorization_runtime(runtime, snapshot, claim_context, entry) do
-    prior_attempts =
-      Enum.uniq_by(
-        (runtime[:prior_attempts] || []) ++ entry.causal_attempts,
-        &causal_attempt_identity/1
-      )
+    prior_attempts = merge_prior_attempts(runtime[:prior_attempts], entry.causal_attempts)
 
     Map.merge(runtime, %{
       current_head_sha: snapshot[:current_head_sha],
@@ -497,6 +502,18 @@ defmodule SymphonyElixir.ReviewMonitor do
       prior_attempts: prior_attempts
     })
   end
+
+  defp merge_prior_attempts(nil, local), do: local
+
+  defp merge_prior_attempts(external, local) when is_list(external) do
+    if Enum.all?(external, &is_map/1) do
+      Enum.uniq_by(external ++ local, &causal_attempt_identity/1)
+    else
+      external
+    end
+  end
+
+  defp merge_prior_attempts(external, _local), do: external
 
   defp authorization_reduction({:ok, grant}, entry) do
     attempt = %{
