@@ -582,10 +582,16 @@ defmodule SymphonyElixir.FindingDisposition do
 
       {:ok, value} ->
         if valid_logical_identity?(field, value),
-          do: {:ok, value},
+          do: {:ok, normalize_logical_identity(field, value)},
           else: {:error, {:invalid_logical_identity, field}}
     end
   end
+
+  defp normalize_logical_identity(:message_kind, value) when is_binary(value) do
+    Enum.find(@supported_message_kinds, &(Atom.to_string(&1) == value))
+  end
+
+  defp normalize_logical_identity(_field, value), do: value
 
   defp valid_logical_identity?(:repository, value), do: valid_repository?(value)
   defp valid_logical_identity?(:pull_request_number, value), do: is_integer(value) and value > 0
@@ -598,7 +604,9 @@ defmodule SymphonyElixir.FindingDisposition do
   defp valid_logical_identity?(:destination, value), do: non_empty_string?(value)
 
   defp valid_logical_identity?(:message_kind, value),
-    do: value in @supported_message_kinds or non_empty_string?(value)
+    do:
+      value in @supported_message_kinds or
+        (is_binary(value) and Enum.any?(@supported_message_kinds, &(Atom.to_string(&1) == value)))
 
   defp valid_logical_identity?(:effect_type, value), do: validate_effect_type(value) == :ok
 

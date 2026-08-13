@@ -529,7 +529,7 @@ defmodule SymphonyElixir.FindingDispositionTest do
                effect_type: :github_comment
              })
 
-    for message_kind <- [true, false, :unsupported, ""] do
+    for message_kind <- [true, false, :unsupported, "", "unsupported"] do
       assert {:error, {:invalid_logical_identity, :message_kind}} =
                FindingDisposition.operation_id(:github_comment, %{
                  repository: "owner/repo",
@@ -541,15 +541,28 @@ defmodule SymphonyElixir.FindingDispositionTest do
                })
     end
 
-    assert {:ok, _operation_id} =
+    comment_input = %{
+      repository: "owner/repo",
+      pull_request_number: 21,
+      review_thread_id: "thread-1",
+      finding_key: String.duplicate("d", 64),
+      message_kind: :follow_up,
+      effect_type: :github_comment
+    }
+
+    assert {:ok, atom_operation_id} =
              FindingDisposition.operation_id(:github_comment, %{
-               repository: "owner/repo",
-               pull_request_number: 21,
-               review_thread_id: "thread-1",
-               finding_key: String.duplicate("d", 64),
-               message_kind: "follow_up",
-               effect_type: :github_comment
+               comment_input
+               | message_kind: :follow_up
              })
+
+    assert {:ok, string_operation_id} =
+             FindingDisposition.operation_id(:github_comment, %{
+               comment_input
+               | message_kind: "follow_up"
+             })
+
+    assert atom_operation_id == string_operation_id
   end
 
   test "operation IDs accept canonical finding and lineage key maps" do
