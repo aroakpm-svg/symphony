@@ -33,6 +33,10 @@ claim:
   # Enable only after the ARO-164 migration is applied to shared staging and
   # this node has completed ARO-169 enrollment/authentication.
   enabled: false
+  database_url: "$SYMPHONY_CLAIM_DATABASE_URL"
+  ca_cert_file: "$SYMPHONY_CLAIM_CA_CERT_FILE"
+  node_id: "$SYMPHONY_NODE_ID"
+  node_instance_id: "$SYMPHONY_NODE_INSTANCE_ID"
   lease_ms: 60000
   heartbeat_ms: 20000
   fallback_grace_ms: 30000

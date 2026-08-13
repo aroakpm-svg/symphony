@@ -167,6 +167,7 @@ defmodule SymphonyElixir.Config.Schema do
     embedded_schema do
       field(:enabled, :boolean, default: false)
       field(:database_url, :string)
+      field(:ca_cert_file, :string)
       field(:node_id, :string)
       field(:node_instance_id, :string)
       field(:lease_ms, :integer, default: 60_000)
@@ -180,6 +181,7 @@ defmodule SymphonyElixir.Config.Schema do
       |> cast(attrs, [
         :enabled,
         :database_url,
+        :ca_cert_file,
         :node_id,
         :node_instance_id,
         :lease_ms,
@@ -496,6 +498,7 @@ defmodule SymphonyElixir.Config.Schema do
     claim = %{
       settings.claim
       | database_url: resolve_secret_setting(settings.claim.database_url, System.get_env("SYMPHONY_CLAIM_DATABASE_URL")),
+        ca_cert_file: resolve_secret_setting(settings.claim.ca_cert_file, System.get_env("SYMPHONY_CLAIM_CA_CERT_FILE")),
         node_id: resolve_secret_setting(settings.claim.node_id, System.get_env("SYMPHONY_NODE_ID")),
         node_instance_id: resolve_secret_setting(settings.claim.node_instance_id, System.get_env("SYMPHONY_NODE_INSTANCE_ID"))
     }
@@ -507,7 +510,7 @@ defmodule SymphonyElixir.Config.Schema do
 
   defp validate_resolved_claim_settings(%{claim: claim} = settings) do
     missing =
-      Enum.filter([:database_url, :node_id, :node_instance_id], fn field ->
+      Enum.filter([:database_url, :ca_cert_file, :node_id, :node_instance_id], fn field ->
         value = Map.get(claim, field)
         not is_binary(value) or String.trim(value) == ""
       end)
