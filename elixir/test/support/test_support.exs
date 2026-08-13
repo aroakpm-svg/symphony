@@ -24,6 +24,7 @@ defmodule SymphonyElixir.TestSupport do
       import SymphonyElixir.TestSupport,
         only: [
           shell_path: 1,
+          bash_path: 1,
           create_directory_link!: 2,
           write_workflow_file!: 1,
           write_workflow_file!: 2,
@@ -77,6 +78,16 @@ defmodule SymphonyElixir.TestSupport do
   def restore_env(key, value), do: System.put_env(key, value)
 
   def shell_path(path) when is_binary(path), do: String.replace(path, "\\", "/")
+
+  def bash_path(path) when is_binary(path) do
+    normalized = shell_path(Path.expand(path))
+
+    case normalized do
+      <<drive, ?:, rest::binary>> when drive in ?A..?Z -> "/#{drive + 32}#{rest}"
+      <<drive, ?:, rest::binary>> when drive in ?a..?z -> "/#{drive}#{rest}"
+      value -> value
+    end
+  end
 
   def create_directory_link!(target, link) do
     case File.ln_s(target, link) do
