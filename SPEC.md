@@ -422,6 +422,17 @@ the runtime MUST fail closed and MUST NOT add local stubs. `aroak_autonomous_v1`
 by default; Design 2 validation MUST NOT start workers, use shared staging credentials, deploy, or
 touch Production.
 
+Design 3 provides one pure causal patch authorization boundary through `PatchAuthorization.authorize/5`.
+It consumes the canonical Design 2 finding/lineage contract, normalized readback-capable root-cause
+receipt, active claim/generation, exact current head, managed-effect readback, causal history, and runtime
+circuit-breaker state. It returns only `{:ok, grant}`, `{:reconcile, evidence}`, or `{:blocked, reason}`.
+Missing, malformed, stale, conflicting, unknown, green pre-mutation, or non-progress evidence MUST fail
+closed. The same lineage, causal fingerprint, and evidence MUST return `:non_progress_blocked`; a new head
+alone is not causal progress. A grant is an opaque authorization for one bounded managed mutation intent
+and MUST NOT carry merge, deploy, settlement, permission, secret, or credential capability. ReviewMonitor
+MUST invoke this owner only after claim binding and effect readback and MUST NOT invoke it twice for the
+same transition.
+
 Technical convergence, a clean review result, a disposition, or a `MergeReadyCandidate` MUST NOT
 be described or interpreted as merge authorization. Merge, deployment, Linear `Done`, and Landing
 remain outside the Design 2 implementation boundary.

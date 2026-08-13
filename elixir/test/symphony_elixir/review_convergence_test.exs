@@ -130,6 +130,19 @@ defmodule SymphonyElixir.ReviewConvergenceTest do
     end
   end
 
+  defmodule CountingPatchAuthorization do
+    @spec authorize(map(), map(), map(), [map()], map()) :: SymphonyElixir.PatchAuthorization.result()
+    def authorize(disposition, receipt, claim, effects, runtime) do
+      send(Application.fetch_env!(:symphony_elixir, :review_recipient), {:autonomous_call, :authorize})
+      SymphonyElixir.PatchAuthorization.authorize(disposition, receipt, claim, effects, runtime)
+    end
+  end
+
+  defmodule ReviewSettlementOwner do
+    @spec settle(map(), map()) :: :ok
+    def settle(_finding, _context), do: :ok
+  end
+
   setup do
     Application.put_env(:symphony_elixir, :review_recipient, self())
     Application.put_env(:symphony_elixir, :review_issues, [issue()])
@@ -363,7 +376,67 @@ defmodule SymphonyElixir.ReviewConvergenceTest do
         }
       )
 
-    assert state["issue-160"].global_blocker == :autonomous_execution_requires_owner_contracts
+    assert state["issue-160"].global_blocker == :root_cause_receipt_unavailable
+  end
+
+  test "autonomous monitor invokes Design 3 once after claim binding and returns an opaque grant" do
+    head = String.duplicate("a", 40)
+
+    facts = %{
+      repository: "aroakpm-svg/repo",
+      pull_request_number: 42,
+      source_head_sha: head,
+      review_thread_id: "thread-design-3",
+      selected_review_comment_id: "comment-design-3",
+      body: "P1 causal failure"
+    }
+
+    {:ok, finding_key} = SymphonyElixir.FindingDisposition.build_finding_key(facts)
+    {:ok, lineage_key} = SymphonyElixir.FindingDisposition.build_lineage_key(facts)
+
+    decision = %{
+      disposition: :fix_in_current_pr,
+      finding_key: finding_key,
+      finding_lineage_key: lineage_key,
+      finding_key_digest: finding_key.digest
+    }
+
+    receipt = design3_receipt(finding_key, lineage_key, head)
+
+    Application.put_env(
+      :symphony_elixir,
+      :review_snapshot,
+      {:ok,
+       snapshot(%{
+         current_head_sha: head,
+         finding_summary: %{decisions: [decision], requires_lifecycle?: true}
+       })}
+    )
+
+    options = %{
+      profile: :aroak_autonomous_v1,
+      claim_service: AutonomousClaimService,
+      effect_ledger: AutonomousEffectLedger,
+      patch_authorization: CountingPatchAuthorization,
+      review_settlement: ReviewSettlementOwner,
+      root_cause_receipts: %{finding_key.digest => receipt},
+      authorization_runtime: %{circuit_breaker: :clear, prior_attempts: []}
+    }
+
+    state = ReviewMonitor.run_with(%{}, settings(), ReviewClient, Tracker, options)
+
+    digest = finding_key.digest
+    assert {:grant, %{^digest => grant}} = state["issue-160"].terminal_result
+    assert grant.authorization == :bounded_managed_mutation
+    assert state["issue-160"].authorization_required
+    assert_receive {:autonomous_call, :authorize}
+
+    state = ReviewMonitor.run_with(state, settings(), ReviewClient, Tracker, options)
+    assert {:grant, _grants} = state["issue-160"].terminal_result
+    refute_receive {:autonomous_call, :authorize}
+    refute_received {:comment, _, _}
+    refute_received {:state, _, _}
+    refute_received {:status, _, _, _, _}
   end
 
   test "pending ledger effects block autonomous execution before owner APIs" do
@@ -2344,6 +2417,35 @@ defmodule SymphonyElixir.ReviewConvergenceTest do
       },
       overrides
     )
+  end
+
+  defp design3_receipt(finding_key, lineage_key, head) do
+    %{
+      verified?: true,
+      valid?: true,
+      readback_capable?: true,
+      finding_key: finding_key,
+      finding_lineage_key: lineage_key,
+      causal_attempt_fingerprint: String.duplicate("c", 64),
+      causal_evidence_digest: String.duplicate("d", 64),
+      invariant: "managed writes are exactly once",
+      causal_hypothesis: "the earliest authorization boundary accepted stale evidence",
+      earliest_incorrect_boundary: "PatchAuthorization exact-head guard",
+      boundary_group: "managed-effect-identity",
+      causal_progress_reference: "regression:design3:1",
+      receipt_provenance: "review-thread:thread-design-3",
+      recurrence_count: 1,
+      evaluated_head_sha: head,
+      authorized_head_sha: head,
+      mutation_intent_reference: "bounded-intent:thread-design-3",
+      pre_mutation_regression: %{
+        phase: :pre_mutation,
+        status: :fail,
+        command_or_source: "mix test test/symphony_elixir/patch_authorization_test.exs",
+        observed_output: "authorization owner was unavailable",
+        head_sha: head
+      }
+    }
   end
 
   defp rework_body(key) do

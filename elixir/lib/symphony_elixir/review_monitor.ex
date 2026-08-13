@@ -9,6 +9,7 @@ defmodule SymphonyElixir.ReviewMonitor do
     EffectLedger,
     FindingDisposition,
     GitHubReviewClient,
+    PatchAuthorization,
     ReviewConvergence,
     ScopeContract,
     Tracker
@@ -141,6 +142,8 @@ defmodule SymphonyElixir.ReviewMonitor do
         pending_effect_ids: [],
         local_blocked_finding_keys: [],
         authorization_required: false,
+        authorization_attempts: %{},
+        authorization_results: %{},
         global_blocker: nil,
         terminal_result: nil
       },
@@ -297,7 +300,7 @@ defmodule SymphonyElixir.ReviewMonitor do
          snapshot,
          summary,
          operations,
-         _claim_context,
+         claim_context,
          _settings,
          options
        ) do
@@ -324,7 +327,7 @@ defmodule SymphonyElixir.ReviewMonitor do
         {:blocked, :owner_api_unavailable, updated}
 
       true ->
-        {:blocked, :autonomous_execution_requires_owner_contracts, updated}
+        authorize_causal_patches(updated, summary[:decisions], operations, snapshot, claim_context, options)
     end
   end
 
@@ -332,11 +335,142 @@ defmodule SymphonyElixir.ReviewMonitor do
     do: Map.new(decisions, &{&1.finding_key_digest, &1})
 
   defp owner_apis_available?(options) do
-    authorization = Map.get(options, :patch_authorization)
+    authorization = Map.get(options, :patch_authorization, PatchAuthorization)
     settlement = Map.get(options, :review_settlement)
 
     loaded_function_exported?(authorization, :authorize, 5) and
       loaded_function_exported?(settlement, :settle, 2)
+  end
+
+  defp authorize_causal_patches(entry, decisions, operations, snapshot, claim_context, options) do
+    authorization = Map.get(options, :patch_authorization, PatchAuthorization)
+    receipts = Map.get(options, :root_cause_receipts)
+    runtime = Map.get(options, :authorization_runtime)
+
+    case is_map(receipts) and is_map(runtime) do
+      true ->
+        reduce_authorizations(
+          entry,
+          decisions,
+          operations,
+          snapshot,
+          claim_context,
+          authorization,
+          receipts,
+          runtime
+        )
+
+      false ->
+        {:blocked, :root_cause_receipt_unavailable, entry}
+    end
+  end
+
+  defp reduce_authorizations(entry, decisions, operations, snapshot, claim_context, authorization, receipts, runtime) do
+    decisions
+    |> FindingDisposition.sort_decisions()
+    |> Enum.reduce_while({:ok, entry}, fn decision, {:ok, acc} ->
+      authorize_decision(acc, decision, operations, snapshot, claim_context, authorization, receipts, runtime)
+    end)
+    |> authorization_result()
+  end
+
+  defp authorize_decision(entry, decision, operations, snapshot, claim_context, authorization, receipts, runtime) do
+    digest = decision[:finding_key_digest]
+    receipt = receipts[digest]
+    key = {snapshot[:current_head_sha], digest, receipt && receipt[:causal_evidence_digest]}
+
+    authorize_decision_once(
+      entry.authorization_attempts[key],
+      entry,
+      key,
+      digest,
+      decision,
+      receipt,
+      operations,
+      snapshot,
+      claim_context,
+      authorization,
+      runtime
+    )
+  end
+
+  # credo:disable-for-next-line Credo.Check.Refactor.FunctionArity
+  defp authorize_decision_once(nil, entry, key, digest, decision, receipt, operations, snapshot, claim_context, authorization, runtime) do
+    result =
+      authorization.authorize(
+        decision,
+        receipt || %{},
+        authorization_claim(claim_context),
+        operations,
+        authorization_runtime(runtime, snapshot, claim_context, entry)
+      )
+
+    updated =
+      entry
+      |> put_in([:authorization_attempts, key], true)
+      |> put_in([:authorization_results, digest], result)
+
+    authorization_reduction(result, updated)
+  end
+
+  # credo:disable-for-next-line Credo.Check.Refactor.FunctionArity
+  defp authorize_decision_once(
+         _already_attempted,
+         entry,
+         _key,
+         digest,
+         _decision,
+         _receipt,
+         _operations,
+         _snapshot,
+         _claim_context,
+         _authorization,
+         _runtime
+       ) do
+    authorization_reduction(entry.authorization_results[digest], entry)
+  end
+
+  defp authorization_claim(claim_context) do
+    %{
+      active?: true,
+      claim_id: claim_context[:claim_id],
+      generation: claim_context[:generation]
+    }
+  end
+
+  defp authorization_runtime(runtime, snapshot, claim_context, entry) do
+    Map.merge(runtime, %{
+      current_head_sha: snapshot[:current_head_sha],
+      active_claim_id: claim_context[:claim_id],
+      active_generation: claim_context[:generation],
+      prior_attempts: runtime[:prior_attempts] || entry[:causal_attempts] || []
+    })
+  end
+
+  defp authorization_reduction({:ok, _grant}, entry), do: {:cont, {:ok, entry}}
+
+  defp authorization_reduction({:reconcile, evidence}, entry),
+    do: {:halt, {:reconcile, evidence, entry}}
+
+  defp authorization_reduction({:blocked, reason}, entry),
+    do: {:halt, {:blocked, reason, entry}}
+
+  defp authorization_reduction(_invalid, entry),
+    do: {:halt, {:blocked, :invalid_patch_authorization_result, entry}}
+
+  defp authorization_result({:ok, entry}) do
+    grants = Map.new(entry.authorization_results, fn {digest, {:ok, grant}} -> {digest, grant} end)
+
+    {:ok, %{entry | authorization_required: true, terminal_result: {:grant, grants}, global_blocker: nil}}
+  end
+
+  defp authorization_result({:reconcile, evidence, entry}) do
+    updated = %{entry | authorization_required: false, terminal_result: {:reconcile, evidence}}
+    {:blocked, :authorization_reconciliation_required, updated}
+  end
+
+  defp authorization_result({:blocked, reason, entry}) do
+    {:blocked, reason, %{entry | authorization_required: false, terminal_result: {:blocked, reason}}}
   end
 
   defp loaded_function_exported?(module, function, arity) when is_atom(module) do
