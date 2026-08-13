@@ -196,6 +196,9 @@ defmodule SymphonyElixir.PatchAuthorization do
     generation = effect[:generation]
 
     cond do
+      not non_empty_string?(effect[:operation_id]) ->
+        {:error, :malformed_effect_readback}
+
       not positive_integer?(generation) ->
         {:error, :malformed_effect_readback}
 

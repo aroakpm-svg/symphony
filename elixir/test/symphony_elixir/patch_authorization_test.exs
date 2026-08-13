@@ -127,6 +127,14 @@ defmodule SymphonyElixir.PatchAuthorizationTest do
                [%{operation_id: "op", status: :surprise, generation: 6}],
                runtime
              )
+
+    for effect <- [
+          %{status: :succeeded, generation: 6},
+          %{operation_id: "", status: :pending, generation: 6}
+        ] do
+      assert {:blocked, :malformed_effect_readback} =
+               PatchAuthorization.authorize(decision, receipt, claim, [effect], runtime)
+    end
   end
 
   test "old-generation terminal readback is allowed but cannot authorize an old claim" do
