@@ -1047,6 +1047,14 @@ defmodule SymphonyElixir.ReviewConvergenceTest do
               "nodes" => [
                 review_event_comment("system", "P2 system", head, "2026-08-09T01:00:00Z", "User", 123),
                 review_event_comment(
+                  "trusted-finding",
+                  "P2 actionable finding",
+                  head,
+                  "2026-08-09T01:00:30Z",
+                  "Bot",
+                  199_175_422
+                ),
+                review_event_comment(
                   "managed",
                   transition_completed_body(operation_id, head)["body"],
                   head,
@@ -1070,9 +1078,12 @@ defmodule SymphonyElixir.ReviewConvergenceTest do
         []
       ).review_events
 
-    [system, managed] = event.comments
+    [system, trusted_finding, managed] = event.comments
     assert system.trusted_review_source? == false
     assert system.managed_agent_reply? == false
+    assert trusted_finding.trusted_review_source? == true
+    assert trusted_finding.managed_agent_reply? == false
+    assert trusted_finding.settlement_marker? == false
     assert managed.trusted_review_source? == true
     assert managed.managed_agent_reply? == true
     assert managed.settlement_marker? == true

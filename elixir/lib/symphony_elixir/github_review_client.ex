@@ -967,6 +967,7 @@ defmodule SymphonyElixir.GitHubReviewClient do
   defp normalize_review_comment(comment, connection_index) when is_map(comment) do
     body = comment["body"]
     author = comment["author"]
+    settlement_marker? = settlement_marker?(body)
 
     %{
       id: comment["id"],
@@ -977,8 +978,8 @@ defmodule SymphonyElixir.GitHubReviewClient do
       created_at: comment["createdAt"],
       updated_at: comment["updatedAt"],
       trusted_review_source?: trusted_reviewer?(author),
-      managed_agent_reply?: managed_agent_author?(author),
-      settlement_marker?: settlement_marker?(body),
+      managed_agent_reply?: managed_agent_author?(author) and settlement_marker?,
+      settlement_marker?: settlement_marker?,
       connection_index: connection_index
     }
   end
@@ -1107,7 +1108,7 @@ defmodule SymphonyElixir.GitHubReviewClient do
   defp managed_agent_author?(_author), do: false
 
   defp settlement_marker?(body) when is_binary(body) do
-    body = String.trim(body)
+    body = body |> String.replace("\r\n", "\n") |> String.trim()
     completed_transition_marker?(body) or intent_transition_marker?(body)
   end
 
