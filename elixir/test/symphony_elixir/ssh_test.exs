@@ -93,6 +93,25 @@ defmodule SymphonyElixir.SSHTest do
              Enum.map(["-T", "-p", "2222", "localhost", "bash -lc 'printf ok'"], &String.to_charlist/1)
   end
 
+  test "run/3 uses the configured default command runner" do
+    previous_runner = Application.get_env(:symphony_elixir, :ssh_command_runner)
+    Application.put_env(:symphony_elixir, :ssh_command_runner, command_runner(self()))
+    on_exit(fn -> restore_app_env(:ssh_command_runner, previous_runner) end)
+
+    assert {:ok, {"", 0}} = SSH.run("localhost", "printf ok")
+    assert_received {:ssh_command, _executable, ["-T", "localhost", "bash -lc 'printf ok'"], []}
+  end
+
+  test "start_port/3 uses the configured default port opener" do
+    fake_port = Port.open({:spawn, windows_noop_command()}, [:exit_status])
+    previous_opener = Application.get_env(:symphony_elixir, :ssh_port_opener)
+    Application.put_env(:symphony_elixir, :ssh_port_opener, port_opener(self(), fake_port))
+    on_exit(fn -> restore_app_env(:ssh_port_opener, previous_opener) end)
+
+    assert {:ok, ^fake_port} = SSH.start_port("localhost", "printf ok")
+    assert_received {:ssh_port, {:spawn_executable, _executable}, _opts}
+  end
+
   test "remote_shell_command/1 escapes embedded single quotes" do
     assert SSH.remote_shell_command("printf 'hello'") ==
              "bash -lc 'printf '\"'\"'hello'\"'\"''"
@@ -118,4 +137,7 @@ defmodule SymphonyElixir.SSHTest do
 
   defp restore_env(key, nil), do: System.delete_env(key)
   defp restore_env(key, value), do: System.put_env(key, value)
+
+  defp restore_app_env(key, nil), do: Application.delete_env(:symphony_elixir, key)
+  defp restore_app_env(key, value), do: Application.put_env(:symphony_elixir, key, value)
 end
