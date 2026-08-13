@@ -361,6 +361,71 @@ operations MUST remain recoverable after restart and after the issue leaves the 
 round MUST be counted only once the target state is observed and completion is durable.
 Technical convergence MUST NOT authorize merge, deployment, or terminal tracker transitions.
 
+#### 5.3.8 Finding disposition and effect-readback (Design 2 implementation extension)
+
+An implementation that enables the Design 2 finding-disposition extension MUST use one canonical
+identity contract for each review finding. `FindingKey` identifies the finding in the current
+pull-request context; `FindingLineageKey` identifies the same finding across head changes and
+reconciliation. The identity MUST include the verified repository and pull-request scope and MUST
+not be derived from severity alone or from mutable display text.
+
+Every evaluation MUST record the verified `source_head_sha`, the `evaluated_head_sha`, and the
+observed current head. A head mismatch, missing head evidence, unverified base evidence, or an
+invalid scope contract MUST fail closed. The only dispositions are `fix_in_current_pr`,
+`follow_up_required`, and `blocked_unverified`. A classifier MAY select one of these dispositions
+only from verified evidence; severity alone MUST NOT create a rework decision. Responsibility
+evidence is conjunctively validated for shape and validity, then uses OR semantics: an explicit
+`introduced_by_pr? == true` OR an explicit `invariant_violation? == true` is sufficient to prove
+current-PR responsibility. Safety conditions remain conjunctive: `still_applies? == true`,
+`root_cause_bounded? == true`, and `requires_new_decision? == false` are all required. Missing,
+malformed, or conflicting responsibility evidence MUST remain `blocked_unverified`; `in_scope?`
+MUST NOT erase either positive responsibility proof.
+
+Before selecting any actionable disposition, the classifier MUST rebuild a canonical `FindingKey`
+and `FindingLineageKey` from the finding's verified repository, pull-request, head, thread,
+comment, and body identity. Missing, partial, malformed, or conflicting supplied identity MUST
+produce `blocked_unverified`; a caller-provided digest alone is not a canonical identity. The
+`follow_up_required` route MUST use the same explicit boolean ownership-evidence gate as the fix
+route, including rejection of missing, unknown, malformed, or conflicting ownership facts.
+
+Before any autonomous effect, the runtime MUST complete claim ownership and effect-ledger
+readback for the active issue, claim, node, instance, and current generation. A current verified
+claim MAY read unresolved (`pending` or `unknown`) effect rows from older generations for the same
+issue, but an older claim, effect, or generation MUST NOT authorize a new current-generation
+mutation. Pending, unknown, malformed, or conflicting ledger rows MUST stop the cycle before owner
+APIs or external writes. A read-only monitor MUST distinguish a claim newly acquired by its own
+invocation from an existing worker claim and MUST NOT bind, release, or otherwise mutate the latter;
+a failed acquisition MUST NOT release a cached claim. Request fingerprints are immutable: after
+decoding, the runtime MUST rebuild and compare the canonical `FindingKey` and
+`FindingLineageKey`, including repository/pull-request scope and digests. Reusing an operation
+identity with a different fingerprint MUST fail closed, and lock reconciliation MUST be
+deterministic and in fixed order. The global preflight gate MUST require both `verified? == true`
+AND `valid? == true`; every other value, including missing flags, MUST fail closed.
+
+Provider review comments whose author is unavailable or unsupported MUST be retained as untrusted
+evidence when the rest of the comment shape is valid; one such comment MUST NOT invalidate the
+whole review snapshot. Trusted-review selection MUST continue to require the configured author
+identity. Convergence MUST inspect raw actionable threads even when a syntactically valid finding
+summary is present; contradictory raw evidence MUST prevent a converged result. After a successful
+autonomous readback and reconciliation cycle, transient `global_blocker` state MUST be cleared;
+newly observed blockers may then replace it.
+
+The readback function's execute privilege MUST be granted both to existing node principals and by
+the node-login enrollment hook for principals created or re-enrolled after the readback migration.
+
+Design 2 does not add another evaluator, settlement engine, claim path, ledger path, receipt path,
+or coordinator, and MUST preserve ClaimService's existing lease/renew/release lifecycle. It MAY
+carry explicit acquisition provenance in the existing claim record so monitor readback cannot
+release an existing worker claim. Design 3 authorization
+(`authorize/5`) and Design 4 settlement (`settle/2`) are owner contracts; when they are absent,
+the runtime MUST fail closed and MUST NOT add local stubs. `aroak_autonomous_v1` remains disabled
+by default; Design 2 validation MUST NOT start workers, use shared staging credentials, deploy, or
+touch Production.
+
+Technical convergence, a clean review result, a disposition, or a `MergeReadyCandidate` MUST NOT
+be described or interpreted as merge authorization. Merge, deployment, Linear `Done`, and Landing
+remain outside the Design 2 implementation boundary.
+
 Note:
 
 - The workflow front matter is extensible. Extensions MAY define additional top-level keys without

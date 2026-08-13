@@ -22,7 +22,8 @@ defmodule SymphonyElixir.ClaimService do
           claim_id: String.t(),
           generation: pos_integer(),
           lease_deadline_ms: integer(),
-          owner: pid()
+          owner: pid(),
+          acquisition: :new | :existing
         }
 
   @spec start_link(keyword()) :: GenServer.on_start() | :ignore
@@ -109,12 +110,17 @@ defmodule SymphonyElixir.ClaimService do
   @impl true
   def handle_call({:claim, issue, owner}, _from, state) do
     grant_started_ms = System.monotonic_time(:millisecond)
+    local_claim = Map.get(state.claims, issue.id)
 
     case claim_query(state, issue) do
       {:ok, claim} ->
+        acquisition = if same_claim?(local_claim, claim), do: :existing, else: :new
+
         claim =
           claim
-          |> Map.put(:owner, owner)
+          |> Map.put(:owner, if(acquisition == :existing, do: local_claim.owner, else: owner))
+          |> maybe_preserve_worker(local_claim, acquisition)
+          |> Map.put(:acquisition, acquisition)
           |> refresh_lease_deadline(state.settings.lease_ms, grant_started_ms)
 
         {:reply, {:ok, claim}, %{state | claims: Map.put(state.claims, issue.id, claim)}}
@@ -356,6 +362,14 @@ defmodule SymphonyElixir.ClaimService do
   defp refresh_lease_deadline(claim, lease_ms, grant_started_ms) do
     Map.put(claim, :lease_deadline_ms, lease_deadline_for_test(grant_started_ms, lease_ms))
   end
+
+  defp same_claim?(%{claim_id: claim_id, generation: generation}, %{claim_id: claim_id, generation: generation}),
+    do: true
+
+  defp same_claim?(_local_claim, _remote_claim), do: false
+
+  defp maybe_preserve_worker(claim, %{worker: worker}, :existing), do: Map.put(claim, :worker, worker)
+  defp maybe_preserve_worker(claim, _local_claim, _acquisition), do: claim
 
   defp notify_claim_lost(claims, reason) do
     Enum.each(claims, fn {issue_id, claim} ->
