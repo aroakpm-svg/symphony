@@ -38,11 +38,20 @@ defmodule SymphonyElixir.SSH do
   end
 
   defp ssh_executable do
-    finder = Application.get_env(:symphony_elixir, :ssh_executable_finder, &System.find_executable/1)
+    finder =
+      Application.get_env(:symphony_elixir, :ssh_executable_finder) ||
+        injected_seam_executable_finder() || (&System.find_executable/1)
 
     case finder.("ssh") do
       nil -> {:error, :ssh_not_found}
       executable -> {:ok, executable}
+    end
+  end
+
+  defp injected_seam_executable_finder do
+    if Application.get_env(:symphony_elixir, :ssh_command_runner) ||
+         Application.get_env(:symphony_elixir, :ssh_port_opener) do
+      fn "ssh" -> "ssh" end
     end
   end
 

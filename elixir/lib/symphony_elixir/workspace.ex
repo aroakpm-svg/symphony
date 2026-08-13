@@ -1266,7 +1266,12 @@ defmodule SymphonyElixir.Workspace do
 
   defp normalize_windows_local_repo_path(<<drive, ?:, separator, _rest::binary>> = path)
        when drive in ?A..?Z and separator in [?/, ?\\],
-       do: String.replace(path, "\\", "/")
+       do:
+         String.replace(
+           <<drive + 32, ?:, separator, binary_part(path, 3, byte_size(path) - 3)::binary>>,
+           "\\",
+           "/"
+         )
 
   defp normalize_windows_local_repo_path(<<drive, ?:, separator, _rest::binary>> = path)
        when drive in ?a..?z and separator in [?/, ?\\],
