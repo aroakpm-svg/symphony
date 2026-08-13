@@ -1259,10 +1259,23 @@ defmodule SymphonyElixir.Workspace do
   defp normalized_repo_url(url) when is_binary(url) do
     url
     |> String.trim()
-    |> String.replace("\\", "/")
+    |> normalize_windows_local_repo_path()
     |> String.trim_trailing("/")
     |> String.trim_trailing(".git")
   end
+
+  defp normalize_windows_local_repo_path(<<drive, ?:, separator, _rest::binary>> = path)
+       when drive in ?A..?Z and separator in [?/, ?\\],
+       do: String.replace(path, "\\", "/")
+
+  defp normalize_windows_local_repo_path(<<drive, ?:, separator, _rest::binary>> = path)
+       when drive in ?a..?z and separator in [?/, ?\\],
+       do: String.replace(path, "\\", "/")
+
+  defp normalize_windows_local_repo_path("\\\\" <> _rest = path),
+    do: String.replace(path, "\\", "/")
+
+  defp normalize_windows_local_repo_path(url), do: url
 
   defp sanitize_hook_output_for_log(output, max_bytes \\ 2_048) do
     redacted_output =
