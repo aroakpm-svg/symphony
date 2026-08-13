@@ -50,6 +50,8 @@ defmodule SymphonyElixir.FindingDisposition do
   @type effect_intent :: map()
   @type managed_publish_identity :: map()
 
+  @supported_message_kinds [:follow_up]
+
   @spec build_finding_key(map()) :: {:ok, finding_key()} | {:error, term()}
   def build_finding_key(input) when is_map(input) do
     with {:ok, repository} <- required_string(input, :repository),
@@ -594,7 +596,10 @@ defmodule SymphonyElixir.FindingDisposition do
   defp valid_logical_identity?(:finding_lineage_key, value), do: valid_canonical_key_or_digest?(value, :finding_lineage_key)
   defp valid_logical_identity?(:review_thread_id, value), do: non_empty_string?(value)
   defp valid_logical_identity?(:destination, value), do: non_empty_string?(value)
-  defp valid_logical_identity?(:message_kind, value), do: (is_atom(value) and not is_nil(value)) or non_empty_string?(value)
+
+  defp valid_logical_identity?(:message_kind, value),
+    do: value in @supported_message_kinds or non_empty_string?(value)
+
   defp valid_logical_identity?(:effect_type, value), do: validate_effect_type(value) == :ok
 
   defp valid_repository?(value) do
