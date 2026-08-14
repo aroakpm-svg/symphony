@@ -1209,7 +1209,7 @@ defmodule SymphonyElixir.Workspace do
         "git config --get remote.origin.url >/dev/null"
 
       expected_url ->
-        expected = shell_escape(comparable_repo_url(expected_url))
+        expected = shell_escape(remote_comparable_repo_url(expected_url))
 
         [
           "strip_url_userinfo() {",
@@ -1218,11 +1218,24 @@ defmodule SymphonyElixir.Workspace do
           "    *) printf '%s\\n' \"$1\" ;;",
           "  esac",
           "}",
+          "normalize_windows_local_path() {",
+          "  case \"$1\" in",
+          "    [A-Za-z]:[\\\\/]*)",
+          "      normalized=\"$(printf '%s' \"$1\" | sed 's#\\\\#/#g')\"",
+          "      drive=\"$(printf '%s' \"${normalized%\"${normalized#?}\"}\" | tr '[:upper:]' '[:lower:]')\"",
+          "      printf '%s%s\\n' \"$drive\" \"${normalized#?}\"",
+          "      ;;",
+          "    \\\\\\\\*|//*) printf '%s\\n' \"$1\" | sed 's#\\\\#/#g' ;;",
+          "    *) printf '%s\\n' \"$1\" ;;",
+          "  esac",
+          "}",
           "actual_remote=\"$(git config --get remote.origin.url)\"",
           "actual_remote=\"$(strip_url_userinfo \"$actual_remote\")\"",
+          "actual_remote=\"$(normalize_windows_local_path \"$actual_remote\")\"",
           "actual_remote=\"${actual_remote%/}\"",
           "actual_remote=\"${actual_remote%.git}\"",
           "expected_remote=#{expected}",
+          "expected_remote=\"$(normalize_windows_local_path \"$expected_remote\")\"",
           "expected_remote=\"${expected_remote%/}\"",
           "expected_remote=\"${expected_remote%.git}\"",
           "test \"$actual_remote\" = \"$expected_remote\""
@@ -1254,6 +1267,14 @@ defmodule SymphonyElixir.Workspace do
     url
     |> strip_url_userinfo()
     |> normalized_repo_url()
+  end
+
+  defp remote_comparable_repo_url(url) when is_binary(url) do
+    url
+    |> strip_url_userinfo()
+    |> String.trim()
+    |> String.trim_trailing("/")
+    |> String.trim_trailing(".git")
   end
 
   defp normalized_repo_url(url) when is_binary(url) do

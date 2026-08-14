@@ -3,6 +3,8 @@ defmodule SymphonyElixir.SpecsCheckTest do
 
   alias SymphonyElixir.SpecsCheck
 
+  import SymphonyElixir.TestSupport, only: [create_directory_link!: 2]
+
   test "reports missing @spec for public functions" do
     dir = create_tmp_dir()
 
@@ -75,6 +77,26 @@ defmodule SymphonyElixir.SpecsCheckTest do
     findings = SpecsCheck.missing_public_specs([dir], exemptions: ["Sample.legacy/1"])
 
     assert findings == []
+  end
+
+  test "does not follow directory links while collecting source files" do
+    dir = create_tmp_dir()
+    nested_dir = Path.join(dir, "nested")
+    File.mkdir_p!(nested_dir)
+
+    write_module!(dir, "sample.ex", """
+    defmodule Sample do
+      def missing(arg), do: arg
+    end
+    """)
+
+    create_directory_link!(dir, Path.join(nested_dir, "back"))
+
+    task = Task.async(fn -> SpecsCheck.missing_public_specs([dir]) end)
+    result = Task.yield(task, 500) || Task.shutdown(task, :brutal_kill)
+
+    assert {:ok, findings} = result
+    assert Enum.map(findings, &SpecsCheck.finding_identifier/1) == ["Sample.missing/1"]
   end
 
   test "the checked-in runtime docs describe fail-closed finding disposition" do

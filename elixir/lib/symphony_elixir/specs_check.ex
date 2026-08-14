@@ -28,14 +28,14 @@ defmodule SymphonyElixir.SpecsCheck do
   end
 
   defp collect_elixir_files(path) do
-    cond do
-      File.regular?(path) and String.ends_with?(path, ".ex") ->
-        [path]
+    case File.lstat(path) do
+      {:ok, %File.Stat{type: :regular}} when is_binary(path) ->
+        if String.ends_with?(path, ".ex"), do: [path], else: []
 
-      File.dir?(path) ->
+      {:ok, %File.Stat{type: :directory}} ->
         collect_elixir_directory_files(path)
 
-      true ->
+      _ ->
         []
     end
   end
@@ -44,14 +44,23 @@ defmodule SymphonyElixir.SpecsCheck do
     path
     |> File.ls!()
     |> Enum.flat_map(fn entry ->
-      entry_path = Path.join(path, entry)
-
-      cond do
-        File.dir?(entry_path) -> collect_elixir_directory_files(entry_path)
-        File.regular?(entry_path) and String.ends_with?(entry_path, ".ex") -> [entry_path]
-        true -> []
-      end
+      path
+      |> Path.join(entry)
+      |> collect_elixir_entry()
     end)
+  end
+
+  defp collect_elixir_entry(path) do
+    case File.lstat(path) do
+      {:ok, %File.Stat{type: :directory}} ->
+        collect_elixir_directory_files(path)
+
+      {:ok, %File.Stat{type: :regular}} ->
+        if String.ends_with?(path, ".ex"), do: [path], else: []
+
+      _ ->
+        []
+    end
   end
 
   defp file_findings(file, exemptions) do
