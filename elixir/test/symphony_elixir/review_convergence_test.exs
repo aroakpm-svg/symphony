@@ -877,6 +877,60 @@ defmodule SymphonyElixir.ReviewConvergenceTest do
     end
   end
 
+  test "fail-closed exits invalidate retained grants even when claim release is forbidden" do
+    grant = %{
+      authorization_required: true,
+      retained_claim: %{claim_id: "11111111-1111-4111-8111-111111111111", generation: 1},
+      terminal_result:
+        {:grant,
+         %{
+           "finding-1" => %{
+             claim_id: "11111111-1111-4111-8111-111111111111",
+             generation: 1
+           }
+         }}
+    }
+
+    Application.put_env(:symphony_elixir, :review_snapshot, {:error, :github_unavailable})
+
+    unavailable =
+      ReviewMonitor.run_with(
+        %{"issue-160" => grant},
+        settings(),
+        ReviewClient,
+        Tracker,
+        %{profile: :aroak_autonomous_v1, claim_service: AutonomousClaimService}
+      )
+
+    assert unavailable["issue-160"].global_blocker == :github_unavailable
+    assert unavailable["issue-160"].terminal_result == nil
+    refute unavailable["issue-160"].authorization_required
+    refute_received {:autonomous_call, :release}
+
+    Application.put_env(
+      :symphony_elixir,
+      :review_snapshot,
+      {:ok, snapshot(%{finding_summary: %{decisions: [], requires_lifecycle?: false}})}
+    )
+
+    Application.put_env(:symphony_elixir, :claim_acquisition, :existing)
+    Application.put_env(:symphony_elixir, :claim_generation, 2)
+
+    ownership_changed =
+      ReviewMonitor.run_with(
+        %{"issue-160" => grant},
+        settings(),
+        ReviewClient,
+        Tracker,
+        %{profile: :aroak_autonomous_v1, claim_service: AutonomousClaimService}
+      )
+
+    assert ownership_changed["issue-160"].global_blocker == :claim_already_owned
+    assert ownership_changed["issue-160"].terminal_result == nil
+    refute ownership_changed["issue-160"].authorization_required
+    refute_received {:autonomous_call, :release}
+  end
+
   test "an unresolved managed effect releases claim capacity and is read back by a fresh generation" do
     Application.put_env(
       :symphony_elixir,

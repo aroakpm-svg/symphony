@@ -119,8 +119,9 @@ defmodule SymphonyElixir.ReviewMonitor do
         {:error, reason} -> {{:blocked, reason}, :none}
       end
 
-    release? = acquisition in [:new, :retained] and releasable_result?(result)
-    result = if release?, do: invalidate_released_grant(result, entry), else: result
+    grant_invalid? = releasable_result?(result)
+    result = if grant_invalid?, do: invalidate_stale_grant(result, entry), else: result
+    release? = acquisition in [:new, :retained] and grant_invalid?
 
     if release?, do: release_claim(options, issue.id)
 
@@ -148,13 +149,13 @@ defmodule SymphonyElixir.ReviewMonitor do
   defp releasable_result?({:ok, %{terminal_result: {:grant, _grants}}}), do: false
   defp releasable_result?(_result), do: true
 
-  defp invalidate_released_grant({:ok, updated}, _entry),
+  defp invalidate_stale_grant({:ok, updated}, _entry),
     do: {:ok, clear_grant_if_present(updated)}
 
-  defp invalidate_released_grant({:blocked, reason, blocked}, _entry),
+  defp invalidate_stale_grant({:blocked, reason, blocked}, _entry),
     do: {:blocked, reason, clear_grant_if_present(blocked)}
 
-  defp invalidate_released_grant({:blocked, reason}, entry),
+  defp invalidate_stale_grant({:blocked, reason}, entry),
     do: {:blocked, reason, clear_grant_if_present(entry)}
 
   defp clear_grant_if_present(%{terminal_result: {:grant, _grants}} = entry),
