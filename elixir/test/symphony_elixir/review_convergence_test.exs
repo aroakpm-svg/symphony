@@ -90,7 +90,8 @@ defmodule SymphonyElixir.ReviewConvergenceTest do
          claim_id: "11111111-1111-4111-8111-111111111111",
          generation: Application.get_env(:symphony_elixir, :claim_generation, 1),
          acquisition: Application.get_env(:symphony_elixir, :claim_acquisition, :new),
-         owner: owner
+         owner: owner,
+         worker: Application.get_env(:symphony_elixir, :claim_worker)
        }}
     end
 
@@ -110,6 +111,21 @@ defmodule SymphonyElixir.ReviewConvergenceTest do
     def release(_issue_id) do
       send(Application.fetch_env!(:symphony_elixir, :review_recipient), {:autonomous_call, :release})
       :ok
+    end
+
+    def release_if_owned(_issue_id, identity) do
+      owner = Application.fetch_env!(:symphony_elixir, :review_recipient)
+      worker = Application.get_env(:symphony_elixir, :claim_worker)
+
+      if identity == %{
+           claim_id: "11111111-1111-4111-8111-111111111111",
+           generation: Application.get_env(:symphony_elixir, :claim_generation, 1)
+         } and owner == self() and worker in [nil, self()] do
+        send(owner, {:autonomous_call, :release_if_owned})
+        :ok
+      else
+        {:error, :claim_ownership_changed}
+      end
     end
 
     defp claim_context do
@@ -160,6 +176,7 @@ defmodule SymphonyElixir.ReviewConvergenceTest do
       Application.delete_env(:symphony_elixir, :autonomous_operations)
       Application.delete_env(:symphony_elixir, :claim_acquisition)
       Application.delete_env(:symphony_elixir, :claim_generation)
+      Application.delete_env(:symphony_elixir, :claim_worker)
     end)
   end
 
@@ -510,6 +527,118 @@ defmodule SymphonyElixir.ReviewConvergenceTest do
     assert blocked["issue-160"].global_blocker == :claim_already_owned
   end
 
+  test "a retained grant transferred to a running worker is not reconciled or released by the monitor" do
+    worker = spawn(fn -> Process.sleep(:infinity) end)
+    on_exit(fn -> if Process.alive?(worker), do: Process.exit(worker, :kill) end)
+
+    grant = %{claim_id: "11111111-1111-4111-8111-111111111111", generation: 1}
+    Application.put_env(:symphony_elixir, :claim_acquisition, :existing)
+    Application.put_env(:symphony_elixir, :claim_worker, worker)
+
+    Application.put_env(
+      :symphony_elixir,
+      :review_snapshot,
+      {:ok, snapshot(%{finding_summary: %{decisions: [], requires_lifecycle?: false}})}
+    )
+
+    state = %{
+      "issue-160" => %{
+        authorization_required: true,
+        terminal_result: {:grant, %{"finding" => grant}}
+      }
+    }
+
+    options = %{
+      profile: :aroak_autonomous_v1,
+      claim_service: AutonomousClaimService,
+      effect_ledger: AutonomousEffectLedger
+    }
+
+    blocked = ReviewMonitor.run_with(state, settings(), ReviewClient, Tracker, options)
+
+    assert blocked["issue-160"].global_blocker == :claim_already_owned
+    refute_received {:autonomous_call, :bind_worker}
+    refute_received {:autonomous_call, :release}
+  end
+
+  test "a retained grant holds its claim across polls while nothing consumes it" do
+    head = String.duplicate("a", 40)
+
+    facts = %{
+      repository: "aroakpm-svg/repo",
+      pull_request_number: 42,
+      source_head_sha: head,
+      review_thread_id: "thread-retained-loop",
+      selected_review_comment_id: "comment-retained-loop",
+      body: "P1 retained loop"
+    }
+
+    {:ok, finding_key} = SymphonyElixir.FindingDisposition.build_finding_key(facts)
+    {:ok, lineage_key} = SymphonyElixir.FindingDisposition.build_lineage_key(facts)
+
+    decision = %{
+      disposition: :fix_in_current_pr,
+      finding_key: finding_key,
+      finding_lineage_key: lineage_key,
+      finding_key_digest: finding_key.digest
+    }
+
+    receipt = design3_receipt(finding_key, lineage_key, head)
+
+    Application.put_env(
+      :symphony_elixir,
+      :review_snapshot,
+      {:ok,
+       snapshot(%{
+         current_head_sha: head,
+         finding_summary: %{decisions: [decision], requires_lifecycle?: true}
+       })}
+    )
+
+    options = %{
+      profile: :aroak_autonomous_v1,
+      claim_service: AutonomousClaimService,
+      effect_ledger: AutonomousEffectLedger,
+      patch_authorization: CountingPatchAuthorization,
+      review_settlement: ReviewSettlementOwner,
+      root_cause_receipts: %{finding_key.digest => receipt},
+      authorization_runtime: %{circuit_breaker: :clear, prior_attempts: []}
+    }
+
+    granted = ReviewMonitor.run_with(%{}, settings(), ReviewClient, Tracker, options)
+    assert {:grant, _grants} = granted["issue-160"].terminal_result
+
+    # From here nothing an authorization decision depends on changes: same head, same
+    # decision set, same receipt, same claim identity, same circuit breaker. The only
+    # new fact on each poll is that the monitor already holds an unconsumed grant.
+    Application.put_env(:symphony_elixir, :claim_acquisition, :existing)
+
+    final =
+      Enum.reduce(1..5, granted, fn _round, acc ->
+        ReviewMonitor.run_with(acc, settings(), ReviewClient, Tracker, options)
+      end)
+
+    assert {:grant, _grants} = final["issue-160"].terminal_result
+
+    calls = drain_autonomous_calls()
+
+    # Retention is deliberate: a monitor must not release the claim its own grant is
+    # bound to, so `releasable_result?/1` holds while the grant is unconsumed. This
+    # boundary performs no mutation, so nothing consumes the grant here and the claim
+    # is renewed on every poll. In production that renewal is bounded by the
+    # ClaimService lease; within this boundary there is no earlier exit.
+    assert Enum.count(calls, &(&1 == :claim)) == 6
+    refute Enum.any?(calls, &(&1 == :release))
+  end
+
+  defp drain_autonomous_calls(acc \\ []) do
+    receive do
+      {:autonomous_call, call} -> drain_autonomous_calls([call | acc])
+    after
+      0 -> Enum.reverse(acc)
+    end
+  end
+
   test "a new head alone cannot reauthorize the same causal attempt" do
     old_head = String.duplicate("a", 40)
     new_head = String.duplicate("b", 40)
@@ -682,6 +811,258 @@ defmodule SymphonyElixir.ReviewConvergenceTest do
     refute_received {:comment, _, _}
     refute_received {:state, _, _}
     refute_received {:status, _, _, _, _}
+  end
+
+  test "an unresolved managed effect releases claim capacity and is read back by a fresh generation" do
+    Application.put_env(
+      :symphony_elixir,
+      :review_snapshot,
+      {:ok,
+       snapshot(%{
+         finding_summary: %{
+           decisions: [%{finding_key_digest: "finding-1", disposition: :fix_in_current_pr}],
+           requires_lifecycle?: true
+         }
+       })}
+    )
+
+    Application.put_env(
+      :symphony_elixir,
+      :autonomous_operations,
+      [%{operation_id: "issue-160:operation-1", request_fingerprint: "fingerprint", status: :pending}]
+    )
+
+    options = %{
+      profile: :aroak_autonomous_v1,
+      claim_service: AutonomousClaimService,
+      effect_ledger: AutonomousEffectLedger
+    }
+
+    blocked = ReviewMonitor.run_with(%{}, settings(), ReviewClient, Tracker, options)
+
+    assert blocked["issue-160"].global_blocker == :pending_effects
+    assert_receive {:autonomous_call, :release}
+
+    # Readback accepts prior-generation operations, so a fresh claim can continue
+    # reconciliation without one In Review issue monopolising claim capacity.
+    Application.put_env(:symphony_elixir, :claim_generation, 2)
+    retried = ReviewMonitor.run_with(blocked, settings(), ReviewClient, Tracker, options)
+
+    assert retried["issue-160"].global_blocker == :pending_effects
+    assert retried["issue-160"].pending_effect_ids == ["issue-160:operation-1"]
+    assert_receive {:autonomous_call, :release}
+
+    # Once the effect resolves, the claim is no longer load-bearing and goes back.
+    Application.put_env(
+      :symphony_elixir,
+      :autonomous_operations,
+      [%{operation_id: "issue-160:operation-1", request_fingerprint: "fingerprint", status: :succeeded}]
+    )
+
+    resolved = ReviewMonitor.run_with(retried, settings(), ReviewClient, Tracker, options)
+
+    assert resolved["issue-160"].pending_effect_ids == []
+    assert_received {:autonomous_call, :release}
+  end
+
+  test "a foreign existing claim is still rejected when no retention is recorded" do
+    Application.put_env(
+      :symphony_elixir,
+      :review_snapshot,
+      {:ok,
+       snapshot(%{
+         finding_summary: %{
+           decisions: [%{finding_key_digest: "finding-1", disposition: :fix_in_current_pr}],
+           requires_lifecycle?: true
+         }
+       })}
+    )
+
+    Application.put_env(:symphony_elixir, :claim_acquisition, :existing)
+
+    state =
+      ReviewMonitor.run_with(
+        %{},
+        settings(),
+        ReviewClient,
+        Tracker,
+        %{
+          profile: :aroak_autonomous_v1,
+          claim_service: AutonomousClaimService,
+          effect_ledger: AutonomousEffectLedger
+        }
+      )
+
+    assert state["issue-160"].global_blocker == :claim_already_owned
+    refute_received {:autonomous_call, :release}
+  end
+
+  test "an inactive routed issue releases a valid retained claim before its entry is dropped" do
+    retained = %{
+      claim_id: "11111111-1111-4111-8111-111111111111",
+      generation: 1
+    }
+
+    Application.put_env(:symphony_elixir, :review_issues, [])
+
+    state =
+      ReviewMonitor.run_with(
+        %{"issue-160" => %{retained_claim: retained}},
+        settings(),
+        ReviewClient,
+        Tracker,
+        %{
+          profile: :aroak_autonomous_v1,
+          claim_service: AutonomousClaimService,
+          effect_ledger: AutonomousEffectLedger
+        }
+      )
+
+    assert state == %{}
+    assert_receive {:autonomous_call, :release_if_owned}
+  end
+
+  test "an inactive malformed retention record cannot release a claim" do
+    Application.put_env(:symphony_elixir, :review_issues, [])
+
+    state =
+      ReviewMonitor.run_with(
+        %{"issue-160" => %{retained_claim: %{claim_id: "", generation: 1}}},
+        settings(),
+        ReviewClient,
+        Tracker,
+        %{
+          profile: :aroak_autonomous_v1,
+          claim_service: AutonomousClaimService,
+          effect_ledger: AutonomousEffectLedger
+        }
+      )
+
+    assert state == %{}
+    refute_received {:autonomous_call, :release_if_owned}
+  end
+
+  test "an inactive unconsumed grant releases its still monitor-owned claim" do
+    grant = %{claim_id: "11111111-1111-4111-8111-111111111111", generation: 1}
+    Application.put_env(:symphony_elixir, :review_issues, [])
+
+    state =
+      ReviewMonitor.run_with(
+        %{
+          "issue-160" => %{
+            retained_claim: nil,
+            terminal_result: {:grant, %{"finding" => grant}}
+          }
+        },
+        settings(),
+        ReviewClient,
+        Tracker,
+        %{
+          profile: :aroak_autonomous_v1,
+          claim_service: AutonomousClaimService,
+          effect_ledger: AutonomousEffectLedger
+        }
+      )
+
+    assert state == %{}
+    assert_receive {:autonomous_call, :release_if_owned}
+  end
+
+  test "inactive cleanup cannot release a retained claim transferred to a worker" do
+    worker = spawn(fn -> Process.sleep(:infinity) end)
+    on_exit(fn -> if Process.alive?(worker), do: Process.exit(worker, :kill) end)
+
+    Application.put_env(:symphony_elixir, :claim_worker, worker)
+    Application.put_env(:symphony_elixir, :review_issues, [])
+
+    retained = %{
+      claim_id: "11111111-1111-4111-8111-111111111111",
+      generation: 1
+    }
+
+    state =
+      ReviewMonitor.run_with(
+        %{"issue-160" => %{retained_claim: retained}},
+        settings(),
+        ReviewClient,
+        Tracker,
+        %{
+          profile: :aroak_autonomous_v1,
+          claim_service: AutonomousClaimService,
+          effect_ledger: AutonomousEffectLedger
+        }
+      )
+
+    assert state == %{}
+    refute_received {:autonomous_call, :release_if_owned}
+  end
+
+  test "the monitor never rebinds a retained claim transferred to a running worker" do
+    worker = spawn(fn -> Process.sleep(:infinity) end)
+    Application.put_env(:symphony_elixir, :claim_acquisition, :existing)
+    Application.put_env(:symphony_elixir, :claim_worker, worker)
+
+    Application.put_env(
+      :symphony_elixir,
+      :review_snapshot,
+      {:ok, snapshot(%{finding_summary: %{decisions: [], requires_lifecycle?: false}})}
+    )
+
+    retained = %{
+      claim_id: "11111111-1111-4111-8111-111111111111",
+      generation: 1
+    }
+
+    state =
+      ReviewMonitor.run_with(
+        %{"issue-160" => %{retained_claim: retained}},
+        settings(),
+        ReviewClient,
+        Tracker,
+        %{
+          profile: :aroak_autonomous_v1,
+          claim_service: AutonomousClaimService,
+          effect_ledger: AutonomousEffectLedger
+        }
+      )
+
+    assert state["issue-160"].global_blocker == :claim_already_owned
+    refute_received {:autonomous_call, :bind_worker}
+    refute_received {:autonomous_call, :release}
+    Process.exit(worker, :kill)
+  end
+
+  test "a malformed retention record cannot assert ownership of an existing claim" do
+    Application.put_env(
+      :symphony_elixir,
+      :review_snapshot,
+      {:ok,
+       snapshot(%{
+         finding_summary: %{
+           decisions: [%{finding_key_digest: "finding-1", disposition: :fix_in_current_pr}],
+           requires_lifecycle?: true
+         }
+       })}
+    )
+
+    Application.put_env(:symphony_elixir, :claim_acquisition, :existing)
+
+    options = %{
+      profile: :aroak_autonomous_v1,
+      claim_service: AutonomousClaimService,
+      effect_ledger: AutonomousEffectLedger
+    }
+
+    for retained <- [
+          %{claim_id: "11111111-1111-4111-8111-111111111111", generation: nil},
+          %{claim_id: "", generation: 1},
+          %{claim_id: nil, generation: 1}
+        ] do
+      state = ReviewMonitor.run_with(%{"issue-160" => %{retained_claim: retained}}, settings(), ReviewClient, Tracker, options)
+
+      assert state["issue-160"].global_blocker == :claim_already_owned
+      refute_received {:autonomous_call, :release}
+    end
   end
 
   test "missing expected GitHub Actions checks fail closed instead of treating zero rows as passing" do

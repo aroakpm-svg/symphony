@@ -83,8 +83,11 @@ conditions remain AND-gated, and missing, malformed, or conflicting evidence sta
 `in_scope?` cannot erase either positive responsibility proof. Before any autonomous effect, the
 runtime authenticates the current claim and reads unresolved (`pending`/`unknown`) effects for the
 same issue across older generations. Historical effects are recovery evidence only and cannot
-authorize a current-generation mutation. A monitor invocation releases only a claim it newly
-acquired; an existing worker claim is left untouched. The global preflight requires explicit
+authorize a current-generation mutation. Pending or unknown effects release claim capacity after
+readback so a later generation can continue reconciliation. An unconsumed grant may retain the
+same monitor-owned claim across invocations. When that entry becomes inactive, cleanup releases it
+only if the live claim still has the retained identity and remains owned by the monitor with no
+different worker; a transferred worker claim is left untouched. The global preflight requires explicit
 `verified? == true` and `valid? == true`. Request fingerprints are immutable: decoding rebuilds
 and compares canonical finding and lineage identities, including scope and digests; lock
 reconciliation uses a deterministic fixed order.
