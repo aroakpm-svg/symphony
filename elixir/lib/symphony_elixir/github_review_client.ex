@@ -6,6 +6,7 @@ defmodule SymphonyElixir.GitHubReviewClient do
     repository(owner: $owner, name: $name) {
       pullRequest(number: $number) {
         number
+        body
         headRefOid
         baseRefName
         baseRefOid
@@ -18,6 +19,7 @@ defmodule SymphonyElixir.GitHubReviewClient do
             author {
               login
               __typename
+              ... on User { databaseId }
               ... on Organization { databaseId }
               ... on Bot { databaseId }
             }
@@ -28,7 +30,23 @@ defmodule SymphonyElixir.GitHubReviewClient do
             isResolved
             id
             comments(first: 100) {
-              nodes { body path url commit { oid } }
+              nodes {
+                id
+                body
+                path
+                url
+                commit { oid }
+                createdAt
+                updatedAt
+                author {
+                  login
+                  __typename
+                  ... on User { databaseId }
+                  ... on Organization { databaseId }
+                  ... on Bot { databaseId }
+                }
+              }
+              pageInfo { hasNextPage endCursor }
             }
           }
           pageInfo { hasNextPage endCursor }
@@ -43,7 +61,22 @@ defmodule SymphonyElixir.GitHubReviewClient do
     node(id: $threadId) {
       ... on PullRequestReviewThread {
         comments(first: 100, after: $endCursor) {
-          nodes { body path url commit { oid } }
+          nodes {
+            id
+            body
+            path
+            url
+            commit { oid }
+            createdAt
+            updatedAt
+            author {
+              login
+              __typename
+              ... on User { databaseId }
+              ... on Organization { databaseId }
+              ... on Bot { databaseId }
+            }
+          }
           pageInfo { hasNextPage endCursor }
         }
       }
@@ -602,8 +635,8 @@ defmodule SymphonyElixir.GitHubReviewClient do
            }
          } = page
        ) do
-    if is_list(nodes) and is_boolean(has_next_page) and
-         (is_binary(end_cursor) or is_nil(end_cursor)) do
+    if validate_page_info(%{"hasNextPage" => has_next_page, "endCursor" => end_cursor}) == :ok and
+         valid_pull_request_body?(pull_request) and valid_review_threads?(nodes) do
       {:ok, pull_request, nodes}
     else
       {:error, {:invalid_pull_request_page, page}}
@@ -611,6 +644,80 @@ defmodule SymphonyElixir.GitHubReviewClient do
   end
 
   defp validate_pull_request_page(page), do: {:error, {:invalid_pull_request_page, page}}
+
+  defp valid_pull_request_body?(pull_request) do
+    Map.has_key?(pull_request, "body") and
+      (is_nil(pull_request["body"]) or is_binary(pull_request["body"]))
+  end
+
+  defp valid_review_threads?(nodes) when is_list(nodes) do
+    Enum.all?(nodes, &valid_review_thread?/1)
+  end
+
+  defp valid_review_threads?(_nodes), do: false
+
+  defp valid_review_thread?(%{"id" => id, "isResolved" => resolved, "comments" => comments})
+       when is_binary(id) and id != "" and is_boolean(resolved) do
+    case validate_comments_connection(comments) do
+      {:ok, _nodes} -> true
+      {:error, _reason} -> false
+    end
+  end
+
+  defp valid_review_thread?(_thread), do: false
+
+  defp validate_comments_connection(%{"nodes" => nodes, "pageInfo" => page_info})
+       when is_list(nodes) do
+    with :ok <- validate_page_info(page_info),
+         :ok <- validate_review_comments(nodes) do
+      {:ok, nodes}
+    end
+  end
+
+  defp validate_comments_connection(_comments), do: {:error, :invalid_comments_connection}
+
+  defp validate_review_comments(comments) when is_list(comments) do
+    if Enum.all?(comments, &valid_review_comment?/1), do: :ok, else: {:error, :invalid_review_comment}
+  end
+
+  defp validate_page_info(%{"hasNextPage" => has_next_page, "endCursor" => end_cursor})
+       when is_boolean(has_next_page) and (is_binary(end_cursor) or is_nil(end_cursor)) do
+    if has_next_page and (not is_binary(end_cursor) or end_cursor == ""),
+      do: {:error, :missing_pagination_cursor},
+      else: :ok
+  end
+
+  defp validate_page_info(_page_info), do: {:error, :invalid_page_info}
+
+  defp valid_review_comment?(comment) when is_map(comment) do
+    non_empty_binary?(comment["id"]) and
+      is_binary(comment["body"]) and
+      valid_optional_string?(comment["path"]) and
+      valid_optional_string?(comment["url"]) and
+      valid_commit_oid?(comment["commit"]) and
+      valid_iso8601?(comment["createdAt"]) and
+      valid_iso8601?(comment["updatedAt"]) and
+      valid_review_author_field?(comment["author"])
+  end
+
+  defp valid_review_comment?(_comment), do: false
+
+  defp non_empty_binary?(value), do: is_binary(value) and value != ""
+
+  defp valid_optional_string?(value), do: is_nil(value) or is_binary(value)
+
+  defp valid_commit_oid?(%{"oid" => oid}), do: non_empty_binary?(oid)
+  defp valid_commit_oid?(_commit), do: false
+
+  defp valid_iso8601?(value) when is_binary(value) do
+    match?({:ok, _, _}, DateTime.from_iso8601(value))
+  end
+
+  defp valid_iso8601?(_value), do: false
+
+  defp valid_review_author_field?(nil), do: true
+  defp valid_review_author_field?(author) when is_map(author), do: true
+  defp valid_review_author_field?(_author), do: false
 
   defp encode_path_segment(value) do
     URI.encode(value, &URI.char_unreserved?/1)
@@ -637,11 +744,17 @@ defmodule SymphonyElixir.GitHubReviewClient do
   defp hydrate_one_thread(repository, thread) do
     comments = get_in(thread, ["comments", "nodes"]) || []
 
-    if length(comments) == 100 do
+    if length(comments) == 100 or get_in(thread, ["comments", "pageInfo", "hasNextPage"]) == true do
       fetch_all_thread_comments(repository, thread["id"])
       |> case do
-        {:ok, comments} -> {:ok, put_in(thread, ["comments", "nodes"], comments)}
-        error -> error
+        {:ok, comments} ->
+          {:ok,
+           thread
+           |> put_in(["comments", "nodes"], comments)
+           |> put_in(["comments", "pageInfo"], %{"hasNextPage" => false, "endCursor" => nil})}
+
+        error ->
+          error
       end
     else
       {:ok, thread}
@@ -674,9 +787,9 @@ defmodule SymphonyElixir.GitHubReviewClient do
 
   defp merge_thread_comment_pages(pages) when is_list(pages) do
     Enum.reduce_while(pages, {:ok, []}, fn page, {:ok, acc} ->
-      case get_in(page, ["data", "node", "comments", "nodes"]) do
-        nodes when is_list(nodes) -> {:cont, {:ok, [nodes | acc]}}
-        _ -> {:halt, {:error, {:invalid_thread_comment_page, page}}}
+      case validate_thread_comment_page(page) do
+        {:ok, nodes} -> {:cont, {:ok, [nodes | acc]}}
+        {:error, _reason} -> {:halt, {:error, {:invalid_thread_comment_page, page}}}
       end
     end)
     |> case do
@@ -686,6 +799,15 @@ defmodule SymphonyElixir.GitHubReviewClient do
   end
 
   defp merge_thread_comment_pages(payload), do: {:error, {:invalid_thread_comment_pages, payload}}
+
+  defp validate_thread_comment_page(page) do
+    with comments when is_map(comments) <- get_in(page, ["data", "node", "comments"]),
+         {:ok, nodes} <- validate_comments_connection(comments) do
+      {:ok, nodes}
+    else
+      _ -> {:error, :invalid_thread_comment_page}
+    end
+  end
 
   defp normalize_no_required_checks(output) do
     if output == "" or String.contains?(output, "checks reported on") do
@@ -808,8 +930,73 @@ defmodule SymphonyElixir.GitHubReviewClient do
       base_verification_required: base_verification.required,
       base_verification: base_verification.result,
       required_checks: checks,
+      pull_request_body: pull_request["body"],
+      review_events: normalize_review_events(threads),
       threads: normalize_threads(threads, head_sha),
       structural_risk: structural_risk?(current_threads, head_sha)
+    }
+  end
+
+  defp normalize_review_events(threads) when is_list(threads) do
+    Enum.map(threads, fn thread ->
+      comments = get_in(thread, ["comments", "nodes"]) || []
+
+      %{
+        review_thread_id: thread["id"],
+        resolved?: thread["isResolved"] == true,
+        complete_pagination?: complete_comments_pagination?(thread),
+        comments:
+          comments
+          |> Enum.with_index()
+          |> Enum.map(fn {comment, connection_index} ->
+            normalize_review_comment(comment, connection_index)
+          end)
+      }
+    end)
+  end
+
+  defp normalize_review_events(_threads), do: []
+
+  defp complete_comments_pagination?(thread) do
+    case get_in(thread, ["comments", "pageInfo"]) do
+      %{"hasNextPage" => false, "endCursor" => _end_cursor} -> true
+      _ -> false
+    end
+  end
+
+  defp normalize_review_comment(comment, connection_index) when is_map(comment) do
+    body = comment["body"]
+    author = comment["author"]
+    settlement_marker? = settlement_marker?(body)
+
+    %{
+      id: comment["id"],
+      body: body,
+      path: comment["path"],
+      url: comment["url"],
+      commit_sha: get_in(comment, ["commit", "oid"]),
+      created_at: comment["createdAt"],
+      updated_at: comment["updatedAt"],
+      trusted_review_source?: trusted_reviewer?(author),
+      managed_agent_reply?: managed_agent_author?(author) and settlement_marker?,
+      settlement_marker?: settlement_marker?,
+      connection_index: connection_index
+    }
+  end
+
+  defp normalize_review_comment(_comment, connection_index) do
+    %{
+      id: nil,
+      body: nil,
+      path: nil,
+      url: nil,
+      commit_sha: nil,
+      created_at: nil,
+      updated_at: nil,
+      trusted_review_source?: false,
+      managed_agent_reply?: false,
+      settlement_marker?: false,
+      connection_index: connection_index
     }
   end
 
@@ -913,6 +1100,41 @@ defmodule SymphonyElixir.GitHubReviewClient do
   end
 
   defp trusted_reviewer?(_author), do: false
+
+  defp managed_agent_author?(%{"login" => login, "__typename" => "Bot", "databaseId" => database_id}) do
+    login == @trusted_comment_user.login and database_id == @trusted_comment_user.id
+  end
+
+  defp managed_agent_author?(_author), do: false
+
+  defp settlement_marker?(body) when is_binary(body) do
+    body = body |> String.replace("\r\n", "\n") |> String.trim()
+    completed_transition_marker?(body) or intent_transition_marker?(body)
+  end
+
+  defp settlement_marker?(_body), do: false
+
+  defp completed_transition_marker?(body) do
+    case Regex.run(
+           ~r/\AReview Convergence Gate returned this issue to In Progress for latest-head repair\.\n\n- currentHeadSha: `[0-9a-f]{40}`\n- transition-operation: `completed`\n- transition-operation-id: `([0-9a-f]{64})`\n- dedup-key: `([0-9a-f]{64})`\z/,
+           body,
+           capture: :all_but_first
+         ) do
+      [operation_id, dedup_key] -> operation_id == dedup_key
+      _ -> false
+    end
+  end
+
+  defp intent_transition_marker?(body) do
+    case Regex.run(
+           ~r/\AReview Convergence Gate recorded a durable rework transition intent\.\n\n- currentHeadSha: `[0-9a-f]{40}`\n- target-state: `[^`\r\n]+`\n- transition-operation: `intent`\n- transition-operation-id: `([0-9a-f]{64})`\n- dedup-key: `transition-intent:([0-9a-f]{64})`\n\nThis operation is safe to resume after timeout or process restart; completion is recorded separately\.\z/,
+           body,
+           capture: :all_but_first
+         ) do
+      [operation_id, dedup_operation_id] -> operation_id == dedup_operation_id
+      _ -> false
+    end
+  end
 
   defp normalize_threads(threads, _head_sha) do
     Enum.flat_map(threads, fn thread ->

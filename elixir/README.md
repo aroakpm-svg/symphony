@@ -70,6 +70,44 @@ Each decision publishes the fixed GitHub commit status context `Review Convergen
 that context as required only after the runtime change is deployed and live-smoked; keep existing
 human approval protection until then.
 
+## Design 2 finding disposition boundary
+
+The Design 2 runtime keeps one canonical finding contract. `FindingKey` identifies a finding in the
+current repository and pull request; `FindingLineageKey` follows that finding across head changes.
+Every result records the source head, `evaluated_head_sha`, and the observed current head. Missing,
+stale, conflicting, or unverified evidence fails closed.
+
+The classifier can return only `fix_in_current_pr`, `follow_up_required`, or `blocked_unverified`.
+Responsibility proof is `introduced_by_pr? == true OR invariant_violation? == true`; all safety
+conditions remain AND-gated, and missing, malformed, or conflicting evidence stays blocked.
+`in_scope?` cannot erase either positive responsibility proof. Before any autonomous effect, the
+runtime authenticates the current claim and reads unresolved (`pending`/`unknown`) effects for the
+same issue across older generations. Historical effects are recovery evidence only and cannot
+authorize a current-generation mutation. A monitor invocation releases only a claim it newly
+acquired; an existing worker claim is left untouched. The global preflight requires explicit
+`verified? == true` and `valid? == true`. Request fingerprints are immutable: decoding rebuilds
+and compares canonical finding and lineage identities, including scope and digests; lock
+reconciliation uses a deterministic fixed order.
+
+Actionable routing first rebuilds and validates canonical finding and lineage identities. Missing,
+partial, malformed, or conflicting identity, ownership, or preflight evidence remains
+`blocked_unverified`; a caller-supplied digest is not enough. Follow-up routing uses the same
+explicit boolean ownership gate as fix routing. Review comments with an unavailable or unsupported
+author remain in the snapshot as untrusted evidence, so one malformed trust field cannot erase
+other evidence. Raw actionable threads remain blocking even when an empty finding summary exists.
+After a successful autonomous readback/reconciliation cycle, transient `global_blocker` state is
+cleared before any newly observed blocker is applied.
+
+Design 2 consumes the merged HandoffReceipt V1 dependency only. It does not add a second evaluator,
+settlement engine, claim/ledger/receipt path, or coordinator, and it preserves ClaimService's
+existing lease/renew/release lifecycle. Design 3 `authorize/5` and Design 4 `settle/2` are owner contracts; when either
+is unavailable, execution fails closed rather than using a local stub. `aroak_autonomous_v1` stays
+disabled by default, and this work does not start workers, use shared staging credentials, deploy,
+or touch Production.
+
+A technical pass, finding disposition, or `MergeReadyCandidate` does not authorize merge. Merge,
+deployment, Linear `Done`, and Landing remain human/owner actions outside Design 2.
+
 ## How to use it
 
 1. Make sure your codebase is set up to work well with agents: see

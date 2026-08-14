@@ -74,6 +74,62 @@ defmodule SymphonyElixir.ReviewConvergenceTest do
     def fetch_routed_issues_by_states(_states), do: {:error, :linear_unavailable}
   end
 
+  defmodule FailingClaimService do
+    @spec claim(Issue.t(), pid()) :: {:error, :claim_service_unavailable}
+    def claim(_issue, _owner), do: {:error, :claim_service_unavailable}
+  end
+
+  defmodule AutonomousClaimService do
+    @spec claim(Issue.t(), pid()) :: {:ok, map()}
+    def claim(issue, _owner) do
+      send(Application.fetch_env!(:symphony_elixir, :review_recipient), {:autonomous_call, :claim})
+
+      {:ok,
+       %{
+         issue_id: issue.id,
+         claim_id: "11111111-1111-4111-8111-111111111111",
+         generation: 1,
+         acquisition: :new
+       }}
+    end
+
+    @spec bind_worker(String.t(), pid()) :: :ok
+    def bind_worker(_issue_id, _worker) do
+      send(Application.fetch_env!(:symphony_elixir, :review_recipient), {:autonomous_call, :bind_worker})
+      :ok
+    end
+
+    @spec effect_context(String.t()) :: {:ok, (String.t(), list() -> term()), map()}
+    def effect_context(_issue_id) do
+      send(Application.fetch_env!(:symphony_elixir, :review_recipient), {:autonomous_call, :effect_context})
+      {:ok, fn _sql, _params -> :unused end, claim_context()}
+    end
+
+    @spec release(String.t()) :: :ok
+    def release(_issue_id) do
+      send(Application.fetch_env!(:symphony_elixir, :review_recipient), {:autonomous_call, :release})
+      :ok
+    end
+
+    defp claim_context do
+      %{
+        issue_id: "issue-160",
+        claim_id: "11111111-1111-4111-8111-111111111111",
+        generation: 1,
+        node_id: "22222222-2222-4222-8222-222222222222",
+        node_instance_id: "33333333-3333-4333-8333-333333333333"
+      }
+    end
+  end
+
+  defmodule AutonomousEffectLedger do
+    @spec list_operations(term(), map()) :: {:ok, [map()]}
+    def list_operations(_connection, _claim_context) do
+      send(Application.fetch_env!(:symphony_elixir, :review_recipient), {:autonomous_call, :list_operations})
+      {:ok, Application.get_env(:symphony_elixir, :autonomous_operations, [])}
+    end
+  end
+
   setup do
     Application.put_env(:symphony_elixir, :review_recipient, self())
     Application.put_env(:symphony_elixir, :review_issues, [issue()])
@@ -87,6 +143,7 @@ defmodule SymphonyElixir.ReviewConvergenceTest do
       Application.delete_env(:symphony_elixir, :linear_client_module)
       Application.delete_env(:symphony_elixir, :review_state_result)
       Application.delete_env(:symphony_elixir, :verified_issue_state)
+      Application.delete_env(:symphony_elixir, :autonomous_operations)
     end)
   end
 
@@ -105,6 +162,254 @@ defmodule SymphonyElixir.ReviewConvergenceTest do
              })
 
     assert malformed_message =~ "must use owner/name format"
+  end
+
+  test "raw actionable threads remain blocking when an empty finding summary is present" do
+    snapshot =
+      snapshot(%{
+        threads: [%{priority: 1, resolved: false, body: "P1"}],
+        finding_summary: %{decisions: [], requires_lifecycle?: false}
+      })
+
+    assert {:rework, %{actionable_threads: [_]}} = ReviewConvergence.evaluate(snapshot, 0, 3)
+  end
+
+  test "invalid finding summaries fail closed before convergence" do
+    assert {:wait, %{reason: :finding_summary_invalid}} =
+             ReviewConvergence.evaluate(
+               snapshot(%{finding_summary: %{decisions: :invalid}}),
+               0,
+               3
+             )
+
+    assert {:wait, %{reason: :finding_summary_invalid}} =
+             ReviewConvergence.evaluate(snapshot(%{finding_summary: :invalid}), 0, 3)
+  end
+
+  test "autonomous global preflight failure performs no external write" do
+    Application.put_env(
+      :symphony_elixir,
+      :review_snapshot,
+      {:ok, snapshot(%{finding_summary: %{decisions: [], requires_lifecycle?: false}})}
+    )
+
+    state =
+      ReviewMonitor.run_with(
+        %{},
+        settings(),
+        ReviewClient,
+        Tracker,
+        %{profile: :aroak_autonomous_v1, claim_service: FailingClaimService}
+      )
+
+    assert state["issue-160"].global_blocker == :claim_service_unavailable
+    refute_received {:comment, _, _}
+    refute_received {:state, _, _}
+    refute_received {:status, _, _, _, _}
+  end
+
+  test "successful autonomous recovery clears a stale global blocker" do
+    Application.put_env(
+      :symphony_elixir,
+      :review_snapshot,
+      {:ok, snapshot(%{finding_summary: %{decisions: [], requires_lifecycle?: false}})}
+    )
+
+    entry = %{
+      "issue-160" => %{
+        evaluated_head_sha: "old-head",
+        decisions: %{"old-finding" => %{disposition: :blocked_unverified}},
+        pending_effect_ids: ["old-operation"],
+        global_blocker: :pending_effects,
+        authorization_required: false,
+        terminal_result: nil
+      }
+    }
+
+    state =
+      ReviewMonitor.run_with(
+        entry,
+        settings(),
+        ReviewClient,
+        Tracker,
+        %{
+          profile: :aroak_autonomous_v1,
+          claim_service: AutonomousClaimService,
+          effect_ledger: AutonomousEffectLedger
+        }
+      )
+
+    assert state["issue-160"].global_blocker == nil
+    assert state["issue-160"].pending_effect_ids == []
+    assert state["issue-160"].decisions == %{}
+  end
+
+  test "autonomous profile bypasses the legacy advisory status publisher" do
+    Application.put_env(
+      :symphony_elixir,
+      :review_snapshot,
+      {:ok, snapshot(%{finding_summary: %{decisions: [], requires_lifecycle?: false}})}
+    )
+
+    state =
+      ReviewMonitor.run_with(
+        %{},
+        settings(),
+        ReviewClient,
+        Tracker,
+        %{
+          profile: :aroak_autonomous_v1,
+          claim_service: AutonomousClaimService,
+          effect_ledger: AutonomousEffectLedger
+        }
+      )
+
+    assert state["issue-160"].decisions == %{}
+    assert state["issue-160"].pending_effect_ids == []
+    refute_received {:status, _, _, _, _}
+    assert_receive {:autonomous_call, :claim}
+    assert_receive {:autonomous_call, :bind_worker}
+    assert_receive {:autonomous_call, :effect_context}
+    assert_receive {:autonomous_call, :list_operations}
+    assert_receive {:autonomous_call, :release}
+  end
+
+  test "autonomous readback loads the configured effect ledger before introspection" do
+    Application.put_env(
+      :symphony_elixir,
+      :review_snapshot,
+      {:ok, snapshot(%{finding_summary: %{decisions: [], requires_lifecycle?: false}})}
+    )
+
+    lazy_effect_ledger =
+      prepare_unloaded_module(
+        Module.concat(__MODULE__, RuntimeEffectLedger),
+        """
+        def list_operations(_connection, _claim_context) do
+          send(Application.fetch_env!(:symphony_elixir, :review_recipient), {:lazy_autonomous_call, :list_operations})
+          {:ok, []}
+        end
+        """
+      )
+
+    refute function_exported?(lazy_effect_ledger, :list_operations, 2)
+
+    state =
+      ReviewMonitor.run_with(
+        %{},
+        settings(),
+        ReviewClient,
+        Tracker,
+        %{
+          profile: :aroak_autonomous_v1,
+          claim_service: AutonomousClaimService,
+          effect_ledger: lazy_effect_ledger
+        }
+      )
+
+    assert state["issue-160"].global_blocker == nil
+    assert_receive {:lazy_autonomous_call, :list_operations}
+  end
+
+  test "autonomous owner API checks load configured modules before introspection" do
+    Application.put_env(
+      :symphony_elixir,
+      :review_snapshot,
+      {:ok,
+       snapshot(%{
+         finding_summary: %{
+           decisions: [%{finding_key_digest: "finding-1", disposition: :fix_in_current_pr}],
+           requires_lifecycle?: true
+         }
+       })}
+    )
+
+    lazy_effect_ledger =
+      prepare_unloaded_module(
+        Module.concat(__MODULE__, RuntimeOwnerEffectLedger),
+        """
+        def list_operations(_connection, _claim_context), do: {:ok, []}
+        """
+      )
+
+    lazy_authorization =
+      prepare_unloaded_module(
+        Module.concat(__MODULE__, RuntimePatchAuthorization),
+        """
+        def authorize(_issue, _finding, _patch, _head, _context), do: :ok
+        """
+      )
+
+    lazy_settlement =
+      prepare_unloaded_module(
+        Module.concat(__MODULE__, RuntimeReviewSettlement),
+        """
+        def settle(_finding, _context), do: :ok
+        """
+      )
+
+    state =
+      ReviewMonitor.run_with(
+        %{},
+        settings(),
+        ReviewClient,
+        Tracker,
+        %{
+          profile: :aroak_autonomous_v1,
+          claim_service: AutonomousClaimService,
+          effect_ledger: lazy_effect_ledger,
+          patch_authorization: lazy_authorization,
+          review_settlement: lazy_settlement
+        }
+      )
+
+    assert state["issue-160"].global_blocker == :autonomous_execution_requires_owner_contracts
+  end
+
+  test "pending ledger effects block autonomous execution before owner APIs" do
+    Application.put_env(
+      :symphony_elixir,
+      :review_snapshot,
+      {:ok,
+       snapshot(%{
+         finding_summary: %{
+           decisions: [%{finding_key_digest: "finding-1", disposition: :fix_in_current_pr}],
+           requires_lifecycle?: true
+         }
+       })}
+    )
+
+    Application.put_env(
+      :symphony_elixir,
+      :autonomous_operations,
+      [
+        %{
+          operation_id: "issue-160:operation-1",
+          request_fingerprint: "fingerprint",
+          status: :pending
+        }
+      ]
+    )
+
+    state =
+      ReviewMonitor.run_with(
+        %{},
+        settings(),
+        ReviewClient,
+        Tracker,
+        %{
+          profile: :aroak_autonomous_v1,
+          claim_service: AutonomousClaimService,
+          effect_ledger: AutonomousEffectLedger
+        }
+      )
+
+    assert state["issue-160"].global_blocker == :pending_effects
+    assert state["issue-160"].pending_effect_ids == ["issue-160:operation-1"]
+    assert state["issue-160"].authorization_required == false
+    refute_received {:comment, _, _}
+    refute_received {:state, _, _}
+    refute_received {:status, _, _, _, _}
   end
 
   test "missing expected GitHub Actions checks fail closed instead of treating zero rows as passing" do
@@ -514,8 +819,33 @@ defmodule SymphonyElixir.ReviewConvergenceTest do
         "data" => %{
           "repository" => %{
             "pullRequest" => %{
+              "body" => "",
               "reviewThreads" => %{
-                "nodes" => [%{"comments" => %{"nodes" => [%{"body" => body}]}}],
+                "nodes" => [
+                  %{
+                    "id" => "thread-#{body}",
+                    "isResolved" => false,
+                    "comments" => %{
+                      "nodes" => [
+                        %{
+                          "id" => "review-#{body}",
+                          "body" => body,
+                          "path" => "lib/example.ex",
+                          "url" => "https://github.test/review/#{body}",
+                          "commit" => %{"oid" => "head"},
+                          "createdAt" => "2026-08-09T00:00:00Z",
+                          "updatedAt" => "2026-08-09T00:00:00Z",
+                          "author" => %{
+                            "login" => "chatgpt-codex-connector",
+                            "__typename" => "Organization",
+                            "databaseId" => 261_883_814
+                          }
+                        }
+                      ],
+                      "pageInfo" => %{"hasNextPage" => false, "endCursor" => nil}
+                    }
+                  }
+                ],
                 "pageInfo" => %{"hasNextPage" => has_next_page, "endCursor" => end_cursor}
               }
             }
@@ -536,11 +866,476 @@ defmodule SymphonyElixir.ReviewConvergenceTest do
            ) == ["P4 first", "P1 second"]
   end
 
+  test "normalized review events retain exact comment identity and provider order" do
+    head = String.duplicate("a", 40)
+
+    pull_request = %{
+      "body" => "## Scope Contract\n",
+      "headRefOid" => head,
+      "baseRefOid" => String.duplicate("b", 40),
+      "reviews" => %{"nodes" => []},
+      "reviewThreads" => %{
+        "nodes" => [
+          %{
+            "id" => "thread-1",
+            "isResolved" => false,
+            "comments" => %{
+              "nodes" => [
+                review_event_comment("review-1", "P2 old", head, "2026-08-09T01:00:00Z", "Organization", 261_883_814),
+                review_event_comment("review-2", "P1\r\nexact bytes", head, "2026-08-09T01:02:03Z", "Organization", 261_883_814)
+              ],
+              "pageInfo" => %{"hasNextPage" => false, "endCursor" => nil}
+            }
+          }
+        ]
+      }
+    }
+
+    snapshot =
+      GitHubReviewClient.normalize_snapshot_for_test(
+        pull_request,
+        [%{name: "make-all", state: :success}],
+        %{required: false, result: :not_required},
+        []
+      )
+
+    [event] = snapshot.review_events
+    assert snapshot.pull_request_body == "## Scope Contract\n"
+    assert event.review_thread_id == "thread-1"
+    assert event.resolved? == false
+    assert event.complete_pagination? == true
+    assert Enum.map(event.comments, & &1.id) == ["review-1", "review-2"]
+    assert Enum.map(event.comments, & &1.connection_index) == [0, 1]
+    assert Enum.at(event.comments, 1).body == "P1\r\nexact bytes"
+    assert Enum.at(event.comments, 1).updated_at == "2026-08-09T01:02:03Z"
+    assert Enum.all?(event.comments, &(&1.trusted_review_source? == true))
+  end
+
+  test "missing thread comment pagination evidence blocks normalization" do
+    page = %{
+      "data" => %{
+        "repository" => %{
+          "pullRequest" => %{
+            "body" => "",
+            "reviewThreads" => %{
+              "nodes" => [
+                %{
+                  "id" => "thread-1",
+                  "isResolved" => false,
+                  "comments" => %{"nodes" => []}
+                }
+              ],
+              "pageInfo" => %{"hasNextPage" => false, "endCursor" => nil}
+            }
+          }
+        }
+      }
+    }
+
+    assert {:error, {:invalid_pull_request_page, ^page}} =
+             GitHubReviewClient.merge_pull_request_pages_for_test([page])
+  end
+
+  test "review pages reject missing identity, malformed dates, and invalid authors" do
+    valid = review_event_page()
+
+    invalid_pages = [
+      put_in(valid, ["data", "repository", "pullRequest", "reviewThreads", "nodes", Access.at(0), "id"], ""),
+      put_in(
+        valid,
+        [
+          "data",
+          "repository",
+          "pullRequest",
+          "reviewThreads",
+          "nodes",
+          Access.at(0),
+          "comments",
+          "nodes",
+          Access.at(0),
+          "id"
+        ],
+        nil
+      ),
+      put_in(
+        valid,
+        [
+          "data",
+          "repository",
+          "pullRequest",
+          "reviewThreads",
+          "nodes",
+          Access.at(0),
+          "comments",
+          "nodes",
+          Access.at(0),
+          "author"
+        ],
+        "unsupported"
+      ),
+      put_in(
+        valid,
+        [
+          "data",
+          "repository",
+          "pullRequest",
+          "reviewThreads",
+          "nodes",
+          Access.at(0),
+          "comments",
+          "nodes",
+          Access.at(0),
+          "createdAt"
+        ],
+        "not-a-date"
+      )
+    ]
+
+    for invalid <- invalid_pages do
+      assert {:error, {:invalid_pull_request_page, ^invalid}} =
+               GitHubReviewClient.merge_pull_request_pages_for_test([invalid])
+    end
+  end
+
+  test "review pages preserve comments whose author is unavailable as untrusted evidence" do
+    page =
+      put_in(
+        review_event_page(),
+        [
+          "data",
+          "repository",
+          "pullRequest",
+          "reviewThreads",
+          "nodes",
+          Access.at(0),
+          "comments",
+          "nodes",
+          Access.at(0),
+          "author"
+        ],
+        nil
+      )
+
+    assert {:ok, pull_request} = GitHubReviewClient.merge_pull_request_pages_for_test([page])
+
+    assert get_in(pull_request, ["reviewThreads", "nodes", Access.at(0), "comments", "nodes", Access.at(0), "author"]) ==
+             nil
+
+    snapshot =
+      GitHubReviewClient.normalize_snapshot_for_test(
+        pull_request,
+        [],
+        %{required: false, result: :not_required},
+        []
+      )
+
+    assert [%{comments: [%{trusted_review_source?: false}]}] = snapshot.review_events
+  end
+
+  test "normalized provider facts distinguish managed and system comments" do
+    head = String.duplicate("e", 40)
+    operation_id = String.duplicate("1", 64)
+
+    pull_request = %{
+      "headRefOid" => head,
+      "reviewThreads" => %{
+        "nodes" => [
+          %{
+            "id" => "thread-identity",
+            "isResolved" => false,
+            "comments" => %{
+              "nodes" => [
+                review_event_comment("system", "P2 system", head, "2026-08-09T01:00:00Z", "User", 123),
+                review_event_comment(
+                  "trusted-finding",
+                  "P2 actionable finding",
+                  head,
+                  "2026-08-09T01:00:30Z",
+                  "Bot",
+                  199_175_422
+                ),
+                review_event_comment(
+                  "managed",
+                  transition_completed_body(operation_id, head)["body"],
+                  head,
+                  "2026-08-09T01:01:00Z",
+                  "Bot",
+                  199_175_422
+                )
+              ],
+              "pageInfo" => %{"hasNextPage" => false, "endCursor" => nil}
+            }
+          }
+        ]
+      }
+    }
+
+    [event] =
+      GitHubReviewClient.normalize_snapshot_for_test(
+        pull_request,
+        [],
+        %{required: false, result: :not_required},
+        []
+      ).review_events
+
+    [system, trusted_finding, managed] = event.comments
+    assert system.trusted_review_source? == false
+    assert system.managed_agent_reply? == false
+    assert trusted_finding.trusted_review_source? == true
+    assert trusted_finding.managed_agent_reply? == false
+    assert trusted_finding.settlement_marker? == false
+    assert managed.trusted_review_source? == true
+    assert managed.managed_agent_reply? == true
+    assert managed.settlement_marker? == true
+  end
+
+  test "ordinary review prose mentioning transition operations is not a settlement marker" do
+    head = String.duplicate("f", 40)
+
+    pull_request = %{
+      "headRefOid" => head,
+      "reviewThreads" => %{
+        "nodes" => [
+          %{
+            "id" => "thread-prose",
+            "isResolved" => false,
+            "comments" => %{
+              "nodes" => [
+                review_event_comment(
+                  "review-prose",
+                  "P2 review text discusses `transition-operation:` but is not a managed marker.",
+                  head,
+                  "2026-08-09T01:00:00Z",
+                  "Organization",
+                  261_883_814
+                )
+              ],
+              "pageInfo" => %{"hasNextPage" => false, "endCursor" => nil}
+            }
+          }
+        ]
+      }
+    }
+
+    [event] =
+      GitHubReviewClient.normalize_snapshot_for_test(
+        pull_request,
+        [],
+        %{required: false, result: :not_required},
+        []
+      ).review_events
+
+    [comment] = event.comments
+    assert comment.trusted_review_source? == true
+    assert comment.managed_agent_reply? == false
+    assert comment.settlement_marker? == false
+  end
+
+  test "quoted complete transition templates in review prose are not settlement markers" do
+    head = String.duplicate("a", 40)
+    quoted = transition_completed_body("example", head)["body"]
+
+    pull_request = %{
+      "headRefOid" => head,
+      "reviewThreads" => %{
+        "nodes" => [
+          %{
+            "id" => "thread-quoted-template",
+            "isResolved" => false,
+            "comments" => %{
+              "nodes" => [
+                review_event_comment(
+                  "review-quoted-template",
+                  "P2 diagnostic prose quoting an example:\n\n#{quoted}\nThis is not managed metadata.",
+                  head,
+                  "2026-08-09T01:00:00Z",
+                  "Organization",
+                  261_883_814
+                )
+              ],
+              "pageInfo" => %{"hasNextPage" => false, "endCursor" => nil}
+            }
+          }
+        ]
+      }
+    }
+
+    [event] =
+      GitHubReviewClient.normalize_snapshot_for_test(
+        pull_request,
+        [],
+        %{required: false, result: :not_required},
+        []
+      ).review_events
+
+    [comment] = event.comments
+    assert comment.trusted_review_source? == true
+    assert comment.managed_agent_reply? == false
+    assert comment.settlement_marker? == false
+  end
+
+  test "settlement markers require the generated template and matching operation identity" do
+    head = String.duplicate("b", 40)
+    completed_operation_id = String.duplicate("2", 64)
+    intent_operation_id = String.duplicate("3", 64)
+    other_completed_operation_id = String.duplicate("4", 64)
+    other_intent_operation_id = String.duplicate("5", 64)
+    completed = transition_completed_body(completed_operation_id, head)["body"]
+    intent = transition_intent_body(intent_operation_id, head)["body"]
+
+    comments = [
+      review_event_comment("completed", completed, head, "2026-08-09T01:00:00Z", "Bot", 199_175_422),
+      review_event_comment("intent", intent, head, "2026-08-09T01:01:00Z", "Bot", 199_175_422),
+      review_event_comment(
+        "completed-mismatch",
+        String.replace(
+          completed,
+          "- dedup-key: `#{completed_operation_id}`",
+          "- dedup-key: `#{other_completed_operation_id}`"
+        ),
+        head,
+        "2026-08-09T01:02:00Z",
+        "Organization",
+        261_883_814
+      ),
+      review_event_comment(
+        "intent-mismatch",
+        String.replace(
+          intent,
+          "- dedup-key: `transition-intent:#{intent_operation_id}`",
+          "- dedup-key: `transition-intent:#{other_intent_operation_id}`"
+        ),
+        head,
+        "2026-08-09T01:03:00Z",
+        "Organization",
+        261_883_814
+      )
+    ]
+
+    pull_request = %{
+      "headRefOid" => head,
+      "reviewThreads" => %{
+        "nodes" => [
+          %{
+            "id" => "thread-marker-identity",
+            "isResolved" => false,
+            "comments" => %{
+              "nodes" => comments,
+              "pageInfo" => %{"hasNextPage" => false, "endCursor" => nil}
+            }
+          }
+        ]
+      }
+    }
+
+    [event] =
+      GitHubReviewClient.normalize_snapshot_for_test(
+        pull_request,
+        [],
+        %{required: false, result: :not_required},
+        []
+      ).review_events
+
+    assert Enum.map(event.comments, & &1.settlement_marker?) == [true, true, false, false]
+  end
+
+  test "settlement markers reject placeholder heads and operation identities" do
+    head = String.duplicate("d", 40)
+
+    comments = [
+      review_event_comment(
+        "completed-placeholder",
+        transition_completed_body("P2-example", head)["body"]
+        |> String.replace("- currentHeadSha: `#{head}`", "- currentHeadSha: `head`"),
+        head,
+        "2026-08-09T01:00:00Z",
+        "Organization",
+        261_883_814
+      ),
+      review_event_comment(
+        "intent-placeholder",
+        transition_intent_body("P2-example", head)["body"],
+        head,
+        "2026-08-09T01:01:00Z",
+        "Organization",
+        261_883_814
+      )
+    ]
+
+    pull_request = %{
+      "headRefOid" => head,
+      "reviewThreads" => %{
+        "nodes" => [
+          %{
+            "id" => "thread-marker-placeholder",
+            "isResolved" => false,
+            "comments" => %{
+              "nodes" => comments,
+              "pageInfo" => %{"hasNextPage" => false, "endCursor" => nil}
+            }
+          }
+        ]
+      }
+    }
+
+    [event] =
+      GitHubReviewClient.normalize_snapshot_for_test(
+        pull_request,
+        [],
+        %{required: false, result: :not_required},
+        []
+      ).review_events
+
+    assert Enum.map(event.comments, & &1.settlement_marker?) == [false, false]
+  end
+
+  test "resolved thread data is retained as a review event" do
+    head = String.duplicate("c", 40)
+
+    pull_request = %{
+      "headRefOid" => head,
+      "baseRefOid" => String.duplicate("d", 40),
+      "reviews" => %{"nodes" => []},
+      "reviewThreads" => %{
+        "nodes" => [
+          %{
+            "id" => "thread-resolved",
+            "isResolved" => true,
+            "comments" => %{
+              "nodes" => [
+                review_event_comment(
+                  "review-1",
+                  "P1 resolved",
+                  head,
+                  "2026-08-09T01:00:00Z",
+                  "Organization",
+                  261_883_814
+                )
+              ],
+              "pageInfo" => %{"hasNextPage" => false, "endCursor" => nil}
+            }
+          }
+        ]
+      }
+    }
+
+    snapshot =
+      GitHubReviewClient.normalize_snapshot_for_test(
+        pull_request,
+        [],
+        %{required: false, result: :not_required},
+        []
+      )
+
+    assert [%{review_thread_id: "thread-resolved", resolved?: true, comments: [_ | _]}] = snapshot.review_events
+  end
+
   test "every paginated pull-request page must have valid data and pagination evidence" do
     valid = %{
       "data" => %{
         "repository" => %{
           "pullRequest" => %{
+            "body" => "",
             "reviewThreads" => %{
               "nodes" => [],
               "pageInfo" => %{"hasNextPage" => true, "endCursor" => "next"}
@@ -580,10 +1375,10 @@ defmodule SymphonyElixir.ReviewConvergenceTest do
              "release%20100%25%2F%E5%8F%B0%E7%81%A3"
   end
 
-  test "pull-request pagination exposes only the outer review-thread cursor" do
+  test "pull-request pagination exposes both outer and nested cursors" do
     query = GitHubReviewClient.pull_request_query_for_test()
 
-    assert length(Regex.scan(~r/pageInfo \{ hasNextPage endCursor \}/, query)) == 1
+    assert length(Regex.scan(~r/pageInfo \{ hasNextPage endCursor \}/, query)) == 2
     assert query =~ "reviewThreads(first: 100, after: $endCursor)"
     assert query =~ "comments(first: 100)"
   end
@@ -741,7 +1536,31 @@ defmodule SymphonyElixir.ReviewConvergenceTest do
 
   test "review thread comments are merged across every comment page" do
     page = fn body ->
-      %{"data" => %{"node" => %{"comments" => %{"nodes" => [%{"body" => body}]}}}}
+      %{
+        "data" => %{
+          "node" => %{
+            "comments" => %{
+              "nodes" => [
+                %{
+                  "id" => "review-#{body}",
+                  "body" => body,
+                  "path" => "lib/example.ex",
+                  "url" => "https://github.test/review/#{body}",
+                  "commit" => %{"oid" => "head"},
+                  "createdAt" => "2026-08-09T00:00:00Z",
+                  "updatedAt" => "2026-08-09T00:00:00Z",
+                  "author" => %{
+                    "login" => "chatgpt-codex-connector",
+                    "__typename" => "Organization",
+                    "databaseId" => 261_883_814
+                  }
+                }
+              ],
+              "pageInfo" => %{"hasNextPage" => false, "endCursor" => nil}
+            }
+          }
+        }
+      }
     end
 
     assert {:ok, [%{"body" => "old"}, %{"body" => "current P1"}]} =
@@ -1423,6 +2242,63 @@ defmodule SymphonyElixir.ReviewConvergenceTest do
     }
   end
 
+  defp review_event_comment(id, body, commit_sha, timestamp, author_type, author_id) do
+    login = if author_type == "Bot", do: "chatgpt-codex-connector[bot]", else: "chatgpt-codex-connector"
+
+    %{
+      "id" => id,
+      "body" => body,
+      "path" => "lib/example.ex",
+      "url" => "https://github.test/review/#{id}",
+      "commit" => %{"oid" => commit_sha},
+      "createdAt" => timestamp,
+      "updatedAt" => timestamp,
+      "author" => %{
+        "login" => login,
+        "__typename" => author_type,
+        "databaseId" => author_id
+      }
+    }
+  end
+
+  defp review_event_page(comment_overrides \\ %{}) do
+    comment =
+      Map.merge(
+        review_event_comment(
+          "review-1",
+          "P1 issue",
+          String.duplicate("a", 40),
+          "2026-08-09T01:00:00Z",
+          "Organization",
+          261_883_814
+        ),
+        comment_overrides
+      )
+
+    %{
+      "data" => %{
+        "repository" => %{
+          "pullRequest" => %{
+            "body" => "",
+            "reviewThreads" => %{
+              "nodes" => [
+                %{
+                  "id" => "thread-1",
+                  "isResolved" => false,
+                  "comments" => %{
+                    "nodes" => [comment],
+                    "pageInfo" => %{"hasNextPage" => false, "endCursor" => nil}
+                  }
+                }
+              ],
+              "pageInfo" => %{"hasNextPage" => false, "endCursor" => nil}
+            }
+          }
+        }
+      }
+    }
+  end
+
   defp clean_attestation_comment(reviewed_prefix) do
     %{
       "body" => "Codex Review: Didn't find any major issues. Another round soon, please!\n\n**Reviewed commit:** `#{reviewed_prefix}`",
@@ -1478,11 +2354,14 @@ defmodule SymphonyElixir.ReviewConvergenceTest do
     %{
       "body" => """
       Review Convergence Gate recorded a durable rework transition intent.
-      currentHeadSha: `#{head_sha}`
-      target-state: `In Progress`
-      transition-operation: `intent`
-      transition-operation-id: `#{operation_id}`
-      dedup-key: `transition-intent:#{operation_id}`
+
+      - currentHeadSha: `#{head_sha}`
+      - target-state: `In Progress`
+      - transition-operation: `intent`
+      - transition-operation-id: `#{operation_id}`
+      - dedup-key: `transition-intent:#{operation_id}`
+
+      This operation is safe to resume after timeout or process restart; completion is recorded separately.
       """
     }
   end
@@ -1491,10 +2370,11 @@ defmodule SymphonyElixir.ReviewConvergenceTest do
     %{
       "body" => """
       Review Convergence Gate returned this issue to In Progress for latest-head repair.
-      currentHeadSha: `#{head_sha}`
-      transition-operation: `completed`
-      transition-operation-id: `#{operation_id}`
-      dedup-key: `#{operation_id}`
+
+      - currentHeadSha: `#{head_sha}`
+      - transition-operation: `completed`
+      - transition-operation-id: `#{operation_id}`
+      - dedup-key: `#{operation_id}`
       """
     }
   end
@@ -1516,5 +2396,18 @@ defmodule SymphonyElixir.ReviewConvergenceTest do
         }
       }
     }
+  end
+
+  defp prepare_unloaded_module(module, body) do
+    source = "defmodule #{inspect(module)} do\n#{body}\nend\n"
+    [{^module, binary}] = Code.compile_string(source, "runtime_module_fixture.exs")
+    directory = Path.join(System.tmp_dir!(), "symphony-review-monitor-#{System.unique_integer([:positive])}")
+    File.mkdir_p!(directory)
+    beam_path = Path.join(directory, Atom.to_string(module) <> ".beam")
+    File.write!(beam_path, binary)
+    :code.add_patha(String.to_charlist(directory))
+    :code.purge(module)
+    :code.delete(module)
+    module
   end
 end
