@@ -214,6 +214,11 @@ defmodule SymphonyElixir.FindingDispositionTest do
     receipt = facts.root_cause_receipt
 
     invalid_receipts = [
+      Map.delete(receipt, :disposition),
+      %{receipt | disposition: nil},
+      %{receipt | disposition: :unknown},
+      Map.delete(receipt, :disposition)
+      |> Map.new(fn {key, value} -> {Atom.to_string(key), value} end),
       Map.delete(receipt, :rejection_basis),
       %{receipt | rejection_basis: "  \t\n"},
       %{receipt | rejection_basis: <<255>>},

@@ -53,6 +53,14 @@ defmodule SymphonyElixir.FindingDisposition do
   @type managed_publish_identity :: map()
 
   @supported_message_kinds [:follow_up]
+  @rejection_receipt_fields [
+    :disposition,
+    :rejection_basis,
+    :evidence_references,
+    :review_action,
+    :validation_receipt_status,
+    :hypothesis_rejected?
+  ]
 
   @spec build_finding_key(map()) :: {:ok, finding_key()} | {:error, term()}
   def build_finding_key(input) when is_map(input) do
@@ -322,7 +330,7 @@ defmodule SymphonyElixir.FindingDisposition do
 
   defp reject_receipt_attempted?(facts) do
     case value(facts, :root_cause_receipt) do
-      receipt when is_map(receipt) -> value(receipt, :disposition) in [:reject, "reject"]
+      receipt when is_map(receipt) -> Enum.any?(@rejection_receipt_fields, &present?(receipt, &1))
       _receipt -> false
     end
   end
