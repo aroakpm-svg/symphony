@@ -415,8 +415,12 @@ the node-login enrollment hook for principals created or re-enrolled after the r
 
 Design 2 does not add another evaluator, settlement engine, claim path, ledger path, receipt path,
 or coordinator, and MUST preserve ClaimService's existing lease/renew/release lifecycle. It MAY
-carry explicit acquisition provenance in the existing claim record so monitor readback cannot
-release an existing worker claim. Design 3 authorization
+carry explicit acquisition provenance in the existing claim record. An unconsumed grant MAY retain
+its monitor-owned claim across monitor invocations. If the entry leaves the monitored set, cleanup
+MUST release only when the live claim atomically matches the retained claim identity, is still owned
+by the monitor, and has no different worker. It MUST NOT release a claim transferred to a worker.
+Pending or unknown effect readback MUST release claim capacity so a later claim generation can
+continue reconciliation. Design 3 authorization
 (`authorize/5`) and Design 4 settlement (`settle/2`) are owner contracts; when they are absent,
 the runtime MUST fail closed and MUST NOT add local stubs. `aroak_autonomous_v1` remains disabled
 by default; Design 2 validation MUST NOT start workers, use shared staging credentials, deploy, or
