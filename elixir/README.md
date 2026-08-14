@@ -97,7 +97,8 @@ only if the live claim still has the retained identity and remains owned by the 
 different worker; normal retained-claim reconciliation uses the same atomic conditional release, so
 a concurrently transferred worker claim is left untouched. Transient or uncertain release failures
 keep the ClaimService record and monitor retention identity for a later retry; confirmed release or
-definitive ownership change clears them. The global preflight requires explicit
+definitive ownership change clears them. Inactive entries follow the same transition and remain in
+monitor state while release is uncertain. The global preflight requires explicit
 `verified? == true` and `valid? == true`. Request fingerprints are immutable: decoding rebuilds
 and compares canonical finding and lineage identities, including scope and digests; lock
 reconciliation uses a deterministic fixed order.

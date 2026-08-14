@@ -1149,6 +1149,40 @@ defmodule SymphonyElixir.ReviewConvergenceTest do
     assert_receive {:autonomous_call, :release_if_owned}
   end
 
+  test "inactive cleanup retains claim identity when conditional release is uncertain" do
+    retained = %{
+      claim_id: "11111111-1111-4111-8111-111111111111",
+      generation: 1
+    }
+
+    Application.put_env(:symphony_elixir, :review_issues, [])
+    Application.put_env(:symphony_elixir, :conditional_release_result, {:error, :database_unavailable})
+
+    state =
+      ReviewMonitor.run_with(
+        %{
+          "issue-160" => %{
+            authorization_required: true,
+            retained_claim: retained,
+            terminal_result: {:grant, %{"finding" => retained}}
+          }
+        },
+        settings(),
+        ReviewClient,
+        Tracker,
+        %{
+          profile: :aroak_autonomous_v1,
+          claim_service: AutonomousClaimService,
+          effect_ledger: AutonomousEffectLedger
+        }
+      )
+
+    assert state["issue-160"].retained_claim == retained
+    assert state["issue-160"].terminal_result == nil
+    refute state["issue-160"].authorization_required
+    assert_receive {:autonomous_call, :release_if_owned}
+  end
+
   test "an inactive malformed retention record cannot release a claim" do
     Application.put_env(:symphony_elixir, :review_issues, [])
 

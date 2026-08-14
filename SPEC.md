@@ -431,6 +431,8 @@ retained grant in monitor state. Releasing a retained claim MUST atomically veri
 claim identity and monitor ownership, so a concurrent transfer to a worker cannot be revoked.
 An uncertain conditional-release error MUST preserve both ClaimService ownership state and the
 monitor retention identity for retry; only confirmed release or definitive ownership change may clear them.
+This rule applies equally when an issue leaves the routed set: inactive monitor state MUST remain
+until release succeeds or ownership is definitively known to have changed.
 Design 3 authorization
 (`authorize/5`) and Design 4 settlement (`settle/2`) are owner contracts; when they are absent,
 the runtime MUST fail closed and MUST NOT add local stubs. `aroak_autonomous_v1` remains disabled

@@ -51,15 +51,21 @@ defmodule SymphonyElixir.ReviewMonitor do
     end
   end
 
-  defp release_inactive_retained_claims(state, active_issue_ids, options) do
+  defp retain_uncertain_inactive_claims(state, active_issue_ids, options) do
     state
     |> Enum.reject(fn {issue_id, _entry} -> MapSet.member?(active_issue_ids, issue_id) end)
-    |> Enum.each(fn {issue_id, entry} ->
-      case retained_claim_identity(entry) do
-        {:ok, identity} -> release_claim_if_owned(options, issue_id, identity)
-        :error -> :ok
-      end
+    |> Enum.reduce(%{}, fn {issue_id, entry}, retained ->
+      retain_uncertain_inactive_claim(retained, issue_id, entry, options)
     end)
+  end
+
+  defp retain_uncertain_inactive_claim(retained, issue_id, entry, options) do
+    with {:ok, identity} <- retained_claim_identity(entry),
+         :uncertain <- release_outcome(release_claim_if_owned(options, issue_id, identity)) do
+      Map.put(retained, issue_id, clear_grant_if_present(entry, :preserve_claim))
+    else
+      _definitive_or_invalid -> retained
+    end
   end
 
   @doc false
@@ -83,8 +89,12 @@ defmodule SymphonyElixir.ReviewMonitor do
           Enum.filter(issues, &Issue.routable?(&1, Config.settings!().tracker.required_labels))
 
         active_issue_ids = MapSet.new(routed_issues, & &1.id)
-        release_inactive_retained_claims(state, active_issue_ids, options)
-        active_state = Map.take(state, MapSet.to_list(active_issue_ids))
+        uncertain_inactive = retain_uncertain_inactive_claims(state, active_issue_ids, options)
+
+        active_state =
+          state
+          |> Map.take(MapSet.to_list(active_issue_ids))
+          |> Map.merge(uncertain_inactive)
 
         Enum.reduce(
           routed_issues,
@@ -358,12 +368,17 @@ defmodule SymphonyElixir.ReviewMonitor do
   defp release_reconciled_claim(options, issue_id, :new, _entry),
     do: release_claim(options, issue_id)
 
-  defp release_retention(:retained, result)
-       when result not in [:ok, {:error, :claim_ownership_changed}, {:error, :claim_not_owned}],
-       do: :preserve_claim
+  defp release_retention(:retained, result) do
+    if release_outcome(result) == :uncertain, do: :preserve_claim, else: :drop_claim
+  end
 
   defp release_retention(_acquisition, :not_released), do: :preserve_claim
   defp release_retention(_acquisition, _result), do: :drop_claim
+
+  defp release_outcome(:ok), do: :released
+  defp release_outcome({:error, :claim_ownership_changed}), do: :ownership_changed
+  defp release_outcome({:error, :claim_not_owned}), do: :ownership_changed
+  defp release_outcome(_result), do: :uncertain
 
   defp release_claim_if_owned(options, issue_id, identity) do
     claim_service = Map.get(options, :claim_service, ClaimService)
