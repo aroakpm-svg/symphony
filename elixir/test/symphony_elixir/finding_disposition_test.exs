@@ -215,7 +215,9 @@ defmodule SymphonyElixir.FindingDispositionTest do
 
     invalid_receipts = [
       Map.delete(receipt, :rejection_basis),
+      %{receipt | rejection_basis: "  \t\n"},
       %{receipt | evidence_references: []},
+      %{receipt | evidence_references: ["spec:design-2a", " \r\n"]},
       %{receipt | evidence_conflict?: true},
       %{receipt | current_head_sha: full_sha("2")},
       %{receipt | finding_key: Map.put(receipt.finding_key, :digest, String.duplicate("f", 64))},
@@ -235,6 +237,12 @@ defmodule SymphonyElixir.FindingDispositionTest do
       assert {:ok, %{disposition: :blocked_unverified}} =
                FindingDisposition.classify(%{facts | root_cause_receipt: invalid}, preflight_facts())
     end
+
+    assert {:ok, %{disposition: :blocked_unverified}} =
+             FindingDisposition.classify(facts, %{preflight_facts() | current_head_sha: full_sha("2")})
+
+    assert {:ok, %{disposition: :blocked_unverified}} =
+             FindingDisposition.classify(facts, Map.delete(preflight_facts(), :current_head_sha))
   end
 
   test "an invalid attempted reject cannot fall through to follow-up routing" do
@@ -966,7 +974,14 @@ defmodule SymphonyElixir.FindingDispositionTest do
     Map.put(facts, :root_cause_receipt, receipt)
   end
 
-  defp preflight_facts, do: %{verified?: true, valid?: true, repository: "openai/symphony", pull_request_number: 21}
+  defp preflight_facts,
+    do: %{
+      verified?: true,
+      valid?: true,
+      repository: "openai/symphony",
+      pull_request_number: 21,
+      current_head_sha: full_sha("1")
+    }
 
   defp trusted_comment(id, body, connection_index), do: %{id: id, body: body, trusted_review_source?: true, managed_agent_reply?: false, settlement_marker?: false, connection_index: connection_index}
 

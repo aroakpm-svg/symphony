@@ -120,12 +120,12 @@ defmodule SymphonyElixir.FindingDisposition do
   def select_review_comment(_thread, _options), do: {:error, :invalid_review_thread}
 
   @spec classify(map(), map()) :: {:ok, decision()} | {:error, term()}
-  def classify(facts, _preflight) when is_map(facts) do
+  def classify(facts, preflight) when is_map(facts) and is_map(preflight) do
     case canonical_identity(facts) do
       {:ok, {finding_key, finding_lineage_key, finding_key_digest}} ->
         {:ok,
          %{
-           disposition: classify_disposition(facts, finding_key, finding_lineage_key),
+           disposition: classify_disposition(facts, finding_key, finding_lineage_key, preflight),
            finding_key: finding_key,
            finding_key_digest: finding_key_digest,
            finding_lineage_key: finding_lineage_key,
@@ -310,9 +310,9 @@ defmodule SymphonyElixir.FindingDisposition do
     decision
   end
 
-  defp classify_disposition(facts, finding_key, finding_lineage_key) do
+  defp classify_disposition(facts, finding_key, finding_lineage_key, preflight) do
     cond do
-      rejected_facts?(facts, finding_key, finding_lineage_key) -> :rejected
+      rejected_facts?(facts, finding_key, finding_lineage_key, preflight) -> :rejected
       reject_receipt_attempted?(facts) -> :blocked_unverified
       fix_facts?(facts) -> :fix_in_current_pr
       follow_up_facts?(facts) -> :follow_up_required
@@ -327,15 +327,15 @@ defmodule SymphonyElixir.FindingDisposition do
     end
   end
 
-  defp rejected_facts?(facts, finding_key, finding_lineage_key) do
+  defp rejected_facts?(facts, finding_key, finding_lineage_key, preflight) do
     with receipt when is_map(receipt) <- value(facts, :root_cause_receipt),
          disposition when disposition in [:reject, "reject"] <- value(receipt, :disposition),
          true <- true_value?(value(receipt, :verified?)),
          true <- true_value?(value(receipt, :valid?)),
          true <- no_evidence_conflict?(facts),
          true <- no_evidence_conflict?(receipt),
-         true <- non_empty_string?(value(receipt, :rejection_basis)),
-         true <- non_empty_string_list?(value(receipt, :evidence_references)),
+         true <- non_blank_string?(value(receipt, :rejection_basis)),
+         true <- non_blank_string_list?(value(receipt, :evidence_references)),
          true <- value(receipt, :review_action) in [:unresolved_with_reason, "unresolved_with_reason"],
          true <- value(receipt, :validation_receipt_status) in [:pass, "PASS"],
          false <- value(receipt, :hypothesis_rejected?),
@@ -344,6 +344,7 @@ defmodule SymphonyElixir.FindingDisposition do
          true <- receipt_finding_key == finding_key,
          true <- receipt_lineage_key == finding_lineage_key,
          source_head_sha when is_binary(source_head_sha) <- finding_key.source_head_sha,
+         true <- value(preflight, :current_head_sha) == source_head_sha,
          true <- value(receipt, :evaluated_head_sha) == source_head_sha,
          true <- value(receipt, :current_head_sha) == source_head_sha,
          native_readback when is_map(native_readback) <- value(receipt, :native_readback),
@@ -1014,10 +1015,12 @@ defmodule SymphonyElixir.FindingDisposition do
 
   defp non_empty_string?(value), do: is_binary(value) and byte_size(value) > 0
 
-  defp non_empty_string_list?(values) when is_list(values) and values != [],
-    do: Enum.all?(values, &non_empty_string?/1)
+  defp non_blank_string?(value), do: is_binary(value) and String.trim(value) != ""
 
-  defp non_empty_string_list?(_values), do: false
+  defp non_blank_string_list?(values) when is_list(values) and values != [],
+    do: Enum.all?(values, &non_blank_string?/1)
+
+  defp non_blank_string_list?(_values), do: false
 
   defp false_value?(value), do: is_boolean(value) and not value
 
