@@ -157,7 +157,7 @@ defmodule SymphonyElixir.ReviewMonitor do
   end
 
   defp retained_claim?(%{terminal_result: {:grant, grants}}, claim) when is_map(grants) do
-    claim[:owner] == self() and
+    claim[:owner] == self() and claim[:worker] in [nil, self()] and
       Enum.any?(grants, fn {_digest, grant} ->
         grant[:claim_id] == claim[:claim_id] and grant[:generation] == claim[:generation]
       end)

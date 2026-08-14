@@ -512,6 +512,40 @@ defmodule SymphonyElixir.ReviewConvergenceTest do
     assert blocked["issue-160"].global_blocker == :claim_already_owned
   end
 
+  test "a retained grant transferred to a running worker is not reconciled or released by the monitor" do
+    worker = spawn(fn -> Process.sleep(:infinity) end)
+    on_exit(fn -> if Process.alive?(worker), do: Process.exit(worker, :kill) end)
+
+    grant = %{claim_id: "11111111-1111-4111-8111-111111111111", generation: 1}
+    Application.put_env(:symphony_elixir, :claim_acquisition, :existing)
+    Application.put_env(:symphony_elixir, :claim_worker, worker)
+
+    Application.put_env(
+      :symphony_elixir,
+      :review_snapshot,
+      {:ok, snapshot(%{finding_summary: %{decisions: [], requires_lifecycle?: false}})}
+    )
+
+    state = %{
+      "issue-160" => %{
+        authorization_required: true,
+        terminal_result: {:grant, %{"finding" => grant}}
+      }
+    }
+
+    options = %{
+      profile: :aroak_autonomous_v1,
+      claim_service: AutonomousClaimService,
+      effect_ledger: AutonomousEffectLedger
+    }
+
+    blocked = ReviewMonitor.run_with(state, settings(), ReviewClient, Tracker, options)
+
+    assert blocked["issue-160"].global_blocker == :claim_already_owned
+    refute_received {:autonomous_call, :bind_worker}
+    refute_received {:autonomous_call, :release}
+  end
+
   test "a retained grant holds its claim across polls while nothing consumes it" do
     head = String.duplicate("a", 40)
 
