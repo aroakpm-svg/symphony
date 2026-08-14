@@ -58,6 +58,29 @@ defmodule SymphonyElixir.SSHTest do
     assert {:error, :ssh_not_found} = SSH.run("localhost", "printf ok")
   end
 
+  test "per-call SSH seams do not require a host ssh executable" do
+    test_root = Path.join(System.tmp_dir!(), "symphony-ssh-seam-test-#{System.unique_integer([:positive])}")
+    previous_path = System.get_env("PATH")
+    fake_port = Port.open({:spawn, windows_noop_command()}, [:exit_status])
+
+    on_exit(fn ->
+      restore_env("PATH", previous_path)
+      File.rm_rf(test_root)
+    end)
+
+    File.mkdir_p!(test_root)
+    System.put_env("PATH", test_root)
+
+    assert {:ok, {"", 0}} =
+             SSH.run("localhost", "printf ok", command_runner: command_runner(self()))
+
+    assert {:ok, ^fake_port} =
+             SSH.start_port("localhost", "printf ok", port_opener: port_opener(self(), fake_port))
+
+    assert_received {:ssh_command, "ssh", _args, []}
+    assert_received {:ssh_port, {:spawn_executable, ~c"ssh"}, _opts}
+  end
+
   test "start_port/3 supports binary output without line mode" do
     previous_ssh_config = System.get_env("SYMPHONY_SSH_CONFIG")
 

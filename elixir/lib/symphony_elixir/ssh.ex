@@ -4,9 +4,10 @@ defmodule SymphonyElixir.SSH do
   @spec run(String.t(), String.t(), keyword()) :: {:ok, {String.t(), non_neg_integer()}} | {:error, term()}
   def run(host, command, opts \\ []) when is_binary(host) and is_binary(command) do
     default_runner = Application.get_env(:symphony_elixir, :ssh_command_runner, &System.cmd/3)
+    seam_injected? = Keyword.has_key?(opts, :command_runner)
     {command_runner, command_opts} = Keyword.pop(opts, :command_runner, default_runner)
 
-    with {:ok, executable} <- ssh_executable() do
+    with {:ok, executable} <- ssh_executable(seam_injected?) do
       {:ok, command_runner.(executable, ssh_args(host, command), command_opts)}
     end
   end
@@ -14,9 +15,10 @@ defmodule SymphonyElixir.SSH do
   @spec start_port(String.t(), String.t(), keyword()) :: {:ok, port()} | {:error, term()}
   def start_port(host, command, opts \\ []) when is_binary(host) and is_binary(command) do
     default_opener = Application.get_env(:symphony_elixir, :ssh_port_opener, &Port.open/2)
+    seam_injected? = Keyword.has_key?(opts, :port_opener)
     {port_opener, opts} = Keyword.pop(opts, :port_opener, default_opener)
 
-    with {:ok, executable} <- ssh_executable() do
+    with {:ok, executable} <- ssh_executable(seam_injected?) do
       line_bytes = Keyword.get(opts, :line)
 
       port_opts =
@@ -37,10 +39,10 @@ defmodule SymphonyElixir.SSH do
     "bash -lc " <> shell_escape(command)
   end
 
-  defp ssh_executable do
+  defp ssh_executable(seam_injected?) do
     finder =
       Application.get_env(:symphony_elixir, :ssh_executable_finder) ||
-        injected_seam_executable_finder() || (&System.find_executable/1)
+        injected_seam_executable_finder(seam_injected?) || (&System.find_executable/1)
 
     case finder.("ssh") do
       nil -> {:error, :ssh_not_found}
@@ -48,8 +50,8 @@ defmodule SymphonyElixir.SSH do
     end
   end
 
-  defp injected_seam_executable_finder do
-    if Application.get_env(:symphony_elixir, :ssh_command_runner) ||
+  defp injected_seam_executable_finder(seam_injected?) do
+    if seam_injected? || Application.get_env(:symphony_elixir, :ssh_command_runner) ||
          Application.get_env(:symphony_elixir, :ssh_port_opener) do
       fn "ssh" -> "ssh" end
     end
