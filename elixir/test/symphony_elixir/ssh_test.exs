@@ -81,6 +81,43 @@ defmodule SymphonyElixir.SSHTest do
     assert_received {:ssh_port, {:spawn_executable, ~c"ssh"}, _opts}
   end
 
+  test "configured command runner does not bypass executable discovery for start_port/3" do
+    test_root = Path.join(System.tmp_dir!(), "symphony-ssh-runner-isolation-test-#{System.unique_integer([:positive])}")
+    previous_path = System.get_env("PATH")
+    previous_runner = Application.get_env(:symphony_elixir, :ssh_command_runner)
+
+    on_exit(fn ->
+      restore_env("PATH", previous_path)
+      restore_app_env(:ssh_command_runner, previous_runner)
+      File.rm_rf(test_root)
+    end)
+
+    File.mkdir_p!(test_root)
+    System.put_env("PATH", test_root)
+    Application.put_env(:symphony_elixir, :ssh_command_runner, command_runner(self()))
+
+    assert {:error, :ssh_not_found} = SSH.start_port("localhost", "printf ok")
+  end
+
+  test "configured port opener does not bypass executable discovery for run/3" do
+    test_root = Path.join(System.tmp_dir!(), "symphony-ssh-opener-isolation-test-#{System.unique_integer([:positive])}")
+    previous_path = System.get_env("PATH")
+    previous_opener = Application.get_env(:symphony_elixir, :ssh_port_opener)
+    fake_port = Port.open({:spawn, windows_noop_command()}, [:exit_status])
+
+    on_exit(fn ->
+      restore_env("PATH", previous_path)
+      restore_app_env(:ssh_port_opener, previous_opener)
+      File.rm_rf(test_root)
+    end)
+
+    File.mkdir_p!(test_root)
+    System.put_env("PATH", test_root)
+    Application.put_env(:symphony_elixir, :ssh_port_opener, port_opener(self(), fake_port))
+
+    assert {:error, :ssh_not_found} = SSH.run("localhost", "printf ok")
+  end
+
   test "start_port/3 supports binary output without line mode" do
     previous_ssh_config = System.get_env("SYMPHONY_SSH_CONFIG")
 
