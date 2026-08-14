@@ -939,7 +939,7 @@ defmodule SymphonyElixir.ReviewConvergenceTest do
     state = %{
       "issue-160" => %{
         authorization_required: true,
-        retained_claim: retained,
+        retained_claim: nil,
         terminal_result: {:grant, %{"finding-1" => retained}}
       }
     }

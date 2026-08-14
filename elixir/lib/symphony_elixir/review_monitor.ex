@@ -166,7 +166,12 @@ defmodule SymphonyElixir.ReviewMonitor do
     do: %{entry | terminal_result: nil, retained_claim: nil, authorization_required: false}
 
   defp clear_grant_if_present(%{terminal_result: {:grant, _grants}} = entry, :preserve_claim),
-    do: %{entry | terminal_result: nil, authorization_required: false}
+    do: %{
+      entry
+      | terminal_result: nil,
+        retained_claim: recoverable_grant_claim_identity(entry),
+        authorization_required: false
+    }
 
   defp clear_grant_if_present(entry, _retention), do: entry
 
@@ -174,6 +179,13 @@ defmodule SymphonyElixir.ReviewMonitor do
     Map.new(state, fn {issue_id, entry} ->
       {issue_id, clear_grant_if_present(entry, :preserve_claim)}
     end)
+  end
+
+  defp recoverable_grant_claim_identity(entry) do
+    case retained_claim_identity(entry) do
+      {:ok, identity} -> identity
+      :error -> entry[:retained_claim]
+    end
   end
 
   defp retained_claim?(%{retained_claim: %{claim_id: claim_id, generation: generation}}, claim)
