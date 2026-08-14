@@ -415,12 +415,46 @@ the node-login enrollment hook for principals created or re-enrolled after the r
 
 Design 2 does not add another evaluator, settlement engine, claim path, ledger path, receipt path,
 or coordinator, and MUST preserve ClaimService's existing lease/renew/release lifecycle. It MAY
-carry explicit acquisition provenance in the existing claim record so monitor readback cannot
-release an existing worker claim. Design 3 authorization
+carry explicit acquisition provenance in the existing claim record. An unconsumed grant MAY retain
+its monitor-owned claim across monitor invocations. If the entry leaves the monitored set, cleanup
+MUST release only when the live claim atomically matches the retained claim identity, is still owned
+by the monitor, and has no different worker. It MUST NOT release a claim transferred to a worker.
+Pending or unknown effect readback MUST release claim capacity so a later claim generation can
+continue reconciliation. Every fail-closed exit MUST invalidate any retained authorization grant,
+including exits before claim acquisition and ownership-mismatch exits where release is forbidden.
+Every claim release MUST invalidate the grant in the same state transition; an unverifiable or
+released claim MUST NOT leave an old grant visible to a worker or a later monitor pass. Grant
+invalidation without a proven release MUST preserve the claim identity needed for later ownership
+revalidation or conditional release, deriving it from a valid grant when no explicit retention record
+exists yet. Tracker-enumeration failure MUST apply the same rule to every
+retained grant in monitor state. Releasing a retained claim MUST atomically verify the retained
+claim identity and monitor ownership, so a concurrent transfer to a worker cannot be revoked.
+An uncertain conditional-release error MUST preserve both ClaimService ownership state and the
+monitor retention identity for retry; only confirmed release or definitive ownership change may clear them.
+This rule applies equally when an issue leaves the routed set: inactive monitor state MUST remain
+until release succeeds or ownership is definitively known to have changed.
+Design 3 authorization
 (`authorize/5`) and Design 4 settlement (`settle/2`) are owner contracts; when they are absent,
 the runtime MUST fail closed and MUST NOT add local stubs. `aroak_autonomous_v1` remains disabled
 by default; Design 2 validation MUST NOT start workers, use shared staging credentials, deploy, or
 touch Production.
+
+Design 3 provides one pure causal patch authorization boundary through `PatchAuthorization.authorize/5`.
+It consumes the canonical Design 2 finding/lineage contract, normalized readback-capable root-cause
+receipt, active claim/generation, exact current head, managed-effect readback, causal history, and runtime
+circuit-breaker state. It returns only `{:ok, grant}`, `{:reconcile, evidence}`, or `{:blocked, reason}`.
+After claim-bound effect readback and immediately before this authorization boundary, ReviewMonitor
+MUST perform a dedicated final live-head read, after all snapshot hydration work, and fail closed if
+it differs from the snapshot used for evidence.
+Missing, malformed, stale, conflicting, unknown, green pre-mutation, or non-progress evidence MUST fail
+closed. The owner-provided causal history MUST be durable across orchestrator restarts and MUST declare
+that it is complete for the authorization boundary. Monitor-local history is only a cache; if durable
+history completeness cannot be verified, authorization MUST fail closed. The same lineage, causal
+fingerprint, and evidence MUST return `:non_progress_blocked`; a new head
+alone is not causal progress. A grant is an opaque authorization for one bounded managed mutation intent
+and MUST NOT carry merge, deploy, settlement, permission, secret, or credential capability. ReviewMonitor
+MUST invoke this owner only after claim binding and effect readback and MUST NOT invoke it twice for the
+same transition.
 
 Technical convergence, a clean review result, a disposition, or a `MergeReadyCandidate` MUST NOT
 be described or interpreted as merge authorization. Merge, deployment, Linear `Done`, and Landing

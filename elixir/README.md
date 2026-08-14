@@ -83,8 +83,23 @@ conditions remain AND-gated, and missing, malformed, or conflicting evidence sta
 `in_scope?` cannot erase either positive responsibility proof. Before any autonomous effect, the
 runtime authenticates the current claim and reads unresolved (`pending`/`unknown`) effects for the
 same issue across older generations. Historical effects are recovery evidence only and cannot
-authorize a current-generation mutation. A monitor invocation releases only a claim it newly
-acquired; an existing worker claim is left untouched. The global preflight requires explicit
+authorize a current-generation mutation. After claim-bound readback and all snapshot hydration, the
+monitor performs a dedicated lightweight live-head read immediately before authorization and fails
+closed if it changed. Pending or unknown effects release claim capacity after
+readback so a later generation can continue reconciliation. Releasing that claim also invalidates
+any retained grant in the same state transition, so stale authorization cannot survive pending
+effects, unavailable owner APIs, or a readback error. Fail-closed exits before claim acquisition
+and ownership mismatches also invalidate the grant without releasing a claim they cannot prove
+they own, while preserving the retained claim identity for later revalidation or conditional
+release. If the identity exists only inside the grant, invalidation extracts it before clearing the
+grant. A tracker-enumeration outage invalidates every cached grant under the same rule. An unconsumed grant may retain the
+same monitor-owned claim across invocations. When that entry becomes inactive, cleanup releases it
+only if the live claim still has the retained identity and remains owned by the monitor with no
+different worker; normal retained-claim reconciliation uses the same atomic conditional release, so
+a concurrently transferred worker claim is left untouched. Transient or uncertain release failures
+keep the ClaimService record and monitor retention identity for a later retry; confirmed release or
+definitive ownership change clears them. Inactive entries follow the same transition and remain in
+monitor state while release is uncertain. The global preflight requires explicit
 `verified? == true` and `valid? == true`. Request fingerprints are immutable: decoding rebuilds
 and compares canonical finding and lineage identities, including scope and digests; lock
 reconciliation uses a deterministic fixed order.
@@ -104,6 +119,11 @@ existing lease/renew/release lifecycle. Design 3 `authorize/5` and Design 4 `set
 is unavailable, execution fails closed rather than using a local stub. `aroak_autonomous_v1` stays
 disabled by default, and this work does not start workers, use shared staging credentials, deploy,
 or touch Production.
+
+Design 3's owner runtime must provide the complete causal-attempt history from storage that survives
+an orchestrator restart and mark it with `causal_history_complete?: true`. The monitor merges its
+in-memory attempts only as a cache. Missing or unverified durable history returns
+`causal_history_unverified` and cannot issue a new mutation grant.
 
 A technical pass, finding disposition, or `MergeReadyCandidate` does not authorize merge. Merge,
 deployment, Linear `Done`, and Landing remain human/owner actions outside Design 2.

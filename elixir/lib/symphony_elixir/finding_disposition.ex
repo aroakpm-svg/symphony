@@ -176,6 +176,26 @@ defmodule SymphonyElixir.FindingDisposition do
     Enum.sort_by(decisions, &Map.get(&1, :finding_key_digest, ""))
   end
 
+  @spec validate_canonical_keys(map(), map()) ::
+          {:ok, {finding_key(), finding_lineage_key()}} | {:error, term()}
+  def validate_canonical_keys(finding_key, finding_lineage_key) do
+    with {:ok, finding_key} <- canonical_finding_key(finding_key),
+         {:ok, finding_lineage_key} <- canonical_lineage_key(finding_lineage_key),
+         :ok <- matching_finding_scope(finding_key, finding_lineage_key) do
+      {:ok, {finding_key, finding_lineage_key}}
+    end
+  end
+
+  defp matching_finding_scope(finding_key, finding_lineage_key) do
+    if finding_key.repository == finding_lineage_key.repository and
+         finding_key.pull_request_number == finding_lineage_key.pull_request_number and
+         finding_key.review_thread_id == finding_lineage_key.review_thread_id do
+      :ok
+    else
+      {:error, :finding_lineage_scope_mismatch}
+    end
+  end
+
   @spec head_guard(map(), String.t()) :: :ok | {:error, term()}
   def head_guard(plan, current_head_sha) when is_map(plan) and is_binary(current_head_sha) do
     with :ok <- validate_sha(current_head_sha, :current_head_sha),
@@ -506,7 +526,8 @@ defmodule SymphonyElixir.FindingDisposition do
              :pull_request_number
            ]),
          {:ok, destination} <- logical_identity_field(input, :destination) do
-      {:ok, [value(input, :repository), value(input, :pull_request_number), lineage, destination, :linear_issue_create]}
+      identity = [value(input, :repository), value(input, :pull_request_number), lineage, destination]
+      {:ok, identity ++ [:linear_issue_create]}
     end
   end
 

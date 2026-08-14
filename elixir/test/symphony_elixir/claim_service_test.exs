@@ -119,6 +119,30 @@ defmodule SymphonyElixir.ClaimServiceTest do
     assert_receive {:claim_lost, "issue-1", :claim_service_disabled}
   end
 
+  test "conditional release preserves claims transferred to another worker" do
+    worker = spawn(fn -> Process.sleep(:infinity) end)
+    on_exit(fn -> if Process.alive?(worker), do: Process.exit(worker, :kill) end)
+
+    claim = %{
+      claim_id: "11111111-1111-4111-8111-111111111111",
+      generation: 3,
+      owner: self(),
+      worker: worker
+    }
+
+    state = %ClaimService{claims: %{"issue-1" => claim}}
+    identity = Map.take(claim, [:claim_id, :generation])
+
+    assert {:reply, {:error, :claim_ownership_changed}, unchanged} =
+             ClaimService.handle_call(
+               {:release_if_owned, "issue-1", identity},
+               {self(), make_ref()},
+               state
+             )
+
+    assert unchanged.claims == state.claims
+  end
+
   test "supervisor shutdown drains claims and stops immediately" do
     state = %ClaimService{connection: make_ref(), claims: %{"issue-1" => %{owner: self()}}}
 
