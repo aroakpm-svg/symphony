@@ -33,6 +33,15 @@ defmodule SymphonyElixir.ReviewConvergenceTest do
     end
   end
 
+  defmodule SequencedReviewClient do
+    @spec snapshot(String.t(), String.t()) :: {:ok, map()} | {:error, term()}
+    def snapshot(_repository, _branch) do
+      [next | rest] = Application.fetch_env!(:symphony_elixir, :review_snapshot_sequence)
+      Application.put_env(:symphony_elixir, :review_snapshot_sequence, rest)
+      next
+    end
+  end
+
   defmodule Tracker do
     @spec fetch_routed_issues_by_states([String.t()]) :: {:ok, [Issue.t()]}
     def fetch_routed_issues_by_states(_states), do: {:ok, Application.fetch_env!(:symphony_elixir, :review_issues)}
@@ -173,6 +182,7 @@ defmodule SymphonyElixir.ReviewConvergenceTest do
       Application.delete_env(:symphony_elixir, :review_recipient)
       Application.delete_env(:symphony_elixir, :review_issues)
       Application.delete_env(:symphony_elixir, :review_snapshot)
+      Application.delete_env(:symphony_elixir, :review_snapshot_sequence)
       Application.delete_env(:symphony_elixir, :existing_review_keys)
       Application.delete_env(:symphony_elixir, :review_history)
       Application.delete_env(:symphony_elixir, :linear_client_module)
@@ -308,6 +318,38 @@ defmodule SymphonyElixir.ReviewConvergenceTest do
     assert_receive {:autonomous_call, :claim}
     assert_receive {:autonomous_call, :bind_worker}
     assert_receive {:autonomous_call, :effect_context}
+    assert_receive {:autonomous_call, :list_operations}
+    assert_receive {:autonomous_call, :release}
+  end
+
+  test "claim-bound readback rechecks the live head before autonomous completion" do
+    old_head = String.duplicate("a", 40)
+    new_head = String.duplicate("b", 40)
+
+    Application.put_env(
+      :symphony_elixir,
+      :review_snapshot_sequence,
+      [
+        {:ok, snapshot(%{current_head_sha: old_head, finding_summary: %{decisions: [], requires_lifecycle?: false}})},
+        {:ok, snapshot(%{current_head_sha: new_head, finding_summary: %{decisions: [], requires_lifecycle?: false}})}
+      ]
+    )
+
+    state =
+      ReviewMonitor.run_with(
+        %{},
+        settings(),
+        SequencedReviewClient,
+        Tracker,
+        %{
+          profile: :aroak_autonomous_v1,
+          claim_service: AutonomousClaimService,
+          effect_ledger: AutonomousEffectLedger
+        }
+      )
+
+    assert state["issue-160"].global_blocker == :head_changed_during_reconciliation
+    assert state["issue-160"].terminal_result == nil
     assert_receive {:autonomous_call, :list_operations}
     assert_receive {:autonomous_call, :release}
   end

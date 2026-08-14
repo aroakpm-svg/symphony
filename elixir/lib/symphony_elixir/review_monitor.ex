@@ -111,6 +111,7 @@ defmodule SymphonyElixir.ReviewMonitor do
           snapshot,
           claim,
           settings,
+          review_client,
           options
         )
       else
@@ -136,13 +137,13 @@ defmodule SymphonyElixir.ReviewMonitor do
     end
   end
 
-  defp reconcile_acquired_claim(:new, entry, issue, snapshot, claim, settings, options) do
-    {reconcile_new_claim(entry, issue, snapshot, claim, settings, options, :bind), :new}
+  defp reconcile_acquired_claim(:new, entry, issue, snapshot, claim, settings, review_client, options) do
+    {reconcile_new_claim(entry, issue, snapshot, claim, settings, review_client, options, :bind), :new}
   end
 
-  defp reconcile_acquired_claim(:existing, entry, issue, snapshot, claim, settings, options) do
+  defp reconcile_acquired_claim(:existing, entry, issue, snapshot, claim, settings, review_client, options) do
     if retained_claim?(entry, claim) do
-      {reconcile_new_claim(entry, issue, snapshot, claim, settings, options, :preserve), :retained}
+      {reconcile_new_claim(entry, issue, snapshot, claim, settings, review_client, options, :preserve), :retained}
     else
       {{:blocked, :claim_already_owned}, :existing}
     end
@@ -237,11 +238,12 @@ defmodule SymphonyElixir.ReviewMonitor do
     %{claim_id: claim_context[:claim_id], generation: claim_context[:generation]}
   end
 
-  defp reconcile_new_claim(entry, issue, snapshot, claim, settings, options, binding) do
+  defp reconcile_new_claim(entry, issue, snapshot, claim, settings, review_client, options, binding) do
     with {:ok, connection, claim_context} <- claimed_context(options, issue, claim, binding),
          {:ok, operations} <- list_effect_operations(options, connection, claim_context),
          {:ok, summary} <- finding_summary(snapshot, settings),
-         :ok <- reconcile_operation_locks(operations) do
+         :ok <- reconcile_operation_locks(operations),
+         :ok <- verify_live_head(review_client, settings, issue.branch_name, snapshot) do
       autonomous_claimed_result(
         entry,
         issue,
@@ -254,6 +256,17 @@ defmodule SymphonyElixir.ReviewMonitor do
       )
     else
       {:error, reason} -> {:blocked, reason}
+    end
+  end
+
+  defp verify_live_head(review_client, settings, branch, snapshot) do
+    with {:ok, live_snapshot} <- review_client.snapshot(settings.repository, branch),
+         true <- live_snapshot[:current_head_sha] == snapshot[:current_head_sha] do
+      :ok
+    else
+      false -> {:error, :head_changed_during_reconciliation}
+      {:error, reason} -> {:error, reason}
+      _invalid -> {:error, :head_verification_unavailable}
     end
   end
 

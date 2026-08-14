@@ -439,6 +439,8 @@ Design 3 provides one pure causal patch authorization boundary through `PatchAut
 It consumes the canonical Design 2 finding/lineage contract, normalized readback-capable root-cause
 receipt, active claim/generation, exact current head, managed-effect readback, causal history, and runtime
 circuit-breaker state. It returns only `{:ok, grant}`, `{:reconcile, evidence}`, or `{:blocked, reason}`.
+After claim-bound effect readback and immediately before this authorization boundary, ReviewMonitor
+MUST re-read the live PR head and fail closed if it differs from the snapshot used for evidence.
 Missing, malformed, stale, conflicting, unknown, green pre-mutation, or non-progress evidence MUST fail
 closed. The owner-provided causal history MUST be durable across orchestrator restarts and MUST declare
 that it is complete for the authorization boundary. Monitor-local history is only a cache; if durable
