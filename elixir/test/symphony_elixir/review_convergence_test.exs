@@ -813,7 +813,7 @@ defmodule SymphonyElixir.ReviewConvergenceTest do
     refute_received {:status, _, _, _, _}
   end
 
-  test "an unresolved managed effect retains its claim and keeps reconciling on later polls" do
+  test "an unresolved managed effect releases claim capacity and is read back by a fresh generation" do
     Application.put_env(
       :symphony_elixir,
       :review_snapshot,
@@ -841,17 +841,16 @@ defmodule SymphonyElixir.ReviewConvergenceTest do
     blocked = ReviewMonitor.run_with(%{}, settings(), ReviewClient, Tracker, options)
 
     assert blocked["issue-160"].global_blocker == :pending_effects
-    # Releasing here hands back the exact claim the reconciliation needs.
-    refute_received {:autonomous_call, :release}
+    assert_receive {:autonomous_call, :release}
 
-    # The next poll sees the claim it kept. It must recognise its own retention and
-    # continue reconciling, not reject it as another worker's claim.
-    Application.put_env(:symphony_elixir, :claim_acquisition, :existing)
-    retained = ReviewMonitor.run_with(blocked, settings(), ReviewClient, Tracker, options)
+    # Readback accepts prior-generation operations, so a fresh claim can continue
+    # reconciliation without one In Review issue monopolising claim capacity.
+    Application.put_env(:symphony_elixir, :claim_generation, 2)
+    retried = ReviewMonitor.run_with(blocked, settings(), ReviewClient, Tracker, options)
 
-    assert retained["issue-160"].global_blocker == :pending_effects
-    assert retained["issue-160"].pending_effect_ids == ["issue-160:operation-1"]
-    refute_received {:autonomous_call, :release}
+    assert retried["issue-160"].global_blocker == :pending_effects
+    assert retried["issue-160"].pending_effect_ids == ["issue-160:operation-1"]
+    assert_receive {:autonomous_call, :release}
 
     # Once the effect resolves, the claim is no longer load-bearing and goes back.
     Application.put_env(
@@ -860,7 +859,7 @@ defmodule SymphonyElixir.ReviewConvergenceTest do
       [%{operation_id: "issue-160:operation-1", request_fingerprint: "fingerprint", status: :succeeded}]
     )
 
-    resolved = ReviewMonitor.run_with(retained, settings(), ReviewClient, Tracker, options)
+    resolved = ReviewMonitor.run_with(retried, settings(), ReviewClient, Tracker, options)
 
     assert resolved["issue-160"].pending_effect_ids == []
     assert_received {:autonomous_call, :release}

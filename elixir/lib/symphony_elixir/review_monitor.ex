@@ -141,12 +141,9 @@ defmodule SymphonyElixir.ReviewMonitor do
     end
   end
 
-  # The claim is held back only while it is the one thing that can carry the next
-  # step: an unconsumed grant, or a managed effect that still needs reconciliation.
-  # Releasing an unresolved effect strands it, because a later generation reads the
-  # same row and takes this branch again.
+  # Only an unconsumed grant keeps its claim. Pending effects remain visible to a
+  # later claim generation through durable readback, so they must release capacity.
   defp releasable_result?({:ok, %{terminal_result: {:grant, _grants}}}), do: false
-  defp releasable_result?({:blocked, :pending_effects, _entry}), do: false
   defp releasable_result?(_result), do: true
 
   defp retained_claim?(%{retained_claim: %{claim_id: claim_id, generation: generation}}, claim)
