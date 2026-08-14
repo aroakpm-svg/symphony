@@ -199,7 +199,15 @@ defmodule SymphonyElixir.FindingDispositionTest do
   end
 
   test "reject receipt maps to rejected only with complete exact-head native evidence" do
-    facts = rejected_finding_facts("strict-reject")
+    facts =
+      rejected_finding_facts("strict-reject")
+      |> Map.merge(%{
+        introduced_by_pr?: true,
+        invariant_violation?: false,
+        still_applies?: true,
+        root_cause_bounded?: true,
+        requires_new_decision?: false
+      })
 
     assert {:ok, %{disposition: :rejected}} = FindingDisposition.classify(facts, preflight_facts())
 
@@ -222,6 +230,26 @@ defmodule SymphonyElixir.FindingDispositionTest do
       assert {:ok, %{disposition: :blocked_unverified}} =
                FindingDisposition.classify(%{facts | root_cause_receipt: invalid}, preflight_facts())
     end
+  end
+
+  test "an invalid attempted reject cannot fall through to follow-up routing" do
+    facts =
+      rejected_finding_facts("invalid-reject-follow-up")
+      |> Map.merge(%{
+        introduced_by_pr?: false,
+        invariant_violation?: false,
+        safe_follow_up?: true,
+        in_scope?: false,
+        follow_up_destination: "ARO-999",
+        still_applies?: true,
+        root_cause_bounded?: true,
+        requires_new_decision?: false
+      })
+
+    stale_receipt = %{facts.root_cause_receipt | current_head_sha: full_sha("2")}
+
+    assert {:ok, %{disposition: :blocked_unverified}} =
+             FindingDisposition.classify(%{facts | root_cause_receipt: stale_receipt}, preflight_facts())
   end
 
   test "real out-of-scope findings remain follow-up and causal hypothesis rejection is not review rejection" do

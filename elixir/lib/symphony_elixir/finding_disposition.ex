@@ -313,9 +313,17 @@ defmodule SymphonyElixir.FindingDisposition do
   defp classify_disposition(facts, finding_key, finding_lineage_key) do
     cond do
       rejected_facts?(facts, finding_key, finding_lineage_key) -> :rejected
+      reject_receipt_attempted?(facts) -> :blocked_unverified
       fix_facts?(facts) -> :fix_in_current_pr
       follow_up_facts?(facts) -> :follow_up_required
       true -> :blocked_unverified
+    end
+  end
+
+  defp reject_receipt_attempted?(facts) do
+    case value(facts, :root_cause_receipt) do
+      receipt when is_map(receipt) -> value(receipt, :disposition) in [:reject, "reject"]
+      _receipt -> false
     end
   end
 
