@@ -223,7 +223,12 @@ defmodule SymphonyElixir.FindingDispositionTest do
       %{receipt | native_readback: %{receipt.native_readback | current_head_sha: full_sha("2")}},
       %{receipt | review_action: :resolved},
       %{receipt | validation_receipt_status: "UNVERIFIED"},
-      %{receipt | hypothesis_rejected?: true}
+      %{receipt | hypothesis_rejected?: true},
+      Map.delete(receipt, :hypothesis_rejected?),
+      %{receipt | hypothesis_rejected?: :unknown},
+      %{receipt | hypothesis_rejected?: "true"},
+      %{receipt | hypothesis_rejected?: "false"},
+      %{receipt | hypothesis_rejected?: nil}
     ]
 
     for invalid <- invalid_receipts do

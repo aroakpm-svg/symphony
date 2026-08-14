@@ -338,7 +338,7 @@ defmodule SymphonyElixir.FindingDisposition do
          true <- non_empty_string_list?(value(receipt, :evidence_references)),
          true <- value(receipt, :review_action) in [:unresolved_with_reason, "unresolved_with_reason"],
          true <- value(receipt, :validation_receipt_status) in [:pass, "PASS"],
-         false <- true_value?(value(receipt, :hypothesis_rejected?)),
+         false <- value(receipt, :hypothesis_rejected?),
          {:ok, receipt_finding_key} <- canonical_finding_key(value(receipt, :finding_key)),
          {:ok, receipt_lineage_key} <- canonical_lineage_key(value(receipt, :finding_lineage_key)),
          true <- receipt_finding_key == finding_key,
