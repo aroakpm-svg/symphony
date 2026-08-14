@@ -28,16 +28,7 @@ defmodule SymphonyElixir.SpecsCheck do
   end
 
   defp collect_elixir_files(path) do
-    case File.lstat(path) do
-      {:ok, %File.Stat{type: :regular}} when is_binary(path) ->
-        if String.ends_with?(path, ".ex"), do: [path], else: []
-
-      {:ok, %File.Stat{type: :directory}} ->
-        collect_elixir_directory_files(path)
-
-      _ ->
-        []
-    end
+    collect_elixir_entry(path)
   end
 
   defp collect_elixir_directory_files(path) do
@@ -55,6 +46,19 @@ defmodule SymphonyElixir.SpecsCheck do
       {:ok, %File.Stat{type: :directory}} ->
         collect_elixir_directory_files(path)
 
+      {:ok, %File.Stat{type: :regular}} ->
+        if String.ends_with?(path, ".ex"), do: [path], else: []
+
+      {:ok, %File.Stat{type: :symlink}} ->
+        collect_symlinked_elixir_file(path)
+
+      _ ->
+        []
+    end
+  end
+
+  defp collect_symlinked_elixir_file(path) do
+    case File.stat(path) do
       {:ok, %File.Stat{type: :regular}} ->
         if String.ends_with?(path, ".ex"), do: [path], else: []
 

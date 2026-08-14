@@ -99,6 +99,30 @@ defmodule SymphonyElixir.SpecsCheckTest do
     assert Enum.map(findings, &SpecsCheck.finding_identifier/1) == ["Sample.missing/1"]
   end
 
+  test "includes source-file symlinks without traversing linked directories" do
+    dir = create_tmp_dir()
+    target_dir = Path.join(dir, "target")
+    File.mkdir_p!(target_dir)
+
+    target =
+      write_module!(target_dir, "linked_source", """
+      defmodule LinkedSource do
+        def missing(arg), do: arg
+      end
+      """)
+
+    linked_source = Path.join(dir, "linked_source.ex")
+
+    case File.ln_s(target, linked_source) do
+      :ok ->
+        findings = SpecsCheck.missing_public_specs([linked_source])
+        assert Enum.map(findings, &SpecsCheck.finding_identifier/1) == ["LinkedSource.missing/1"]
+
+      {:error, :eperm} ->
+        :ok
+    end
+  end
+
   test "the checked-in runtime docs describe fail-closed finding disposition" do
     spec = File.read!(Path.expand("../../../SPEC.md", __DIR__))
     readme = File.read!(Path.expand("../../README.md", __DIR__))
@@ -120,5 +144,6 @@ defmodule SymphonyElixir.SpecsCheckTest do
   defp write_module!(dir, rel_path, source) do
     path = Path.join(dir, rel_path)
     File.write!(path, source)
+    path
   end
 end
