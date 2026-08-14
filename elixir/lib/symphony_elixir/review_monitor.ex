@@ -54,12 +54,11 @@ defmodule SymphonyElixir.ReviewMonitor do
   defp release_inactive_retained_claims(state, active_issue_ids, options) do
     state
     |> Enum.reject(fn {issue_id, _entry} -> MapSet.member?(active_issue_ids, issue_id) end)
-    |> Enum.each(fn
-      {issue_id, %{retained_claim: retained}} ->
-        if valid_claim_identity?(retained), do: release_claim(options, issue_id)
-
-      {_issue_id, _entry} ->
-        :ok
+    |> Enum.each(fn {issue_id, entry} ->
+      case retained_claim_identity(entry) do
+        {:ok, identity} -> release_claim_if_owned(options, issue_id, identity)
+        :error -> :ok
+      end
     end)
   end
 
@@ -170,6 +169,25 @@ defmodule SymphonyElixir.ReviewMonitor do
 
   defp valid_claim_identity?(_identity), do: false
 
+  defp retained_claim_identity(%{retained_claim: retained}) do
+    if valid_claim_identity?(retained), do: {:ok, retained}, else: :error
+  end
+
+  defp retained_claim_identity(%{terminal_result: {:grant, grants}}) when is_map(grants) do
+    identities =
+      grants
+      |> Map.values()
+      |> Enum.map(&Map.take(&1, [:claim_id, :generation]))
+      |> Enum.uniq()
+
+    case identities do
+      [identity] -> if valid_claim_identity?(identity), do: {:ok, identity}, else: :error
+      _identities -> :error
+    end
+  end
+
+  defp retained_claim_identity(_entry), do: :error
+
   defp claim_identity(claim_context) do
     %{claim_id: claim_context[:claim_id], generation: claim_context[:generation]}
   end
@@ -257,6 +275,16 @@ defmodule SymphonyElixir.ReviewMonitor do
 
     if function_exported?(claim_service, :release, 1) do
       _ = claim_service.release(issue_id)
+    end
+
+    :ok
+  end
+
+  defp release_claim_if_owned(options, issue_id, identity) do
+    claim_service = Map.get(options, :claim_service, ClaimService)
+
+    if function_exported?(claim_service, :release_if_owned, 2) do
+      _ = claim_service.release_if_owned(issue_id, identity)
     end
 
     :ok

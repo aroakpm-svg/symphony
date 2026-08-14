@@ -113,6 +113,21 @@ defmodule SymphonyElixir.ReviewConvergenceTest do
       :ok
     end
 
+    def release_if_owned(_issue_id, identity) do
+      owner = Application.fetch_env!(:symphony_elixir, :review_recipient)
+      worker = Application.get_env(:symphony_elixir, :claim_worker)
+
+      if identity == %{
+           claim_id: "11111111-1111-4111-8111-111111111111",
+           generation: Application.get_env(:symphony_elixir, :claim_generation, 1)
+         } and owner == self() and worker in [nil, self()] do
+        send(owner, {:autonomous_call, :release_if_owned})
+        :ok
+      else
+        {:error, :claim_ownership_changed}
+      end
+    end
+
     defp claim_context do
       %{
         issue_id: "issue-160",
@@ -905,7 +920,7 @@ defmodule SymphonyElixir.ReviewConvergenceTest do
       )
 
     assert state == %{}
-    assert_receive {:autonomous_call, :release}
+    assert_receive {:autonomous_call, :release_if_owned}
   end
 
   test "an inactive malformed retention record cannot release a claim" do
@@ -925,7 +940,57 @@ defmodule SymphonyElixir.ReviewConvergenceTest do
       )
 
     assert state == %{}
-    refute_received {:autonomous_call, :release}
+    refute_received {:autonomous_call, :release_if_owned}
+  end
+
+  test "an inactive unconsumed grant releases its still monitor-owned claim" do
+    grant = %{claim_id: "11111111-1111-4111-8111-111111111111", generation: 1}
+    Application.put_env(:symphony_elixir, :review_issues, [])
+
+    state =
+      ReviewMonitor.run_with(
+        %{"issue-160" => %{terminal_result: {:grant, %{"finding" => grant}}}},
+        settings(),
+        ReviewClient,
+        Tracker,
+        %{
+          profile: :aroak_autonomous_v1,
+          claim_service: AutonomousClaimService,
+          effect_ledger: AutonomousEffectLedger
+        }
+      )
+
+    assert state == %{}
+    assert_receive {:autonomous_call, :release_if_owned}
+  end
+
+  test "inactive cleanup cannot release a retained claim transferred to a worker" do
+    worker = spawn(fn -> Process.sleep(:infinity) end)
+    on_exit(fn -> if Process.alive?(worker), do: Process.exit(worker, :kill) end)
+
+    Application.put_env(:symphony_elixir, :claim_worker, worker)
+    Application.put_env(:symphony_elixir, :review_issues, [])
+
+    retained = %{
+      claim_id: "11111111-1111-4111-8111-111111111111",
+      generation: 1
+    }
+
+    state =
+      ReviewMonitor.run_with(
+        %{"issue-160" => %{retained_claim: retained}},
+        settings(),
+        ReviewClient,
+        Tracker,
+        %{
+          profile: :aroak_autonomous_v1,
+          claim_service: AutonomousClaimService,
+          effect_ledger: AutonomousEffectLedger
+        }
+      )
+
+    assert state == %{}
+    refute_received {:autonomous_call, :release_if_owned}
   end
 
   test "the monitor never rebinds a retained claim transferred to a running worker" do
