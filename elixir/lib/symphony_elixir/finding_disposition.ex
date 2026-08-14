@@ -58,8 +58,7 @@ defmodule SymphonyElixir.FindingDisposition do
     :rejection_basis,
     :evidence_references,
     :review_action,
-    :validation_receipt_status,
-    :hypothesis_rejected?
+    :validation_receipt_status
   ]
 
   @spec build_finding_key(map()) :: {:ok, finding_key()} | {:error, term()}

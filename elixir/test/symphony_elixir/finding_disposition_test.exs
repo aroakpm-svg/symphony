@@ -272,6 +272,39 @@ defmodule SymphonyElixir.FindingDispositionTest do
              FindingDisposition.classify(%{facts | root_cause_receipt: stale_receipt}, preflight_facts())
   end
 
+  test "causal hypothesis receipt flags alone do not masquerade as review rejection" do
+    for hypothesis_rejected? <- [false, true] do
+      fix =
+        finding_facts("hypothesis-receipt-fix-#{hypothesis_rejected?}", %{
+          introduced_by_pr?: true,
+          invariant_violation?: false,
+          still_applies?: true,
+          root_cause_bounded?: true,
+          requires_new_decision?: false,
+          root_cause_receipt: %{hypothesis_rejected?: hypothesis_rejected?}
+        })
+
+      follow_up =
+        finding_facts("hypothesis-receipt-follow-up-#{hypothesis_rejected?}", %{
+          introduced_by_pr?: false,
+          invariant_violation?: false,
+          safe_follow_up?: true,
+          in_scope?: false,
+          follow_up_destination: "ARO-999",
+          still_applies?: true,
+          root_cause_bounded?: true,
+          requires_new_decision?: false,
+          root_cause_receipt: %{hypothesis_rejected?: hypothesis_rejected?}
+        })
+
+      assert {:ok, %{disposition: :fix_in_current_pr}} =
+               FindingDisposition.classify(fix, preflight_facts())
+
+      assert {:ok, %{disposition: :follow_up_required}} =
+               FindingDisposition.classify(follow_up, preflight_facts())
+    end
+  end
+
   test "real out-of-scope findings remain follow-up and causal hypothesis rejection is not review rejection" do
     follow_up =
       finding_facts("real-follow-up", %{
