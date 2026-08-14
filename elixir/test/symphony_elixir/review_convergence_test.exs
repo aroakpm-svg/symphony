@@ -90,7 +90,8 @@ defmodule SymphonyElixir.ReviewConvergenceTest do
          claim_id: "11111111-1111-4111-8111-111111111111",
          generation: Application.get_env(:symphony_elixir, :claim_generation, 1),
          acquisition: Application.get_env(:symphony_elixir, :claim_acquisition, :new),
-         owner: owner
+         owner: owner,
+         worker: Application.get_env(:symphony_elixir, :claim_worker)
        }}
     end
 
@@ -160,6 +161,7 @@ defmodule SymphonyElixir.ReviewConvergenceTest do
       Application.delete_env(:symphony_elixir, :autonomous_operations)
       Application.delete_env(:symphony_elixir, :claim_acquisition)
       Application.delete_env(:symphony_elixir, :claim_generation)
+      Application.delete_env(:symphony_elixir, :claim_worker)
     end)
   end
 
@@ -845,6 +847,86 @@ defmodule SymphonyElixir.ReviewConvergenceTest do
 
     assert state["issue-160"].global_blocker == :claim_already_owned
     refute_received {:autonomous_call, :release}
+  end
+
+  test "an inactive routed issue releases a valid retained claim before its entry is dropped" do
+    retained = %{
+      claim_id: "11111111-1111-4111-8111-111111111111",
+      generation: 1
+    }
+
+    Application.put_env(:symphony_elixir, :review_issues, [])
+
+    state =
+      ReviewMonitor.run_with(
+        %{"issue-160" => %{retained_claim: retained}},
+        settings(),
+        ReviewClient,
+        Tracker,
+        %{
+          profile: :aroak_autonomous_v1,
+          claim_service: AutonomousClaimService,
+          effect_ledger: AutonomousEffectLedger
+        }
+      )
+
+    assert state == %{}
+    assert_receive {:autonomous_call, :release}
+  end
+
+  test "an inactive malformed retention record cannot release a claim" do
+    Application.put_env(:symphony_elixir, :review_issues, [])
+
+    state =
+      ReviewMonitor.run_with(
+        %{"issue-160" => %{retained_claim: %{claim_id: "", generation: 1}}},
+        settings(),
+        ReviewClient,
+        Tracker,
+        %{
+          profile: :aroak_autonomous_v1,
+          claim_service: AutonomousClaimService,
+          effect_ledger: AutonomousEffectLedger
+        }
+      )
+
+    assert state == %{}
+    refute_received {:autonomous_call, :release}
+  end
+
+  test "the monitor never rebinds a retained claim transferred to a running worker" do
+    worker = spawn(fn -> Process.sleep(:infinity) end)
+    Application.put_env(:symphony_elixir, :claim_acquisition, :existing)
+    Application.put_env(:symphony_elixir, :claim_worker, worker)
+
+    Application.put_env(
+      :symphony_elixir,
+      :review_snapshot,
+      {:ok, snapshot(%{finding_summary: %{decisions: [], requires_lifecycle?: false}})}
+    )
+
+    retained = %{
+      claim_id: "11111111-1111-4111-8111-111111111111",
+      generation: 1
+    }
+
+    state =
+      ReviewMonitor.run_with(
+        %{"issue-160" => %{retained_claim: retained}},
+        settings(),
+        ReviewClient,
+        Tracker,
+        %{
+          profile: :aroak_autonomous_v1,
+          claim_service: AutonomousClaimService,
+          effect_ledger: AutonomousEffectLedger
+        }
+      )
+
+    assert state["issue-160"].global_blocker == :claim_already_owned
+    refute_received {:autonomous_call, :bind_worker}
+    refute_received {:autonomous_call, :release}
+    Process.exit(worker, :kill)
   end
 
   test "a malformed retention record cannot assert ownership of an existing claim" do

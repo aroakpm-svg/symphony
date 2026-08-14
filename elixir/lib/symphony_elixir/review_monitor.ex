@@ -51,6 +51,18 @@ defmodule SymphonyElixir.ReviewMonitor do
     end
   end
 
+  defp release_inactive_retained_claims(state, active_issue_ids, options) do
+    state
+    |> Enum.reject(fn {issue_id, _entry} -> MapSet.member?(active_issue_ids, issue_id) end)
+    |> Enum.each(fn
+      {issue_id, %{retained_claim: retained}} ->
+        if valid_claim_identity?(retained), do: release_claim(options, issue_id)
+
+      {_issue_id, _entry} ->
+        :ok
+    end)
+  end
+
   @doc false
   @spec run_with(state(), struct() | map(), module(), module(), map()) :: state()
   def run_with(state, settings, review_client, tracker, options) when is_map(options) do
@@ -72,6 +84,7 @@ defmodule SymphonyElixir.ReviewMonitor do
           Enum.filter(issues, &Issue.routable?(&1, Config.settings!().tracker.required_labels))
 
         active_issue_ids = MapSet.new(routed_issues, & &1.id)
+        release_inactive_retained_claims(state, active_issue_ids, options)
         active_state = Map.take(state, MapSet.to_list(active_issue_ids))
 
         Enum.reduce(
@@ -118,12 +131,12 @@ defmodule SymphonyElixir.ReviewMonitor do
   end
 
   defp reconcile_acquired_claim(:new, entry, issue, snapshot, claim, settings, options) do
-    {reconcile_new_claim(entry, issue, snapshot, claim, settings, options), :new}
+    {reconcile_new_claim(entry, issue, snapshot, claim, settings, options, :bind), :new}
   end
 
   defp reconcile_acquired_claim(:existing, entry, issue, snapshot, claim, settings, options) do
     if retained_claim?(entry, claim) do
-      {reconcile_new_claim(entry, issue, snapshot, claim, settings, options), :retained}
+      {reconcile_new_claim(entry, issue, snapshot, claim, settings, options, :preserve), :retained}
     else
       {{:blocked, :claim_already_owned}, :existing}
     end
@@ -139,7 +152,8 @@ defmodule SymphonyElixir.ReviewMonitor do
 
   defp retained_claim?(%{retained_claim: %{claim_id: claim_id, generation: generation}}, claim)
        when is_binary(claim_id) and claim_id != "" and is_integer(generation) do
-    claim[:owner] == self() and claim[:claim_id] == claim_id and claim[:generation] == generation
+    claim[:owner] == self() and claim[:worker] in [nil, self()] and claim[:claim_id] == claim_id and
+      claim[:generation] == generation
   end
 
   defp retained_claim?(%{terminal_result: {:grant, grants}}, claim) when is_map(grants) do
@@ -151,12 +165,17 @@ defmodule SymphonyElixir.ReviewMonitor do
 
   defp retained_claim?(_entry, _claim), do: false
 
+  defp valid_claim_identity?(%{claim_id: claim_id, generation: generation}),
+    do: is_binary(claim_id) and claim_id != "" and is_integer(generation) and generation > 0
+
+  defp valid_claim_identity?(_identity), do: false
+
   defp claim_identity(claim_context) do
     %{claim_id: claim_context[:claim_id], generation: claim_context[:generation]}
   end
 
-  defp reconcile_new_claim(entry, issue, snapshot, claim, settings, options) do
-    with {:ok, connection, claim_context} <- claimed_context(options, issue, claim),
+  defp reconcile_new_claim(entry, issue, snapshot, claim, settings, options, binding) do
+    with {:ok, connection, claim_context} <- claimed_context(options, issue, claim, binding),
          {:ok, operations} <- list_effect_operations(options, connection, claim_context),
          {:ok, summary} <- finding_summary(snapshot, settings),
          :ok <- reconcile_operation_locks(operations) do
@@ -220,12 +239,17 @@ defmodule SymphonyElixir.ReviewMonitor do
     end
   end
 
-  defp claimed_context(options, issue, _claim) do
+  defp claimed_context(options, issue, _claim, :bind) do
     claim_service = Map.get(options, :claim_service, ClaimService)
 
     with :ok <- claim_service.bind_worker(issue.id, self()) do
       claim_service.effect_context(issue.id)
     end
+  end
+
+  defp claimed_context(options, issue, _claim, :preserve) do
+    claim_service = Map.get(options, :claim_service, ClaimService)
+    claim_service.effect_context(issue.id)
   end
 
   defp release_claim(options, issue_id) do
