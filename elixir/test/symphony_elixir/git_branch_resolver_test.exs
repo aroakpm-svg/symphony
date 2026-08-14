@@ -453,40 +453,41 @@ defmodule SymphonyElixir.GitBranchResolverTest do
         "symphony-git-resolver-ssh-#{System.unique_integer([:positive])}"
       )
 
-    previous_path = System.get_env("PATH")
-    previous_trace = System.get_env("SYMP_TEST_SSH_TRACE")
+    previous_runner = Application.get_env(:symphony_elixir, :ssh_command_runner)
 
     on_exit(fn ->
-      restore_env("PATH", previous_path)
-      restore_env("SYMP_TEST_SSH_TRACE", previous_trace)
+      if previous_runner do
+        Application.put_env(:symphony_elixir, :ssh_command_runner, previous_runner)
+      else
+        Application.delete_env(:symphony_elixir, :ssh_command_runner)
+      end
     end)
 
     try do
       trace_file = Path.join(test_root, "ssh.trace")
-      fake_ssh = Path.join(test_root, "ssh")
       File.mkdir_p!(test_root)
-      System.put_env("SYMP_TEST_SSH_TRACE", trace_file)
-      System.put_env("PATH", test_root <> ":" <> (previous_path || ""))
 
-      File.write!(fake_ssh, """
-      #!/bin/sh
-      printf '%s\n' "$*" >> "$SYMP_TEST_SSH_TRACE"
-      case "$*" in
-        *"ls-remote"*"--symref"*"origin"*"HEAD"*)
-          printf '%s\n' 'ref: refs/heads/release/ssh\tHEAD' '#{@sha}\tHEAD'
-          ;;
-        *"check-ref-format"*"--branch"*"release/ssh"*)
-          printf '%s\n' 'release/ssh'
-          ;;
-        *"fetch"*"refs/heads/release/ssh"*)
-          ;;
-        *"rev-parse"*"FETCH_HEAD^{commit}"*)
-          printf '%s\n' '#{@sha}'
-          ;;
-      esac
-      """)
+      Application.put_env(:symphony_elixir, :ssh_command_runner, fn _executable, args, _opts ->
+        command = Enum.join(args, " ")
+        File.write!(trace_file, command <> "\n", [:append])
 
-      File.chmod!(fake_ssh, 0o755)
+        output =
+          cond do
+            command =~ "ls-remote" and command =~ "--symref" and command =~ "origin" and command =~ "HEAD" ->
+              "ref: refs/heads/release/ssh\tHEAD\n#{@sha}\tHEAD\n"
+
+            command =~ "check-ref-format" and command =~ "--branch" and command =~ "release/ssh" ->
+              "release/ssh\n"
+
+            command =~ "rev-parse" and command =~ "--verify" and command =~ "FETCH_HEAD^{commit}" ->
+              "#{@sha}\n"
+
+            true ->
+              ""
+          end
+
+        {output, 0}
+      end)
 
       assert {:ok, %Receipt{branch: "release/ssh", fetched_sha: @sha}} =
                GitBranchResolver.resolve("/remote/workspace", worker_host: "worker-01")

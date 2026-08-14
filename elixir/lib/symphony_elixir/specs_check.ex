@@ -28,14 +28,41 @@ defmodule SymphonyElixir.SpecsCheck do
   end
 
   defp collect_elixir_files(path) do
-    cond do
-      File.regular?(path) and String.ends_with?(path, ".ex") ->
-        [path]
+    collect_elixir_entry(path)
+  end
 
-      File.dir?(path) ->
-        Path.wildcard(Path.join(path, "**/*.ex"))
+  defp collect_elixir_directory_files(path) do
+    path
+    |> File.ls!()
+    |> Enum.flat_map(fn entry ->
+      path
+      |> Path.join(entry)
+      |> collect_elixir_entry()
+    end)
+  end
 
-      true ->
+  defp collect_elixir_entry(path) do
+    case File.lstat(path) do
+      {:ok, %File.Stat{type: :directory}} ->
+        collect_elixir_directory_files(path)
+
+      {:ok, %File.Stat{type: :regular}} ->
+        if String.ends_with?(path, ".ex"), do: [path], else: []
+
+      {:ok, %File.Stat{type: :symlink}} ->
+        collect_symlinked_elixir_file(path)
+
+      _ ->
+        []
+    end
+  end
+
+  defp collect_symlinked_elixir_file(path) do
+    case File.stat(path) do
+      {:ok, %File.Stat{type: :regular}} ->
+        if String.ends_with?(path, ".ex"), do: [path], else: []
+
+      _ ->
         []
     end
   end

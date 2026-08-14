@@ -53,7 +53,7 @@ defmodule SymphonyElixir.AppServerTest do
 
       File.mkdir_p!(workspace_root)
       File.mkdir_p!(outside_workspace)
-      File.ln_s!(outside_workspace, symlink_workspace)
+      create_directory_link!(outside_workspace, symlink_workspace)
 
       write_workflow_file!(Workflow.workflow_file_path(),
         workspace_root: workspace_root
@@ -69,7 +69,9 @@ defmodule SymphonyElixir.AppServerTest do
         labels: ["backend"]
       }
 
-      assert {:error, {:invalid_workspace_cwd, :symlink_escape, ^symlink_workspace, _root}} =
+      expanded_symlink_workspace = Path.expand(symlink_workspace)
+
+      assert {:error, {:invalid_workspace_cwd, :symlink_escape, ^expanded_symlink_workspace, _root}} =
                AppServer.run(symlink_workspace, "guard", issue)
     after
       File.rm_rf(test_root)
@@ -86,7 +88,7 @@ defmodule SymphonyElixir.AppServerTest do
     try do
       workspace_root = Path.join(test_root, "workspaces")
       workspace = Path.join(workspace_root, "MT-1001")
-      codex_binary = Path.join(test_root, "fake-codex")
+      codex_binary = shell_path(Path.join(test_root, "fake-codex"))
       trace_file = Path.join(test_root, "codex-supported-turn-policies.trace")
       previous_trace = System.get_env("SYMP_TEST_CODEx_TRACE")
 
@@ -193,7 +195,7 @@ defmodule SymphonyElixir.AppServerTest do
     try do
       workspace_root = Path.join(test_root, "workspaces")
       workspace = Path.join(workspace_root, "MT-88")
-      codex_binary = Path.join(test_root, "fake-codex")
+      codex_binary = shell_path(Path.join(test_root, "fake-codex"))
       trace_file = Path.join(test_root, "codex-input.trace")
       previous_trace = System.get_env("SYMP_TEST_CODEx_TRACE")
 
@@ -272,7 +274,7 @@ defmodule SymphonyElixir.AppServerTest do
     try do
       workspace_root = Path.join(test_root, "workspaces")
       workspace = Path.join(workspace_root, "MT-188")
-      codex_binary = Path.join(test_root, "fake-codex")
+      codex_binary = shell_path(Path.join(test_root, "fake-codex"))
       File.mkdir_p!(workspace)
 
       File.write!(codex_binary, """
@@ -337,7 +339,7 @@ defmodule SymphonyElixir.AppServerTest do
     try do
       workspace_root = Path.join(test_root, "workspaces")
       workspace = Path.join(workspace_root, "MT-89")
-      codex_binary = Path.join(test_root, "fake-codex")
+      codex_binary = shell_path(Path.join(test_root, "fake-codex"))
       File.mkdir_p!(workspace)
 
       File.write!(codex_binary, """
@@ -400,7 +402,7 @@ defmodule SymphonyElixir.AppServerTest do
     try do
       workspace_root = Path.join(test_root, "workspaces")
       workspace = Path.join(workspace_root, "MT-89")
-      codex_binary = Path.join(test_root, "fake-codex")
+      codex_binary = shell_path(Path.join(test_root, "fake-codex"))
       trace_file = Path.join(test_root, "codex-auto-approve.trace")
       previous_trace = System.get_env("SYMP_TEST_CODex_TRACE")
 
@@ -537,7 +539,7 @@ defmodule SymphonyElixir.AppServerTest do
     try do
       workspace_root = Path.join(test_root, "workspaces")
       workspace = Path.join(workspace_root, "MT-717")
-      codex_binary = Path.join(test_root, "fake-codex")
+      codex_binary = shell_path(Path.join(test_root, "fake-codex"))
       trace_file = Path.join(test_root, "codex-tool-user-input-auto-approve.trace")
       previous_trace = System.get_env("SYMP_TEST_CODEx_TRACE")
 
@@ -636,7 +638,7 @@ defmodule SymphonyElixir.AppServerTest do
     try do
       workspace_root = Path.join(test_root, "workspaces")
       workspace = Path.join(workspace_root, "MT-718")
-      codex_binary = Path.join(test_root, "fake-codex")
+      codex_binary = shell_path(Path.join(test_root, "fake-codex"))
       File.mkdir_p!(workspace)
 
       File.write!(codex_binary, """
@@ -712,7 +714,7 @@ defmodule SymphonyElixir.AppServerTest do
     try do
       workspace_root = Path.join(test_root, "workspaces")
       workspace = Path.join(workspace_root, "MT-719")
-      codex_binary = Path.join(test_root, "fake-codex")
+      codex_binary = shell_path(Path.join(test_root, "fake-codex"))
       trace_file = Path.join(test_root, "codex-tool-user-input-options.trace")
       previous_trace = System.get_env("SYMP_TEST_CODEx_TRACE")
 
@@ -812,7 +814,7 @@ defmodule SymphonyElixir.AppServerTest do
     try do
       workspace_root = Path.join(test_root, "workspaces")
       workspace = Path.join(workspace_root, "MT-90")
-      codex_binary = Path.join(test_root, "fake-codex")
+      codex_binary = shell_path(Path.join(test_root, "fake-codex"))
       trace_file = Path.join(test_root, "codex-tool-call.trace")
       previous_trace = System.get_env("SYMP_TEST_CODEx_TRACE")
 
@@ -913,7 +915,7 @@ defmodule SymphonyElixir.AppServerTest do
     try do
       workspace_root = Path.join(test_root, "workspaces")
       workspace = Path.join(workspace_root, "MT-90A")
-      codex_binary = Path.join(test_root, "fake-codex")
+      codex_binary = shell_path(Path.join(test_root, "fake-codex"))
       trace_file = Path.join(test_root, "codex-supported-tool-call.trace")
       previous_trace = System.get_env("SYMP_TEST_CODEx_TRACE")
 
@@ -1035,7 +1037,7 @@ defmodule SymphonyElixir.AppServerTest do
     try do
       workspace_root = Path.join(test_root, "workspaces")
       workspace = Path.join(workspace_root, "MT-90B")
-      codex_binary = Path.join(test_root, "fake-codex")
+      codex_binary = shell_path(Path.join(test_root, "fake-codex"))
       trace_file = Path.join(test_root, "codex-tool-call-failed.trace")
       previous_trace = System.get_env("SYMP_TEST_CODEx_TRACE")
 
@@ -1141,7 +1143,7 @@ defmodule SymphonyElixir.AppServerTest do
     try do
       workspace_root = Path.join(test_root, "workspaces")
       workspace = Path.join(workspace_root, "MT-91")
-      codex_binary = Path.join(test_root, "fake-codex")
+      codex_binary = shell_path(Path.join(test_root, "fake-codex"))
       File.mkdir_p!(workspace)
 
       File.write!(codex_binary, """
@@ -1205,7 +1207,7 @@ defmodule SymphonyElixir.AppServerTest do
     try do
       workspace_root = Path.join(test_root, "workspaces")
       workspace = Path.join(workspace_root, "MT-92")
-      codex_binary = Path.join(test_root, "fake-codex")
+      codex_binary = shell_path(Path.join(test_root, "fake-codex"))
       File.mkdir_p!(workspace)
 
       File.write!(codex_binary, """
@@ -1280,7 +1282,7 @@ defmodule SymphonyElixir.AppServerTest do
     try do
       workspace_root = Path.join(test_root, "workspaces")
       workspace = Path.join(workspace_root, "MT-93")
-      codex_binary = Path.join(test_root, "fake-codex")
+      codex_binary = shell_path(Path.join(test_root, "fake-codex"))
       File.mkdir_p!(workspace)
 
       File.write!(codex_binary, """
@@ -1348,32 +1350,30 @@ defmodule SymphonyElixir.AppServerTest do
         "symphony-elixir-app-server-remote-ssh-#{System.unique_integer([:positive])}"
       )
 
-    previous_path = System.get_env("PATH")
-    previous_trace = System.get_env("SYMP_TEST_SSH_TRACE")
+    previous_opener = Application.get_env(:symphony_elixir, :ssh_port_opener)
 
     on_exit(fn ->
-      restore_env("PATH", previous_path)
-      restore_env("SYMP_TEST_SSH_TRACE", previous_trace)
+      if previous_opener do
+        Application.put_env(:symphony_elixir, :ssh_port_opener, previous_opener)
+      else
+        Application.delete_env(:symphony_elixir, :ssh_port_opener)
+      end
     end)
 
     try do
       trace_file = Path.join(test_root, "ssh.trace")
-      fake_ssh = Path.join(test_root, "ssh")
       remote_workspace = "/remote/workspaces/MT-REMOTE"
 
       File.mkdir_p!(test_root)
-      System.put_env("SYMP_TEST_SSH_TRACE", trace_file)
-      System.put_env("PATH", test_root <> ":" <> (previous_path || ""))
+      protocol_script = shell_path(Path.join(test_root, "remote-protocol"))
 
-      File.write!(fake_ssh, """
+      File.write!(protocol_script, """
       #!/bin/sh
-      trace_file="${SYMP_TEST_SSH_TRACE:-/tmp/symphony-fake-ssh.trace}"
       count=0
-      printf 'ARGV:%s\\n' "$*" >> "$trace_file"
 
       while IFS= read -r line; do
         count=$((count + 1))
-        printf 'JSON:%s\\n' "$line" >> "$trace_file"
+        printf 'JSON:%s\\n' "$line" >> "#{shell_path(trace_file)}"
 
         case "$count" in
           1)
@@ -1396,7 +1396,27 @@ defmodule SymphonyElixir.AppServerTest do
       done
       """)
 
-      File.chmod!(fake_ssh, 0o755)
+      File.chmod!(protocol_script, 0o755)
+
+      Application.put_env(:symphony_elixir, :ssh_port_opener, fn _executable, opts ->
+        ssh_args =
+          Enum.find_value(opts, [], fn
+            {:args, args} -> args
+            _option -> nil
+          end)
+
+        File.write!(trace_file, "ARGV:" <> Enum.map_join(ssh_args, " ", &to_string/1) <> "\n")
+
+        bash_opts =
+          opts
+          |> Enum.reject(&match?({:args, _args}, &1))
+          |> Kernel.++(args: [~c"-lc", String.to_charlist(protocol_script)])
+
+        Port.open(
+          {:spawn_executable, String.to_charlist(System.find_executable("bash"))},
+          bash_opts
+        )
+      end)
 
       write_workflow_file!(Workflow.workflow_file_path(),
         workspace_root: "/remote/workspaces",
