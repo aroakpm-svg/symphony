@@ -948,7 +948,12 @@ defmodule SymphonyElixir.ReviewConvergenceTest do
 
     state =
       ReviewMonitor.run_with(
-        %{"issue-160" => %{terminal_result: {:grant, %{"finding" => grant}}}},
+        %{
+          "issue-160" => %{
+            retained_claim: nil,
+            terminal_result: {:grant, %{"finding" => grant}}
+          }
+        },
         settings(),
         ReviewClient,
         Tracker,

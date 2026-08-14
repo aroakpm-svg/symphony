@@ -166,11 +166,17 @@ defmodule SymphonyElixir.ReviewMonitor do
 
   defp valid_claim_identity?(_identity), do: false
 
+  defp retained_claim_identity(%{retained_claim: nil} = entry) do
+    retained_grant_claim_identity(entry)
+  end
+
   defp retained_claim_identity(%{retained_claim: retained}) do
     if valid_claim_identity?(retained), do: {:ok, retained}, else: :error
   end
 
-  defp retained_claim_identity(%{terminal_result: {:grant, grants}}) when is_map(grants) do
+  defp retained_claim_identity(entry), do: retained_grant_claim_identity(entry)
+
+  defp retained_grant_claim_identity(%{terminal_result: {:grant, grants}}) when is_map(grants) do
     identities =
       grants
       |> Map.values()
@@ -183,7 +189,7 @@ defmodule SymphonyElixir.ReviewMonitor do
     end
   end
 
-  defp retained_claim_identity(_entry), do: :error
+  defp retained_grant_claim_identity(_entry), do: :error
 
   defp claim_identity(claim_context) do
     %{claim_id: claim_context[:claim_id], generation: claim_context[:generation]}
