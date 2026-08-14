@@ -166,7 +166,7 @@ defmodule SymphonyElixir.ClaimService do
             {:reply, :ok, %{state | claims: Map.delete(state.claims, issue_id)}}
 
           {:error, reason} ->
-            {:reply, {:error, reason}, %{state | claims: Map.delete(state.claims, issue_id)}}
+            {:reply, {:error, reason}, state}
         end
 
       {:ok, _claim} ->

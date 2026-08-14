@@ -122,13 +122,12 @@ defmodule SymphonyElixir.ReviewMonitor do
 
     grant_invalid? = releasable_result?(result)
     release? = acquisition in [:new, :retained] and grant_invalid?
+    release_result = if release?, do: release_reconciled_claim(options, issue.id, acquisition, entry), else: :not_released
 
     result =
       if grant_invalid?,
-        do: invalidate_stale_grant(result, entry, if(release?, do: :drop_claim, else: :preserve_claim)),
+        do: invalidate_stale_grant(result, entry, release_retention(acquisition, release_result)),
         else: result
-
-    if release?, do: release_reconciled_claim(options, issue.id, acquisition, entry)
 
     case result do
       {:ok, updated_entry} -> Map.put(state, issue.id, updated_entry)
@@ -154,14 +153,25 @@ defmodule SymphonyElixir.ReviewMonitor do
   defp releasable_result?({:ok, %{terminal_result: {:grant, _grants}}}), do: false
   defp releasable_result?(_result), do: true
 
-  defp invalidate_stale_grant({:ok, updated}, _entry, retention),
-    do: {:ok, clear_grant_if_present(updated, retention)}
+  defp invalidate_stale_grant({:ok, updated}, entry, retention),
+    do: {:ok, invalidate_entry_grant(updated, entry, retention)}
 
-  defp invalidate_stale_grant({:blocked, reason, blocked}, _entry, retention),
-    do: {:blocked, reason, clear_grant_if_present(blocked, retention)}
+  defp invalidate_stale_grant({:blocked, reason, blocked}, entry, retention),
+    do: {:blocked, reason, invalidate_entry_grant(blocked, entry, retention)}
 
   defp invalidate_stale_grant({:blocked, reason}, entry, retention),
     do: {:blocked, reason, clear_grant_if_present(entry, retention)}
+
+  defp invalidate_entry_grant(updated, original, :preserve_claim) do
+    retained_claim = recoverable_grant_claim_identity(original)
+
+    updated
+    |> clear_grant_if_present(:preserve_claim)
+    |> Map.put(:retained_claim, retained_claim)
+  end
+
+  defp invalidate_entry_grant(updated, _original, :drop_claim),
+    do: clear_grant_if_present(updated, :drop_claim)
 
   defp clear_grant_if_present(%{terminal_result: {:grant, _grants}} = entry, :drop_claim),
     do: %{entry | terminal_result: nil, retained_claim: nil, authorization_required: false}
@@ -348,14 +358,21 @@ defmodule SymphonyElixir.ReviewMonitor do
   defp release_reconciled_claim(options, issue_id, :new, _entry),
     do: release_claim(options, issue_id)
 
+  defp release_retention(:retained, result)
+       when result not in [:ok, {:error, :claim_ownership_changed}, {:error, :claim_not_owned}],
+       do: :preserve_claim
+
+  defp release_retention(_acquisition, :not_released), do: :preserve_claim
+  defp release_retention(_acquisition, _result), do: :drop_claim
+
   defp release_claim_if_owned(options, issue_id, identity) do
     claim_service = Map.get(options, :claim_service, ClaimService)
 
     if function_exported?(claim_service, :release_if_owned, 2) do
-      _ = claim_service.release_if_owned(issue_id, identity)
+      claim_service.release_if_owned(issue_id, identity)
+    else
+      {:error, :conditional_release_unavailable}
     end
-
-    :ok
   end
 
   defp list_effect_operations(options, connection, claim_context) do

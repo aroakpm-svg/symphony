@@ -429,6 +429,8 @@ revalidation or conditional release, deriving it from a valid grant when no expl
 exists yet. Tracker-enumeration failure MUST apply the same rule to every
 retained grant in monitor state. Releasing a retained claim MUST atomically verify the retained
 claim identity and monitor ownership, so a concurrent transfer to a worker cannot be revoked.
+An uncertain conditional-release error MUST preserve both ClaimService ownership state and the
+monitor retention identity for retry; only confirmed release or definitive ownership change may clear them.
 Design 3 authorization
 (`authorize/5`) and Design 4 settlement (`settle/2`) are owner contracts; when they are absent,
 the runtime MUST fail closed and MUST NOT add local stubs. `aroak_autonomous_v1` remains disabled

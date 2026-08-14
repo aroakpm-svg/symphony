@@ -131,7 +131,7 @@ defmodule SymphonyElixir.ReviewConvergenceTest do
            generation: Application.get_env(:symphony_elixir, :claim_generation, 1)
          } and owner == self() and worker in [nil, self()] do
         send(owner, {:autonomous_call, :release_if_owned})
-        :ok
+        Application.get_env(:symphony_elixir, :conditional_release_result, :ok)
       else
         {:error, :claim_ownership_changed}
       end
@@ -192,6 +192,7 @@ defmodule SymphonyElixir.ReviewConvergenceTest do
       Application.delete_env(:symphony_elixir, :claim_acquisition)
       Application.delete_env(:symphony_elixir, :claim_generation)
       Application.delete_env(:symphony_elixir, :claim_worker)
+      Application.delete_env(:symphony_elixir, :conditional_release_result)
     end)
   end
 
@@ -572,6 +573,44 @@ defmodule SymphonyElixir.ReviewConvergenceTest do
 
     blocked = ReviewMonitor.run_with(foreign, settings(), ReviewClient, Tracker, options)
     assert blocked["issue-160"].global_blocker == :claim_already_owned
+  end
+
+  test "uncertain conditional release preserves identity for a later retry" do
+    grant = %{claim_id: "11111111-1111-4111-8111-111111111111", generation: 1}
+    Application.put_env(:symphony_elixir, :claim_acquisition, :existing)
+    Application.put_env(:symphony_elixir, :conditional_release_result, {:error, :database_unavailable})
+
+    Application.put_env(
+      :symphony_elixir,
+      :review_snapshot,
+      {:ok, snapshot(%{finding_summary: %{decisions: [], requires_lifecycle?: false}})}
+    )
+
+    state = %{
+      "issue-160" => %{
+        authorization_required: true,
+        retained_claim: grant,
+        terminal_result: {:grant, %{"finding" => grant}}
+      }
+    }
+
+    result =
+      ReviewMonitor.run_with(
+        state,
+        settings(),
+        ReviewClient,
+        Tracker,
+        %{
+          profile: :aroak_autonomous_v1,
+          claim_service: AutonomousClaimService,
+          effect_ledger: AutonomousEffectLedger
+        }
+      )
+
+    assert result["issue-160"].terminal_result == nil
+    assert result["issue-160"].retained_claim == grant
+    refute result["issue-160"].authorization_required
+    assert_receive {:autonomous_call, :release_if_owned}
   end
 
   test "a retained grant transferred to a running worker is not reconciled or released by the monitor" do
