@@ -127,7 +127,7 @@ defmodule SymphonyElixir.ReviewMonitor do
         do: invalidate_stale_grant(result, entry, if(release?, do: :drop_claim, else: :preserve_claim)),
         else: result
 
-    if release?, do: release_claim(options, issue.id)
+    if release?, do: release_reconciled_claim(options, issue.id, acquisition, entry)
 
     case result do
       {:ok, updated_entry} -> Map.put(state, issue.id, updated_entry)
@@ -324,6 +324,16 @@ defmodule SymphonyElixir.ReviewMonitor do
 
     :ok
   end
+
+  defp release_reconciled_claim(options, issue_id, :retained, entry) do
+    case retained_claim_identity(entry) do
+      {:ok, identity} -> release_claim_if_owned(options, issue_id, identity)
+      :error -> :ok
+    end
+  end
+
+  defp release_reconciled_claim(options, issue_id, :new, _entry),
+    do: release_claim(options, issue_id)
 
   defp release_claim_if_owned(options, issue_id, identity) do
     claim_service = Map.get(options, :claim_service, ClaimService)

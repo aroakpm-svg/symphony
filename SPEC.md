@@ -427,7 +427,9 @@ released claim MUST NOT leave an old grant visible to a worker or a later monito
 invalidation without a proven release MUST preserve the claim identity needed for later ownership
 revalidation or conditional release, deriving it from a valid grant when no explicit retention record
 exists yet. Tracker-enumeration failure MUST apply the same rule to every
-retained grant in monitor state. Design 3 authorization
+retained grant in monitor state. Releasing a retained claim MUST atomically verify the retained
+claim identity and monitor ownership, so a concurrent transfer to a worker cannot be revoked.
+Design 3 authorization
 (`authorize/5`) and Design 4 settlement (`settle/2`) are owner contracts; when they are absent,
 the runtime MUST fail closed and MUST NOT add local stubs. `aroak_autonomous_v1` remains disabled
 by default; Design 2 validation MUST NOT start workers, use shared staging credentials, deploy, or

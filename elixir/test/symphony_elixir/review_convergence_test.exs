@@ -489,7 +489,7 @@ defmodule SymphonyElixir.ReviewConvergenceTest do
 
     assert stopped["issue-160"].global_blocker == :safety_stopped
     assert_receive {:autonomous_call, :authorize}
-    assert_receive {:autonomous_call, :release}
+    assert_receive {:autonomous_call, :release_if_owned}
   end
 
   test "retained grants continue only under the exact owning claim and release after consumption" do
@@ -519,7 +519,7 @@ defmodule SymphonyElixir.ReviewConvergenceTest do
 
     continued = ReviewMonitor.run_with(state, settings(), ReviewClient, Tracker, options)
     assert continued["issue-160"].global_blocker == nil
-    assert_receive {:autonomous_call, :release}
+    assert_receive {:autonomous_call, :release_if_owned}
 
     foreign =
       put_in(
@@ -873,7 +873,7 @@ defmodule SymphonyElixir.ReviewConvergenceTest do
       refute match?({:grant, _}, entry.terminal_result)
       assert entry.retained_claim == nil
       refute entry.authorization_required
-      assert_receive {:autonomous_call, :release}
+      assert_receive {:autonomous_call, :release_if_owned}
     end
   end
 

@@ -93,7 +93,8 @@ release. If the identity exists only inside the grant, invalidation extracts it 
 grant. A tracker-enumeration outage invalidates every cached grant under the same rule. An unconsumed grant may retain the
 same monitor-owned claim across invocations. When that entry becomes inactive, cleanup releases it
 only if the live claim still has the retained identity and remains owned by the monitor with no
-different worker; a transferred worker claim is left untouched. The global preflight requires explicit
+different worker; normal retained-claim reconciliation uses the same atomic conditional release, so
+a concurrently transferred worker claim is left untouched. The global preflight requires explicit
 `verified? == true` and `valid? == true`. Request fingerprints are immutable: decoding rebuilds
 and compares canonical finding and lineage identities, including scope and digests; lock
 reconciliation uses a deterministic fixed order.
