@@ -40,6 +40,7 @@ defmodule SymphonyElixir.PatchAuthorization do
   defp validate_disposition(%{disposition: :fix_in_current_pr}), do: :ok
   defp validate_disposition(%{disposition: :follow_up_required}), do: {:error, :follow_up_required}
   defp validate_disposition(%{disposition: :blocked_unverified}), do: {:error, :blocked_unverified}
+  defp validate_disposition(%{disposition: :rejected}), do: {:error, :rejected_not_settled}
   defp validate_disposition(_disposition), do: {:error, :invalid_disposition}
 
   defp validate_identity(disposition, receipt) do

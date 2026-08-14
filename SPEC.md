@@ -372,8 +372,8 @@ not be derived from severity alone or from mutable display text.
 Every evaluation MUST record the verified `source_head_sha`, the `evaluated_head_sha`, and the
 observed current head. A head mismatch, missing head evidence, unverified base evidence, or an
 invalid scope contract MUST fail closed. The only dispositions are `fix_in_current_pr`,
-`follow_up_required`, and `blocked_unverified`. A classifier MAY select one of these dispositions
-only from verified evidence; severity alone MUST NOT create a rework decision. Responsibility
+`follow_up_required`, `blocked_unverified`, and `rejected`. A classifier MAY select one of these
+dispositions only from verified evidence; severity alone MUST NOT create a rework decision. Responsibility
 evidence is conjunctively validated for shape and validity, then uses OR semantics: an explicit
 `introduced_by_pr? == true` OR an explicit `invariant_violation? == true` is sufficient to prove
 current-PR responsibility. Safety conditions remain conjunctive: `still_applies? == true`,
@@ -387,6 +387,15 @@ comment, and body identity. Missing, partial, malformed, or conflicting supplied
 produce `blocked_unverified`; a caller-provided digest alone is not a canonical identity. The
 `follow_up_required` route MUST use the same explicit boolean ownership-evidence gate as the fix
 route, including rejection of missing, unknown, malformed, or conflicting ownership facts.
+
+`rejected` MUST be produced only from a verified Root-Cause Receipt whose canonical `reject`
+mapping, `FindingKey`, `FindingLineageKey`, exact evaluated/current head, native repository
+readback, contradiction basis, evidence references, unresolved review action, and PASS validation
+receipt all agree. A causal `hypothesis_rejected` is not a review-finding rejection. A true
+pre-existing or out-of-scope finding MUST remain `follow_up_required`; missing, malformed, stale,
+or conflicting rejection evidence MUST remain `blocked_unverified`. Classification alone remains
+merge-blocking. Only Design 4 may advance the durable lifecycle from `classified_rejected` through
+reply confirmation and resolve readback to `rejected_settled`.
 
 Before any autonomous effect, the runtime MUST complete claim ownership and effect-ledger
 readback for the active issue, claim, node, instance, and current generation. A current verified

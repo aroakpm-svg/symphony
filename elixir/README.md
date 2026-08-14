@@ -77,7 +77,8 @@ current repository and pull request; `FindingLineageKey` follows that finding ac
 Every result records the source head, `evaluated_head_sha`, and the observed current head. Missing,
 stale, conflicting, or unverified evidence fails closed.
 
-The classifier can return only `fix_in_current_pr`, `follow_up_required`, or `blocked_unverified`.
+The classifier can return only `fix_in_current_pr`, `follow_up_required`, `blocked_unverified`, or
+`rejected`.
 Responsibility proof is `introduced_by_pr? == true OR invariant_violation? == true`; all safety
 conditions remain AND-gated, and missing, malformed, or conflicting evidence stays blocked.
 `in_scope?` cannot erase either positive responsibility proof. Before any autonomous effect, the
@@ -124,6 +125,11 @@ Design 3's owner runtime must provide the complete causal-attempt history from s
 an orchestrator restart and mark it with `causal_history_complete?: true`. The monitor merges its
 in-memory attempts only as a cache. Missing or unverified durable history returns
 `causal_history_unverified` and cannot issue a new mutation grant.
+
+`rejected` requires a verified exact-head Root-Cause Receipt and native readback that actually
+contradict the review finding. It is distinct from `hypothesis_rejected`, remains merge-blocking
+while classified, and cannot authorize a patch. Design 4 alone may later confirm the reply and
+Resolve readback required for `rejected_settled`.
 
 A technical pass, finding disposition, or `MergeReadyCandidate` does not authorize merge. Merge,
 deployment, Linear `Done`, and Landing remain human/owner actions outside Design 2.
