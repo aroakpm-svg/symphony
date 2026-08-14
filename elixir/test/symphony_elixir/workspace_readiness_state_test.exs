@@ -326,7 +326,7 @@ defmodule SymphonyElixir.WorkspaceReadinessStateTest do
 
       write_workflow_file!(Workflow.workflow_file_path(),
         workspace_root: fixture.workspace_root,
-        hook_after_create: "git clone #{fixture.remote} ."
+        hook_after_create: "git clone '#{shell_path(fixture.remote)}' ."
       )
 
       assert {:ok, %{path: workspace, readiness_state: state} = preparation} =
@@ -350,26 +350,22 @@ defmodule SymphonyElixir.WorkspaceReadinessStateTest do
 
   test "SSH workspace state uses the same durable state machine across preparations and removal" do
     test_root = temporary_root!("ssh-state")
-    bin_dir = Path.join(test_root, "bin")
-    fake_ssh = Path.join(bin_dir, "ssh")
     workspace_root = Path.join(test_root, "remote-workspaces")
     issue = issue("ARO-305", "codex/aro-305")
-    previous_path = System.get_env("PATH")
+    previous_runner = Application.get_env(:symphony_elixir, :ssh_command_runner)
 
-    on_exit(fn -> restore_env("PATH", previous_path) end)
-    File.mkdir_p!(bin_dir)
+    on_exit(fn ->
+      if previous_runner do
+        Application.put_env(:symphony_elixir, :ssh_command_runner, previous_runner)
+      else
+        Application.delete_env(:symphony_elixir, :ssh_command_runner)
+      end
+    end)
 
-    File.write!(fake_ssh, """
-    #!/bin/sh
-    remote_command=''
-    for argument in "$@"; do
-      remote_command="$argument"
-    done
-    exec /bin/sh -c "$remote_command"
-    """)
-
-    File.chmod!(fake_ssh, 0o755)
-    System.put_env("PATH", bin_dir <> ":" <> (previous_path || ""))
+    Application.put_env(:symphony_elixir, :ssh_command_runner, fn _executable, args, opts ->
+      remote_command = args |> List.last() |> to_string()
+      System.cmd("bash", ["-lc", remote_command], opts)
+    end)
 
     write_workflow_file!(Workflow.workflow_file_path(),
       workspace_root: workspace_root,
@@ -413,11 +409,10 @@ defmodule SymphonyElixir.WorkspaceReadinessStateTest do
               }
             }} = Workspace.prepare_for_issue(issue, "worker-state")
 
-    state_path = Workspace.readiness_state_path(workspace)
-    assert File.regular?(state_path)
     assert {:ok, []} = Workspace.remove(workspace, "worker-state")
-    refute File.exists?(workspace)
-    refute File.exists?(state_path)
+
+    assert {:ok, %{created_now: true, readiness_state: %{phase: :unverified}}} =
+             Workspace.prepare_for_issue(issue, "worker-state")
   end
 
   defp issue(identifier, branch_name) do

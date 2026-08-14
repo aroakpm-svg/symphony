@@ -74,6 +74,86 @@ defmodule SymphonyElixir.WorkspacePreflightBlockerTest do
     assert sanitized =~ "... (truncated)"
   end
 
+  test "workspace preflight does not fold separators inside remote URLs" do
+    previous_source_repo_url = System.get_env("SOURCE_REPO_URL")
+    on_exit(fn -> restore_env("SOURCE_REPO_URL", previous_source_repo_url) end)
+    System.put_env("SOURCE_REPO_URL", "https://github.com/example/right.git")
+
+    workspace_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-workspace-preflight-url-separator-#{System.unique_integer([:positive])}"
+      )
+
+    workspace = Path.join(workspace_root, "MT-URL-SEPARATOR")
+
+    try do
+      File.mkdir_p!(workspace)
+      System.cmd("git", ["-C", workspace, "init"], stderr_to_stdout: true)
+
+      System.cmd(
+        "git",
+        ["-C", workspace, "remote", "add", "origin", "https://github.com/example\\right.git"],
+        stderr_to_stdout: true
+      )
+
+      assert {:error, {:workspace_preflight_failed, :git_remote_mismatch, _command, _detail}} =
+               Workspace.preflight(workspace, "MT-URL-SEPARATOR")
+    after
+      File.rm_rf(workspace_root)
+    end
+  end
+
+  test "workspace preflight folds separators for forward-slash UNC remotes" do
+    previous_source_repo_url = System.get_env("SOURCE_REPO_URL")
+    on_exit(fn -> restore_env("SOURCE_REPO_URL", previous_source_repo_url) end)
+    System.put_env("SOURCE_REPO_URL", "//server/share/repo.git")
+
+    workspace_root = Path.join(System.tmp_dir!(), "symphony-preflight-unc-#{System.unique_integer([:positive])}")
+    workspace = Path.join(workspace_root, "MT-UNC")
+
+    try do
+      File.mkdir_p!(workspace)
+      System.cmd("git", ["-C", workspace, "init"], stderr_to_stdout: true)
+      System.cmd("git", ["-C", workspace, "remote", "add", "origin", "//server\\share\\repo.git"], stderr_to_stdout: true)
+
+      result = Workspace.preflight(workspace, "MT-UNC")
+
+      if match?({:win32, _}, :os.type()) do
+        assert {:error, {:workspace_preflight_failed, :git_fetch_failed, _command, _status, _output}} = result
+      else
+        assert {:error, {:workspace_preflight_failed, :git_remote_mismatch, _command, _detail}} = result
+      end
+    after
+      File.rm_rf(workspace_root)
+    end
+  end
+
+  test "workspace preflight normalizes Windows drive-letter case" do
+    previous_source_repo_url = System.get_env("SOURCE_REPO_URL")
+    on_exit(fn -> restore_env("SOURCE_REPO_URL", previous_source_repo_url) end)
+    System.put_env("SOURCE_REPO_URL", "C:/repo.git")
+
+    workspace_root = Path.join(System.tmp_dir!(), "symphony-preflight-drive-#{System.unique_integer([:positive])}")
+    workspace = Path.join(workspace_root, "MT-DRIVE")
+
+    try do
+      File.mkdir_p!(workspace)
+      System.cmd("git", ["-C", workspace, "init"], stderr_to_stdout: true)
+      System.cmd("git", ["-C", workspace, "remote", "add", "origin", "c:\\repo.git"], stderr_to_stdout: true)
+
+      result = Workspace.preflight(workspace, "MT-DRIVE")
+
+      if match?({:win32, _}, :os.type()) do
+        assert {:error, {:workspace_preflight_failed, :git_fetch_failed, _command, _status, _output}} = result
+      else
+        assert {:error, {:workspace_preflight_failed, :git_remote_mismatch, _command, _detail}} = result
+      end
+    after
+      File.rm_rf(workspace_root)
+    end
+  end
+
   test "workspace preflight compares stored remote before URL rewrites" do
     previous_source_repo_url = System.get_env("SOURCE_REPO_URL")
     on_exit(fn -> restore_env("SOURCE_REPO_URL", previous_source_repo_url) end)
@@ -159,6 +239,42 @@ defmodule SymphonyElixir.WorkspacePreflightBlockerTest do
     assert script =~ "https://github.com/example/repo"
     assert script =~ "actual_remote=\"${actual_remote%/}\"\nactual_remote=\"${actual_remote%.git}\""
     assert script =~ "expected_remote=\"${expected_remote%/}\"\nexpected_remote=\"${expected_remote%.git}\""
+  end
+
+  test "remote preflight normalizes Windows local paths symmetrically on the workspace host" do
+    previous_source_repo_url = System.get_env("SOURCE_REPO_URL")
+    on_exit(fn -> restore_env("SOURCE_REPO_URL", previous_source_repo_url) end)
+    System.put_env("SOURCE_REPO_URL", "C:/repo.git")
+
+    script = Workspace.remote_expected_repo_script_for_test()
+
+    assert script =~ "actual_remote=\"$(normalize_windows_local_path \"$actual_remote\")\""
+    assert script =~ "expected_remote=\"$(normalize_windows_local_path \"$expected_remote\")\""
+    assert script =~ "expected_remote='C:/repo'"
+
+    fake_git_script = "git() { printf 'C:/repo.git\\n'; }\n" <> script
+    assert {_output, 0} = System.cmd("bash", ["-n", "-c", fake_git_script], stderr_to_stdout: true)
+    assert {_output, 0} = System.cmd("bash", ["-c", fake_git_script], stderr_to_stdout: true)
+  end
+
+  test "remote preflight folds Windows paths only on Windows workers" do
+    previous_source_repo_url = System.get_env("SOURCE_REPO_URL")
+    on_exit(fn -> restore_env("SOURCE_REPO_URL", previous_source_repo_url) end)
+    System.put_env("SOURCE_REPO_URL", "//server/share/repo.git")
+
+    script = Workspace.remote_expected_repo_script_for_test()
+    windows_remote = "//server#{<<92>>}share#{<<92>>}repo.git"
+
+    unix_script =
+      "uname() { printf 'Linux\\n'; }\n" <>
+        "git() { printf '%s\\n' '#{windows_remote}'; }\n" <> script
+
+    windows_script =
+      "uname() { printf 'MINGW64_NT\\n'; }\n" <>
+        "git() { printf '%s\\n' '#{windows_remote}'; }\n" <> script
+
+    assert {_output, 1} = System.cmd("bash", ["-c", unix_script], stderr_to_stdout: true)
+    assert {_output, 0} = System.cmd("bash", ["-c", windows_script], stderr_to_stdout: true)
   end
 
   test "agent-reported workspace preflight failure blocks without retrying" do

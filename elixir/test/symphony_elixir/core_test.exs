@@ -672,6 +672,7 @@ defmodule SymphonyElixir.CoreTest do
       |> Map.put(:retry_attempts, %{})
     end)
 
+    scheduled_from_ms = System.monotonic_time(:millisecond)
     send(pid, {:DOWN, ref, :process, self(), :normal})
     Process.sleep(50)
     state = :sys.get_state(pid)
@@ -680,7 +681,7 @@ defmodule SymphonyElixir.CoreTest do
     assert MapSet.member?(state.completed, issue_id)
     assert %{attempt: 1, due_at_ms: due_at_ms} = state.retry_attempts[issue_id]
     assert is_integer(due_at_ms)
-    assert_due_in_range(due_at_ms, 500, 1_100)
+    assert_due_after(due_at_ms, scheduled_from_ms, 900, 1_100)
   end
 
   test "abnormal worker exit increments retry attempt progressively" do
@@ -713,6 +714,7 @@ defmodule SymphonyElixir.CoreTest do
       |> Map.put(:retry_attempts, %{})
     end)
 
+    scheduled_from_ms = System.monotonic_time(:millisecond)
     send(pid, {:DOWN, ref, :process, self(), :boom})
     Process.sleep(50)
     state = :sys.get_state(pid)
@@ -720,7 +722,7 @@ defmodule SymphonyElixir.CoreTest do
     assert %{attempt: 3, due_at_ms: due_at_ms, identifier: "MT-559", error: "agent exited: :boom"} =
              state.retry_attempts[issue_id]
 
-    assert_due_in_range(due_at_ms, 39_500, 40_500)
+    assert_due_after(due_at_ms, scheduled_from_ms, 39_500, 40_500)
   end
 
   test "first abnormal worker exit waits before retrying" do
@@ -752,6 +754,7 @@ defmodule SymphonyElixir.CoreTest do
       |> Map.put(:retry_attempts, %{})
     end)
 
+    scheduled_from_ms = System.monotonic_time(:millisecond)
     send(pid, {:DOWN, ref, :process, self(), :boom})
     Process.sleep(50)
     state = :sys.get_state(pid)
@@ -759,7 +762,7 @@ defmodule SymphonyElixir.CoreTest do
     assert %{attempt: 1, due_at_ms: due_at_ms, identifier: "MT-560", error: "agent exited: :boom"} =
              state.retry_attempts[issue_id]
 
-    assert_due_in_range(due_at_ms, 9_000, 10_500)
+    assert_due_after(due_at_ms, scheduled_from_ms, 9_500, 10_500)
   end
 
   test "stale retry timer messages do not consume newer retry entries" do
@@ -879,11 +882,11 @@ defmodule SymphonyElixir.CoreTest do
     assert Orchestrator.select_worker_host_for_test(state, "worker-a") == "worker-a"
   end
 
-  defp assert_due_in_range(due_at_ms, min_remaining_ms, max_remaining_ms) do
-    remaining_ms = due_at_ms - System.monotonic_time(:millisecond)
+  defp assert_due_after(due_at_ms, scheduled_from_ms, min_delay_ms, max_delay_ms) do
+    delay_ms = due_at_ms - scheduled_from_ms
 
-    assert remaining_ms >= min_remaining_ms
-    assert remaining_ms <= max_remaining_ms
+    assert delay_ms >= min_delay_ms
+    assert delay_ms <= max_delay_ms
   end
 
   defp restore_app_env(key, nil), do: Application.delete_env(:symphony_elixir, key)
@@ -1123,8 +1126,11 @@ defmodule SymphonyElixir.CoreTest do
 
     try do
       template_repo = Path.join(test_root, "source")
+      previous_source_repo_url = System.get_env("SOURCE_REPO_URL")
+      on_exit(fn -> restore_env("SOURCE_REPO_URL", previous_source_repo_url) end)
+      System.put_env("SOURCE_REPO_URL", template_repo)
       workspace_root = Path.join(test_root, "workspaces")
-      codex_binary = Path.join(test_root, "fake-codex")
+      codex_binary = shell_path(Path.join(test_root, "fake-codex"))
 
       File.mkdir_p!(template_repo)
       File.mkdir_p!(workspace_root)
@@ -1208,8 +1214,11 @@ defmodule SymphonyElixir.CoreTest do
 
     try do
       template_repo = Path.join(test_root, "source")
+      previous_source_repo_url = System.get_env("SOURCE_REPO_URL")
+      on_exit(fn -> restore_env("SOURCE_REPO_URL", previous_source_repo_url) end)
+      System.put_env("SOURCE_REPO_URL", template_repo)
       workspace_root = Path.join(test_root, "workspaces")
-      codex_binary = Path.join(test_root, "fake-codex")
+      codex_binary = shell_path(Path.join(test_root, "fake-codex"))
 
       File.mkdir_p!(template_repo)
       File.write!(Path.join(template_repo, "README.md"), "# test")
@@ -1295,43 +1304,35 @@ defmodule SymphonyElixir.CoreTest do
         "symphony-elixir-agent-runner-single-host-#{System.unique_integer([:positive])}"
       )
 
-    previous_path = System.get_env("PATH")
-    previous_trace = System.get_env("SYMP_TEST_SSH_TRACE")
+    previous_runner = Application.get_env(:symphony_elixir, :ssh_command_runner)
 
     on_exit(fn ->
-      restore_env("PATH", previous_path)
-      restore_env("SYMP_TEST_SSH_TRACE", previous_trace)
+      if previous_runner do
+        Application.put_env(:symphony_elixir, :ssh_command_runner, previous_runner)
+      else
+        Application.delete_env(:symphony_elixir, :ssh_command_runner)
+      end
     end)
 
     try do
       trace_file = Path.join(test_root, "ssh.trace")
-      fake_ssh = Path.join(test_root, "ssh")
-
       File.mkdir_p!(test_root)
-      System.put_env("SYMP_TEST_SSH_TRACE", trace_file)
-      System.put_env("PATH", test_root <> ":" <> (previous_path || ""))
 
-      File.write!(fake_ssh, """
-      #!/bin/sh
-      trace_file="${SYMP_TEST_SSH_TRACE:-/tmp/symphony-fake-ssh.trace}"
-      printf 'ARGV:%s\\n' "$*" >> "$trace_file"
+      Application.put_env(:symphony_elixir, :ssh_command_runner, fn _executable, args, _opts ->
+        command = Enum.join(args, " ")
+        File.write!(trace_file, "ARGV:" <> command <> "\n", [:append])
 
-      case "$*" in
-        *worker-a*"__SYMPHONY_WORKSPACE__"*)
-          printf '%s\\n' 'worker-a prepare failed' >&2
-          exit 75
-          ;;
-        *worker-b*"__SYMPHONY_WORKSPACE__"*)
-          printf '%s\\t%s\\t%s\\n' '__SYMPHONY_WORKSPACE__' '1' '/remote/home/.symphony-remote-workspaces/MT-SSH-FAILOVER'
-          exit 0
-          ;;
-        *)
-          exit 0
-          ;;
-      esac
-      """)
+        cond do
+          command =~ "worker-a" and command =~ "__SYMPHONY_WORKSPACE__" ->
+            {"worker-a prepare failed\n", 75}
 
-      File.chmod!(fake_ssh, 0o755)
+          command =~ "worker-b" and command =~ "__SYMPHONY_WORKSPACE__" ->
+            {"__SYMPHONY_WORKSPACE__\t1\t/remote/home/.symphony-remote-workspaces/MT-SSH-FAILOVER\n", 0}
+
+          true ->
+            {"", 0}
+        end
+      end)
 
       write_workflow_file!(Workflow.workflow_file_path(),
         workspace_root: "~/.symphony-remote-workspaces",
@@ -1367,8 +1368,11 @@ defmodule SymphonyElixir.CoreTest do
 
     try do
       template_repo = Path.join(test_root, "source")
+      previous_source_repo_url = System.get_env("SOURCE_REPO_URL")
+      on_exit(fn -> restore_env("SOURCE_REPO_URL", previous_source_repo_url) end)
+      System.put_env("SOURCE_REPO_URL", template_repo)
       workspace_root = Path.join(test_root, "workspaces")
-      codex_binary = Path.join(test_root, "fake-codex")
+      codex_binary = shell_path(Path.join(test_root, "fake-codex"))
       trace_file = Path.join(test_root, "codex.trace")
 
       File.mkdir_p!(template_repo)
@@ -1499,8 +1503,11 @@ defmodule SymphonyElixir.CoreTest do
 
     try do
       template_repo = Path.join(test_root, "source")
+      previous_source_repo_url = System.get_env("SOURCE_REPO_URL")
+      on_exit(fn -> restore_env("SOURCE_REPO_URL", previous_source_repo_url) end)
+      System.put_env("SOURCE_REPO_URL", template_repo)
       workspace_root = Path.join(test_root, "workspaces")
-      codex_binary = Path.join(test_root, "fake-codex")
+      codex_binary = shell_path(Path.join(test_root, "fake-codex"))
       trace_file = Path.join(test_root, "codex.trace")
 
       File.mkdir_p!(template_repo)
@@ -1598,7 +1605,7 @@ defmodule SymphonyElixir.CoreTest do
     try do
       workspace_root = Path.join(test_root, "workspaces")
       workspace = Path.join(workspace_root, "MT-77")
-      codex_binary = Path.join(test_root, "fake-codex")
+      codex_binary = shell_path(Path.join(test_root, "fake-codex"))
       trace_file = Path.join(test_root, "codex-args.trace")
       previous_trace = System.get_env("SYMP_TEST_CODex_TRACE")
 
@@ -1744,7 +1751,7 @@ defmodule SymphonyElixir.CoreTest do
     try do
       workspace_root = Path.join(test_root, "workspaces")
       workspace = Path.join(workspace_root, "MT-88")
-      codex_binary = Path.join(test_root, "fake-codex")
+      codex_binary = shell_path(Path.join(test_root, "fake-codex"))
       trace_file = Path.join(test_root, "codex-custom-args.trace")
       previous_trace = System.get_env("SYMP_TEST_CODex_TRACE")
 
@@ -1829,7 +1836,7 @@ defmodule SymphonyElixir.CoreTest do
     try do
       workspace_root = Path.join(test_root, "workspaces")
       workspace = Path.join(workspace_root, "MT-99")
-      codex_binary = Path.join(test_root, "fake-codex")
+      codex_binary = shell_path(Path.join(test_root, "fake-codex"))
       trace_file = Path.join(test_root, "codex-policy-overrides.trace")
       previous_trace = System.get_env("SYMP_TEST_CODex_TRACE")
 

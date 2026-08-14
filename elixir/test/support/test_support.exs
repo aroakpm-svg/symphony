@@ -22,7 +22,15 @@ defmodule SymphonyElixir.TestSupport do
       alias SymphonyElixir.Workspace
 
       import SymphonyElixir.TestSupport,
-        only: [write_workflow_file!: 1, write_workflow_file!: 2, restore_env: 2, stop_default_http_server: 0]
+        only: [
+          shell_path: 1,
+          bash_path: 1,
+          create_directory_link!: 2,
+          write_workflow_file!: 1,
+          write_workflow_file!: 2,
+          restore_env: 2,
+          stop_default_http_server: 0
+        ]
 
       setup do
         workflow_root =
@@ -68,6 +76,41 @@ defmodule SymphonyElixir.TestSupport do
 
   def restore_env(key, nil), do: System.delete_env(key)
   def restore_env(key, value), do: System.put_env(key, value)
+
+  def shell_path(path) when is_binary(path), do: String.replace(path, "\\", "/")
+
+  def bash_path(path) when is_binary(path) do
+    normalized = shell_path(Path.expand(path))
+
+    case normalized do
+      <<drive, ?:, rest::binary>> when drive in ?A..?Z -> "/#{drive + 32}#{rest}"
+      <<drive, ?:, rest::binary>> when drive in ?a..?z -> "/#{drive}#{rest}"
+      value -> value
+    end
+  end
+
+  def create_directory_link!(target, link) do
+    case File.ln_s(target, link) do
+      :ok ->
+        :ok
+
+      {:error, :eperm} ->
+        if elem(:os.type(), 0) == :win32 do
+          windows_link = String.replace(link, "/", "\\")
+          windows_target = String.replace(target, "/", "\\")
+
+          {_, 0} =
+            System.cmd("cmd.exe", ["/d", "/c", "mklink", "/J", windows_link, windows_target], stderr_to_stdout: true)
+
+          :ok
+        else
+          raise File.LinkError, reason: :eperm, action: "create symlink", existing: target, new: link
+        end
+
+      {:error, reason} ->
+        raise File.LinkError, reason: reason, action: "create symlink", existing: target, new: link
+    end
+  end
 
   def stop_default_http_server do
     case Enum.find(Supervisor.which_children(SymphonyElixir.Supervisor), fn
