@@ -119,8 +119,10 @@ defmodule SymphonyElixir.ReviewMonitor do
         {:error, reason} -> {{:blocked, reason}, :none}
       end
 
-    if acquisition in [:new, :retained] and releasable_result?(result),
-      do: release_claim(options, issue.id)
+    release? = acquisition in [:new, :retained] and releasable_result?(result)
+    result = if release?, do: invalidate_released_grant(result, entry), else: result
+
+    if release?, do: release_claim(options, issue.id)
 
     case result do
       {:ok, updated_entry} -> Map.put(state, issue.id, updated_entry)
@@ -145,6 +147,20 @@ defmodule SymphonyElixir.ReviewMonitor do
   # later claim generation through durable readback, so they must release capacity.
   defp releasable_result?({:ok, %{terminal_result: {:grant, _grants}}}), do: false
   defp releasable_result?(_result), do: true
+
+  defp invalidate_released_grant({:ok, updated}, _entry),
+    do: {:ok, clear_grant_if_present(updated)}
+
+  defp invalidate_released_grant({:blocked, reason, blocked}, _entry),
+    do: {:blocked, reason, clear_grant_if_present(blocked)}
+
+  defp invalidate_released_grant({:blocked, reason}, entry),
+    do: {:blocked, reason, clear_grant_if_present(entry)}
+
+  defp clear_grant_if_present(%{terminal_result: {:grant, _grants}} = entry),
+    do: %{entry | terminal_result: nil, retained_claim: nil, authorization_required: false}
+
+  defp clear_grant_if_present(entry), do: entry
 
   defp retained_claim?(%{retained_claim: %{claim_id: claim_id, generation: generation}}, claim)
        when is_binary(claim_id) and claim_id != "" and is_integer(generation) do

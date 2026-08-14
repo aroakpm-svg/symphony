@@ -147,6 +147,11 @@ defmodule SymphonyElixir.ReviewConvergenceTest do
     end
   end
 
+  defmodule FailingAutonomousEffectLedger do
+    @spec list_operations(term(), map()) :: {:error, :readback_failed}
+    def list_operations(_connection, _claim_context), do: {:error, :readback_failed}
+  end
+
   defmodule CountingPatchAuthorization do
     @spec authorize(map(), map(), map(), [map()], map()) :: SymphonyElixir.PatchAuthorization.result()
     def authorize(disposition, receipt, claim, effects, runtime) do
@@ -440,7 +445,7 @@ defmodule SymphonyElixir.ReviewConvergenceTest do
       patch_authorization: CountingPatchAuthorization,
       review_settlement: ReviewSettlementOwner,
       root_cause_receipts: %{finding_key.digest => receipt},
-      authorization_runtime: %{circuit_breaker: :clear, prior_attempts: []}
+      authorization_runtime: %{circuit_breaker: :clear, causal_history_complete?: true, prior_attempts: []}
     }
 
     initial_state = %{
@@ -602,7 +607,7 @@ defmodule SymphonyElixir.ReviewConvergenceTest do
       patch_authorization: CountingPatchAuthorization,
       review_settlement: ReviewSettlementOwner,
       root_cause_receipts: %{finding_key.digest => receipt},
-      authorization_runtime: %{circuit_breaker: :clear, prior_attempts: []}
+      authorization_runtime: %{circuit_breaker: :clear, causal_history_complete?: true, prior_attempts: []}
     }
 
     granted = ReviewMonitor.run_with(%{}, settings(), ReviewClient, Tracker, options)
@@ -671,7 +676,7 @@ defmodule SymphonyElixir.ReviewConvergenceTest do
       patch_authorization: CountingPatchAuthorization,
       review_settlement: ReviewSettlementOwner,
       root_cause_receipts: %{finding_key.digest => old_receipt},
-      authorization_runtime: %{circuit_breaker: :clear, prior_attempts: []}
+      authorization_runtime: %{circuit_breaker: :clear, causal_history_complete?: true, prior_attempts: []}
     }
 
     Application.put_env(
@@ -754,7 +759,7 @@ defmodule SymphonyElixir.ReviewConvergenceTest do
       patch_authorization: CountingPatchAuthorization,
       review_settlement: ReviewSettlementOwner,
       root_cause_receipts: %{finding_key.digest => receipt},
-      authorization_runtime: %{circuit_breaker: :clear, prior_attempts: []}
+      authorization_runtime: %{circuit_breaker: :clear, causal_history_complete?: true, prior_attempts: []}
     }
 
     state = ReviewMonitor.run_with(%{}, settings(), ReviewClient, Tracker, options)
@@ -811,6 +816,65 @@ defmodule SymphonyElixir.ReviewConvergenceTest do
     refute_received {:comment, _, _}
     refute_received {:state, _, _}
     refute_received {:status, _, _, _, _}
+  end
+
+  test "releasing a retained claim invalidates its stale grant for every fail-closed exit" do
+    Application.put_env(:symphony_elixir, :claim_acquisition, :existing)
+
+    Application.put_env(
+      :symphony_elixir,
+      :review_snapshot,
+      {:ok,
+       snapshot(%{
+         finding_summary: %{
+           decisions: [%{finding_key_digest: "finding-1", disposition: :fix_in_current_pr}],
+           requires_lifecycle?: true
+         }
+       })}
+    )
+
+    retained = %{
+      authorization_required: true,
+      retained_claim: %{claim_id: "11111111-1111-4111-8111-111111111111", generation: 1},
+      terminal_result:
+        {:grant,
+         %{
+           "finding-1" => %{
+             claim_id: "11111111-1111-4111-8111-111111111111",
+             generation: 1
+           }
+         }}
+    }
+
+    cases = [
+      {:pending_effects, AutonomousEffectLedger, [%{operation_id: "issue-160:operation-1", request_fingerprint: "fingerprint", status: :pending}]},
+      {:owner_api_unavailable, AutonomousEffectLedger, []},
+      {:readback_failed, FailingAutonomousEffectLedger, []}
+    ]
+
+    for {expected_blocker, ledger, operations} <- cases do
+      Application.put_env(:symphony_elixir, :autonomous_operations, operations)
+
+      result =
+        ReviewMonitor.run_with(
+          %{"issue-160" => retained},
+          settings(),
+          ReviewClient,
+          Tracker,
+          %{
+            profile: :aroak_autonomous_v1,
+            claim_service: AutonomousClaimService,
+            effect_ledger: ledger
+          }
+        )
+
+      entry = result["issue-160"]
+      assert entry.global_blocker == expected_blocker
+      refute match?({:grant, _}, entry.terminal_result)
+      assert entry.retained_claim == nil
+      refute entry.authorization_required
+      assert_receive {:autonomous_call, :release}
+    end
   end
 
   test "an unresolved managed effect releases claim capacity and is read back by a fresh generation" do

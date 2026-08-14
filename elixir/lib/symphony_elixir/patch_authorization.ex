@@ -23,6 +23,7 @@ defmodule SymphonyElixir.PatchAuthorization do
          :ok <- validate_exact_head(receipt, runtime),
          :ok <- validate_claim(claim, runtime),
          :ok <- validate_circuit_breaker(runtime),
+         :ok <- validate_causal_history_source(runtime),
          :ok <- validate_recurrence(receipt),
          :ok <- validate_causal_progress(receipt, runtime),
          :ok <- validate_effects(effects, claim) do
@@ -135,6 +136,10 @@ defmodule SymphonyElixir.PatchAuthorization do
 
   defp validate_circuit_breaker(%{circuit_breaker: :clear}), do: :ok
   defp validate_circuit_breaker(_runtime), do: {:error, :safety_stopped}
+
+  defp validate_causal_history_source(%{causal_history_complete?: true}), do: :ok
+
+  defp validate_causal_history_source(_runtime), do: {:error, :causal_history_unverified}
 
   defp validate_recurrence(%{recurrence_count: count, escalation_decision: decision})
        when count > 2 and decision in [:architecture_escalation, :policy_clarification, :follow_up],

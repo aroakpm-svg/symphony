@@ -329,6 +329,18 @@ defmodule SymphonyElixir.PatchAuthorizationTest do
     end
   end
 
+  test "fails closed when durable causal history completeness is not verified" do
+    {decision, receipt, claim, effects, runtime} = valid_inputs()
+
+    for unverified <- [
+          Map.delete(runtime, :causal_history_complete?),
+          %{runtime | causal_history_complete?: false}
+        ] do
+      assert {:blocked, :causal_history_unverified} =
+               PatchAuthorization.authorize(decision, receipt, claim, effects, unverified)
+    end
+  end
+
   defp valid_inputs do
     head_sha = String.duplicate("a", 40)
 
@@ -385,6 +397,7 @@ defmodule SymphonyElixir.PatchAuthorizationTest do
       active_claim_id: "claim-6",
       active_generation: 6,
       circuit_breaker: :clear,
+      causal_history_complete?: true,
       prior_attempts: []
     }
 

@@ -420,7 +420,9 @@ its monitor-owned claim across monitor invocations. If the entry leaves the moni
 MUST release only when the live claim atomically matches the retained claim identity, is still owned
 by the monitor, and has no different worker. It MUST NOT release a claim transferred to a worker.
 Pending or unknown effect readback MUST release claim capacity so a later claim generation can
-continue reconciliation. Design 3 authorization
+continue reconciliation. Every claim release MUST invalidate any retained authorization grant in
+the same state transition; a released claim MUST NOT leave an old grant visible to a worker or a
+later monitor pass. Design 3 authorization
 (`authorize/5`) and Design 4 settlement (`settle/2`) are owner contracts; when they are absent,
 the runtime MUST fail closed and MUST NOT add local stubs. `aroak_autonomous_v1` remains disabled
 by default; Design 2 validation MUST NOT start workers, use shared staging credentials, deploy, or
@@ -431,7 +433,10 @@ It consumes the canonical Design 2 finding/lineage contract, normalized readback
 receipt, active claim/generation, exact current head, managed-effect readback, causal history, and runtime
 circuit-breaker state. It returns only `{:ok, grant}`, `{:reconcile, evidence}`, or `{:blocked, reason}`.
 Missing, malformed, stale, conflicting, unknown, green pre-mutation, or non-progress evidence MUST fail
-closed. The same lineage, causal fingerprint, and evidence MUST return `:non_progress_blocked`; a new head
+closed. The owner-provided causal history MUST be durable across orchestrator restarts and MUST declare
+that it is complete for the authorization boundary. Monitor-local history is only a cache; if durable
+history completeness cannot be verified, authorization MUST fail closed. The same lineage, causal
+fingerprint, and evidence MUST return `:non_progress_blocked`; a new head
 alone is not causal progress. A grant is an opaque authorization for one bounded managed mutation intent
 and MUST NOT carry merge, deploy, settlement, permission, secret, or credential capability. ReviewMonitor
 MUST invoke this owner only after claim binding and effect readback and MUST NOT invoke it twice for the
