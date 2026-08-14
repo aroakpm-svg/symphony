@@ -111,6 +111,18 @@ defmodule SymphonyElixir.GitHubReviewClient do
     end
   end
 
+  @spec current_head_sha(String.t(), pos_integer()) :: {:ok, String.t()} | {:error, term()}
+  def current_head_sha(repository, number) when is_binary(repository) and is_integer(number) and number > 0 do
+    case run(["api", "repos/#{repository}/pulls/#{number}", "--jq", ".head.sha"]) do
+      {:ok, output} ->
+        sha = String.trim(output)
+        if Regex.match?(~r/\A[0-9a-f]{40}\z/, sha), do: {:ok, sha}, else: {:error, :invalid_head_sha}
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
   @spec request_review(String.t(), pos_integer(), String.t()) :: :ok | {:error, term()}
   def request_review(repository, number, key) do
     body = "@codex review\n\ndedup-key: `#{key}`"

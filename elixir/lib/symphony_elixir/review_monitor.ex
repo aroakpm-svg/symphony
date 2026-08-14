@@ -263,7 +263,7 @@ defmodule SymphonyElixir.ReviewMonitor do
          {:ok, operations} <- list_effect_operations(options, connection, claim_context),
          {:ok, summary} <- finding_summary(snapshot, settings),
          :ok <- reconcile_operation_locks(operations),
-         :ok <- verify_live_head(review_client, settings, issue.branch_name, snapshot) do
+         :ok <- verify_live_head(review_client, settings, snapshot) do
       autonomous_claimed_result(
         entry,
         issue,
@@ -279,14 +279,15 @@ defmodule SymphonyElixir.ReviewMonitor do
     end
   end
 
-  defp verify_live_head(review_client, settings, branch, snapshot) do
-    with {:ok, live_snapshot} <- review_client.snapshot(settings.repository, branch),
-         true <- live_snapshot[:current_head_sha] == snapshot[:current_head_sha] do
+  defp verify_live_head(review_client, settings, snapshot) do
+    with true <- loaded_function_exported?(review_client, :current_head_sha, 2),
+         {:ok, live_head_sha} <- review_client.current_head_sha(settings.repository, snapshot[:pull_request_number]),
+         true <- live_head_sha == snapshot[:current_head_sha] do
       :ok
     else
       false -> {:error, :head_changed_during_reconciliation}
       {:error, reason} -> {:error, reason}
-      _invalid -> {:error, :head_verification_unavailable}
+      _unavailable -> {:error, :head_verification_unavailable}
     end
   end
 

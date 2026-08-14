@@ -11,6 +11,16 @@ defmodule SymphonyElixir.ReviewConvergenceTest do
     @spec snapshot(String.t(), String.t()) :: {:ok, map()} | {:error, term()}
     def snapshot(_repository, _branch), do: Application.fetch_env!(:symphony_elixir, :review_snapshot)
 
+    @spec current_head_sha(String.t(), pos_integer()) :: {:ok, String.t()}
+    def current_head_sha(_repository, _number) do
+      {:ok,
+       Application.get_env(
+         :symphony_elixir,
+         :review_live_head,
+         Application.fetch_env!(:symphony_elixir, :review_snapshot) |> elem(1) |> Map.fetch!(:current_head_sha)
+       )}
+    end
+
     @spec request_review(String.t(), pos_integer(), String.t()) :: :ok
     def request_review(repository, number, key) do
       send(Application.fetch_env!(:symphony_elixir, :review_recipient), {:review_requested, repository, number, key})
@@ -39,6 +49,13 @@ defmodule SymphonyElixir.ReviewConvergenceTest do
       [next | rest] = Application.fetch_env!(:symphony_elixir, :review_snapshot_sequence)
       Application.put_env(:symphony_elixir, :review_snapshot_sequence, rest)
       next
+    end
+
+    @spec current_head_sha(String.t(), pos_integer()) :: {:ok, String.t()}
+    def current_head_sha(_repository, _number) do
+      [next | rest] = Application.fetch_env!(:symphony_elixir, :review_snapshot_sequence)
+      Application.put_env(:symphony_elixir, :review_snapshot_sequence, rest)
+      {:ok, next |> elem(1) |> Map.fetch!(:current_head_sha)}
     end
   end
 
@@ -183,6 +200,7 @@ defmodule SymphonyElixir.ReviewConvergenceTest do
       Application.delete_env(:symphony_elixir, :review_issues)
       Application.delete_env(:symphony_elixir, :review_snapshot)
       Application.delete_env(:symphony_elixir, :review_snapshot_sequence)
+      Application.delete_env(:symphony_elixir, :review_live_head)
       Application.delete_env(:symphony_elixir, :existing_review_keys)
       Application.delete_env(:symphony_elixir, :review_history)
       Application.delete_env(:symphony_elixir, :linear_client_module)

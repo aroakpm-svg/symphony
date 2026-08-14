@@ -83,8 +83,9 @@ conditions remain AND-gated, and missing, malformed, or conflicting evidence sta
 `in_scope?` cannot erase either positive responsibility proof. Before any autonomous effect, the
 runtime authenticates the current claim and reads unresolved (`pending`/`unknown`) effects for the
 same issue across older generations. Historical effects are recovery evidence only and cannot
-authorize a current-generation mutation. After claim-bound readback, the monitor re-reads the live
-PR head immediately before authorization and fails closed if it changed. Pending or unknown effects release claim capacity after
+authorize a current-generation mutation. After claim-bound readback and all snapshot hydration, the
+monitor performs a dedicated lightweight live-head read immediately before authorization and fails
+closed if it changed. Pending or unknown effects release claim capacity after
 readback so a later generation can continue reconciliation. Releasing that claim also invalidates
 any retained grant in the same state transition, so stale authorization cannot survive pending
 effects, unavailable owner APIs, or a readback error. Fail-closed exits before claim acquisition
