@@ -904,6 +904,7 @@ defmodule SymphonyElixir.ReviewConvergenceTest do
 
     assert unavailable["issue-160"].global_blocker == :github_unavailable
     assert unavailable["issue-160"].terminal_result == nil
+    assert unavailable["issue-160"].retained_claim == grant.retained_claim
     refute unavailable["issue-160"].authorization_required
     refute_received {:autonomous_call, :release}
 
@@ -927,7 +928,34 @@ defmodule SymphonyElixir.ReviewConvergenceTest do
 
     assert ownership_changed["issue-160"].global_blocker == :claim_already_owned
     assert ownership_changed["issue-160"].terminal_result == nil
+    assert ownership_changed["issue-160"].retained_claim == grant.retained_claim
     refute ownership_changed["issue-160"].authorization_required
+    refute_received {:autonomous_call, :release}
+  end
+
+  test "tracker enumeration failure invalidates grants but preserves conditional claim recovery identity" do
+    retained = %{claim_id: "11111111-1111-4111-8111-111111111111", generation: 1}
+
+    state = %{
+      "issue-160" => %{
+        authorization_required: true,
+        retained_claim: retained,
+        terminal_result: {:grant, %{"finding-1" => retained}}
+      }
+    }
+
+    failed =
+      ReviewMonitor.run_with(
+        state,
+        settings(),
+        ReviewClient,
+        FailingIssueTracker,
+        %{profile: :aroak_autonomous_v1, claim_service: AutonomousClaimService}
+      )
+
+    assert failed["issue-160"].terminal_result == nil
+    assert failed["issue-160"].retained_claim == retained
+    refute failed["issue-160"].authorization_required
     refute_received {:autonomous_call, :release}
   end
 

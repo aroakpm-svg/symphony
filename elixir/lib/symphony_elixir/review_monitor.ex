@@ -93,7 +93,7 @@ defmodule SymphonyElixir.ReviewMonitor do
         )
 
       {:error, _reason} ->
-        state
+        invalidate_state_grants(state)
     end
   end
 
@@ -120,8 +120,12 @@ defmodule SymphonyElixir.ReviewMonitor do
       end
 
     grant_invalid? = releasable_result?(result)
-    result = if grant_invalid?, do: invalidate_stale_grant(result, entry), else: result
     release? = acquisition in [:new, :retained] and grant_invalid?
+
+    result =
+      if grant_invalid?,
+        do: invalidate_stale_grant(result, entry, if(release?, do: :drop_claim, else: :preserve_claim)),
+        else: result
 
     if release?, do: release_claim(options, issue.id)
 
@@ -149,19 +153,28 @@ defmodule SymphonyElixir.ReviewMonitor do
   defp releasable_result?({:ok, %{terminal_result: {:grant, _grants}}}), do: false
   defp releasable_result?(_result), do: true
 
-  defp invalidate_stale_grant({:ok, updated}, _entry),
-    do: {:ok, clear_grant_if_present(updated)}
+  defp invalidate_stale_grant({:ok, updated}, _entry, retention),
+    do: {:ok, clear_grant_if_present(updated, retention)}
 
-  defp invalidate_stale_grant({:blocked, reason, blocked}, _entry),
-    do: {:blocked, reason, clear_grant_if_present(blocked)}
+  defp invalidate_stale_grant({:blocked, reason, blocked}, _entry, retention),
+    do: {:blocked, reason, clear_grant_if_present(blocked, retention)}
 
-  defp invalidate_stale_grant({:blocked, reason}, entry),
-    do: {:blocked, reason, clear_grant_if_present(entry)}
+  defp invalidate_stale_grant({:blocked, reason}, entry, retention),
+    do: {:blocked, reason, clear_grant_if_present(entry, retention)}
 
-  defp clear_grant_if_present(%{terminal_result: {:grant, _grants}} = entry),
+  defp clear_grant_if_present(%{terminal_result: {:grant, _grants}} = entry, :drop_claim),
     do: %{entry | terminal_result: nil, retained_claim: nil, authorization_required: false}
 
-  defp clear_grant_if_present(entry), do: entry
+  defp clear_grant_if_present(%{terminal_result: {:grant, _grants}} = entry, :preserve_claim),
+    do: %{entry | terminal_result: nil, authorization_required: false}
+
+  defp clear_grant_if_present(entry, _retention), do: entry
+
+  defp invalidate_state_grants(state) do
+    Map.new(state, fn {issue_id, entry} ->
+      {issue_id, clear_grant_if_present(entry, :preserve_claim)}
+    end)
+  end
 
   defp retained_claim?(%{retained_claim: %{claim_id: claim_id, generation: generation}}, claim)
        when is_binary(claim_id) and claim_id != "" and is_integer(generation) do

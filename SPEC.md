@@ -423,7 +423,10 @@ Pending or unknown effect readback MUST release claim capacity so a later claim 
 continue reconciliation. Every fail-closed exit MUST invalidate any retained authorization grant,
 including exits before claim acquisition and ownership-mismatch exits where release is forbidden.
 Every claim release MUST invalidate the grant in the same state transition; an unverifiable or
-released claim MUST NOT leave an old grant visible to a worker or a later monitor pass. Design 3 authorization
+released claim MUST NOT leave an old grant visible to a worker or a later monitor pass. Grant
+invalidation without a proven release MUST preserve the claim identity needed for later ownership
+revalidation or conditional release. Tracker-enumeration failure MUST apply the same rule to every
+retained grant in monitor state. Design 3 authorization
 (`authorize/5`) and Design 4 settlement (`settle/2`) are owner contracts; when they are absent,
 the runtime MUST fail closed and MUST NOT add local stubs. `aroak_autonomous_v1` remains disabled
 by default; Design 2 validation MUST NOT start workers, use shared staging credentials, deploy, or

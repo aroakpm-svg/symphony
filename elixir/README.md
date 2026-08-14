@@ -88,7 +88,8 @@ readback so a later generation can continue reconciliation. Releasing that claim
 any retained grant in the same state transition, so stale authorization cannot survive pending
 effects, unavailable owner APIs, or a readback error. Fail-closed exits before claim acquisition
 and ownership mismatches also invalidate the grant without releasing a claim they cannot prove
-they own. An unconsumed grant may retain the
+they own, while preserving the retained claim identity for later revalidation or conditional
+release. A tracker-enumeration outage invalidates every cached grant under the same rule. An unconsumed grant may retain the
 same monitor-owned claim across invocations. When that entry becomes inactive, cleanup releases it
 only if the live claim still has the retained identity and remains owned by the monitor with no
 different worker; a transferred worker claim is left untouched. The global preflight requires explicit
