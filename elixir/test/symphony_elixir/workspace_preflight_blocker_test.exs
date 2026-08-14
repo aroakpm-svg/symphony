@@ -117,8 +117,13 @@ defmodule SymphonyElixir.WorkspacePreflightBlockerTest do
       System.cmd("git", ["-C", workspace, "init"], stderr_to_stdout: true)
       System.cmd("git", ["-C", workspace, "remote", "add", "origin", "//server\\share\\repo.git"], stderr_to_stdout: true)
 
-      assert {:error, {:workspace_preflight_failed, :git_fetch_failed, _command, _status, _output}} =
-               Workspace.preflight(workspace, "MT-UNC")
+      result = Workspace.preflight(workspace, "MT-UNC")
+
+      if match?({:win32, _}, :os.type()) do
+        assert {:error, {:workspace_preflight_failed, :git_fetch_failed, _command, _status, _output}} = result
+      else
+        assert {:error, {:workspace_preflight_failed, :git_remote_mismatch, _command, _detail}} = result
+      end
     after
       File.rm_rf(workspace_root)
     end
@@ -137,8 +142,13 @@ defmodule SymphonyElixir.WorkspacePreflightBlockerTest do
       System.cmd("git", ["-C", workspace, "init"], stderr_to_stdout: true)
       System.cmd("git", ["-C", workspace, "remote", "add", "origin", "c:\\repo.git"], stderr_to_stdout: true)
 
-      assert {:error, {:workspace_preflight_failed, :git_fetch_failed, _command, _status, _output}} =
-               Workspace.preflight(workspace, "MT-DRIVE")
+      result = Workspace.preflight(workspace, "MT-DRIVE")
+
+      if match?({:win32, _}, :os.type()) do
+        assert {:error, {:workspace_preflight_failed, :git_fetch_failed, _command, _status, _output}} = result
+      else
+        assert {:error, {:workspace_preflight_failed, :git_remote_mismatch, _command, _detail}} = result
+      end
     after
       File.rm_rf(workspace_root)
     end

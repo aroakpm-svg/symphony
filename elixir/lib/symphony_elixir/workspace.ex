@@ -1264,7 +1264,11 @@ defmodule SymphonyElixir.Workspace do
     |> String.trim_trailing(".git")
   end
 
-  defp normalize_windows_local_repo_path(<<drive, ?:, separator, _rest::binary>> = path)
+  defp normalize_windows_local_repo_path(path) do
+    if match?({:win32, _}, :os.type()), do: do_normalize_windows_local_repo_path(path), else: path
+  end
+
+  defp do_normalize_windows_local_repo_path(<<drive, ?:, separator, _rest::binary>> = path)
        when drive in ?A..?Z and separator in [?/, ?\\],
        do:
          String.replace(
@@ -1273,17 +1277,17 @@ defmodule SymphonyElixir.Workspace do
            "/"
          )
 
-  defp normalize_windows_local_repo_path(<<drive, ?:, separator, _rest::binary>> = path)
+  defp do_normalize_windows_local_repo_path(<<drive, ?:, separator, _rest::binary>> = path)
        when drive in ?a..?z and separator in [?/, ?\\],
        do: String.replace(path, "\\", "/")
 
-  defp normalize_windows_local_repo_path("\\\\" <> _rest = path),
+  defp do_normalize_windows_local_repo_path("\\\\" <> _rest = path),
     do: String.replace(path, "\\", "/")
 
-  defp normalize_windows_local_repo_path("//" <> _rest = path),
+  defp do_normalize_windows_local_repo_path("//" <> _rest = path),
     do: String.replace(path, "\\", "/")
 
-  defp normalize_windows_local_repo_path(url), do: url
+  defp do_normalize_windows_local_repo_path(url), do: url
 
   defp sanitize_hook_output_for_log(output, max_bytes \\ 2_048) do
     redacted_output =
