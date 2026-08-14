@@ -257,6 +257,26 @@ defmodule SymphonyElixir.WorkspacePreflightBlockerTest do
     assert {_output, 0} = System.cmd("bash", ["-c", fake_git_script], stderr_to_stdout: true)
   end
 
+  test "remote preflight folds Windows paths only on Windows workers" do
+    previous_source_repo_url = System.get_env("SOURCE_REPO_URL")
+    on_exit(fn -> restore_env("SOURCE_REPO_URL", previous_source_repo_url) end)
+    System.put_env("SOURCE_REPO_URL", "//server/share/repo.git")
+
+    script = Workspace.remote_expected_repo_script_for_test()
+    windows_remote = "//server#{<<92>>}share#{<<92>>}repo.git"
+
+    unix_script =
+      "uname() { printf 'Linux\\n'; }\n" <>
+        "git() { printf '%s\\n' '#{windows_remote}'; }\n" <> script
+
+    windows_script =
+      "uname() { printf 'MINGW64_NT\\n'; }\n" <>
+        "git() { printf '%s\\n' '#{windows_remote}'; }\n" <> script
+
+    assert {_output, 1} = System.cmd("bash", ["-c", unix_script], stderr_to_stdout: true)
+    assert {_output, 0} = System.cmd("bash", ["-c", windows_script], stderr_to_stdout: true)
+  end
+
   test "agent-reported workspace preflight failure blocks without retrying" do
     issue_id = "issue-preflight-blocker"
 
