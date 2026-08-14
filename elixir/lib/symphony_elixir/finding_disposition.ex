@@ -1015,7 +1015,8 @@ defmodule SymphonyElixir.FindingDisposition do
 
   defp non_empty_string?(value), do: is_binary(value) and byte_size(value) > 0
 
-  defp non_blank_string?(value), do: is_binary(value) and String.trim(value) != ""
+  defp non_blank_string?(value),
+    do: is_binary(value) and String.valid?(value) and String.trim(value) != ""
 
   defp non_blank_string_list?(values) when is_list(values) and values != [],
     do: Enum.all?(values, &non_blank_string?/1)

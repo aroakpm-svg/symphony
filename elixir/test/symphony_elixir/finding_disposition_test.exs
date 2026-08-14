@@ -216,8 +216,10 @@ defmodule SymphonyElixir.FindingDispositionTest do
     invalid_receipts = [
       Map.delete(receipt, :rejection_basis),
       %{receipt | rejection_basis: "  \t\n"},
+      %{receipt | rejection_basis: <<255>>},
       %{receipt | evidence_references: []},
       %{receipt | evidence_references: ["spec:design-2a", " \r\n"]},
+      %{receipt | evidence_references: ["spec:design-2a", <<255>>]},
       %{receipt | evidence_conflict?: true},
       %{receipt | current_head_sha: full_sha("2")},
       %{receipt | finding_key: Map.put(receipt.finding_key, :digest, String.duplicate("f", 64))},
