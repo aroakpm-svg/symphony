@@ -1209,7 +1209,7 @@ defmodule SymphonyElixir.Workspace do
         "git config --get remote.origin.url >/dev/null"
 
       expected_url ->
-        expected = shell_escape(comparable_repo_url(expected_url))
+        expected = shell_escape(remote_comparable_repo_url(expected_url))
 
         [
           "strip_url_userinfo() {",
@@ -1218,11 +1218,33 @@ defmodule SymphonyElixir.Workspace do
           "    *) printf '%s\\n' \"$1\" ;;",
           "  esac",
           "}",
+          "normalize_windows_local_path() {",
+          "  case \"$1\" in",
+          "    [A-Za-z]:[\\\\/]*)",
+          "      normalized=\"$(printf '%s' \"$1\" | tr '\\\\134' '/')\"",
+          "      drive=\"$(printf '%s' \"${normalized%\"${normalized#?}\"}\" | tr '[:upper:]' '[:lower:]')\"",
+          "      printf '%s%s\\n' \"$drive\" \"${normalized#?}\"",
+          "      ;;",
+          "    \\\\\\\\*|//*) printf '%s\\n' \"$1\" | tr '\\\\134' '/' ;;",
+          "    *) printf '%s\\n' \"$1\" ;;",
+          "  esac",
+          "}",
           "actual_remote=\"$(git config --get remote.origin.url)\"",
           "actual_remote=\"$(strip_url_userinfo \"$actual_remote\")\"",
+          "remote_os=\"$(uname -s 2>/dev/null || printf 'unknown')\"",
+          "case \"$remote_os\" in",
+          "  CYGWIN*|MINGW*|MSYS*|Windows_NT*)",
+          "    actual_remote=\"$(normalize_windows_local_path \"$actual_remote\")\"",
+          "    ;;",
+          "esac",
           "actual_remote=\"${actual_remote%/}\"",
           "actual_remote=\"${actual_remote%.git}\"",
           "expected_remote=#{expected}",
+          "case \"$remote_os\" in",
+          "  CYGWIN*|MINGW*|MSYS*|Windows_NT*)",
+          "    expected_remote=\"$(normalize_windows_local_path \"$expected_remote\")\"",
+          "    ;;",
+          "esac",
           "expected_remote=\"${expected_remote%/}\"",
           "expected_remote=\"${expected_remote%.git}\"",
           "test \"$actual_remote\" = \"$expected_remote\""
@@ -1256,12 +1278,46 @@ defmodule SymphonyElixir.Workspace do
     |> normalized_repo_url()
   end
 
-  defp normalized_repo_url(url) when is_binary(url) do
+  defp remote_comparable_repo_url(url) when is_binary(url) do
     url
+    |> strip_url_userinfo()
     |> String.trim()
     |> String.trim_trailing("/")
     |> String.trim_trailing(".git")
   end
+
+  defp normalized_repo_url(url) when is_binary(url) do
+    url
+    |> String.trim()
+    |> normalize_windows_local_repo_path()
+    |> String.trim_trailing("/")
+    |> String.trim_trailing(".git")
+  end
+
+  defp normalize_windows_local_repo_path(path) do
+    if match?({:win32, _}, :os.type()), do: do_normalize_windows_local_repo_path(path), else: path
+  end
+
+  defp do_normalize_windows_local_repo_path(<<drive, ?:, separator, _rest::binary>> = path)
+       when drive in ?A..?Z and separator in [?/, ?\\],
+       do:
+         String.replace(
+           <<drive + 32, ?:, separator, binary_part(path, 3, byte_size(path) - 3)::binary>>,
+           "\\",
+           "/"
+         )
+
+  defp do_normalize_windows_local_repo_path(<<drive, ?:, separator, _rest::binary>> = path)
+       when drive in ?a..?z and separator in [?/, ?\\],
+       do: String.replace(path, "\\", "/")
+
+  defp do_normalize_windows_local_repo_path("\\\\" <> _rest = path),
+    do: String.replace(path, "\\", "/")
+
+  defp do_normalize_windows_local_repo_path("//" <> _rest = path),
+    do: String.replace(path, "\\", "/")
+
+  defp do_normalize_windows_local_repo_path(url), do: url
 
   defp sanitize_hook_output_for_log(output, max_bytes \\ 2_048) do
     redacted_output =

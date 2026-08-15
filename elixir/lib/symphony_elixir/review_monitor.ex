@@ -9,6 +9,7 @@ defmodule SymphonyElixir.ReviewMonitor do
     EffectLedger,
     FindingDisposition,
     GitHubReviewClient,
+    PatchAuthorization,
     ReviewConvergence,
     ScopeContract,
     Tracker
@@ -50,6 +51,23 @@ defmodule SymphonyElixir.ReviewMonitor do
     end
   end
 
+  defp retain_uncertain_inactive_claims(state, active_issue_ids, options) do
+    state
+    |> Enum.reject(fn {issue_id, _entry} -> MapSet.member?(active_issue_ids, issue_id) end)
+    |> Enum.reduce(%{}, fn {issue_id, entry}, retained ->
+      retain_uncertain_inactive_claim(retained, issue_id, entry, options)
+    end)
+  end
+
+  defp retain_uncertain_inactive_claim(retained, issue_id, entry, options) do
+    with {:ok, identity} <- retained_claim_identity(entry),
+         :uncertain <- release_outcome(release_claim_if_owned(options, issue_id, identity)) do
+      Map.put(retained, issue_id, clear_grant_if_present(entry, :preserve_claim))
+    else
+      _definitive_or_invalid -> retained
+    end
+  end
+
   @doc false
   @spec run_with(state(), struct() | map(), module(), module(), map()) :: state()
   def run_with(state, settings, review_client, tracker, options) when is_map(options) do
@@ -71,7 +89,12 @@ defmodule SymphonyElixir.ReviewMonitor do
           Enum.filter(issues, &Issue.routable?(&1, Config.settings!().tracker.required_labels))
 
         active_issue_ids = MapSet.new(routed_issues, & &1.id)
-        active_state = Map.take(state, MapSet.to_list(active_issue_ids))
+        uncertain_inactive = retain_uncertain_inactive_claims(state, active_issue_ids, options)
+
+        active_state =
+          state
+          |> Map.take(MapSet.to_list(active_issue_ids))
+          |> Map.merge(uncertain_inactive)
 
         Enum.reduce(
           routed_issues,
@@ -80,7 +103,7 @@ defmodule SymphonyElixir.ReviewMonitor do
         )
 
       {:error, _reason} ->
-        state
+        invalidate_state_grants(state)
     end
   end
 
@@ -91,20 +114,30 @@ defmodule SymphonyElixir.ReviewMonitor do
       with branch when is_binary(branch) and branch != "" <- issue.branch_name,
            {:ok, snapshot} <- review_client.snapshot(settings.repository, branch),
            {:ok, claim, claim_acquisition} <- claim_for(options, issue) do
-        case claim_acquisition do
-          :new ->
-            {reconcile_new_claim(entry, issue, snapshot, claim, settings, options), :new}
-
-          :existing ->
-            {{:blocked, :claim_already_owned}, :existing}
-        end
+        reconcile_acquired_claim(
+          claim_acquisition,
+          entry,
+          issue,
+          snapshot,
+          claim,
+          settings,
+          review_client,
+          options
+        )
       else
         nil -> {{:blocked, :missing_branch_name}, :none}
         "" -> {{:blocked, :missing_branch_name}, :none}
         {:error, reason} -> {{:blocked, reason}, :none}
       end
 
-    if acquisition == :new, do: release_claim(options, issue.id)
+    grant_invalid? = releasable_result?(result)
+    release? = acquisition in [:new, :retained] and grant_invalid?
+    release_result = if release?, do: release_reconciled_claim(options, issue.id, acquisition, entry), else: :not_released
+
+    result =
+      if grant_invalid?,
+        do: invalidate_stale_grant(result, entry, release_retention(acquisition, release_result)),
+        else: result
 
     case result do
       {:ok, updated_entry} -> Map.put(state, issue.id, updated_entry)
@@ -113,11 +146,124 @@ defmodule SymphonyElixir.ReviewMonitor do
     end
   end
 
-  defp reconcile_new_claim(entry, issue, snapshot, claim, settings, options) do
-    with {:ok, connection, claim_context} <- claimed_context(options, issue, claim),
+  defp reconcile_acquired_claim(:new, entry, issue, snapshot, claim, settings, review_client, options) do
+    {reconcile_new_claim(entry, issue, snapshot, claim, settings, review_client, options, :bind), :new}
+  end
+
+  defp reconcile_acquired_claim(:existing, entry, issue, snapshot, claim, settings, review_client, options) do
+    if retained_claim?(entry, claim) do
+      {reconcile_new_claim(entry, issue, snapshot, claim, settings, review_client, options, :preserve), :retained}
+    else
+      {{:blocked, :claim_already_owned}, :existing}
+    end
+  end
+
+  # Only an unconsumed grant keeps its claim. Pending effects remain visible to a
+  # later claim generation through durable readback, so they must release capacity.
+  defp releasable_result?({:ok, %{terminal_result: {:grant, _grants}}}), do: false
+  defp releasable_result?(_result), do: true
+
+  defp invalidate_stale_grant({:ok, updated}, entry, retention),
+    do: {:ok, invalidate_entry_grant(updated, entry, retention)}
+
+  defp invalidate_stale_grant({:blocked, reason, blocked}, entry, retention),
+    do: {:blocked, reason, invalidate_entry_grant(blocked, entry, retention)}
+
+  defp invalidate_stale_grant({:blocked, reason}, entry, retention),
+    do: {:blocked, reason, clear_grant_if_present(entry, retention)}
+
+  defp invalidate_entry_grant(updated, original, :preserve_claim) do
+    retained_claim = recoverable_grant_claim_identity(original)
+
+    updated
+    |> clear_grant_if_present(:preserve_claim)
+    |> Map.put(:retained_claim, retained_claim)
+  end
+
+  defp invalidate_entry_grant(updated, _original, :drop_claim),
+    do: clear_grant_if_present(updated, :drop_claim)
+
+  defp clear_grant_if_present(%{terminal_result: {:grant, _grants}} = entry, :drop_claim),
+    do: %{entry | terminal_result: nil, retained_claim: nil, authorization_required: false}
+
+  defp clear_grant_if_present(%{terminal_result: {:grant, _grants}} = entry, :preserve_claim),
+    do: %{
+      entry
+      | terminal_result: nil,
+        retained_claim: recoverable_grant_claim_identity(entry),
+        authorization_required: false
+    }
+
+  defp clear_grant_if_present(entry, _retention), do: entry
+
+  defp invalidate_state_grants(state) do
+    Map.new(state, fn {issue_id, entry} ->
+      {issue_id, clear_grant_if_present(entry, :preserve_claim)}
+    end)
+  end
+
+  defp recoverable_grant_claim_identity(entry) do
+    case retained_claim_identity(entry) do
+      {:ok, identity} -> identity
+      :error -> entry[:retained_claim]
+    end
+  end
+
+  defp retained_claim?(%{retained_claim: %{claim_id: claim_id, generation: generation}}, claim)
+       when is_binary(claim_id) and claim_id != "" and is_integer(generation) do
+    claim[:owner] == self() and claim[:worker] in [nil, self()] and claim[:claim_id] == claim_id and
+      claim[:generation] == generation
+  end
+
+  defp retained_claim?(%{terminal_result: {:grant, grants}}, claim) when is_map(grants) do
+    claim[:owner] == self() and claim[:worker] in [nil, self()] and
+      Enum.any?(grants, fn {_digest, grant} ->
+        grant[:claim_id] == claim[:claim_id] and grant[:generation] == claim[:generation]
+      end)
+  end
+
+  defp retained_claim?(_entry, _claim), do: false
+
+  defp valid_claim_identity?(%{claim_id: claim_id, generation: generation}),
+    do: is_binary(claim_id) and claim_id != "" and is_integer(generation) and generation > 0
+
+  defp valid_claim_identity?(_identity), do: false
+
+  defp retained_claim_identity(%{retained_claim: nil} = entry) do
+    retained_grant_claim_identity(entry)
+  end
+
+  defp retained_claim_identity(%{retained_claim: retained}) do
+    if valid_claim_identity?(retained), do: {:ok, retained}, else: :error
+  end
+
+  defp retained_claim_identity(entry), do: retained_grant_claim_identity(entry)
+
+  defp retained_grant_claim_identity(%{terminal_result: {:grant, grants}}) when is_map(grants) do
+    identities =
+      grants
+      |> Map.values()
+      |> Enum.map(&Map.take(&1, [:claim_id, :generation]))
+      |> Enum.uniq()
+
+    case identities do
+      [identity] -> if valid_claim_identity?(identity), do: {:ok, identity}, else: :error
+      _identities -> :error
+    end
+  end
+
+  defp retained_grant_claim_identity(_entry), do: :error
+
+  defp claim_identity(claim_context) do
+    %{claim_id: claim_context[:claim_id], generation: claim_context[:generation]}
+  end
+
+  defp reconcile_new_claim(entry, issue, snapshot, claim, settings, review_client, options, binding) do
+    with {:ok, connection, claim_context} <- claimed_context(options, issue, claim, binding),
          {:ok, operations} <- list_effect_operations(options, connection, claim_context),
          {:ok, summary} <- finding_summary(snapshot, settings),
-         :ok <- reconcile_operation_locks(operations) do
+         :ok <- reconcile_operation_locks(operations),
+         :ok <- verify_live_head(review_client, settings, snapshot) do
       autonomous_claimed_result(
         entry,
         issue,
@@ -133,6 +279,18 @@ defmodule SymphonyElixir.ReviewMonitor do
     end
   end
 
+  defp verify_live_head(review_client, settings, snapshot) do
+    with true <- loaded_function_exported?(review_client, :current_head_sha, 2),
+         {:ok, live_head_sha} <- review_client.current_head_sha(settings.repository, snapshot[:pull_request_number]),
+         true <- live_head_sha == snapshot[:current_head_sha] do
+      :ok
+    else
+      false -> {:error, :head_changed_during_reconciliation}
+      {:error, reason} -> {:error, reason}
+      _unavailable -> {:error, :head_verification_unavailable}
+    end
+  end
+
   defp autonomous_entry(entry) do
     Map.merge(
       %{
@@ -141,7 +299,12 @@ defmodule SymphonyElixir.ReviewMonitor do
         pending_effect_ids: [],
         local_blocked_finding_keys: [],
         authorization_required: false,
+        authorization_attempts: %{},
+        authorization_results: %{},
+        causal_attempts: [],
+        pending_causal_attempts: [],
         global_blocker: nil,
+        retained_claim: nil,
         terminal_result: nil
       },
       entry
@@ -173,12 +336,17 @@ defmodule SymphonyElixir.ReviewMonitor do
     end
   end
 
-  defp claimed_context(options, issue, _claim) do
+  defp claimed_context(options, issue, _claim, :bind) do
     claim_service = Map.get(options, :claim_service, ClaimService)
 
     with :ok <- claim_service.bind_worker(issue.id, self()) do
       claim_service.effect_context(issue.id)
     end
+  end
+
+  defp claimed_context(options, issue, _claim, :preserve) do
+    claim_service = Map.get(options, :claim_service, ClaimService)
+    claim_service.effect_context(issue.id)
   end
 
   defp release_claim(options, issue_id) do
@@ -189,6 +357,38 @@ defmodule SymphonyElixir.ReviewMonitor do
     end
 
     :ok
+  end
+
+  defp release_reconciled_claim(options, issue_id, :retained, entry) do
+    case retained_claim_identity(entry) do
+      {:ok, identity} -> release_claim_if_owned(options, issue_id, identity)
+      :error -> :ok
+    end
+  end
+
+  defp release_reconciled_claim(options, issue_id, :new, _entry),
+    do: release_claim(options, issue_id)
+
+  defp release_retention(:retained, result) do
+    if release_outcome(result) == :uncertain, do: :preserve_claim, else: :drop_claim
+  end
+
+  defp release_retention(_acquisition, :not_released), do: :preserve_claim
+  defp release_retention(_acquisition, _result), do: :drop_claim
+
+  defp release_outcome(:ok), do: :released
+  defp release_outcome({:error, :claim_ownership_changed}), do: :ownership_changed
+  defp release_outcome({:error, :claim_not_owned}), do: :ownership_changed
+  defp release_outcome(_result), do: :uncertain
+
+  defp release_claim_if_owned(options, issue_id, identity) do
+    claim_service = Map.get(options, :claim_service, ClaimService)
+
+    if function_exported?(claim_service, :release_if_owned, 2) do
+      claim_service.release_if_owned(issue_id, identity)
+    else
+      {:error, :conditional_release_unavailable}
+    end
   end
 
   defp list_effect_operations(options, connection, claim_context) do
@@ -297,7 +497,7 @@ defmodule SymphonyElixir.ReviewMonitor do
          snapshot,
          summary,
          operations,
-         _claim_context,
+         claim_context,
          _settings,
          options
        ) do
@@ -312,19 +512,26 @@ defmodule SymphonyElixir.ReviewMonitor do
       |> Map.put(:decisions, decisions_by_digest(summary[:decisions] || []))
       |> Map.put(:pending_effect_ids, pending_effect_ids)
       |> Map.put(:global_blocker, nil)
+      |> Map.put(:retained_claim, nil)
 
     cond do
       pending_effect_ids != [] ->
-        {:blocked, :pending_effects, updated}
+        {:blocked, :pending_effects, Map.put(updated, :retained_claim, claim_identity(claim_context))}
 
       summary[:decisions] == [] ->
-        {:ok, updated}
+        {:ok,
+         %{
+           updated
+           | authorization_required: false,
+             authorization_results: %{},
+             terminal_result: nil
+         }}
 
       not owner_apis_available?(options) ->
         {:blocked, :owner_api_unavailable, updated}
 
       true ->
-        {:blocked, :autonomous_execution_requires_owner_contracts, updated}
+        authorize_causal_patches(updated, summary[:decisions], operations, snapshot, claim_context, options)
     end
   end
 
@@ -332,11 +539,218 @@ defmodule SymphonyElixir.ReviewMonitor do
     do: Map.new(decisions, &{&1.finding_key_digest, &1})
 
   defp owner_apis_available?(options) do
-    authorization = Map.get(options, :patch_authorization)
+    authorization = Map.get(options, :patch_authorization, PatchAuthorization)
     settlement = Map.get(options, :review_settlement)
 
     loaded_function_exported?(authorization, :authorize, 5) and
       loaded_function_exported?(settlement, :settle, 2)
+  end
+
+  defp authorize_causal_patches(entry, decisions, operations, snapshot, claim_context, options) do
+    authorization = Map.get(options, :patch_authorization, PatchAuthorization)
+    receipts = Map.get(options, :root_cause_receipts)
+    runtime = Map.get(options, :authorization_runtime)
+
+    case is_map(receipts) and is_map(runtime) do
+      true ->
+        reduce_authorizations(
+          entry,
+          decisions,
+          operations,
+          snapshot,
+          claim_context,
+          authorization,
+          receipts,
+          runtime
+        )
+
+      false ->
+        {:blocked, :root_cause_receipt_unavailable, entry}
+    end
+  end
+
+  defp reduce_authorizations(entry, decisions, operations, snapshot, claim_context, authorization, receipts, runtime) do
+    sorted_decisions = FindingDisposition.sort_decisions(decisions)
+    current_digests = MapSet.new(sorted_decisions, & &1.finding_key_digest)
+    entry = %{entry | authorization_results: %{}}
+
+    sorted_decisions
+    |> Enum.reduce_while({:ok, entry}, fn decision, {:ok, acc} ->
+      authorize_decision(acc, decision, operations, snapshot, claim_context, authorization, receipts, runtime)
+    end)
+    |> authorization_result(current_digests)
+  end
+
+  defp authorize_decision(entry, decision, operations, snapshot, claim_context, authorization, receipts, runtime) do
+    digest = decision[:finding_key_digest]
+    receipt = receipts[digest]
+
+    key = authorization_transition_key(decision, receipt, operations, snapshot, claim_context, runtime)
+
+    authorize_decision_once(
+      Map.get(entry.authorization_attempts, key),
+      entry,
+      key,
+      digest,
+      decision,
+      receipt,
+      operations,
+      snapshot,
+      claim_context,
+      authorization,
+      runtime
+    )
+  end
+
+  # credo:disable-for-next-line Credo.Check.Refactor.FunctionArity
+  defp authorize_decision_once(nil, entry, key, digest, decision, receipt, operations, snapshot, claim_context, authorization, runtime) do
+    result =
+      authorization.authorize(
+        decision,
+        receipt || %{},
+        authorization_claim(claim_context),
+        operations,
+        authorization_runtime(runtime, snapshot, claim_context, entry)
+      )
+
+    updated =
+      entry
+      |> put_in([:authorization_attempts, key], result)
+      |> put_in([:authorization_results, digest], result)
+
+    authorization_reduction(result, updated)
+  end
+
+  # credo:disable-for-next-line Credo.Check.Refactor.FunctionArity
+  defp authorize_decision_once(
+         cached_result,
+         entry,
+         _key,
+         digest,
+         _decision,
+         _receipt,
+         _operations,
+         _snapshot,
+         _claim_context,
+         _authorization,
+         _runtime
+       ) do
+    updated = put_in(entry, [:authorization_results, digest], cached_result)
+    authorization_reduction(cached_result, updated)
+  end
+
+  defp authorization_transition_key(decision, receipt, operations, snapshot, claim_context, runtime) do
+    payload = {
+      decision,
+      receipt,
+      operations,
+      snapshot[:current_head_sha],
+      claim_context[:claim_id],
+      claim_context[:generation],
+      runtime
+    }
+
+    :crypto.hash(:sha256, :erlang.term_to_binary(payload))
+  end
+
+  defp authorization_claim(claim_context) do
+    %{
+      active?: true,
+      claim_id: claim_context[:claim_id],
+      generation: claim_context[:generation]
+    }
+  end
+
+  defp authorization_runtime(runtime, snapshot, claim_context, entry) do
+    prior_attempts = merge_prior_attempts(runtime[:prior_attempts], entry.causal_attempts)
+
+    Map.merge(runtime, %{
+      current_head_sha: snapshot[:current_head_sha],
+      active_claim_id: claim_context[:claim_id],
+      active_generation: claim_context[:generation],
+      prior_attempts: prior_attempts
+    })
+  end
+
+  defp merge_prior_attempts(nil, local), do: local
+
+  defp merge_prior_attempts(external, local) when is_list(external) do
+    if Enum.all?(external, &is_map/1) do
+      Enum.uniq_by(external ++ local, &causal_attempt_identity/1)
+    else
+      external
+    end
+  end
+
+  defp merge_prior_attempts(external, _local), do: external
+
+  defp authorization_reduction({:ok, grant}, entry) do
+    attempt = %{
+      finding_lineage_digest: grant.finding_lineage_key.digest,
+      causal_attempt_fingerprint: grant.causal_attempt_fingerprint,
+      causal_evidence_digest: grant.causal_evidence_digest,
+      generation: grant.generation
+    }
+
+    pending = Enum.uniq_by([attempt | entry.pending_causal_attempts], &causal_attempt_identity/1)
+    {:cont, {:ok, %{entry | pending_causal_attempts: pending}}}
+  end
+
+  defp authorization_reduction({:reconcile, evidence}, entry),
+    do: {:halt, {:reconcile, evidence, entry}}
+
+  defp authorization_reduction({:blocked, reason}, entry),
+    do: {:halt, {:blocked, reason, entry}}
+
+  defp authorization_reduction(_invalid, entry),
+    do: {:halt, {:blocked, :invalid_patch_authorization_result, entry}}
+
+  defp causal_attempt_identity(attempt) do
+    {
+      attempt[:finding_lineage_digest],
+      attempt[:causal_attempt_fingerprint],
+      attempt[:causal_evidence_digest]
+    }
+  end
+
+  defp authorization_result({:ok, entry}, current_digests) do
+    current_results = Map.take(entry.authorization_results, MapSet.to_list(current_digests))
+    grants = Map.new(current_results, fn {digest, {:ok, grant}} -> {digest, grant} end)
+
+    attempts =
+      Enum.uniq_by(entry.pending_causal_attempts ++ entry.causal_attempts, &causal_attempt_identity/1)
+
+    {:ok,
+     %{
+       entry
+       | authorization_required: true,
+         authorization_results: current_results,
+         causal_attempts: attempts,
+         pending_causal_attempts: [],
+         terminal_result: {:grant, grants},
+         global_blocker: nil
+     }}
+  end
+
+  defp authorization_result({:reconcile, evidence, entry}, _current_digests) do
+    updated = %{
+      entry
+      | authorization_required: false,
+        pending_causal_attempts: [],
+        terminal_result: {:reconcile, evidence}
+    }
+
+    {:blocked, :authorization_reconciliation_required, updated}
+  end
+
+  defp authorization_result({:blocked, reason, entry}, _current_digests) do
+    {:blocked, reason,
+     %{
+       entry
+       | authorization_required: false,
+         pending_causal_attempts: [],
+         terminal_result: {:blocked, reason}
+     }}
   end
 
   defp loaded_function_exported?(module, function, arity) when is_atom(module) do

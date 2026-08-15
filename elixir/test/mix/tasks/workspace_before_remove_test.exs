@@ -299,6 +299,8 @@ defmodule Mix.Tasks.Workspace.BeforeRemoveTest do
     root = Path.join(System.tmp_dir!(), "workspace-before-remove-task-test-#{unique}")
     bin_dir = Path.join(root, "bin")
     log_path = Path.join(root, "gh.log")
+    previous_finder = Application.get_env(:symphony_elixir, :workspace_before_remove_executable_finder)
+    previous_runner = Application.get_env(:symphony_elixir, :workspace_before_remove_command_runner)
 
     try do
       File.rm_rf!(root)
@@ -309,8 +311,18 @@ defmodule Mix.Tasks.Workspace.BeforeRemoveTest do
 
       Enum.each(scripts, fn {name, script} ->
         path = Path.join(bin_dir, name)
-        File.write!(path, script)
+        File.write!(path, String.replace(script, "\r\n", "\n"))
         File.chmod!(path, 0o755)
+      end)
+
+      Application.put_env(:symphony_elixir, :workspace_before_remove_executable_finder, fn command ->
+        candidate = Path.join(bin_dir, command)
+        if File.regular?(candidate), do: candidate
+      end)
+
+      Application.put_env(:symphony_elixir, :workspace_before_remove_command_runner, fn path, args, opts ->
+        script = path |> File.read!() |> String.replace("\r\n", "\n")
+        run_fake_command(Path.basename(path), args, script, opts)
       end)
 
       with_env(
@@ -323,9 +335,64 @@ defmodule Mix.Tasks.Workspace.BeforeRemoveTest do
         end
       )
     after
+      restore_app_env(:workspace_before_remove_executable_finder, previous_finder)
+      restore_app_env(:workspace_before_remove_command_runner, previous_runner)
       File.rm_rf!(root)
     end
   end
+
+  defp run_fake_command("gh", args, script, _opts) do
+    File.write!(System.fetch_env!("GH_LOG"), Enum.join(args, " ") <> "\n", [:append])
+
+    body =
+      case args do
+        ["auth", "status"] -> extract_shell_block(script, ~r/"\$1" = "auth".*?"\$2" = "status"/)
+        ["pr", "list" | _rest] -> extract_shell_block(script, ~r/"\$1" = "pr".*?"\$2" = "list"/)
+        ["pr", "close", number | _rest] -> extract_shell_block(script, ~r/"\$1" = "pr".*?"\$2" = "close".*?"\$3" = "#{Regex.escape(number)}"/)
+      end
+
+    shell_block_result(body)
+  end
+
+  defp run_fake_command("git", ["branch", "--show-current"], script, _opts) do
+    shell_block_result(script)
+  end
+
+  defp extract_shell_block(script, condition) do
+    case Regex.run(~r/if \[ (.*?) \]; then(.*?)fi/s, script) do
+      [_whole, matched_condition, body] ->
+        if Regex.match?(condition, matched_condition), do: body, else: extract_later_shell_block(script, condition)
+
+      _ ->
+        "exit 99"
+    end
+  end
+
+  defp extract_later_shell_block(script, condition) do
+    Regex.scan(~r/if \[ (.*?) \]; then(.*?)fi/s, script)
+    |> Enum.find_value("exit 99", fn [_whole, matched_condition, body] ->
+      if Regex.match?(condition, matched_condition), do: body
+    end)
+  end
+
+  defp shell_block_result(body) do
+    status =
+      case Regex.run(~r/exit\s+(\d+)/, body) do
+        [_, value] -> String.to_integer(value)
+        _ -> 0
+      end
+
+    output =
+      case Regex.run(~r/printf\s+'([^']*)'/s, body) do
+        [_, value] -> String.replace(value, "\\n", "\n")
+        _ -> ""
+      end
+
+    {output, status}
+  end
+
+  defp restore_app_env(key, nil), do: Application.delete_env(:symphony_elixir, key)
+  defp restore_app_env(key, value), do: Application.put_env(:symphony_elixir, key, value)
 
   defp with_path(paths, fun) do
     with_env(%{"PATH" => Enum.join(paths, ":")}, fun)

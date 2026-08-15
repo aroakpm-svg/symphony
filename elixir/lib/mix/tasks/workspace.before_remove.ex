@@ -53,7 +53,7 @@ defmodule Mix.Tasks.Workspace.BeforeRemove do
   end
 
   defp gh_available? do
-    not is_nil(System.find_executable("gh"))
+    not is_nil(find_executable("gh"))
   end
 
   defp gh_authenticated? do
@@ -126,15 +126,28 @@ defmodule Mix.Tasks.Workspace.BeforeRemove do
   end
 
   defp run_command(command, args) do
-    case System.find_executable(command) do
+    case find_executable(command) do
       nil ->
         {:error, {:enoent, ""}}
 
       path ->
-        case System.cmd(path, args, stderr_to_stdout: true) do
+        command_runner = Application.get_env(:symphony_elixir, :workspace_before_remove_command_runner, &System.cmd/3)
+
+        case command_runner.(path, args, stderr_to_stdout: true) do
           {output, 0} -> {:ok, output}
           {output, status} -> {:error, {status, output}}
         end
     end
+  end
+
+  defp find_executable(command) do
+    finder =
+      Application.get_env(
+        :symphony_elixir,
+        :workspace_before_remove_executable_finder,
+        &System.find_executable/1
+      )
+
+    finder.(command)
   end
 end

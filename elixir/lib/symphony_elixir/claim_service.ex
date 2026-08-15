@@ -54,6 +54,14 @@ defmodule SymphonyElixir.ClaimService do
     if coordinator_running?(), do: safe_call({:release, issue_id}), else: :ok
   end
 
+  @spec release_if_owned(String.t(), map()) :: :ok | {:error, term()}
+  def release_if_owned(issue_id, %{claim_id: claim_id, generation: generation} = identity)
+      when is_binary(issue_id) and is_binary(claim_id) and is_integer(generation) do
+    if coordinator_running?(),
+      do: safe_call({:release_if_owned, issue_id, identity}),
+      else: {:error, :claim_service_unavailable}
+  end
+
   @spec complete(String.t()) :: :ok | {:error, term()}
   def complete(issue_id) when is_binary(issue_id) do
     if coordinator_running?(), do: safe_call({:complete, issue_id}), else: :ok
@@ -142,6 +150,30 @@ defmodule SymphonyElixir.ClaimService do
           :ok -> {:reply, :ok, %{state | claims: Map.delete(state.claims, issue_id)}}
           {:error, reason} -> {:reply, {:error, reason}, %{state | claims: Map.delete(state.claims, issue_id)}}
         end
+    end
+  end
+
+  def handle_call(
+        {:release_if_owned, issue_id, %{claim_id: claim_id, generation: generation}},
+        {caller, _tag},
+        state
+      ) do
+    case Map.fetch(state.claims, issue_id) do
+      {:ok, %{claim_id: ^claim_id, generation: ^generation, owner: ^caller, worker: worker} = claim}
+      when worker in [nil, caller] ->
+        case terminal_query(state, "release_claim", claim) do
+          :ok ->
+            {:reply, :ok, %{state | claims: Map.delete(state.claims, issue_id)}}
+
+          {:error, reason} ->
+            {:reply, {:error, reason}, state}
+        end
+
+      {:ok, _claim} ->
+        {:reply, {:error, :claim_ownership_changed}, state}
+
+      :error ->
+        {:reply, {:error, :claim_not_owned}, state}
     end
   end
 
