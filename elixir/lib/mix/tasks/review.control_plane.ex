@@ -19,22 +19,21 @@ defmodule Mix.Tasks.Review.ControlPlane do
   @impl Mix.Task
   @spec run([String.t()]) :: :ok | no_return()
   def run(args) do
-    {opts, _argv, invalid} = OptionParser.parse(args, strict: [max_fix_rounds: :integer])
+    {_opts, _argv, invalid} = OptionParser.parse(args, strict: [])
 
     case invalid do
-      [] -> run_control_plane(opts)
+      [] -> run_control_plane()
       _invalid -> Mix.raise("Invalid option(s): #{inspect(invalid)}")
     end
   end
 
-  defp run_control_plane(opts) do
-    max_fix_rounds = Keyword.get(opts, :max_fix_rounds, 3)
-
+  defp run_control_plane do
     with {:ok, targets} <- ReviewTargetRegistry.from_env(),
          # The target head is immutable and is also the status revocation address,
          # so a fresh CLI state cannot leave an unverifiable success green.
+         # This status-only slice does not track fix rounds.
          {:ok, _state, outcomes} <-
-           ReviewControlPlane.run(targets, %{}, GitHubReviewClient, max_fix_rounds),
+           ReviewControlPlane.run(targets, %{}, GitHubReviewClient, 3),
          :ok <- print_outcomes(outcomes),
          :ok <- ensure_all_targets_converged(outcomes) do
       :ok

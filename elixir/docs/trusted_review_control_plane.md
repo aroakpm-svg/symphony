@@ -55,7 +55,9 @@ identity fields. A mismatch fails closed and publishes no status.
 Because commit statuses are addressed by repository and commit SHA, two
 allowlisted targets may not share the same repository/head destination, even if
 their pull-request numbers differ. The registry rejects that configuration
-before any GitHub reads or writes.
+before any GitHub reads or writes. The same pull request must not be reconciled
+by `ReviewMonitor` while it is also listed as a control-plane target; both
+writers publish `Review Convergence Gate`, so concurrent use is last-write-wins.
 
 Target-scoped issue-comment review requests persist the pinned head explicitly
 as `currentHeadSha` alongside the opaque `dedup-key`. The target-aware
