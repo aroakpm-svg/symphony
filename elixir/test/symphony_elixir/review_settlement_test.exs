@@ -21,6 +21,7 @@ defmodule SymphonyElixir.ReviewSettlementTest do
     assert evidence.status == :follow_up_settled
     assert evidence.merge_authorized? == false
     assert evidence.receipt.finding_key.digest == decision.finding_key.digest
+    refute evidence.receipt.native_resources == context.native_readback
     assert evidence.receipt.native_resources == evidence.receipt.native_readbacks
   end
 
@@ -116,7 +117,23 @@ defmodule SymphonyElixir.ReviewSettlementTest do
     {decision, context} = fixture(:follow_up_required)
 
     assert {:blocked, :settlement_claim_unverified} =
-             ReviewSettlement.settle(decision, put_in(context, [:claim, :active?], false))
+             ReviewSettlement.settle(decision, put_in(context, [:claim, :claim_id], nil))
+
+    assert {:blocked, :settlement_native_thread_unverified} =
+             ReviewSettlement.settle(decision, Map.delete(context, :native_thread))
+
+    resolve = context.native_readback.resolve
+
+    assert {:blocked, :settlement_native_readbacks_unverified} =
+             ReviewSettlement.settle(
+               decision,
+               update_in(context, [:native_readback], fn readback ->
+                 readback |> Map.delete(:resolve) |> Map.put(:thread, resolve)
+               end)
+             )
+
+    assert {:blocked, {:settlement_native_resource_mismatch, :follow_up_issue}} =
+             ReviewSettlement.settle(decision, %{context | native_readback: :not_a_map})
 
     assert {:blocked, :invalid_settlement_identity} =
              ReviewSettlement.settle(%{decision | finding_key_digest: sha256("wrong")}, context)
@@ -129,7 +146,7 @@ defmodule SymphonyElixir.ReviewSettlementTest do
     assert {:blocked, :unsupported_settlement_disposition} =
              ReviewSettlement.settle(%{decision | disposition: :unsupported}, context)
 
-    assert {:blocked, :settlement_issue_identity_unverified} =
+    assert {:blocked, :settlement_claim_unverified} =
              ReviewSettlement.settle(decision, put_in(context, [:claim, :issue_id], nil))
 
     assert {:blocked, {:settlement_native_resource_mismatch, :follow_up_issue}} =
@@ -278,7 +295,14 @@ defmodule SymphonyElixir.ReviewSettlementTest do
       current_head_sha: sha("a"),
       source_head_sha: sha("a"),
       evaluated_head_sha: sha("a"),
-      claim: %{active?: true, issue_id: issue_id, claim_id: "claim-1", generation: 1},
+      native_thread: %{
+        repository: finding_key.repository,
+        pull_request_number: finding_key.pull_request_number,
+        review_thread_id: finding_key.review_thread_id,
+        thread_state: :unresolved,
+        observed_head_sha: sha("a")
+      },
+      claim: %{issue_id: issue_id, claim_id: "claim-1", generation: 1},
       operation_ids: %{
         follow_up_issue: linear_id,
         reply: reply_id,
@@ -296,26 +320,40 @@ defmodule SymphonyElixir.ReviewSettlementTest do
         authorization_identity: authorization_identity
       },
       native_readback: %{
-        publish: %{commit_sha: sha("a"), tree_sha: sha("c")},
+        publish: %{
+          commit_sha: sha("a"),
+          tree_sha: sha("c"),
+          repository: finding_key.repository,
+          pull_request_number: finding_key.pull_request_number
+        },
         follow_up: %{
           id: "ARO-999",
+          issue_id: "ARO-999",
           identifier: "ARO-999",
           url: "https://linear.app/issue/ARO-999",
           destination: "Backlog",
           state: "Backlog",
+          lineage_digest: lineage_key.digest,
           finding_lineage_key_digest: lineage_key.digest
         },
         reply: %{
           id: "reply-1",
+          comment_id: "reply-1",
           body: "settled by Symphony",
           finding_key_digest: finding_key.digest,
+          repository: finding_key.repository,
+          pull_request_number: finding_key.pull_request_number,
+          thread_id: finding_key.review_thread_id,
+          body_sha256: sha256("settled by Symphony"),
           head_sha: sha("a")
         },
         resolve: %{
           repository: finding_key.repository,
           pull_request_number: finding_key.pull_request_number,
           review_thread_id: finding_key.review_thread_id,
+          resolved: true,
           resolved?: true,
+          observed_head_sha: sha("a"),
           head_sha: sha("a")
         },
         reopened?: false,

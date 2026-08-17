@@ -56,7 +56,7 @@ defmodule SymphonyElixir.FindingDispositionTest do
     assert {:error, {:missing_or_invalid_field, :pull_request_number}} =
              FindingDisposition.build_finding_key(finding_input(%{pull_request_number: 0}))
 
-    assert {:error, {:missing_or_invalid_field, :body}} =
+    assert {:error, :finding_body_unverified} =
              FindingDisposition.build_finding_key(finding_input(%{body: nil}))
 
     assert {:ok, without_head} =
@@ -68,16 +68,46 @@ defmodule SymphonyElixir.FindingDispositionTest do
     assert {:error, :invalid_finding_lineage_input} = FindingDisposition.build_lineage_key([])
     assert {:error, {:missing_field, :repository}} = FindingDisposition.build_lineage_key(%{})
 
-    {:ok, from_digest} =
+    assert {:error, :finding_body_unverified} =
+             FindingDisposition.build_finding_key(%{
+               repository: "openai/symphony",
+               pull_request_number: 21,
+               review_thread_id: "thread-1",
+               selected_review_comment_id: "comment-1",
+               body_sha256: sha256("P1 issue")
+             })
+
+    {:ok, from_body} =
       FindingDisposition.build_finding_key(%{
         repository: "openai/symphony",
         pull_request_number: 21,
         review_thread_id: "thread-1",
         selected_review_comment_id: "comment-1",
+        body: "P1 issue",
         body_sha256: sha256("P1 issue")
       })
 
-    assert from_digest.body_sha256 == sha256("P1 issue")
+    assert from_body.body_sha256 == sha256("P1 issue")
+
+    assert {:error, :finding_body_digest_mismatch} =
+             FindingDisposition.build_finding_key(%{
+               repository: "openai/symphony",
+               pull_request_number: 21,
+               review_thread_id: "thread-1",
+               selected_review_comment_id: "comment-1",
+               body: "P1 issue",
+               body_sha256: sha256("other")
+             })
+
+    assert {:error, :finding_body_unverified} =
+             FindingDisposition.build_finding_key(%{
+               repository: "openai/symphony",
+               pull_request_number: 21,
+               review_thread_id: "thread-1",
+               selected_review_comment_id: "comment-1",
+               body: "P1 issue",
+               body_sha256: 123
+             })
   end
 
   test "selection uses provider connection order and excludes managed comments" do
@@ -553,7 +583,7 @@ defmodule SymphonyElixir.FindingDispositionTest do
              FindingDisposition.operation_id(:linear_issue_create, %{
                repository: "openai/symphony",
                pull_request_number: 21,
-               finding_lineage_key: String.duplicate("c", 64),
+               finding_lineage_key: built_lineage_key(),
                destination: "Backlog",
                effect_type: :linear_issue_create
              })
@@ -563,7 +593,7 @@ defmodule SymphonyElixir.FindingDispositionTest do
                repository: "openai/symphony",
                pull_request_number: 21,
                review_thread_id: "thread-1",
-               finding_key: String.duplicate("d", 64),
+               finding_key: built_finding_key(),
                message_kind: :follow_up,
                effect_type: :github_comment
              })
@@ -573,7 +603,7 @@ defmodule SymphonyElixir.FindingDispositionTest do
                repository: "openai/symphony",
                pull_request_number: 21,
                review_thread_id: "thread-1",
-               finding_lineage_key: String.duplicate("c", 64),
+               finding_lineage_key: built_lineage_key(),
                effect_type: :github_review_thread_resolve
              })
 
@@ -598,10 +628,10 @@ defmodule SymphonyElixir.FindingDispositionTest do
              FindingDisposition.operation_id(:github_comment, missing_finding)
 
     missing_message = %{
-      repository: "owner/repo",
-      pull_request_number: 1,
-      review_thread_id: "t",
-      finding_key: String.duplicate("e", 64),
+      repository: "openai/symphony",
+      pull_request_number: 21,
+      review_thread_id: "thread-1",
+      finding_key: built_finding_key(),
       effect_type: :github_comment
     }
 
@@ -612,7 +642,7 @@ defmodule SymphonyElixir.FindingDispositionTest do
       repository: "owner/repo",
       pull_request_number: 1,
       review_thread_id: "t",
-      finding_lineage_key: String.duplicate("f", 64)
+      finding_lineage_key: built_lineage_key()
     }
 
     assert {:error, {:missing_field, :effect_type}} =
@@ -672,10 +702,10 @@ defmodule SymphonyElixir.FindingDispositionTest do
 
     assert {:error, {:invalid_logical_identity, :message_kind}} =
              FindingDisposition.operation_id(:github_comment, %{
-               repository: "owner/repo",
+               repository: "openai/symphony",
                pull_request_number: 21,
                review_thread_id: "thread-1",
-               finding_key: String.duplicate("d", 64),
+               finding_key: built_finding_key(),
                message_kind: nil,
                effect_type: :github_comment
              })
@@ -683,20 +713,20 @@ defmodule SymphonyElixir.FindingDispositionTest do
     for message_kind <- [true, false, :unsupported, "", "unsupported"] do
       assert {:error, {:invalid_logical_identity, :message_kind}} =
                FindingDisposition.operation_id(:github_comment, %{
-                 repository: "owner/repo",
+                 repository: "openai/symphony",
                  pull_request_number: 21,
                  review_thread_id: "thread-1",
-                 finding_key: String.duplicate("d", 64),
+                 finding_key: built_finding_key(),
                  message_kind: message_kind,
                  effect_type: :github_comment
                })
     end
 
     comment_input = %{
-      repository: "owner/repo",
+      repository: "openai/symphony",
       pull_request_number: 21,
       review_thread_id: "thread-1",
-      finding_key: String.duplicate("d", 64),
+      finding_key: built_finding_key(),
       message_kind: :follow_up,
       effect_type: :github_comment
     }
@@ -764,27 +794,27 @@ defmodule SymphonyElixir.FindingDispositionTest do
     cases = [
       {:linear_issue_create,
        %{
-         repository: "owner/repo",
+         repository: "openai/symphony",
          pull_request_number: 21,
-         finding_lineage_key: String.duplicate("c", 64),
+         finding_lineage_key: built_lineage_key(),
          destination: "Backlog",
          effect_type: :linear_issue_create
        }},
       {:github_comment,
        %{
-         repository: "owner/repo",
+         repository: "openai/symphony",
          pull_request_number: 21,
          review_thread_id: "thread-1",
-         finding_key: String.duplicate("d", 64),
+         finding_key: built_finding_key(),
          message_kind: :follow_up,
          effect_type: :github_comment
        }},
       {:github_review_thread_resolve,
        %{
-         repository: "owner/repo",
+         repository: "openai/symphony",
          pull_request_number: 21,
          review_thread_id: "thread-1",
-         finding_lineage_key: String.duplicate("c", 64),
+         finding_lineage_key: built_lineage_key(),
          effect_type: :github_review_thread_resolve
        }}
     ]
@@ -957,6 +987,16 @@ defmodule SymphonyElixir.FindingDispositionTest do
         ] do
       assert {:error, :invalid_source_head_sha} = FindingDisposition.head_guard(plan, full_sha("a"))
     end
+  end
+
+  defp built_finding_key do
+    {:ok, key} = FindingDisposition.build_finding_key(finding_input(%{}))
+    key
+  end
+
+  defp built_lineage_key do
+    {:ok, key} = FindingDisposition.build_lineage_key(finding_input(%{}))
+    key
   end
 
   defp finding_input(overrides) do

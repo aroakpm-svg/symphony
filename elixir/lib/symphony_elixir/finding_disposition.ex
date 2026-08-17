@@ -616,8 +616,6 @@ defmodule SymphonyElixir.FindingDisposition do
       else: {:error, {:logical_identity_scope_mismatch, field}}
   end
 
-  defp matching_operation_scope(_input, _identity, _field, _scope_fields), do: :ok
-
   defp matching_effect_type(input, expected) do
     case logical_identity_field(input, :effect_type) do
       {:ok, ^expected} -> :ok
@@ -691,7 +689,7 @@ defmodule SymphonyElixir.FindingDisposition do
   defp valid_canonical_key_or_digest?(value, :finding_lineage_key) when is_map(value),
     do: match?({:ok, _key}, canonical_lineage_key(value))
 
-  defp valid_canonical_key_or_digest?(value, _key), do: valid_digest?(value)
+  defp valid_canonical_key_or_digest?(_value, _key), do: false
 
   defp validate_effect_type(effect_type)
        when effect_type in [
@@ -842,14 +840,18 @@ defmodule SymphonyElixir.FindingDisposition do
   defp canonical_lineage_key(_key), do: {:error, :invalid_finding_lineage_key}
 
   defp finding_body_digest(input) do
-    case value(input, :body_sha256) do
-      digest when is_binary(digest) ->
-        required_digest(input, :body_sha256)
+    case required_binary(input, :body) do
+      {:ok, body} -> matching_body_digest(input, sha256(body))
+      _missing -> {:error, :finding_body_unverified}
+    end
+  end
 
-      _missing ->
-        with {:ok, body} <- required_binary(input, :body) do
-          {:ok, sha256(body)}
-        end
+  defp matching_body_digest(input, digest) do
+    case value(input, :body_sha256) do
+      nil -> {:ok, digest}
+      ^digest -> {:ok, digest}
+      supplied when is_binary(supplied) -> {:error, :finding_body_digest_mismatch}
+      _invalid -> {:error, :finding_body_unverified}
     end
   end
 

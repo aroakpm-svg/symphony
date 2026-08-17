@@ -114,7 +114,7 @@ defmodule SymphonyElixir.ReviewIdentityContractTest do
                evidence_sha256: String.duplicate("e", 64)
              })
 
-    assert {:error, :synthetic_terminal_evidence} =
+    assert {:ok, _} =
              ReviewIdentity.evidence_digest(Map.put(terminal_evidence_input(), :recovered_from_pending_receipt?, true))
   end
 
@@ -276,6 +276,21 @@ defmodule SymphonyElixir.ReviewIdentityContractTest do
 
     assert rebuilt_without_digest.finding_key.digest == finding.digest
 
+    {:ok, lineage} = ReviewIdentity.build_lineage_key(finding_input())
+
+    assert {:error, :non_canonical_finding_lineage_key} =
+             ReviewIdentity.build_settlement_receipt(Map.put(receipt_input(), :finding_lineage_key, Map.put(lineage, :digest, digest_char("9"))))
+
+    {:ok, evaluation} = ReviewIdentity.build_evaluation_key(evaluation_input())
+
+    assert {:error, :non_canonical_evaluation_key} =
+             ReviewIdentity.build_settlement_receipt(Map.put(receipt_input(), :evaluation_key, Map.put(evaluation, :digest, digest_char("9"))))
+
+    {:ok, attempt} = ReviewIdentity.build_resolve_attempt_key(resolve_input(:unresolved, nil))
+
+    assert {:error, :non_canonical_resolve_attempt_key} =
+             ReviewIdentity.build_settlement_receipt(Map.put(receipt_input(), :resolve_attempt_key, Map.put(attempt, :digest, digest_char("9"))))
+
     other_lineage = %{
       repository: "aroakpm-svg/other",
       pull_request_number: 1,
@@ -361,7 +376,7 @@ defmodule SymphonyElixir.ReviewIdentityContractTest do
     with_node = put_in(resolve_input(:unresolved, nil), [:native_thread, :node_id], "PRRT_1")
     assert {:ok, _} = ReviewIdentity.derive_reopen_epoch(with_node)
 
-    assert {:error, :synthetic_terminal_evidence} =
+    assert {:ok, _} =
              ReviewIdentity.evidence_digest(Map.put(terminal_evidence_input(), "recovered_from_pending_receipt?", true))
 
     {:ok, matching} = ReviewIdentity.evidence_digest(terminal_evidence_input())
@@ -474,6 +489,82 @@ defmodule SymphonyElixir.ReviewIdentityContractTest do
     assert {:error, {:duplicate_native_path, :reply}} =
              ReviewIdentity.project_native_paths(Map.put(%{reply: native_paths().reply}, "reply", native_paths().reply))
   end
+
+  test "jsonb string-key receipts rebuild to the same digest" do
+    {:ok, receipt} = ReviewIdentity.build_settlement_receipt(receipt_input())
+    string_receipt = stringify_keys(receipt)
+
+    assert {:ok, rebuilt} = ReviewIdentity.reconcile_receipt(%{original_receipt: string_receipt})
+    assert rebuilt.digest == receipt.digest
+    assert ReviewIdentity.receipt_matches_settlement(string_receipt, receipt.finding_key, receipt.disposition)
+  end
+
+  test "supplied reopen epoch must match the derived value" do
+    assert {:error, :reopen_epoch_mismatch} =
+             ReviewIdentity.build_resolve_attempt_key(Map.put(resolve_input(:unresolved, nil), :reopen_epoch, digest_char("9")))
+
+    {:ok, epoch} = ReviewIdentity.derive_reopen_epoch(resolve_input(:unresolved, nil))
+
+    {:ok, explicit} =
+      ReviewIdentity.build_resolve_attempt_key(Map.put(resolve_input(:unresolved, nil), :reopen_epoch, epoch))
+
+    assert explicit.reopen_epoch == epoch
+  end
+
+  test "malformed prior resolve id fails closed instead of becoming initial" do
+    assert {:error, :invalid_prior_resolve_operation_id} =
+             ReviewIdentity.derive_reopen_epoch(resolve_input(:unresolved, "not-a-digest"))
+  end
+
+  test "receipt match and reopen field variants stay fail-closed" do
+    refute ReviewIdentity.receipt_matches_settlement(:no, %{}, :follow_up_required)
+    refute ReviewIdentity.receipt_matches_settlement(%{not: :a_receipt}, finding_input(), :follow_up_required)
+
+    assert {:error, :reopen_epoch_mismatch} =
+             ReviewIdentity.build_resolve_attempt_key(Map.put(resolve_input(:unresolved, nil), :reopen_epoch, "bad"))
+
+    {:ok, epoch} = ReviewIdentity.derive_reopen_epoch(resolve_input(:unresolved, nil))
+
+    {:ok, via_string_key} =
+      ReviewIdentity.build_resolve_attempt_key(resolve_input(:unresolved, nil) |> Map.delete(:reopen_epoch) |> Map.put("reopen_epoch", epoch))
+
+    assert via_string_key.reopen_epoch == epoch
+
+    assert {:error, :invalid_settlement_evidence} =
+             ReviewIdentity.evidence_digest(Map.put(terminal_evidence_input(), :status, "not_an_existing_status_atom"))
+
+    {:ok, receipt} = ReviewIdentity.build_settlement_receipt(receipt_input())
+
+    assert {:error, :terminal_receipt_evidence_unavailable} =
+             ReviewIdentity.reconcile_receipt(%{
+               original_receipt: receipt |> Map.put(:published_head_sha, 1) |> Map.delete(:evidence_sha256)
+             })
+
+    assert {:error, :unsupported_settlement_disposition} =
+             ReviewIdentity.build_settlement_receipt(Map.put(receipt_input(), :disposition, nil))
+
+    assert {:error, :unsupported_settlement_disposition} =
+             ReviewIdentity.build_settlement_receipt(Map.put(receipt_input(), :disposition, "nope"))
+  end
+
+  test "role projections reject flag keys mixed into native paths" do
+    assert {:error, {:unknown_native_path, :reopened?}} =
+             ReviewIdentity.project_native_paths(Map.put(native_paths(), :reopened?, false))
+  end
+
+  defp stringify_keys(value) when is_map(value) do
+    Map.new(value, fn {key, nested} -> {stringify_key(key), stringify_keys(nested)} end)
+  end
+
+  defp stringify_keys(value) when is_list(value), do: Enum.map(value, &stringify_keys/1)
+
+  defp stringify_keys(value) when is_atom(value) and value not in [nil, true, false],
+    do: Atom.to_string(value)
+
+  defp stringify_keys(value), do: value
+
+  defp stringify_key(key) when is_atom(key), do: Atom.to_string(key)
+  defp stringify_key(key), do: key
 
   defp receipt_input do
     {:ok, finding} = ReviewIdentity.build_finding_key(finding_input())

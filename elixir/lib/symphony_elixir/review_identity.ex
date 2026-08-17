@@ -171,26 +171,29 @@ defmodule SymphonyElixir.ReviewIdentity do
          {:ok, thread_state} <- required_thread_state(input),
          {:ok, native_readback} <- required_native_thread_readback(input, evaluation_key),
          :ok <- matching_observed_head(native_readback, evaluation_key),
-         :ok <- matching_native_thread_state(native_readback, thread_state) do
-      prior = optional_digest(input, :prior_resolve_operation_id)
-
-      cond do
-        thread_state == :unresolved and is_nil(prior) ->
-          {:ok, digest(:symphony_reopen_epoch_v1, {:initial, evaluation_key.digest})}
-
-        thread_state == :unresolved and is_binary(prior) ->
-          {:ok, digest(:symphony_reopen_epoch_v1, {:reopened, prior, native_readback})}
-
-        thread_state == :resolved and is_binary(prior) ->
-          {:ok, digest(:symphony_reopen_epoch_v1, {:same_cycle, prior, evaluation_key.digest})}
-
-        thread_state == :resolved and is_nil(prior) ->
-          {:error, :resolved_without_prior_resolve}
-      end
+         :ok <- matching_native_thread_state(native_readback, thread_state),
+         {:ok, prior} <- fetch_prior_resolve_operation_id(input) do
+      reopen_epoch_from(thread_state, prior, evaluation_key, native_readback)
     end
   end
 
   def derive_reopen_epoch(_input), do: {:error, :invalid_reopen_epoch_input}
+
+  defp reopen_epoch_from(:unresolved, nil, evaluation_key, _native_readback) do
+    {:ok, digest(:symphony_reopen_epoch_v1, {:initial, evaluation_key.digest})}
+  end
+
+  defp reopen_epoch_from(:unresolved, prior, _evaluation_key, native_readback) when is_binary(prior) do
+    {:ok, digest(:symphony_reopen_epoch_v1, {:reopened, prior, native_readback})}
+  end
+
+  defp reopen_epoch_from(:resolved, prior, evaluation_key, _native_readback) when is_binary(prior) do
+    {:ok, digest(:symphony_reopen_epoch_v1, {:same_cycle, prior, evaluation_key.digest})}
+  end
+
+  defp reopen_epoch_from(:resolved, nil, _evaluation_key, _native_readback) do
+    {:error, :resolved_without_prior_resolve}
+  end
 
   @spec build_resolve_attempt_key(map()) :: {:ok, resolve_attempt_key()} | {:error, term()}
   def build_resolve_attempt_key(input) when is_map(input) do
@@ -221,13 +224,9 @@ defmodule SymphonyElixir.ReviewIdentity do
 
   @spec evidence_digest(map()) :: {:ok, String.t()} | {:error, term()}
   def evidence_digest(evidence) when is_map(evidence) do
-    if recovered_from_pending?(evidence) do
-      {:error, :synthetic_terminal_evidence}
-    else
-      case terminal_evidence_tuple(evidence) do
-        {:ok, payload} -> {:ok, digest(:symphony_settlement_evidence_v2, payload)}
-        {:error, _reason} -> {:error, :invalid_settlement_evidence}
-      end
+    case terminal_evidence_tuple(evidence) do
+      {:ok, payload} -> {:ok, digest(:symphony_settlement_evidence_v2, payload)}
+      {:error, _reason} -> {:error, :invalid_settlement_evidence}
     end
   end
 
@@ -326,6 +325,20 @@ defmodule SymphonyElixir.ReviewIdentity do
 
   def reconcile_receipt(_input), do: {:error, :terminal_receipt_evidence_unavailable}
 
+  @spec receipt_matches_settlement(map(), finding_key(), atom()) :: boolean()
+  def receipt_matches_settlement(resource, finding_key, disposition)
+      when is_map(resource) and is_map(finding_key) do
+    case reconcile_receipt(%{original_receipt: resource}) do
+      {:ok, rebuilt} ->
+        rebuilt.finding_key.digest == finding_key.digest and rebuilt.disposition == disposition
+
+      _invalid ->
+        false
+    end
+  end
+
+  def receipt_matches_settlement(_resource, _finding_key, _disposition), do: false
+
   @spec exact_head(atom(), evaluation_key() | settlement_receipt(), String.t()) ::
           :ok | {:error, term()}
   def exact_head(:source, %{source_head_sha: expected}, actual) when is_binary(actual) do
@@ -385,7 +398,9 @@ defmodule SymphonyElixir.ReviewIdentity do
     case Map.get(input, :finding_lineage_key) || Map.get(input, "finding_lineage_key") ||
            Map.get(input, :lineage_key) do
       %{} = key ->
-        build_lineage_key(key)
+        with {:ok, rebuilt} <- build_lineage_key(key) do
+          accept_supplied_digest(rebuilt, key, :non_canonical_finding_lineage_key)
+        end
 
       _missing ->
         build_lineage_key(input)
@@ -395,8 +410,9 @@ defmodule SymphonyElixir.ReviewIdentity do
   defp fetch_evaluation_key(input) do
     case Map.get(input, :evaluation_key) || Map.get(input, "evaluation_key") do
       %{} = key ->
-        with {:ok, finding_key} <- fetch_finding_key(key) do
-          build_evaluation_key(Map.put(key, :finding_key, finding_key))
+        with {:ok, finding_key} <- fetch_finding_key(key),
+             {:ok, rebuilt} <- build_evaluation_key(Map.put(key, :finding_key, finding_key)) do
+          accept_supplied_digest(rebuilt, key, :non_canonical_evaluation_key)
         end
 
       _missing ->
@@ -407,19 +423,57 @@ defmodule SymphonyElixir.ReviewIdentity do
   defp fetch_resolve_attempt_key(input) do
     case Map.get(input, :resolve_attempt_key) || Map.get(input, "resolve_attempt_key") do
       %{} = key ->
-        with {:ok, evaluation_key} <- fetch_evaluation_key(key) do
-          build_resolve_attempt_key(Map.merge(key, %{evaluation_key: evaluation_key}))
-        end
+        rebuild_canonical_resolve_attempt_key(key)
 
       _missing ->
         build_resolve_attempt_key(input)
     end
   end
 
+  defp rebuild_canonical_resolve_attempt_key(key) do
+    with {:ok, evaluation_key} <- fetch_evaluation_key(key),
+         {:ok, reopen_epoch} <- required_digest_field(key, :reopen_epoch) do
+      rebuilt = %{
+        evaluation_key: evaluation_key,
+        reopen_epoch: reopen_epoch,
+        digest: digest(:symphony_resolve_attempt_v1, {evaluation_key.digest, reopen_epoch})
+      }
+
+      accept_supplied_digest(rebuilt, key, :non_canonical_resolve_attempt_key)
+    end
+  end
+
+  defp required_digest_field(input, key) do
+    value = Map.get(input, key) || Map.get(input, Atom.to_string(key))
+    if digest?(value), do: {:ok, value}, else: {:error, {:invalid_digest, key}}
+  end
+
   defp fetch_reopen_epoch(input) do
-    case optional_digest(input, :reopen_epoch) do
-      epoch when is_binary(epoch) -> {:ok, epoch}
-      nil -> derive_reopen_epoch(input)
+    with {:ok, derived} <- derive_reopen_epoch(input) do
+      case fetch_optional_digest_field(input, :reopen_epoch) do
+        :absent -> {:ok, derived}
+        {:ok, ^derived} -> {:ok, derived}
+        {:ok, _other} -> {:error, :reopen_epoch_mismatch}
+        :invalid -> {:error, :reopen_epoch_mismatch}
+      end
+    end
+  end
+
+  defp fetch_prior_resolve_operation_id(input) do
+    case fetch_optional_digest_field(input, :prior_resolve_operation_id) do
+      :absent -> {:ok, nil}
+      {:ok, digest} -> {:ok, digest}
+      :invalid -> {:error, :invalid_prior_resolve_operation_id}
+    end
+  end
+
+  defp accept_supplied_digest(rebuilt, key, error) do
+    supplied = Map.get(key, :digest) || Map.get(key, "digest")
+
+    cond do
+      is_nil(supplied) -> {:ok, rebuilt}
+      supplied == rebuilt.digest -> {:ok, rebuilt}
+      true -> {:error, error}
     end
   end
 
@@ -451,13 +505,58 @@ defmodule SymphonyElixir.ReviewIdentity do
   end
 
   defp matching_rebuilt_receipt(rebuilt, original) do
-    compared = Map.take(original, @receipt_fields)
-
-    if rebuilt == compared and map_size(original) == map_size(compared) do
+    with :ok <- known_receipt_fields(original),
+         :ok <- compare_receipt_fields(rebuilt, original) do
       :ok
     else
-      {:error, :terminal_receipt_evidence_unavailable}
+      _invalid -> {:error, :terminal_receipt_evidence_unavailable}
     end
+  end
+
+  defp known_receipt_fields(original) do
+    allowed = MapSet.new(Enum.flat_map(@receipt_fields, &[&1, Atom.to_string(&1)]))
+
+    if Enum.all?(Map.keys(original), &MapSet.member?(allowed, &1)) do
+      :ok
+    else
+      :error
+    end
+  end
+
+  defp compare_receipt_fields(rebuilt, original) do
+    Enum.reduce_while(@receipt_fields, :ok, fn field, :ok ->
+      if values_match?(Map.get(rebuilt, field), receipt_field(original, field)) do
+        {:cont, :ok}
+      else
+        {:halt, :error}
+      end
+    end)
+  end
+
+  defp receipt_field(map, key) when is_map(map) do
+    Map.get(map, key, Map.get(map, Atom.to_string(key)))
+  end
+
+  defp values_match?(left, right) do
+    cond do
+      left == right ->
+        true
+
+      is_atom(left) and is_binary(right) ->
+        Atom.to_string(left) == right
+
+      is_map(left) and is_map(right) ->
+        Enum.all?(left, fn {key, value} ->
+          values_match?(value, receipt_field(right, key))
+        end) and compatible_map_size?(left, right)
+
+      true ->
+        false
+    end
+  end
+
+  defp compatible_map_size?(left, right) do
+    map_size(left) == map_size(right)
   end
 
   defp collect_native_path(acc, key, value) do
@@ -480,34 +579,30 @@ defmodule SymphonyElixir.ReviewIdentity do
   defp assemble_terminal_evidence(parts) do
     evidence = parts.evidence
 
-    if recovered_from_pending?(evidence) do
-      {:error, :synthetic_terminal_evidence}
-    else
-      with {:ok, status} <- required_atom(evidence, :status),
-           {:ok, reopened?} <- required_false(evidence, :reopened?),
-           {:ok, newer_actionable?} <- required_false(evidence, :newer_actionable?) do
-        {:ok,
-         %{
-           finding_key_digest: parts.finding_key.digest,
-           finding_lineage_key_digest: parts.finding_lineage_key.digest,
-           evaluation_key_digest: parts.evaluation_key.digest,
-           resolve_attempt_key_digest: parts.resolve_attempt_key.digest,
-           disposition: parts.disposition,
-           status: status,
-           claim_id: parts.evaluation_key.claim_id,
-           generation: parts.evaluation_key.generation,
-           source_head_sha: parts.evaluation_key.source_head_sha,
-           evaluated_head_sha: parts.evaluation_key.evaluated_head_sha,
-           current_head_sha: parts.evaluation_key.current_head_sha,
-           published_head_sha: parts.published_head_sha,
-           settled_head_sha: parts.settled_head_sha,
-           operation_ids: Map.new(canonical_operation_ids(parts.operation_ids)),
-           native_resources: parts.native_resources,
-           native_readbacks: parts.native_readbacks,
-           reopened?: reopened?,
-           newer_actionable?: newer_actionable?
-         }}
-      end
+    with {:ok, status} <- required_atom(evidence, :status),
+         {:ok, reopened?} <- required_false(evidence, :reopened?),
+         {:ok, newer_actionable?} <- required_false(evidence, :newer_actionable?) do
+      {:ok,
+       %{
+         finding_key_digest: parts.finding_key.digest,
+         finding_lineage_key_digest: parts.finding_lineage_key.digest,
+         evaluation_key_digest: parts.evaluation_key.digest,
+         resolve_attempt_key_digest: parts.resolve_attempt_key.digest,
+         disposition: parts.disposition,
+         status: status,
+         claim_id: parts.evaluation_key.claim_id,
+         generation: parts.evaluation_key.generation,
+         source_head_sha: parts.evaluation_key.source_head_sha,
+         evaluated_head_sha: parts.evaluation_key.evaluated_head_sha,
+         current_head_sha: parts.evaluation_key.current_head_sha,
+         published_head_sha: parts.published_head_sha,
+         settled_head_sha: parts.settled_head_sha,
+         operation_ids: Map.new(canonical_operation_ids(parts.operation_ids)),
+         native_resources: parts.native_resources,
+         native_readbacks: parts.native_readbacks,
+         reopened?: reopened?,
+         newer_actionable?: newer_actionable?
+       }}
     end
   end
 
@@ -648,9 +743,9 @@ defmodule SymphonyElixir.ReviewIdentity do
   end
 
   defp required_thread_state(input) do
-    case Map.get(input, :thread_state) || Map.get(input, "thread_state") do
-      state when state in @thread_states -> {:ok, state}
-      _invalid -> {:error, :native_thread_state_unverified}
+    case known_atom(Map.get(input, :thread_state) || Map.get(input, "thread_state"), @thread_states) do
+      {:ok, state} -> {:ok, state}
+      :error -> {:error, :native_thread_state_unverified}
     end
   end
 
@@ -765,9 +860,9 @@ defmodule SymphonyElixir.ReviewIdentity do
   end
 
   defp required_disposition(input) do
-    case Map.get(input, :disposition) || Map.get(input, "disposition") do
-      disposition when disposition in @dispositions -> {:ok, disposition}
-      _invalid -> {:error, :unsupported_settlement_disposition}
+    case known_atom(Map.get(input, :disposition) || Map.get(input, "disposition"), @dispositions) do
+      {:ok, disposition} -> {:ok, disposition}
+      :error -> {:error, :unsupported_settlement_disposition}
     end
   end
 
@@ -777,9 +872,37 @@ defmodule SymphonyElixir.ReviewIdentity do
   end
 
   defp required_atom(input, key) do
-    value = fetch_field(input, key)
-    if is_atom(value) and not is_nil(value), do: {:ok, value}, else: {:error, {:missing_field, key}}
+    case existing_atom(fetch_field(input, key)) do
+      {:ok, value} -> {:ok, value}
+      :error -> {:error, {:missing_field, key}}
+    end
   end
+
+  defp known_atom(value, allowed) do
+    cond do
+      value in allowed ->
+        {:ok, value}
+
+      is_binary(value) ->
+        case Enum.find(allowed, &(Atom.to_string(&1) == value)) do
+          nil -> :error
+          atom -> {:ok, atom}
+        end
+
+      true ->
+        :error
+    end
+  end
+
+  defp existing_atom(value) when is_atom(value) and not is_nil(value), do: {:ok, value}
+
+  defp existing_atom(value) when is_binary(value) do
+    {:ok, String.to_existing_atom(value)}
+  rescue
+    ArgumentError -> :error
+  end
+
+  defp existing_atom(_value), do: :error
 
   defp required_boolean(input, key) do
     value = fetch_field(input, key)
@@ -856,15 +979,21 @@ defmodule SymphonyElixir.ReviewIdentity do
     end
   end
 
-  defp optional_digest(input, key) do
-    value = Map.get(input, key) || Map.get(input, Atom.to_string(key))
-    if digest?(value), do: value, else: nil
+  defp fetch_optional_digest_field(input, key) do
+    cond do
+      Map.has_key?(input, key) ->
+        classify_optional_digest(Map.get(input, key))
+
+      Map.has_key?(input, Atom.to_string(key)) ->
+        classify_optional_digest(Map.get(input, Atom.to_string(key)))
+
+      true ->
+        :absent
+    end
   end
 
-  defp recovered_from_pending?(evidence) do
-    Map.get(evidence, :recovered_from_pending_receipt?) == true or
-      Map.get(evidence, "recovered_from_pending_receipt?") == true
-  end
+  defp classify_optional_digest(nil), do: :absent
+  defp classify_optional_digest(value), do: if(digest?(value), do: {:ok, value}, else: :invalid)
 
   defp digest?(value), do: is_binary(value) and Regex.match?(@digest_re, value)
 

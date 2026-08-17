@@ -178,6 +178,54 @@ defmodule SymphonyElixir.ReviewConvergenceTest do
     def list_operations(_connection, _claim_context), do: {:error, :readback_failed}
   end
 
+  defmodule UnavailableClaimService do
+    def claim(issue, owner) do
+      {:ok,
+       %{
+         issue_id: issue.id,
+         claim_id: "11111111-1111-4111-8111-111111111111",
+         generation: 1,
+         acquisition: :new,
+         owner: owner,
+         worker: nil
+       }}
+    end
+
+    def bind_worker(_issue_id, _worker), do: :ok
+    def effect_context(_issue_id), do: {:error, :claim_service_unavailable}
+  end
+
+  defmodule ForeignClaimService do
+    def claim(issue, owner) do
+      {:ok,
+       %{
+         issue_id: issue.id,
+         claim_id: "11111111-1111-4111-8111-111111111111",
+         generation: 1,
+         acquisition: :new,
+         owner: owner,
+         worker: nil
+       }}
+    end
+
+    def bind_worker(_issue_id, _worker), do: :ok
+    def effect_context(_issue_id), do: {:error, :effect_context_not_owned_by_worker}
+  end
+
+  defmodule PendingReceiptLedger do
+    def list_operations(_connection, _claim_context) do
+      {:ok,
+       [
+         %{
+           effect_type: :review_settlement_receipt,
+           status: :pending,
+           operation_id: "issue-160:receipt",
+           request_fingerprint: "symphony_request_fingerprint_v1:pending"
+         }
+       ]}
+    end
+  end
+
   defmodule CountingPatchAuthorization do
     @spec authorize(map(), map(), map(), [map()], map()) :: SymphonyElixir.PatchAuthorization.result()
     def authorize(disposition, receipt, claim, effects, runtime) do
@@ -339,6 +387,67 @@ defmodule SymphonyElixir.ReviewConvergenceTest do
     assert_receive {:autonomous_call, :effect_context}
     assert_receive {:autonomous_call, :list_operations}
     assert_receive {:autonomous_call, :release}
+  end
+
+  test "effect_context errors block without inventing an active claim" do
+    Application.put_env(
+      :symphony_elixir,
+      :review_snapshot,
+      {:ok, snapshot(%{finding_summary: %{decisions: [], requires_lifecycle?: false}})}
+    )
+
+    unavailable =
+      ReviewMonitor.run_with(
+        %{},
+        settings(),
+        ReviewClient,
+        Tracker,
+        %{
+          profile: :aroak_autonomous_v1,
+          claim_service: UnavailableClaimService,
+          effect_ledger: AutonomousEffectLedger
+        }
+      )
+
+    assert unavailable["issue-160"].global_blocker == :claim_service_unavailable
+
+    foreign =
+      ReviewMonitor.run_with(
+        %{},
+        settings(),
+        ReviewClient,
+        Tracker,
+        %{
+          profile: :aroak_autonomous_v1,
+          claim_service: ForeignClaimService,
+          effect_ledger: AutonomousEffectLedger
+        }
+      )
+
+    assert foreign["issue-160"].global_blocker == :effect_context_not_owned_by_worker
+  end
+
+  test "pending settlement receipts fail closed when they cannot be reconciled" do
+    Application.put_env(
+      :symphony_elixir,
+      :review_snapshot,
+      {:ok, snapshot(%{finding_summary: %{decisions: [], requires_lifecycle?: false}})}
+    )
+
+    state =
+      ReviewMonitor.run_with(
+        %{},
+        settings(),
+        ReviewClient,
+        Tracker,
+        %{
+          profile: :aroak_autonomous_v1,
+          claim_service: AutonomousClaimService,
+          effect_ledger: PendingReceiptLedger
+        }
+      )
+
+    assert state["issue-160"].global_blocker == :terminal_receipt_evidence_unavailable
   end
 
   test "claim-bound readback rechecks the live head before autonomous completion" do

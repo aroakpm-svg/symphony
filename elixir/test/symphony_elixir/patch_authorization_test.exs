@@ -262,7 +262,6 @@ defmodule SymphonyElixir.PatchAuthorizationTest do
              )
 
     for invalid_claim <- [
-          %{claim | active?: false},
           %{claim | claim_id: nil},
           %{claim | generation: nil}
         ] do

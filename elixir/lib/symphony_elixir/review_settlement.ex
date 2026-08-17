@@ -40,8 +40,11 @@ defmodule SymphonyElixir.ReviewSettlement do
     end
   end
 
-  defp active_claim(%{claim: %{active?: true, claim_id: claim_id, generation: generation}})
-       when is_binary(claim_id) and claim_id != "" and is_integer(generation) and generation > 0,
+  defp active_claim(%{
+         claim: %{issue_id: issue_id, claim_id: claim_id, generation: generation}
+       })
+       when is_binary(issue_id) and issue_id != "" and is_binary(claim_id) and claim_id != "" and
+              is_integer(generation) and generation > 0,
        do: :ok
 
   defp active_claim(_context), do: {:error, :settlement_claim_unverified}
@@ -60,24 +63,21 @@ defmodule SymphonyElixir.ReviewSettlement do
   end
 
   defp resolve_attempt_key(context, evaluation_key) do
-    ReviewIdentity.build_resolve_attempt_key(%{
-      evaluation_key: evaluation_key,
-      thread_state: context[:thread_state] || :unresolved,
-      prior_resolve_operation_id: context[:prior_resolve_operation_id],
-      native_thread: native_thread(context, evaluation_key)
-    })
+    case native_thread(context) do
+      %{} = thread ->
+        ReviewIdentity.build_resolve_attempt_key(%{
+          evaluation_key: evaluation_key,
+          thread_state: context[:thread_state] || :unresolved,
+          prior_resolve_operation_id: context[:prior_resolve_operation_id],
+          native_thread: thread
+        })
+
+      _missing ->
+        {:error, :settlement_native_thread_unverified}
+    end
   end
 
-  defp native_thread(context, evaluation_key) do
-    context[:native_thread] ||
-      %{
-        repository: evaluation_key.finding_key.repository,
-        pull_request_number: evaluation_key.finding_key.pull_request_number,
-        review_thread_id: evaluation_key.finding_key.review_thread_id,
-        thread_state: context[:thread_state] || :unresolved,
-        observed_head_sha: evaluation_key.current_head_sha
-      }
-  end
+  defp native_thread(context), do: context[:native_thread]
 
   defp no_unsafe_effects(context) do
     operations = context[:operations]
@@ -273,6 +273,7 @@ defmodule SymphonyElixir.ReviewSettlement do
   defp finish(status, decision, context, finding_key, lineage_key, evaluation_key, resolve_attempt_key, paths) do
     with {:ok, resolve_op} <- ReviewIdentity.resolve_operation_identity(resolve_attempt_key),
          operation_ids <- receipt_operation_ids(context, resolve_op),
+         {:ok, readbacks} <- live_native_readbacks(context, paths),
          {:ok, receipt} <-
            ReviewIdentity.build_settlement_receipt(%{
              finding_key: finding_key,
@@ -284,7 +285,7 @@ defmodule SymphonyElixir.ReviewSettlement do
              published_head_sha: published_head(status, evaluation_key),
              operation_ids: operation_ids,
              native_resources: paths,
-             native_readbacks: paths,
+             native_readbacks: readbacks,
              evidence: %{status: status, reopened?: false, newer_actionable?: false}
            }) do
       {:settled,
@@ -354,11 +355,9 @@ defmodule SymphonyElixir.ReviewSettlement do
     end
   end
 
-  defp ledger_operation_id(context, operation_id) do
-    case get_in(context, [:claim, :issue_id]) do
-      issue_id when is_binary(issue_id) and issue_id != "" -> {:ok, issue_id <> ":" <> operation_id}
-      _missing -> {:error, :settlement_issue_identity_unverified}
-    end
+  defp ledger_operation_id(%{claim: %{issue_id: issue_id}}, operation_id)
+       when is_binary(issue_id) and issue_id != "" do
+    {:ok, issue_id <> ":" <> operation_id}
   end
 
   defp validate_succeeded_effect(context, effect_type, role, expected_id, disposition, finding_key, lineage_key, evaluation_key) do
@@ -646,9 +645,35 @@ defmodule SymphonyElixir.ReviewSettlement do
     |> Map.get(:native_resource, %{})
   end
 
+  defp live_native_readbacks(context, paths) do
+    source = context[:native_readbacks] || context[:native_readback] || %{}
+
+    roles =
+      Enum.reduce(Map.keys(paths), {:ok, %{}}, fn
+        role, {:ok, acc} ->
+          case path_from_source(source, role) do
+            nil -> {:error, :settlement_native_readbacks_unverified}
+            value -> {:ok, Map.put(acc, role, value)}
+          end
+
+        _role, error ->
+          error
+      end)
+
+    case roles do
+      {:ok, projected} -> ReviewIdentity.project_native_paths(projected)
+      error -> error
+    end
+  end
+
+  defp path_from_source(source, role) when is_map(source),
+    do: Map.get(source, role) || Map.get(source, Atom.to_string(role))
+
+  defp path_from_source(_source, _role), do: nil
+
   defp path_readback(context, role) do
     readbacks = context[:native_readbacks] || context[:native_readback] || %{}
-    readbacks[role] || readbacks[Atom.to_string(role)]
+    path_from_source(readbacks, role)
   end
 
   defp same_id?(left, right), do: present_string?(left) and left == right

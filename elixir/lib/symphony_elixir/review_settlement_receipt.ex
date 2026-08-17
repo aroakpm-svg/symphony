@@ -22,7 +22,7 @@ defmodule SymphonyElixir.ReviewSettlementReceipt do
     with {:ok, receipt} <- ReviewIdentity.reconcile_receipt(%{original_receipt: operation[:native_resource]}),
          context <- pending_context(operation, claim),
          {:ok, stored} <- execute_receipt(ledger, connection, context, receipt),
-         true <- stored == receipt do
+         true <- same_receipt?(stored, receipt) do
       :ok
     else
       false -> {:error, :settlement_receipt_mismatch}
@@ -51,7 +51,8 @@ defmodule SymphonyElixir.ReviewSettlementReceipt do
   @spec record(term(), module(), map(), map(), map(), [map()]) :: {:ok, map()} | {:error, term()}
   def record(connection, ledger, claim, decision, evidence, operations) do
     with {:ok, receipt} <- receipt_from_evidence(evidence),
-         {:ok, fingerprint} <- fingerprint(decision, operations),
+         :ok <- bound_to_sibling_effects?(decision, operations),
+         {:ok, fingerprint} <- receipt_fingerprint(decision, evidence),
          context <- Map.merge(claim, %{operation_id: operation_id(fingerprint), request_fingerprint: fingerprint}),
          {:ok, stored} <-
            ledger.execute(
@@ -61,7 +62,7 @@ defmodule SymphonyElixir.ReviewSettlementReceipt do
              fn -> {:ok, receipt} end,
              fn -> {:found, receipt} end
            ),
-         true <- stored == receipt do
+         true <- same_receipt?(stored, receipt) do
       {:ok, stored}
     else
       false -> {:error, :settlement_receipt_mismatch}
@@ -80,23 +81,55 @@ defmodule SymphonyElixir.ReviewSettlementReceipt do
 
   defp receipt_from_evidence(_evidence), do: {:error, :invalid_settlement_receipt}
 
-  defp fingerprint(decision, operations) when is_list(operations) do
-    operations
-    |> Enum.map(& &1[:request_fingerprint])
-    |> Enum.uniq()
-    |> Enum.find_value({:error, :settlement_fingerprint_unavailable}, fn fingerprint ->
-      case FindingDisposition.decode_request_fingerprint(fingerprint) do
-        {:ok, %{finding_key: %{digest: digest}, disposition: disposition}}
-        when digest == decision.finding_key_digest and disposition == decision.disposition ->
-          {:ok, fingerprint}
-
-        _ ->
-          nil
-      end
-    end)
+  defp same_receipt?(stored, expected) do
+    with {:ok, left} <- ReviewIdentity.reconcile_receipt(%{original_receipt: stored}),
+         {:ok, right} <- ReviewIdentity.reconcile_receipt(%{original_receipt: expected}) do
+      left.digest == right.digest
+    else
+      _invalid -> false
+    end
   end
 
-  defp fingerprint(_decision, _operations), do: {:error, :settlement_fingerprint_unavailable}
+  defp bound_to_sibling_effects?(decision, operations) when is_list(operations) do
+    if Enum.any?(operations, &matching_sibling_effect?(&1, decision)) do
+      :ok
+    else
+      {:error, :settlement_fingerprint_unavailable}
+    end
+  end
+
+  defp bound_to_sibling_effects?(_decision, _operations), do: {:error, :settlement_fingerprint_unavailable}
+
+  defp matching_sibling_effect?(operation, decision) do
+    case FindingDisposition.decode_request_fingerprint(operation[:request_fingerprint]) do
+      {:ok, intent} ->
+        sibling_finding_digest(intent) == decision.finding_key_digest and
+          intent[:disposition] == decision.disposition
+
+      _invalid ->
+        false
+    end
+  end
+
+  defp sibling_finding_digest(intent), do: get_in(intent, [:finding_key, :digest])
+
+  defp receipt_fingerprint(decision, evidence) do
+    evaluated_head_sha =
+      get_in(evidence, [:receipt, :evaluation_key, :evaluated_head_sha]) ||
+        get_in(evidence, [:evaluation_key, :evaluated_head_sha])
+
+    if is_binary(decision[:finding_key_digest]) and decision[:finding_key_digest] != "" and
+         decision[:disposition] in [:fix_in_current_pr, :follow_up_required, :rejected] and
+         is_binary(evaluated_head_sha) do
+      identity = {decision.finding_key_digest, decision.disposition, evaluated_head_sha}
+      payload = :erlang.term_to_binary({:symphony_settlement_receipt_identity_v1, identity}, [:deterministic])
+
+      hash = Base.encode16(:crypto.hash(:sha256, payload), case: :lower)
+      {:ok, "symphony_settlement_receipt_v1:" <> hash}
+    else
+      {:error, :settlement_fingerprint_unavailable}
+    end
+  end
 
   defp operation_id(fingerprint),
     do: "review-settlement-receipt-" <> Base.encode16(:crypto.hash(:sha256, fingerprint), case: :lower)

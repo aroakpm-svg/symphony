@@ -24,6 +24,20 @@ defmodule SymphonyElixir.ReviewSettlementReceiptTest do
       do: reconciler.()
   end
 
+  defmodule JsonLedger do
+    def execute(_connection, :review_settlement_receipt, _context, adapter, _reconciler) do
+      {:ok, receipt} = adapter.()
+      {:ok, SymphonyElixir.ReviewSettlementReceiptTest.stringify_keys(receipt)}
+    end
+  end
+
+  defmodule CaptureLedger do
+    def execute(_connection, :review_settlement_receipt, context, adapter, _reconciler) do
+      send(self(), {:receipt_operation_id, context.operation_id})
+      adapter.()
+    end
+  end
+
   test "record persists the rebuilt ReviewIdentity receipt" do
     {decision, context} = settle_fixture()
     assert {:settled, evidence} = ReviewSettlement.settle(decision, context)
@@ -32,6 +46,47 @@ defmodule SymphonyElixir.ReviewSettlementReceiptTest do
              ReviewSettlementReceipt.record(:conn, Ledger, context.claim, decision, evidence, context.operations)
 
     assert {:ok, ^receipt} = ReviewIdentity.reconcile_receipt(%{original_receipt: receipt})
+  end
+
+  test "jsonb string-key receipts reconcile and record" do
+    {decision, context} = settle_fixture()
+    assert {:settled, evidence} = ReviewSettlement.settle(decision, context)
+    string_receipt = stringify_keys(evidence.receipt)
+
+    assert {:ok, rebuilt} = ReviewIdentity.reconcile_receipt(%{original_receipt: string_receipt})
+    assert rebuilt.digest == evidence.receipt.digest
+    assert ReviewIdentity.receipt_matches_settlement(string_receipt, evidence.finding_key, decision.disposition)
+
+    assert {:ok, _stored} =
+             ReviewSettlementReceipt.record(
+               :conn,
+               JsonLedger,
+               context.claim,
+               decision,
+               evidence,
+               context.operations
+             )
+
+    pending = [
+      %{
+        effect_type: :review_settlement_receipt,
+        status: :pending,
+        operation_id: "ARO-245:receipt",
+        request_fingerprint: hd(context.operations).request_fingerprint,
+        native_resource: string_receipt
+      }
+    ]
+
+    assert :ok = ReviewSettlementReceipt.reconcile_pending(:conn, Ledger, context.claim, pending)
+  end
+
+  test "receipt operation identity is stable across sibling operation order" do
+    {decision, context} = settle_fixture()
+    assert {:settled, evidence} = ReviewSettlement.settle(decision, context)
+
+    first = capture_receipt_operation_id(decision, evidence, context.operations, context.claim)
+    second = capture_receipt_operation_id(decision, evidence, Enum.reverse(context.operations), context.claim)
+    assert first == second
   end
 
   test "pending reconcile requires the original immutable receipt" do
@@ -246,29 +301,45 @@ defmodule SymphonyElixir.ReviewSettlementReceiptTest do
 
     context = %{
       current_head_sha: sha("a"),
-      claim: %{active?: true, issue_id: issue_id, claim_id: "claim-1", generation: 1},
+      native_thread: %{
+        repository: finding_key.repository,
+        pull_request_number: finding_key.pull_request_number,
+        review_thread_id: finding_key.review_thread_id,
+        thread_state: :unresolved,
+        observed_head_sha: sha("a")
+      },
+      claim: %{issue_id: issue_id, claim_id: "claim-1", generation: 1},
       operation_ids: %{follow_up_issue: linear_id, reply: reply_id, resolve: resolve_id},
       operations: operations,
       reply_body: "settled by Symphony",
       native_readback: %{
         follow_up: %{
           id: "ARO-999",
+          issue_id: "ARO-999",
           identifier: "ARO-999",
           destination: "Backlog",
           state: "Backlog",
+          lineage_digest: lineage_key.digest,
           finding_lineage_key_digest: lineage_key.digest
         },
         reply: %{
           id: "reply-1",
+          comment_id: "reply-1",
           body: "settled by Symphony",
           finding_key_digest: finding_key.digest,
+          repository: finding_key.repository,
+          pull_request_number: finding_key.pull_request_number,
+          thread_id: finding_key.review_thread_id,
+          body_sha256: :crypto.hash(:sha256, "settled by Symphony") |> Base.encode16(case: :lower),
           head_sha: sha("a")
         },
         resolve: %{
           repository: finding_key.repository,
           pull_request_number: finding_key.pull_request_number,
           review_thread_id: finding_key.review_thread_id,
+          resolved: true,
           resolved?: true,
+          observed_head_sha: sha("a"),
           head_sha: sha("a")
         },
         reopened?: false,
@@ -278,6 +349,26 @@ defmodule SymphonyElixir.ReviewSettlementReceiptTest do
 
     {decision, context}
   end
+
+  defp capture_receipt_operation_id(decision, evidence, operations, claim) do
+    assert {:ok, _} = ReviewSettlementReceipt.record(:conn, CaptureLedger, claim, decision, evidence, operations)
+    assert_received {:receipt_operation_id, operation_id}
+    operation_id
+  end
+
+  def stringify_keys(value) when is_map(value) do
+    Map.new(value, fn {key, nested} -> {stringify_key(key), stringify_keys(nested)} end)
+  end
+
+  def stringify_keys(value) when is_list(value), do: Enum.map(value, &stringify_keys/1)
+
+  def stringify_keys(value) when is_atom(value) and value not in [nil, true, false],
+    do: Atom.to_string(value)
+
+  def stringify_keys(value), do: value
+
+  defp stringify_key(key) when is_atom(key), do: Atom.to_string(key)
+  defp stringify_key(key), do: key
 
   defp sha(char), do: String.duplicate(char, 40)
 end
