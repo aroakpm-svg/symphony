@@ -402,8 +402,7 @@ defmodule SymphonyElixir.ReviewSettlement do
     receipt = get_in(decision, [:facts, :root_cause_receipt]) || %{}
 
     validate_rejection_identity(
-      {value(receipt, :finding_key), value(receipt, :finding_lineage_key),
-       value(receipt, :evaluated_head_sha)},
+      {value(receipt, :finding_key), value(receipt, :finding_lineage_key), value(receipt, :evaluated_head_sha)},
       {value(receipt, :rejection_basis), value(receipt, :evidence_references)},
       decision,
       context,
