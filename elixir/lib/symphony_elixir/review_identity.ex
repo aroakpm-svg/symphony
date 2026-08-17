@@ -335,9 +335,7 @@ defmodule SymphonyElixir.ReviewIdentity do
     case Map.get(input, :finding_lineage_key) || Map.get(input, "finding_lineage_key") ||
            Map.get(input, :lineage_key) do
       %{} = key ->
-        with {:ok, rebuilt} <- build_lineage_key(key) do
-          {:ok, rebuilt}
-        end
+        build_lineage_key(key)
 
       _missing ->
         build_lineage_key(input)
@@ -347,9 +345,8 @@ defmodule SymphonyElixir.ReviewIdentity do
   defp fetch_evaluation_key(input) do
     case Map.get(input, :evaluation_key) || Map.get(input, "evaluation_key") do
       %{} = key ->
-        with {:ok, finding_key} <- fetch_finding_key(key),
-             {:ok, rebuilt} <- build_evaluation_key(Map.put(key, :finding_key, finding_key)) do
-          {:ok, rebuilt}
+        with {:ok, finding_key} <- fetch_finding_key(key) do
+          build_evaluation_key(Map.put(key, :finding_key, finding_key))
         end
 
       _missing ->
@@ -360,10 +357,8 @@ defmodule SymphonyElixir.ReviewIdentity do
   defp fetch_resolve_attempt_key(input) do
     case Map.get(input, :resolve_attempt_key) || Map.get(input, "resolve_attempt_key") do
       %{} = key ->
-        with {:ok, evaluation_key} <- fetch_evaluation_key(key),
-             {:ok, rebuilt} <-
-               build_resolve_attempt_key(Map.merge(key, %{evaluation_key: evaluation_key})) do
-          {:ok, rebuilt}
+        with {:ok, evaluation_key} <- fetch_evaluation_key(key) do
+          build_resolve_attempt_key(Map.merge(key, %{evaluation_key: evaluation_key}))
         end
 
       _missing ->
@@ -403,6 +398,19 @@ defmodule SymphonyElixir.ReviewIdentity do
       true ->
         :ok
     end
+  end
+
+  defp native_observation(
+         repository,
+         pull_request_number,
+         review_thread_id,
+         thread_state,
+         observed_head_sha,
+         readback
+       ) do
+    node_id = optional_native_node_id(readback)
+
+    {repository, pull_request_number, review_thread_id, thread_state, observed_head_sha, node_id}
   end
 
   defp matching_observed_head(
@@ -459,7 +467,15 @@ defmodule SymphonyElixir.ReviewIdentity do
          true <- repository == evaluation_key.finding_key.repository,
          true <- pull_request_number == evaluation_key.finding_key.pull_request_number,
          true <- review_thread_id == evaluation_key.finding_key.review_thread_id do
-      {:ok, {repository, pull_request_number, review_thread_id, thread_state, observed_head_sha, optional_native_node_id(readback)}}
+      {:ok,
+       native_observation(
+         repository,
+         pull_request_number,
+         review_thread_id,
+         thread_state,
+         observed_head_sha,
+         readback
+       )}
     else
       :missing -> {:error, :native_thread_state_unverified}
       false -> {:error, :native_thread_state_unverified}
