@@ -647,8 +647,10 @@ defmodule SymphonyElixir.ReviewMonitor do
   end
 
   defp review_resolved_comment_for_evaluation(event, selection, head_sha, unresolved) do
-    if event[:resolved?] == true do
+    if (event[:resolved?] || event["resolved?"]) == true do
       event
+      |> Map.put(:resolved?, false)
+      |> Map.put("resolved?", false)
       |> FindingDisposition.select_review_comment(%{selection | resolved?: false})
       |> revalidate_resolved_comment_head(head_sha, unresolved)
     else

@@ -222,8 +222,14 @@ defmodule SymphonyElixir.ReviewSettlementTest do
              )
 
     other_facts =
-      decision.facts.root_cause_receipt.finding_key
-      |> Map.delete(:digest)
+      decision.facts
+      |> Map.take([
+        :repository,
+        :pull_request_number,
+        :review_thread_id,
+        :selected_review_comment_id,
+        :body
+      ])
       |> Map.put(:source_head_sha, String.duplicate("c", 40))
 
     {:ok, other_finding_key} = FindingDisposition.build_finding_key(other_facts)
