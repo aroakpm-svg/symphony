@@ -985,7 +985,7 @@ defmodule SymphonyElixir.ReviewConvergenceTest do
     )
 
     stale = ReviewMonitor.run_with(%{}, settings(), ReviewClient, Tracker, options)
-    assert stale["issue-160"].global_blocker == :resolved_thread_settlement_unverified
+    assert stale["issue-160"].global_blocker == :settlement_context_unavailable
 
     Application.put_env(
       :symphony_elixir,
