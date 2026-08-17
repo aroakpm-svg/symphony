@@ -786,10 +786,7 @@ defmodule SymphonyElixir.ReviewMonitor do
         key = :crypto.hash(:sha256, :erlang.term_to_binary({decision, context}))
         result = Map.get(entry.settlement_attempts, key) || settlement.settle(decision, context)
 
-        updated =
-          entry
-          |> put_in([:settlement_attempts, key], result)
-          |> put_in([:settlement_results, digest], result)
+        attempted = put_in(entry, [:settlement_attempts, key], result)
 
         case result do
           {:settled, evidence} ->
@@ -797,11 +794,20 @@ defmodule SymphonyElixir.ReviewMonitor do
             ledger = Map.get(options, :effect_ledger, EffectLedger)
 
             case recorder.record(connection, ledger, claim_context, decision, evidence, operations) do
-              {:ok, _receipt} -> {:cont, {:ok, updated}}
-              {:error, reason} -> {:halt, {:blocked, {:settlement_receipt_failed, reason}, updated}}
+              {:ok, _receipt} ->
+                committed = put_in(attempted, [:settlement_results, digest], result)
+                {:cont, {:ok, committed}}
+
+              {:error, reason} ->
+                {:halt, {:blocked, {:settlement_receipt_failed, reason}, attempted}}
             end
-          {:blocked, reason} -> {:halt, {:blocked, reason, updated}}
-          _invalid -> {:halt, {:blocked, :invalid_review_settlement_result, updated}}
+
+          {:blocked, reason} ->
+            blocked = put_in(attempted, [:settlement_results, digest], result)
+            {:halt, {:blocked, reason, blocked}}
+
+          _invalid ->
+            {:halt, {:blocked, :invalid_review_settlement_result, attempted}}
         end
 
       _missing ->

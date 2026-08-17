@@ -202,6 +202,16 @@ defmodule SymphonyElixir.ReviewConvergenceTest do
     end
   end
 
+  defmodule SuccessfulSettlementReceipt do
+    def record(_connection, _ledger, _claim, _decision, _evidence, _operations),
+      do: {:ok, %{verified: true}}
+  end
+
+  defmodule FailingSettlementReceipt do
+    def record(_connection, _ledger, _claim, _decision, _evidence, _operations),
+      do: {:error, :receipt_store_unavailable}
+  end
+
   defmodule CountingMixedPatchAuthorization do
     @spec authorize(map(), map(), map(), [map()], map()) :: {:ok, map()}
     def authorize(decision, _receipt, claim, _effects, _runtime) do
@@ -515,6 +525,7 @@ defmodule SymphonyElixir.ReviewConvergenceTest do
       effect_ledger: AutonomousEffectLedger,
       patch_authorization: CountingPatchAuthorization,
       review_settlement: CountingReviewSettlement,
+      settlement_receipt: SuccessfulSettlementReceipt,
       settlement_contexts: %{"finding-1" => %{}}
     }
 
@@ -528,6 +539,18 @@ defmodule SymphonyElixir.ReviewConvergenceTest do
     replayed = ReviewMonitor.run_with(state, settings(), ReviewClient, Tracker, options)
     assert replayed["issue-160"].terminal_result == state["issue-160"].terminal_result
     refute_receive {:autonomous_call, :settle}
+
+    failing_options = Map.put(options, :settlement_receipt, FailingSettlementReceipt)
+    failed = ReviewMonitor.run_with(%{}, settings(), ReviewClient, Tracker, failing_options)
+
+    assert failed["issue-160"].global_blocker ==
+             {:settlement_receipt_failed, :receipt_store_unavailable}
+
+    assert failed["issue-160"].settlement_results == %{}
+
+    failed_again = ReviewMonitor.run_with(failed, settings(), ReviewClient, Tracker, failing_options)
+    assert failed_again["issue-160"].settlement_results == %{}
+    assert failed_again["issue-160"].global_blocker == failed["issue-160"].global_blocker
   end
 
   test "autonomous monitor settles and authorizes mixed findings independently" do
@@ -573,6 +596,7 @@ defmodule SymphonyElixir.ReviewConvergenceTest do
       effect_ledger: AutonomousEffectLedger,
       patch_authorization: CountingMixedPatchAuthorization,
       review_settlement: CountingReviewSettlement,
+      settlement_receipt: SuccessfulSettlementReceipt,
       settlement_contexts: %{"settlement-finding" => %{}},
       root_cause_receipts: %{},
       authorization_runtime: %{}
@@ -645,7 +669,8 @@ defmodule SymphonyElixir.ReviewConvergenceTest do
       claim_service: AutonomousClaimService,
       effect_ledger: AutonomousEffectLedger,
       patch_authorization: CountingPatchAuthorization,
-      review_settlement: CountingReviewSettlement
+      review_settlement: CountingReviewSettlement,
+      settlement_receipt: SuccessfulSettlementReceipt
     }
 
     state = ReviewMonitor.run_with(initial_state, settings(), ReviewClient, Tracker, options)
