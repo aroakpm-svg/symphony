@@ -524,7 +524,9 @@ defmodule SymphonyElixir.ReviewMonitor do
       |> Map.values()
       |> Enum.reduce(%{}, fn
         {:settled, %{finding_key: finding_key}}, settled when is_map(finding_key) ->
-          put_settled_thread(settled, finding_key)
+          if settlement_snapshot_identity?(snapshot, finding_key),
+            do: put_settled_thread(settled, finding_key),
+            else: settled
 
         _unsettled, settled ->
           settled

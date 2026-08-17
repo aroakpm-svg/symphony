@@ -683,6 +683,31 @@ defmodule SymphonyElixir.ReviewConvergenceTest do
       settlement_receipt: SuccessfulSettlementReceipt
     }
 
+    Application.put_env(
+      :symphony_elixir,
+      :review_snapshot,
+      {:ok,
+       snapshot(%{
+         current_head_sha: String.duplicate("b", 40),
+         pull_request_body: complete_scope_contract(),
+         review_events: [event]
+       })}
+    )
+
+    stale_local = ReviewMonitor.run_with(initial_state, settings(), ReviewClient, Tracker, options)
+    assert stale_local["issue-160"].global_blocker == :resolved_thread_settlement_unverified
+
+    Application.put_env(
+      :symphony_elixir,
+      :review_snapshot,
+      {:ok,
+       snapshot(%{
+         current_head_sha: head,
+         pull_request_body: complete_scope_contract(),
+         review_events: [event]
+       })}
+    )
+
     state = ReviewMonitor.run_with(initial_state, settings(), ReviewClient, Tracker, options)
 
     assert state["issue-160"].global_blocker == nil
