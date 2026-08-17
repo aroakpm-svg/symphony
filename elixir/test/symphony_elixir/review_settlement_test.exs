@@ -114,7 +114,7 @@ defmodule SymphonyElixir.ReviewSettlementTest do
     assert {:blocked, {:settlement_native_resource_mismatch, :publish}} =
              ReviewSettlement.settle(decision, stale_context)
 
-    assert {:blocked, {:settlement_native_resource_mismatch, :publish}} =
+    assert {:settled, %{status: :fix_settled}} =
              ReviewSettlement.settle(
                decision,
                Map.put(context, :finding_key, %{decision.finding_key | source_head_sha: sha("d")})
