@@ -171,6 +171,9 @@ defmodule SymphonyElixir.ReviewConvergenceTest do
       send(Application.fetch_env!(:symphony_elixir, :review_recipient), {:autonomous_call, :list_operations})
       {:ok, Application.get_env(:symphony_elixir, :autonomous_operations, [])}
     end
+
+    def execute(_connection, :review_settlement_receipt, _context, adapter, _reconciler),
+      do: adapter.()
   end
 
   defmodule FailingAutonomousEffectLedger do
@@ -668,7 +671,7 @@ defmodule SymphonyElixir.ReviewConvergenceTest do
         expected_transition: :settled
       })
 
-    Application.put_env(:symphony_elixir, :autonomous_operations, [
+    component_effects = [
       %{
         operation_id: "issue-160:reply",
         effect_type: :github_comment,
@@ -683,7 +686,30 @@ defmodule SymphonyElixir.ReviewConvergenceTest do
         status: :succeeded,
         native_resource: %{review_thread_id: finding_key.review_thread_id}
       }
-    ])
+    ]
+
+    Application.put_env(:symphony_elixir, :autonomous_operations, component_effects)
+
+    unproven = ReviewMonitor.run_with(%{}, settings(), ReviewClient, Tracker, options)
+    assert unproven["issue-160"].global_blocker == :settlement_context_unavailable
+
+    receipt = %{
+        operation_id: "issue-160:receipt",
+        effect_type: :review_settlement_receipt,
+        request_fingerprint: fingerprint,
+        status: :succeeded,
+        native_resource: %{
+          verified: true,
+          disposition: "fix_in_current_pr",
+          finding_key_digest: finding_key.digest,
+          review_thread_id: finding_key.review_thread_id,
+          selected_review_comment_id: finding_key.selected_review_comment_id,
+          body_sha256: finding_key.body_sha256,
+          exact_head_sha: finding_key.source_head_sha
+        }
+      }
+
+    Application.put_env(:symphony_elixir, :autonomous_operations, component_effects ++ [receipt])
 
     restarted = ReviewMonitor.run_with(%{}, settings(), ReviewClient, Tracker, options)
     assert restarted["issue-160"].global_blocker == nil
