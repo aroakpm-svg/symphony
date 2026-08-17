@@ -751,7 +751,7 @@ defmodule SymphonyElixir.ReviewConvergenceTest do
     Application.put_env(:symphony_elixir, :autonomous_operations, component_effects)
 
     unproven = ReviewMonitor.run_with(%{}, settings(), ReviewClient, Tracker, options)
-    assert unproven["issue-160"].global_blocker == :settlement_context_unavailable
+    assert unproven["issue-160"].global_blocker == :resolved_thread_settlement_unverified
 
     receipt = %{
       operation_id: "issue-160:receipt",
