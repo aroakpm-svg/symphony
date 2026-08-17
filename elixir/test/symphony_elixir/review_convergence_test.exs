@@ -199,6 +199,21 @@ defmodule SymphonyElixir.ReviewConvergenceTest do
     end
   end
 
+  defmodule CountingMixedPatchAuthorization do
+    @spec authorize(map(), map(), map(), [map()], map()) :: {:ok, map()}
+    def authorize(decision, _receipt, claim, _effects, _runtime) do
+      send(Application.fetch_env!(:symphony_elixir, :review_recipient), {:autonomous_call, :authorize})
+
+      {:ok,
+       %{
+         finding_lineage_key: decision.finding_lineage_key,
+         causal_attempt_fingerprint: String.duplicate("c", 64),
+         causal_evidence_digest: String.duplicate("d", 64),
+         generation: claim.generation
+       }}
+    end
+  end
+
   setup do
     Application.put_env(:symphony_elixir, :review_recipient, self())
     Application.put_env(:symphony_elixir, :review_issues, [issue()])
@@ -510,6 +525,133 @@ defmodule SymphonyElixir.ReviewConvergenceTest do
     replayed = ReviewMonitor.run_with(state, settings(), ReviewClient, Tracker, options)
     assert replayed["issue-160"].terminal_result == state["issue-160"].terminal_result
     refute_receive {:autonomous_call, :settle}
+  end
+
+  test "autonomous monitor settles and authorizes mixed findings independently" do
+    head = String.duplicate("a", 40)
+
+    settled = %{
+      finding_key_digest: "settlement-finding",
+      disposition: :follow_up_required
+    }
+
+    authorization_facts = %{
+      repository: "aroakpm-svg/repo",
+      pull_request_number: 42,
+      source_head_sha: head,
+      review_thread_id: "thread-needs-authorization",
+      selected_review_comment_id: "comment-needs-authorization",
+      body: "P1 new causal finding"
+    }
+
+    {:ok, finding_key} = SymphonyElixir.FindingDisposition.build_finding_key(authorization_facts)
+    {:ok, lineage_key} = SymphonyElixir.FindingDisposition.build_lineage_key(authorization_facts)
+
+    authorization = %{
+      finding_key_digest: finding_key.digest,
+      finding_key: finding_key,
+      finding_lineage_key: lineage_key,
+      disposition: :fix_in_current_pr
+    }
+
+    Application.put_env(
+      :symphony_elixir,
+      :review_snapshot,
+      {:ok,
+       snapshot(%{
+         current_head_sha: head,
+         finding_summary: %{decisions: [settled, authorization], requires_lifecycle?: true}
+       })}
+    )
+
+    options = %{
+      profile: :aroak_autonomous_v1,
+      claim_service: AutonomousClaimService,
+      effect_ledger: AutonomousEffectLedger,
+      patch_authorization: CountingMixedPatchAuthorization,
+      review_settlement: CountingReviewSettlement,
+      settlement_contexts: %{"settlement-finding" => %{}},
+      root_cause_receipts: %{},
+      authorization_runtime: %{}
+    }
+
+    state = ReviewMonitor.run_with(%{}, settings(), ReviewClient, Tracker, options)
+    digest = finding_key.digest
+
+    assert {:grant, %{^digest => _grant}} = state["issue-160"].terminal_result
+
+    assert {:settled, %{disposition: :follow_up_required}} =
+             state["issue-160"].settlement_results["settlement-finding"]
+
+    assert_receive {:autonomous_call, :settle}
+    assert_receive {:autonomous_call, :authorize}
+  end
+
+  test "autonomous monitor preserves settled resolved threads across polls" do
+    head = String.duplicate("a", 40)
+    body = "P1 settled finding"
+
+    facts = %{
+      repository: "aroakpm-svg/repo",
+      pull_request_number: 42,
+      source_head_sha: head,
+      review_thread_id: "thread-already-settled",
+      selected_review_comment_id: "comment-already-settled",
+      body: body
+    }
+
+    {:ok, finding_key} = SymphonyElixir.FindingDisposition.build_finding_key(facts)
+
+    event = %{
+      review_thread_id: finding_key.review_thread_id,
+      resolved?: true,
+      comments: [
+        %{
+          id: finding_key.selected_review_comment_id,
+          body: body,
+          commit_sha: head,
+          trusted_review_source?: true,
+          managed_agent_reply?: false,
+          settlement_marker?: false,
+          connection_index: 0
+        }
+      ]
+    }
+
+    Application.put_env(
+      :symphony_elixir,
+      :review_snapshot,
+      {:ok,
+       snapshot(%{
+         current_head_sha: head,
+         pull_request_body: complete_scope_contract(),
+         review_events: [event]
+       })}
+    )
+
+    initial_state = %{
+      "issue-160" => %{
+        settlement_results: %{
+          finding_key.digest => {:settled, %{finding_key: finding_key}}
+        }
+      }
+    }
+
+    options = %{
+      profile: :aroak_autonomous_v1,
+      claim_service: AutonomousClaimService,
+      effect_ledger: AutonomousEffectLedger,
+      patch_authorization: CountingPatchAuthorization,
+      review_settlement: CountingReviewSettlement
+    }
+
+    state = ReviewMonitor.run_with(initial_state, settings(), ReviewClient, Tracker, options)
+
+    assert state["issue-160"].global_blocker == nil
+    assert state["issue-160"].decisions == %{}
+    assert state["issue-160"].settlement_results == initial_state["issue-160"].settlement_results
+    refute_receive {:autonomous_call, :settle}
+    refute_receive {:autonomous_call, :authorize}
   end
 
   test "autonomous monitor invokes Design 3 once after claim binding and returns an opaque grant" do
@@ -3212,6 +3354,36 @@ defmodule SymphonyElixir.ReviewConvergenceTest do
       max_fix_rounds: 3,
       human_owner: "owner"
     }
+  end
+
+  defp complete_scope_contract do
+    """
+    #### Scope Contract
+
+    ##### Work Item
+
+    Verify review settlement.
+
+    ##### Invariants
+
+    - Settled review evidence remains durable.
+
+    ##### Acceptance Criteria
+
+    - AC-1: Resolved settled threads remain non-blocking.
+
+    ##### Non-Goals
+
+    - Do not merge automatically.
+
+    ##### Dependencies
+
+    None
+
+    ##### Follow-Ups
+
+    None
+    """
   end
 
   defp review_request_comment(head) do

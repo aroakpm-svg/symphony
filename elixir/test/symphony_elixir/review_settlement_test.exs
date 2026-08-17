@@ -37,7 +37,7 @@ defmodule SymphonyElixir.ReviewSettlementTest do
   test "response loss and failed resolve remain unresolved" do
     {decision, context} = fixture(:follow_up_required)
 
-    assert {:blocked, :reply_readback_unverified} =
+    assert {:blocked, {:settlement_native_resource_mismatch, :reply}} =
              ReviewSettlement.settle(decision, put_in(context, [:native_readback, :reply], nil))
 
     operations =
@@ -99,6 +99,37 @@ defmodule SymphonyElixir.ReviewSettlementTest do
              ReviewSettlement.settle(%{decision | finding_key_digest: sha256("wrong")}, context)
   end
 
+  test "ledger operation IDs must use the claim issue namespace" do
+    {decision, context} = fixture(:follow_up_required)
+    [first | rest] = context.operations
+    bare_id = get_in(context, [:operation_ids, :follow_up_issue])
+
+    assert {:blocked, {:settlement_effect_missing, :follow_up_issue}} =
+             ReviewSettlement.settle(decision, %{context | operations: [%{first | operation_id: bare_id} | rest]})
+
+    assert {:blocked, :settlement_issue_identity_unverified} =
+             ReviewSettlement.settle(decision, put_in(context, [:claim, :issue_id], nil))
+  end
+
+  test "ledger native resources must identify the same objects as native readback" do
+    {decision, context} = fixture(:follow_up_required)
+
+    for {effect_type, role} <- [
+          {:linear_issue_create, :follow_up_issue},
+          {:github_comment, :reply},
+          {:github_review_thread_resolve, :resolve}
+        ] do
+      operations =
+        Enum.map(context.operations, fn
+          %{effect_type: ^effect_type} = operation -> %{operation | native_resource: %{id: "different"}}
+          operation -> operation
+        end)
+
+      assert {:blocked, {:settlement_native_resource_mismatch, ^role}} =
+               ReviewSettlement.settle(decision, %{context | operations: operations})
+    end
+  end
+
   test "non-canonical operation IDs and fingerprints fail closed" do
     {decision, context} = fixture(:follow_up_required)
 
@@ -114,6 +145,41 @@ defmodule SymphonyElixir.ReviewSettlementTest do
              ReviewSettlement.settle(
                decision,
                %{context | operations: [%{first | request_fingerprint: "not-a-fingerprint"} | rest]}
+             )
+  end
+
+  test "all malformed settlement and readback shapes fail closed" do
+    {decision, context} = fixture(:follow_up_required)
+
+    assert {:blocked, :invalid_settlement_input} = ReviewSettlement.settle(nil, context)
+
+    assert {:blocked, :settlement_operations_unavailable} =
+             ReviewSettlement.settle(decision, %{context | operations: nil})
+
+    assert {:blocked, :unsupported_settlement_disposition} =
+             ReviewSettlement.settle(%{decision | disposition: :unsupported}, context)
+
+    [first | rest] = context.operations
+
+    assert {:blocked, {:settlement_effect_invalid, :follow_up_issue}} =
+             ReviewSettlement.settle(decision, %{context | operations: [%{first | status: :invalid} | rest]})
+
+    assert {:blocked, :follow_up_readback_unverified} =
+             ReviewSettlement.settle(
+               decision,
+               put_in(context, [:native_readback, :follow_up, :url], "")
+             )
+
+    assert {:blocked, :reply_readback_unverified} =
+             ReviewSettlement.settle(
+               decision,
+               put_in(context, [:native_readback, :reply, :body], "wrong reply")
+             )
+
+    assert {:blocked, :resolve_readback_unverified} =
+             ReviewSettlement.settle(
+               decision,
+               put_in(context, [:native_readback, :thread, :resolved?], false)
              )
   end
 
@@ -172,15 +238,20 @@ defmodule SymphonyElixir.ReviewSettlementTest do
 
     fingerprint = fingerprint(decision)
 
+    issue_id = "ARO-245"
+
     operations = [
-      operation(linear_id, :linear_issue_create, fingerprint),
-      operation(reply_id, :github_comment, fingerprint),
-      operation(resolve_id, :github_review_thread_resolve, fingerprint)
+      operation(issue_id, linear_id, :linear_issue_create, fingerprint, %{id: "ARO-999"}),
+      operation(issue_id, reply_id, :github_comment, fingerprint, %{comment_id: "reply-1"}),
+      operation(issue_id, resolve_id, :github_review_thread_resolve, fingerprint, %{
+        review_thread_id: finding_key.review_thread_id,
+        resolved?: true
+      })
     ]
 
     context = %{
       current_head_sha: finding_key.source_head_sha,
-      claim: %{active?: true, claim_id: "claim-1", generation: 1},
+      claim: %{active?: true, issue_id: issue_id, claim_id: "claim-1", generation: 1},
       operation_ids: operation_ids,
       operations: operations,
       reply_body: "settled by Symphony",
@@ -218,13 +289,14 @@ defmodule SymphonyElixir.ReviewSettlementTest do
     {decision, context}
   end
 
-  defp operation(id, type, fingerprint) do
+  defp operation(issue_id, id, type, fingerprint, native_resource) do
     %{
-      operation_id: id,
+      operation_id: issue_id <> ":" <> id,
       effect_type: type,
       request_fingerprint: fingerprint,
       status: :succeeded,
-      native_resource: %{id: "native-#{id}"}
+      native_resource: native_resource,
+      issue_id: issue_id
     }
   end
 

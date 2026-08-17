@@ -261,7 +261,7 @@ defmodule SymphonyElixir.ReviewMonitor do
   defp reconcile_new_claim(entry, issue, snapshot, claim, settings, review_client, options, binding) do
     with {:ok, connection, claim_context} <- claimed_context(options, issue, claim, binding),
          {:ok, operations} <- list_effect_operations(options, connection, claim_context),
-         {:ok, summary} <- finding_summary(snapshot, settings),
+         {:ok, summary} <- finding_summary(snapshot, settings, entry),
          :ok <- reconcile_operation_locks(operations),
          :ok <- verify_live_head(review_client, settings, snapshot) do
       autonomous_claimed_result(
@@ -432,14 +432,14 @@ defmodule SymphonyElixir.ReviewMonitor do
     end
   end
 
-  defp finding_summary(%{finding_summary: summary}, _settings) when is_map(summary) do
+  defp finding_summary(%{finding_summary: summary}, _settings, _entry) when is_map(summary) do
     if is_list(summary[:decisions]), do: {:ok, summary}, else: {:error, :finding_summary_invalid}
   end
 
-  defp finding_summary(snapshot, settings) do
+  defp finding_summary(snapshot, settings, entry) do
     with {:ok, scope_contract} <- parse_scope_contract(snapshot),
          {:ok, events} <- review_events(snapshot),
-         {:ok, findings} <- selected_findings(snapshot, events, settings),
+         {:ok, findings} <- selected_findings(snapshot, events, settings, settled_threads(entry)),
          {:ok, plan} <-
            FindingDisposition.classify_all(findings, %{
              verified?: true,
@@ -462,13 +462,13 @@ defmodule SymphonyElixir.ReviewMonitor do
   defp review_events(%{review_events: events}) when is_list(events), do: {:ok, events}
   defp review_events(_snapshot), do: {:error, :review_events_unavailable}
 
-  defp selected_findings(snapshot, events, settings) do
+  defp selected_findings(snapshot, events, settings, settled) do
     repository = snapshot[:repository] || settings.repository
     pull_request_number = snapshot[:pull_request_number]
     head_sha = snapshot[:current_head_sha]
 
     Enum.reduce_while(events, {:ok, []}, fn event, {:ok, acc} ->
-      case FindingDisposition.select_review_comment(event, %{resolved?: event[:resolved?], settled: %{}}) do
+      case FindingDisposition.select_review_comment(event, %{resolved?: event[:resolved?], settled: settled}) do
         {:ok, comment} ->
           facts = %{
             repository: repository,
@@ -495,6 +495,21 @@ defmodule SymphonyElixir.ReviewMonitor do
         {:error, reason} ->
           {:halt, {:error, reason}}
       end
+    end)
+  end
+
+  defp settled_threads(entry) do
+    entry.settlement_results
+    |> Map.values()
+    |> Enum.reduce(%{}, fn
+      {:settled, %{finding_key: finding_key}}, settled when is_map(finding_key) ->
+        Map.put(settled, finding_key.review_thread_id, %{
+          comment_id: finding_key.selected_review_comment_id,
+          body_sha256: finding_key.body_sha256
+        })
+
+      _unsettled, settled ->
+        settled
     end)
   end
 
@@ -554,26 +569,105 @@ defmodule SymphonyElixir.ReviewMonitor do
   end
 
   defp settle_or_authorize(entry, decisions, operations, snapshot, claim_context, options) do
-    case Map.get(options, :settlement_contexts) do
-      contexts when is_map(contexts) and map_size(contexts) > 0 ->
-        settle_decisions(entry, decisions, operations, snapshot, claim_context, contexts, options)
+    contexts = Map.get(options, :settlement_contexts, %{})
 
-      _missing ->
-        authorize_causal_patches(entry, decisions, operations, snapshot, claim_context, options)
+    if is_map(contexts) do
+      {settlement_decisions, remaining_decisions} =
+        Enum.split_with(decisions, &Map.has_key?(contexts, &1.finding_key_digest))
+
+      {authorization_decisions, missing_settlement_decisions} =
+        Enum.split_with(remaining_decisions, &(&1.disposition == :fix_in_current_pr))
+
+      if missing_settlement_decisions == [] do
+        settle_then_authorize(
+          entry,
+          settlement_decisions,
+          authorization_decisions,
+          operations,
+          snapshot,
+          claim_context,
+          contexts,
+          options
+        )
+      else
+        {:blocked, :settlement_context_unavailable, entry}
+      end
+    else
+      {:blocked, :invalid_settlement_contexts, entry}
+    end
+  end
+
+  defp settle_then_authorize(
+         entry,
+         [],
+         authorization_decisions,
+         operations,
+         snapshot,
+         claim_context,
+         _contexts,
+         options
+       ) do
+    authorize_causal_patches(entry, authorization_decisions, operations, snapshot, claim_context, options)
+  end
+
+  defp settle_then_authorize(
+         entry,
+         settlement_decisions,
+         [],
+         operations,
+         snapshot,
+         claim_context,
+         contexts,
+         options
+       ) do
+    settle_decisions(entry, settlement_decisions, operations, snapshot, claim_context, contexts, options)
+  end
+
+  defp settle_then_authorize(
+         entry,
+         settlement_decisions,
+         authorization_decisions,
+         operations,
+         snapshot,
+         claim_context,
+         contexts,
+         options
+       ) do
+    with {:ok, settled_entry} <-
+           reduce_settlements(
+             entry,
+             settlement_decisions,
+             operations,
+             snapshot,
+             claim_context,
+             contexts,
+             options
+           ) do
+      authorize_causal_patches(
+        settled_entry,
+        authorization_decisions,
+        operations,
+        snapshot,
+        claim_context,
+        options
+      )
     end
   end
 
   defp settle_decisions(entry, decisions, operations, snapshot, claim_context, contexts, options) do
+    decisions
+    |> then(&reduce_settlements(entry, &1, operations, snapshot, claim_context, contexts, options))
+    |> settlement_result(MapSet.new(decisions, & &1.finding_key_digest))
+  end
+
+  defp reduce_settlements(entry, decisions, operations, snapshot, claim_context, contexts, options) do
     settlement = Map.fetch!(options, :review_settlement)
     sorted = FindingDisposition.sort_decisions(decisions)
-    current_digests = MapSet.new(sorted, & &1.finding_key_digest)
-    entry = %{entry | settlement_results: %{}}
 
     sorted
     |> Enum.reduce_while({:ok, entry}, fn decision, {:ok, acc} ->
       settle_decision(acc, decision, operations, snapshot, claim_context, contexts, settlement)
     end)
-    |> settlement_result(current_digests)
   end
 
   defp settle_decision(entry, decision, operations, snapshot, claim_context, contexts, settlement) do
@@ -583,7 +677,10 @@ defmodule SymphonyElixir.ReviewMonitor do
       context when is_map(context) ->
         authoritative = %{
           current_head_sha: snapshot[:current_head_sha],
-          claim: Map.put(claim_identity(claim_context), :active?, true),
+          claim:
+            claim_context
+            |> Map.take([:issue_id, :claim_id, :generation])
+            |> Map.put(:active?, true),
           operations: operations
         }
 
@@ -607,16 +704,18 @@ defmodule SymphonyElixir.ReviewMonitor do
     end
   end
 
-  defp settlement_result({:ok, entry}, current_digests) do
-    current_results = Map.take(entry.settlement_results, MapSet.to_list(current_digests))
-    evidence = Map.new(current_results, fn {digest, {:settled, item}} -> {digest, item} end)
+  defp settlement_result({:ok, entry}, _current_digests) do
+    evidence =
+      Enum.reduce(entry.settlement_results, %{}, fn
+        {digest, {:settled, item}}, acc -> Map.put(acc, digest, item)
+        {_digest, _unsettled}, acc -> acc
+      end)
 
     {:ok,
      %{
        entry
        | authorization_required: false,
          authorization_results: %{},
-         settlement_results: current_results,
          terminal_result: {:settled, evidence},
          global_blocker: nil
      }}

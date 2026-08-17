@@ -155,10 +155,27 @@ defmodule SymphonyElixir.ReviewSettlement do
 
     case expected_operation_id(effect_type, context, finding_key, lineage_key, disposition) do
       {:ok, ^expected_id} ->
-        validate_succeeded_effect(context, effect_type, role, expected_id, disposition, finding_key, lineage_key)
+        with {:ok, ledger_id} <- ledger_operation_id(context, expected_id) do
+          validate_succeeded_effect(
+            context,
+            effect_type,
+            role,
+            ledger_id,
+            disposition,
+            finding_key,
+            lineage_key
+          )
+        end
 
       _invalid ->
         {:error, {:settlement_operation_identity_mismatch, role}}
+    end
+  end
+
+  defp ledger_operation_id(context, operation_id) do
+    case get_in(context, [:claim, :issue_id]) do
+      issue_id when is_binary(issue_id) and issue_id != "" -> {:ok, issue_id <> ":" <> operation_id}
+      _missing -> {:error, :settlement_issue_identity_unverified}
     end
   end
 
@@ -171,7 +188,8 @@ defmodule SymphonyElixir.ReviewSettlement do
     case matches do
       [%{status: :succeeded, request_fingerprint: fingerprint, native_resource: native}]
       when is_binary(fingerprint) and fingerprint != "" and is_map(native) ->
-        validate_fingerprint(fingerprint, disposition, finding_key, lineage_key)
+        with :ok <- validate_fingerprint(fingerprint, disposition, finding_key, lineage_key),
+             do: validate_native_resource(role, native, context)
 
       [] ->
         {:error, {:settlement_effect_missing, role}}
@@ -183,6 +201,41 @@ defmodule SymphonyElixir.ReviewSettlement do
         {:error, {:settlement_effect_invalid, role}}
     end
   end
+
+  defp validate_native_resource(:follow_up_issue, native, context) do
+    readback = get_in(context, [:native_readback, :follow_up]) || %{}
+
+    if same_resource_id?(resource_value(native, :id), resource_value(readback, :id)),
+      do: :ok,
+      else: {:error, {:settlement_native_resource_mismatch, :follow_up_issue}}
+  end
+
+  defp validate_native_resource(:reply, native, context) do
+    readback = get_in(context, [:native_readback, :reply]) || %{}
+    native_id = resource_value(native, :comment_id) || resource_value(native, :id)
+
+    if same_resource_id?(native_id, resource_value(readback, :id)),
+      do: :ok,
+      else: {:error, {:settlement_native_resource_mismatch, :reply}}
+  end
+
+  defp validate_native_resource(:resolve, native, context) do
+    readback = get_in(context, [:native_readback, :thread]) || %{}
+
+    native_id =
+      resource_value(native, :review_thread_id) || resource_value(native, :thread_id) ||
+        resource_value(native, :id)
+
+    if same_resource_id?(native_id, resource_value(readback, :review_thread_id)),
+      do: :ok,
+      else: {:error, {:settlement_native_resource_mismatch, :resolve}}
+  end
+
+  defp same_resource_id?(left, right),
+    do: is_binary(left) and left != "" and left == right
+
+  defp resource_value(resource, key) when is_map(resource),
+    do: Map.get(resource, key) || Map.get(resource, Atom.to_string(key))
 
   defp expected_operation_id(:linear_issue_create, context, finding_key, lineage_key, _disposition) do
     FindingDisposition.operation_id(:linear_issue_create, %{
