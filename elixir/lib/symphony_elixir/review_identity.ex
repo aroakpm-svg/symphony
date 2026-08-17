@@ -149,18 +149,23 @@ defmodule SymphonyElixir.ReviewIdentity do
   def derive_reopen_epoch(input) when is_map(input) do
     with {:ok, evaluation_key} <- fetch_evaluation_key(input),
          {:ok, thread_state} <- required_thread_state(input),
-         {:ok, native_readback} <- required_native_thread_readback(input, evaluation_key) do
+         {:ok, native_readback} <- required_native_thread_readback(input, evaluation_key),
+         :ok <- matching_observed_head(native_readback, evaluation_key),
+         :ok <- matching_native_thread_state(native_readback, thread_state) do
       prior = optional_digest(input, :prior_resolve_operation_id)
 
       cond do
-        thread_state == :resolved and is_binary(prior) ->
-          {:ok, digest(:symphony_reopen_epoch_v1, {:same_cycle, prior, evaluation_key.digest})}
+        thread_state == :unresolved and is_nil(prior) ->
+          {:ok, digest(:symphony_reopen_epoch_v1, {:initial, evaluation_key.digest})}
 
         thread_state == :unresolved and is_binary(prior) ->
           {:ok, digest(:symphony_reopen_epoch_v1, {:reopened, prior, native_readback})}
 
-        true ->
-          {:ok, digest(:symphony_reopen_epoch_v1, {:initial, evaluation_key.digest})}
+        thread_state == :resolved and is_binary(prior) ->
+          {:ok, digest(:symphony_reopen_epoch_v1, {:same_cycle, prior, evaluation_key.digest})}
+
+        thread_state == :resolved and is_nil(prior) ->
+          {:error, :resolved_without_prior_resolve}
       end
     end
   end
@@ -400,6 +405,29 @@ defmodule SymphonyElixir.ReviewIdentity do
     end
   end
 
+  defp matching_observed_head(
+         {_repository, _pull_request_number, _review_thread_id, _thread_state, observed_head_sha, _node_id},
+         evaluation_key
+       ) do
+    if observed_head_sha == evaluation_key.current_head_sha do
+      :ok
+    else
+      {:error, :native_thread_state_unverified}
+    end
+  end
+
+  defp matching_native_thread_state(
+         {_repository, _pull_request_number, _review_thread_id, native_state, _observed_head_sha, _node_id},
+         thread_state
+       ) do
+    if native_state == thread_state, do: :ok, else: {:error, :native_thread_state_unverified}
+  end
+
+  defp optional_native_node_id(readback) do
+    value = Map.get(readback, :node_id) || Map.get(readback, "node_id")
+    if is_binary(value) and String.trim(value) != "", do: value, else: nil
+  end
+
   defp matching_settled_head(evaluation_key, settled_head_sha) do
     if evaluation_key.current_head_sha == settled_head_sha and
          evaluation_key.evaluated_head_sha == settled_head_sha do
@@ -431,7 +459,7 @@ defmodule SymphonyElixir.ReviewIdentity do
          true <- repository == evaluation_key.finding_key.repository,
          true <- pull_request_number == evaluation_key.finding_key.pull_request_number,
          true <- review_thread_id == evaluation_key.finding_key.review_thread_id do
-      {:ok, {repository, pull_request_number, review_thread_id, thread_state, observed_head_sha}}
+      {:ok, {repository, pull_request_number, review_thread_id, thread_state, observed_head_sha, optional_native_node_id(readback)}}
     else
       :missing -> {:error, :native_thread_state_unverified}
       false -> {:error, :native_thread_state_unverified}

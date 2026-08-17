@@ -75,6 +75,11 @@ defmodule SymphonyElixir.ReviewIdentityContractTest do
     assert first == second
   end
 
+  test "resolved native state without prior succeeded resolve fails closed" do
+    assert {:error, :resolved_without_prior_resolve} =
+             ReviewIdentity.derive_reopen_epoch(resolve_input(:resolved, nil))
+  end
+
   test "missing native unresolved readback fails closed instead of using a counter" do
     input = Map.delete(resolve_input(:unresolved, digest_char("1")), :native_thread)
 
