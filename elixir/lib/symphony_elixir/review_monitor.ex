@@ -644,7 +644,8 @@ defmodule SymphonyElixir.ReviewMonitor do
             {:ok, comment} ->
               if comment[:commit_sha] != head_sha, do: {:ok, comment, true}, else: unresolved
 
-            other -> other
+            other ->
+              other
           end
         else
           unresolved
