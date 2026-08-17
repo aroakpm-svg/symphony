@@ -451,7 +451,11 @@ touch Production.
 The production review monitor MUST route through the explicitly configured profile. The default
 `legacy` profile preserves observational convergence; `aroak_autonomous_v1` invokes the same
 claim-bound Design 3/Design 4 owner runtime used by integration tests and fails closed when any
-owner dependency or settlement context is unavailable.
+owner dependency or settlement context is unavailable. Enabling the autonomous profile requires an
+explicit `owner_runtime_module`. After claim-bound EffectLedger readback, the monitor calls that
+owner's `readback/4` boundary to obtain settlement contexts, exact finding-keyed Root-Cause Receipts,
+and complete durable authorization history; missing, malformed, or unavailable owner readback blocks
+the cycle before settlement or authorization.
 
 Design 4 settlement consumes canonical Design 2 decisions and supplied immutable operation
 identities/fingerprints. `ReviewSettlement.settle/2` MUST validate the active claim/generation,

@@ -212,6 +212,23 @@ defmodule SymphonyElixir.ReviewConvergenceTest do
       do: {:error, :receipt_store_unavailable}
   end
 
+  defmodule SuccessfulOwnerRuntime do
+    def readback(_snapshot, _summary, _operations, _claim) do
+      send(Application.fetch_env!(:symphony_elixir, :review_recipient), {:autonomous_call, :owner_readback})
+
+      {:ok,
+       %{
+         settlement_contexts: %{},
+         root_cause_receipts: %{},
+         authorization_runtime: %{causal_history_complete?: true, prior_attempts: []}
+       }}
+    end
+  end
+
+  defmodule InvalidOwnerRuntime do
+    def readback(_snapshot, _summary, _operations, _claim), do: {:ok, %{}}
+  end
+
   defmodule CountingMixedPatchAuthorization do
     @spec authorize(map(), map(), map(), [map()], map()) :: {:ok, map()}
     def authorize(decision, _receipt, claim, _effects, _runtime) do
@@ -264,11 +281,23 @@ defmodule SymphonyElixir.ReviewConvergenceTest do
                "review_convergence" => %{
                  "enabled" => true,
                  "profile" => "aroak_autonomous_v1",
+                 "owner_runtime_module" => "SymphonyElixir.ReviewConvergenceTest.SuccessfulOwnerRuntime",
                  "repository" => "aroakpm-svg/symphony"
                }
              })
 
     assert autonomous.review_convergence.profile == :aroak_autonomous_v1
+
+    assert {:error, {:invalid_workflow_config, missing_owner}} =
+             Schema.parse(%{
+               "review_convergence" => %{
+                 "enabled" => true,
+                 "profile" => "aroak_autonomous_v1",
+                 "repository" => "aroakpm-svg/symphony"
+               }
+             })
+
+    assert missing_owner =~ "review_convergence.owner_runtime_module"
 
     assert {:error, {:invalid_workflow_config, malformed_message}} =
              Schema.parse(%{
@@ -320,6 +349,47 @@ defmodule SymphonyElixir.ReviewConvergenceTest do
     refute_received {:comment, _, _}
     refute_received {:state, _, _}
     refute_received {:status, _, _, _, _}
+  end
+
+  test "autonomous production owner runtime hydrates evidence after claim-bound readback" do
+    Application.put_env(
+      :symphony_elixir,
+      :review_snapshot,
+      {:ok, snapshot(%{finding_summary: %{decisions: [], requires_lifecycle?: false}})}
+    )
+
+    state =
+      ReviewMonitor.run_with(
+        %{},
+        settings(),
+        ReviewClient,
+        Tracker,
+        %{
+          profile: :aroak_autonomous_v1,
+          claim_service: AutonomousClaimService,
+          effect_ledger: AutonomousEffectLedger,
+          owner_runtime: SuccessfulOwnerRuntime
+        }
+      )
+
+    assert state["issue-160"].global_blocker == nil
+    assert_receive {:autonomous_call, :owner_readback}
+
+    invalid =
+      ReviewMonitor.run_with(
+        %{},
+        settings(),
+        ReviewClient,
+        Tracker,
+        %{
+          profile: :aroak_autonomous_v1,
+          claim_service: AutonomousClaimService,
+          effect_ledger: AutonomousEffectLedger,
+          owner_runtime: InvalidOwnerRuntime
+        }
+      )
+
+    assert invalid["issue-160"].global_blocker == :invalid_owner_runtime_readback
   end
 
   test "successful autonomous recovery clears a stale global blocker" do

@@ -236,8 +236,11 @@ defmodule SymphonyElixir.ReviewSettlement do
 
   defp validate_native_resource(:publish, native, context) do
     readback = get_in(context, [:native_readback, :publish]) || %{}
+    expected_head = get_in(context, [:finding_key, :source_head_sha]) || context[:current_head_sha]
+    native_commit = resource_value(native, :commit_sha)
+    readback_commit = resource_value(readback, :commit_sha)
 
-    if same_resource_id?(resource_value(native, :commit_sha), resource_value(readback, :commit_sha)) and
+    if same_resource_id?(native_commit, readback_commit) and native_commit == expected_head and
          same_resource_id?(resource_value(native, :tree_sha), resource_value(readback, :tree_sha)),
        do: :ok,
        else: {:error, {:settlement_native_resource_mismatch, :publish}}
@@ -335,7 +338,8 @@ defmodule SymphonyElixir.ReviewSettlement do
 
     case get_in(context, [:native_readback, :reply]) do
       %{id: id, body: ^expected_body, finding_key_digest: digest, head_sha: head_sha}
-      when is_binary(id) and id != "" and digest == finding_key.digest and
+      when is_binary(id) and id != "" and is_binary(expected_body) and expected_body != "" and
+             digest == finding_key.digest and
              head_sha == finding_key.source_head_sha ->
         :ok
 
@@ -428,18 +432,22 @@ defmodule SymphonyElixir.ReviewSettlement do
          decision,
          context
        ) do
-    identity_matches? =
-      finding_key.digest == decision.finding_key_digest and
-        lineage_key.digest == decision.finding_lineage_key.digest and
-        head_sha == context[:current_head_sha]
-
-    evidence_complete? =
-      is_binary(basis) and basis != "" and is_list(references) and references != []
-
-    if identity_matches? and evidence_complete?,
-      do: :ok,
-      else: {:error, :rejection_proof_unverified}
+    if rejection_identity_matches?(finding_key, lineage_key, head_sha, decision, context) and
+         rejection_evidence_complete?(basis, references),
+       do: :ok,
+       else: {:error, :rejection_proof_unverified}
   end
+
+  defp rejection_identity_matches?(finding_key, lineage_key, head_sha, decision, context) do
+    is_map(finding_key) and is_binary(finding_key[:digest]) and
+      is_map(lineage_key) and is_binary(lineage_key[:digest]) and
+      finding_key[:digest] == decision.finding_key_digest and
+      lineage_key[:digest] == decision.finding_lineage_key.digest and
+      head_sha == context[:current_head_sha]
+  end
+
+  defp rejection_evidence_complete?(basis, references),
+    do: is_binary(basis) and basis != "" and is_list(references) and references != []
 
   defp evidence(status, context, finding_key, lineage_key) do
     %{

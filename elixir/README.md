@@ -306,7 +306,10 @@ Notes:
   invocation when a turn completes normally but the issue is still in an active state. Default: `20`.
 - `review_convergence.enabled` defaults to `false`. `review_convergence.profile` defaults to
   `legacy`; set it explicitly to `aroak_autonomous_v1` only when the claim, ledger, Design 3, and
-  Design 4 owner runtime is installed. When enabled, `repository` is required in
+  Design 4 owner runtime is installed. The autonomous profile also requires
+  `owner_runtime_module`; that module must export `readback/4` and return the claim-bound settlement
+  contexts, finding-keyed root-cause receipts, and complete durable authorization runtime. When enabled,
+  `repository` is required in
   `owner/name` form. `review_state`, `in_progress_state`, `max_fix_rounds`, and `human_owner`
   configure monitoring, rework, and escalation without changing merge authorization.
 - If the Markdown body is blank, Symphony uses a default prompt template that includes the issue

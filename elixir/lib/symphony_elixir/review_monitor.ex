@@ -39,11 +39,20 @@ defmodule SymphonyElixir.ReviewMonitor do
       effect_ledger: EffectLedger,
       patch_authorization: PatchAuthorization,
       review_settlement: ReviewSettlement,
-      settlement_receipt: ReviewSettlementReceipt
+      settlement_receipt: ReviewSettlementReceipt,
+      owner_runtime: configured_owner_runtime(Config.settings!().review_convergence.owner_runtime_module)
     }
   end
 
   defp production_options(_settings), do: %{profile: :legacy}
+
+  defp configured_owner_runtime(name) when is_binary(name) and name != "" do
+    String.to_existing_atom("Elixir." <> String.trim_leading(name, "Elixir."))
+  rescue
+    ArgumentError -> nil
+  end
+
+  defp configured_owner_runtime(_name), do: nil
 
   @doc false
   @spec run_with(state(), struct() | map(), module(), module()) :: state()
@@ -280,6 +289,7 @@ defmodule SymphonyElixir.ReviewMonitor do
            reconcile_pending_settlement_receipts(options, connection, claim_context, operations),
          :ok <- reconcile_operation_locks(operations),
          {:ok, summary} <- finding_summary(snapshot, settings, entry, operations),
+         {:ok, options} <- hydrate_owner_runtime(options, snapshot, summary, operations, claim_context),
          :ok <- verify_live_head(review_client, settings, snapshot) do
       autonomous_claimed_result(
         connection,
@@ -294,6 +304,58 @@ defmodule SymphonyElixir.ReviewMonitor do
       {:error, reason} -> {:blocked, reason}
     end
   end
+
+  defp hydrate_owner_runtime(options, snapshot, summary, operations, claim_context) do
+    cond do
+      complete_owner_evidence?(options) ->
+        {:ok, options}
+
+      owner_runtime_available?(options) ->
+        owner_runtime = options.owner_runtime
+
+        owner_runtime.readback(snapshot, summary, operations, claim_context)
+        |> owner_runtime_result(options)
+
+      Map.has_key?(options, :owner_runtime) ->
+        {:error, :owner_runtime_unavailable}
+
+      true ->
+        {:ok, options}
+    end
+  end
+
+  defp complete_owner_evidence?(options),
+    do:
+      is_map(options[:settlement_contexts]) and is_map(options[:root_cause_receipts]) and
+        is_map(options[:authorization_runtime])
+
+  defp owner_runtime_available?(options),
+    do:
+      Map.has_key?(options, :owner_runtime) and
+        loaded_function_exported?(options[:owner_runtime], :readback, 4)
+
+  defp owner_runtime_result(
+         {:ok,
+          %{
+            settlement_contexts: contexts,
+            root_cause_receipts: receipts,
+            authorization_runtime: runtime
+          }},
+         options
+       )
+       when is_map(contexts) and is_map(receipts) and is_map(runtime) do
+    {:ok,
+     Map.merge(options, %{
+       settlement_contexts: contexts,
+       root_cause_receipts: receipts,
+       authorization_runtime: runtime
+     })}
+  end
+
+  defp owner_runtime_result({:error, reason}, _options),
+    do: {:error, {:owner_runtime_unavailable, reason}}
+
+  defp owner_runtime_result(_invalid, _options), do: {:error, :invalid_owner_runtime_readback}
 
   defp verify_live_head(review_client, settings, snapshot) do
     with true <- loaded_function_exported?(review_client, :current_head_sha, 2),

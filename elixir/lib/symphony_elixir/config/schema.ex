@@ -229,6 +229,7 @@ defmodule SymphonyElixir.Config.Schema do
     embedded_schema do
       field(:enabled, :boolean, default: false)
       field(:profile, Ecto.Enum, values: [:legacy, :aroak_autonomous_v1], default: :legacy)
+      field(:owner_runtime_module, :string)
       field(:repository, :string)
       field(:review_state, :string, default: "In Review")
       field(:in_progress_state, :string, default: "In Progress")
@@ -241,7 +242,16 @@ defmodule SymphonyElixir.Config.Schema do
       schema
       |> cast(
         attrs,
-        [:enabled, :profile, :repository, :review_state, :in_progress_state, :max_fix_rounds, :human_owner],
+        [
+          :enabled,
+          :profile,
+          :owner_runtime_module,
+          :repository,
+          :review_state,
+          :in_progress_state,
+          :max_fix_rounds,
+          :human_owner
+        ],
         empty_values: []
       )
       |> validate_number(:max_fix_rounds, greater_than: 0)
@@ -251,7 +261,14 @@ defmodule SymphonyElixir.Config.Schema do
 
     defp validate_required_if_enabled(changeset) do
       if get_field(changeset, :enabled) do
-        validate_required(changeset, [:repository, :review_state, :in_progress_state])
+        required = [:repository, :review_state, :in_progress_state]
+
+        required =
+          if get_field(changeset, :profile) == :aroak_autonomous_v1,
+            do: [:owner_runtime_module | required],
+            else: required
+
+        validate_required(changeset, required)
       else
         changeset
       end

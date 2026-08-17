@@ -96,6 +96,23 @@ defmodule SymphonyElixir.ReviewSettlementTest do
                decision,
                put_in(context, [:native_readback, :publish, :commit_sha], sha("d"))
              )
+
+    stale_operations =
+      Enum.map(context.operations, fn
+        %{effect_type: :github_pr_update} = operation ->
+          put_in(operation, [:native_resource, :commit_sha], sha("d"))
+
+        operation ->
+          operation
+      end)
+
+    stale_context =
+      context
+      |> Map.put(:operations, stale_operations)
+      |> put_in([:native_readback, :publish, :commit_sha], sha("d"))
+
+    assert {:blocked, {:settlement_native_resource_mismatch, :publish}} =
+             ReviewSettlement.settle(decision, stale_context)
   end
 
   test "follow-up destination comes from the canonical decision" do
@@ -139,6 +156,11 @@ defmodule SymphonyElixir.ReviewSettlementTest do
 
     bad = put_in(decision, [:facts, :root_cause_receipt, :evidence_conflict?], true)
     assert {:blocked, :rejection_proof_unverified} = ReviewSettlement.settle(bad, context)
+
+    for key <- [:finding_key, :finding_lineage_key] do
+      malformed = put_in(decision, [:facts, :root_cause_receipt, key], nil)
+      assert {:blocked, :rejection_proof_unverified} = ReviewSettlement.settle(malformed, context)
+    end
   end
 
   test "claim and identity mismatches fail before effects" do
@@ -221,6 +243,13 @@ defmodule SymphonyElixir.ReviewSettlementTest do
                decision,
                put_in(context, [:native_readback, :follow_up, :url], "")
              )
+
+    nil_reply =
+      context
+      |> Map.put(:reply_body, nil)
+      |> put_in([:native_readback, :reply, :body], nil)
+
+    assert {:blocked, :reply_readback_unverified} = ReviewSettlement.settle(decision, nil_reply)
 
     assert {:blocked, :follow_up_readback_unverified} =
              ReviewSettlement.settle(
