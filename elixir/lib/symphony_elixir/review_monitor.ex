@@ -11,6 +11,7 @@ defmodule SymphonyElixir.ReviewMonitor do
     GitHubReviewClient,
     PatchAuthorization,
     ReviewConvergence,
+    ReviewSettlement,
     ReviewSettlementReceipt,
     ScopeContract,
     Tracker
@@ -25,11 +26,24 @@ defmodule SymphonyElixir.ReviewMonitor do
     settings = Config.settings!().review_convergence
 
     if settings.enabled do
-      run_with(state, settings, GitHubReviewClient, Tracker)
+      run_with(state, settings, GitHubReviewClient, Tracker, production_options(settings))
     else
       state
     end
   end
+
+  defp production_options(%{profile: :aroak_autonomous_v1}) do
+    %{
+      profile: :aroak_autonomous_v1,
+      claim_service: ClaimService,
+      effect_ledger: EffectLedger,
+      patch_authorization: PatchAuthorization,
+      review_settlement: ReviewSettlement,
+      settlement_receipt: ReviewSettlementReceipt
+    }
+  end
+
+  defp production_options(_settings), do: %{profile: :legacy}
 
   @doc false
   @spec run_with(state(), struct() | map(), module(), module()) :: state()

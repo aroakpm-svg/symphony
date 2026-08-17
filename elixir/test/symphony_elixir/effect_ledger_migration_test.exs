@@ -35,6 +35,14 @@ defmodule SymphonyElixir.EffectLedgerMigrationTest do
                                           "../../priv/symphony_migrations/20260817000001_aro_245_durable_settlement_readback.down.sql",
                                           __DIR__
                                         )
+  @settlement_receipt_migration Path.expand(
+                                  "../../priv/symphony_migrations/20260817000002_aro_245_settlement_receipt.sql",
+                                  __DIR__
+                                )
+  @settlement_receipt_rollback Path.expand(
+                                 "../../priv/symphony_migrations/20260817000002_aro_245_settlement_receipt.down.sql",
+                                 __DIR__
+                               )
   @effect_ledger Path.expand("../../lib/symphony_elixir/effect_ledger.ex", __DIR__)
   @dynamic_tool Path.expand("../../lib/symphony_elixir/codex/dynamic_tool.ex", __DIR__)
   @agent_runner Path.expand("../../lib/symphony_elixir/agent_runner.ex", __DIR__)
@@ -188,6 +196,26 @@ defmodule SymphonyElixir.EffectLedgerMigrationTest do
     refute rollback =~ "operations.status = 'succeeded'"
     assert rollback =~ "set contract_version = 1"
     refute rollback =~ "drop table"
+  end
+
+  test "ARO-245 settlement receipt migration and rollback restore the preceding contracts" do
+    sql = File.read!(@settlement_receipt_migration)
+    rollback = File.read!(@settlement_receipt_rollback)
+
+    assert sql =~ "'review_settlement_receipt'"
+    assert sql =~ "'github_pr_update', 'review_settlement_receipt'"
+    assert sql =~ "'effect-ledger', 3"
+    assert sql =~ "'finding-effect-readback', 3"
+
+    assert rollback =~ "delete from symphony_staging.effect_operations"
+    assert rollback =~ "drop constraint"
+    assert rollback =~ "begin_effect allowlist shape is incompatible with settlement receipt rollback"
+    assert rollback =~ "create or replace function symphony_staging.list_effect_operations"
+    assert rollback =~ "'effect-ledger'"
+    assert rollback =~ "'20260817000000_aro_245_review_settlement_effects'"
+    assert rollback =~ "'finding-effect-readback'"
+    assert rollback =~ "'20260817000001_aro_245_durable_settlement_readback'"
+    refute rollback =~ "symphony_production"
   end
 
   test "rollback removes only ARO-165 objects" do

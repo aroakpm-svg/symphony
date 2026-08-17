@@ -562,7 +562,7 @@ defmodule SymphonyElixir.FindingDispositionTest do
                repository: "openai/symphony",
                pull_request_number: 21,
                review_thread_id: "thread-1",
-               finding_lineage_key: String.duplicate("c", 64),
+               finding_key: String.duplicate("d", 64),
                effect_type: :github_review_thread_resolve
              })
 
@@ -614,7 +614,7 @@ defmodule SymphonyElixir.FindingDispositionTest do
       effect_type: :github_review_thread_resolve
     }
 
-    assert {:error, {:missing_field, :finding_lineage_key}} =
+    assert {:error, {:missing_field, :finding_key}} =
              FindingDisposition.operation_id(:github_review_thread_resolve, missing_lineage)
   end
 
@@ -773,7 +773,7 @@ defmodule SymphonyElixir.FindingDispositionTest do
          repository: "owner/repo",
          pull_request_number: 21,
          review_thread_id: "thread-1",
-         finding_lineage_key: String.duplicate("c", 64),
+         finding_key: String.duplicate("d", 64),
          effect_type: :github_review_thread_resolve
        }}
     ]

@@ -42,6 +42,7 @@ claim:
   fallback_grace_ms: 30000
 review_convergence:
   enabled: true
+  profile: legacy
   repository: "aroakpm-svg/aroak-central-brain"
   review_state: "In Review"
   in_progress_state: "In Progress"

@@ -448,6 +448,11 @@ the runtime MUST fail closed and MUST NOT add local stubs. `aroak_autonomous_v1`
 by default; Design 2 validation MUST NOT start workers, use shared staging credentials, deploy, or
 touch Production.
 
+The production review monitor MUST route through the explicitly configured profile. The default
+`legacy` profile preserves observational convergence; `aroak_autonomous_v1` invokes the same
+claim-bound Design 3/Design 4 owner runtime used by integration tests and fails closed when any
+owner dependency or settlement context is unavailable.
+
 Design 4 settlement consumes canonical Design 2 decisions and supplied immutable operation
 identities/fingerprints. `ReviewSettlement.settle/2` MUST validate the active claim/generation,
 exact current head, canonical FindingKey/LineageKey, durable EffectLedger status, path-specific

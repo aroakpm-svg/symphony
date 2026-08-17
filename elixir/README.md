@@ -304,7 +304,9 @@ Notes:
   by the Codex turn sandbox.
 - `agent.max_turns` caps how many back-to-back Codex turns Symphony will run in a single agent
   invocation when a turn completes normally but the issue is still in an active state. Default: `20`.
-- `review_convergence.enabled` defaults to `false`. When enabled, `repository` is required in
+- `review_convergence.enabled` defaults to `false`. `review_convergence.profile` defaults to
+  `legacy`; set it explicitly to `aroak_autonomous_v1` only when the claim, ledger, Design 3, and
+  Design 4 owner runtime is installed. When enabled, `repository` is required in
   `owner/name` form. `review_state`, `in_progress_state`, `max_fix_rounds`, and `human_owner`
   configure monitoring, rework, and escalation without changing merge authorization.
 - If the Markdown body is blank, Symphony uses a default prompt template that includes the issue

@@ -611,14 +611,14 @@ defmodule SymphonyElixir.FindingDisposition do
   defp logical_operation_identity(:github_review_thread_resolve, input) do
     with {:ok, _base_identity} <- required_identity(input, [:repository, :pull_request_number, :review_thread_id]),
          :ok <- matching_effect_type(input, :github_review_thread_resolve),
-         {:ok, lineage} <- logical_identity_field(input, :finding_lineage_key),
+         {:ok, finding} <- logical_identity_field(input, :finding_key),
          :ok <-
-           matching_operation_scope(input, lineage, :finding_lineage_key, [
+           matching_operation_scope(input, finding, :finding_key, [
              :repository,
              :pull_request_number,
              :review_thread_id
            ]) do
-      identity = {review_identity(input), lineage, :github_review_thread_resolve}
+      identity = {review_identity(input), finding, :github_review_thread_resolve}
 
       {:ok, identity}
     end

@@ -74,7 +74,7 @@ begin
     operations.status in ('pending', 'unknown') or
     (operations.status = 'succeeded' and operations.effect_type in (
       'github_comment', 'linear_issue_create', 'github_review_thread_resolve',
-      'review_settlement_receipt'
+      'github_pr_update', 'review_settlement_receipt'
     ))) and operations.generation <= requested_generation
   order by operations.operation_id;
 end

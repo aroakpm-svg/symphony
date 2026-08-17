@@ -75,7 +75,9 @@ defmodule SymphonyElixir.ReviewSettlement do
   defp settle_disposition(%{disposition: :blocked_unverified}, _context, _finding_key, _lineage_key),
     do: {:blocked, :blocked_unverified}
 
-  defp settle_disposition(%{disposition: :follow_up_required}, context, finding_key, lineage_key) do
+  defp settle_disposition(%{disposition: :follow_up_required} = decision, context, finding_key, lineage_key) do
+    context = Map.put(context, :canonical_follow_up_destination, decision[:follow_up_destination])
+
     with :ok <-
            succeeded_effect(
              context,
@@ -85,7 +87,7 @@ defmodule SymphonyElixir.ReviewSettlement do
              lineage_key,
              :follow_up_required
            ),
-         :ok <- follow_up_readback(context, lineage_key),
+         :ok <- follow_up_readback(decision, context, lineage_key),
          :ok <- succeeded_effect(context, :github_comment, :reply, finding_key, lineage_key, :follow_up_required),
          :ok <- reply_readback(context, finding_key),
          :ok <- no_new_actionable_evidence(context),
@@ -107,6 +109,7 @@ defmodule SymphonyElixir.ReviewSettlement do
 
   defp settle_disposition(%{disposition: :fix_in_current_pr}, context, finding_key, lineage_key) do
     with :ok <- fix_evidence(context, finding_key),
+         :ok <- succeeded_effect(context, :github_pr_update, :publish, finding_key, lineage_key, :fix_in_current_pr),
          :ok <- succeeded_effect(context, :github_comment, :reply, finding_key, lineage_key, :fix_in_current_pr),
          :ok <- reply_readback(context, finding_key),
          :ok <- no_new_actionable_evidence(context),
@@ -231,6 +234,15 @@ defmodule SymphonyElixir.ReviewSettlement do
       else: {:error, {:settlement_native_resource_mismatch, :resolve}}
   end
 
+  defp validate_native_resource(:publish, native, context) do
+    readback = get_in(context, [:native_readback, :publish]) || %{}
+
+    if same_resource_id?(resource_value(native, :commit_sha), resource_value(readback, :commit_sha)) and
+         same_resource_id?(resource_value(native, :tree_sha), resource_value(readback, :tree_sha)),
+       do: :ok,
+       else: {:error, {:settlement_native_resource_mismatch, :publish}}
+  end
+
   defp same_resource_id?(left, right),
     do: is_binary(left) and left != "" and left == right
 
@@ -242,8 +254,19 @@ defmodule SymphonyElixir.ReviewSettlement do
       repository: finding_key.repository,
       pull_request_number: finding_key.pull_request_number,
       finding_lineage_key: lineage_key,
-      destination: get_in(context, [:native_readback, :follow_up, :destination]),
+      destination: context[:canonical_follow_up_destination],
       effect_type: :linear_issue_create
+    })
+  end
+
+  defp expected_operation_id(:github_pr_update, context, finding_key, _lineage_key, _disposition) do
+    FindingDisposition.operation_id(:github_pr_update, %{
+      repository: finding_key.repository,
+      pull_request_number: finding_key.pull_request_number,
+      evaluated_head_sha: finding_key.source_head_sha,
+      finding_set_digest: get_in(context, [:path_evidence, :finding_set_digest]),
+      authorization_identity: get_in(context, [:path_evidence, :authorization_identity]),
+      effect_type: :github_pr_update
     })
   end
 
@@ -258,12 +281,12 @@ defmodule SymphonyElixir.ReviewSettlement do
     })
   end
 
-  defp expected_operation_id(:github_review_thread_resolve, _context, finding_key, lineage_key, _disposition) do
+  defp expected_operation_id(:github_review_thread_resolve, _context, finding_key, _lineage_key, _disposition) do
     FindingDisposition.operation_id(:github_review_thread_resolve, %{
       repository: finding_key.repository,
       pull_request_number: finding_key.pull_request_number,
       review_thread_id: finding_key.review_thread_id,
-      finding_lineage_key: lineage_key,
+      finding_key: finding_key,
       effect_type: :github_review_thread_resolve
     })
   end
@@ -286,16 +309,25 @@ defmodule SymphonyElixir.ReviewSettlement do
   defp message_kind(:follow_up_required), do: :follow_up
   defp message_kind(:rejected), do: :rejected
 
-  defp follow_up_readback(context, lineage_key) do
+  defp follow_up_readback(decision, context, lineage_key) do
+    destination = decision[:follow_up_destination]
+
     case get_in(context, [:native_readback, :follow_up]) do
-      %{id: id, url: url, destination: "Backlog", finding_lineage_key_digest: digest, state: state}
-      when is_binary(id) and id != "" and is_binary(url) and url != "" and
-             state in ["Backlog", :backlog] and digest == lineage_key.digest ->
-        :ok
+      %{destination: ^destination} = readback ->
+        validate_follow_up_readback(readback, destination, lineage_key)
 
       _readback ->
         {:error, :follow_up_readback_unverified}
     end
+  end
+
+  defp validate_follow_up_readback(readback, destination, lineage_key) do
+    fields = [readback[:id], readback[:url], destination, readback[:state]]
+
+    if Enum.all?(fields, &(is_binary(&1) and &1 != "")) and
+         readback[:finding_lineage_key_digest] == lineage_key.digest,
+       do: :ok,
+       else: {:error, :follow_up_readback_unverified}
   end
 
   defp reply_readback(context, finding_key) do
@@ -337,14 +369,24 @@ defmodule SymphonyElixir.ReviewSettlement do
     cond do
       readback[:reopened?] == true -> {:error, :review_thread_reopened}
       readback[:newer_trusted_actionable?] == true -> {:error, :newer_trusted_actionable_finding}
+      readback[:reopened?] != false -> {:error, :review_thread_reopen_status_unverified}
+      readback[:newer_trusted_actionable?] != false -> {:error, :newer_actionable_status_unverified}
       true -> :ok
     end
   end
 
   defp fix_evidence(context, finding_key) do
     case context[:path_evidence] do
-      %{managed_publish_confirmed?: true, regression_status: :pass, accepted_review_head_sha: head_sha}
-      when head_sha == finding_key.source_head_sha ->
+      %{
+        managed_publish_confirmed?: true,
+        regression_status: :pass,
+        accepted_review_head_sha: head_sha,
+        authorization_identity: authorization_identity,
+        finding_set_digest: finding_set_digest
+      }
+      when head_sha == finding_key.source_head_sha and is_binary(authorization_identity) and
+             authorization_identity != "" and is_binary(finding_set_digest) and
+             byte_size(finding_set_digest) == 64 ->
         :ok
 
       _evidence ->
@@ -353,18 +395,50 @@ defmodule SymphonyElixir.ReviewSettlement do
   end
 
   defp rejected_evidence(decision, context) do
-    case FindingDisposition.classify(decision[:facts] || %{}, %{
-           verified?: true,
-           valid?: true,
-           current_head_sha: context[:current_head_sha]
-         }) do
-      {:ok, %{disposition: :rejected, finding_key_digest: digest}}
-      when digest == decision.finding_key_digest ->
-        :ok
+    receipt = get_in(decision, [:facts, :root_cause_receipt]) || %{}
+
+    case receipt do
+      %{
+        disposition: :reject,
+        verified?: true,
+        valid?: true,
+        evidence_conflict?: false,
+        rejection_basis: basis,
+        evidence_references: references,
+        validation_receipt_status: "PASS",
+        finding_key: finding_key,
+        finding_lineage_key: lineage_key,
+        evaluated_head_sha: head_sha
+      } ->
+        validate_rejection_identity(
+          {finding_key, lineage_key, head_sha},
+          {basis, references},
+          decision,
+          context
+        )
 
       _invalid ->
         {:error, :rejection_proof_unverified}
     end
+  end
+
+  defp validate_rejection_identity(
+         {finding_key, lineage_key, head_sha},
+         {basis, references},
+         decision,
+         context
+       ) do
+    identity_matches? =
+      finding_key.digest == decision.finding_key_digest and
+        lineage_key.digest == decision.finding_lineage_key.digest and
+        head_sha == context[:current_head_sha]
+
+    evidence_complete? =
+      is_binary(basis) and basis != "" and is_list(references) and references != []
+
+    if identity_matches? and evidence_complete?,
+      do: :ok,
+      else: {:error, :rejection_proof_unverified}
   end
 
   defp evidence(status, context, finding_key, lineage_key) do

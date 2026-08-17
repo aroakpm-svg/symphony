@@ -259,6 +259,17 @@ defmodule SymphonyElixir.ReviewConvergenceTest do
 
     assert message =~ "review_convergence.repository"
 
+    assert {:ok, autonomous} =
+             Schema.parse(%{
+               "review_convergence" => %{
+                 "enabled" => true,
+                 "profile" => "aroak_autonomous_v1",
+                 "repository" => "aroakpm-svg/symphony"
+               }
+             })
+
+    assert autonomous.review_convergence.profile == :aroak_autonomous_v1
+
     assert {:error, {:invalid_workflow_config, malformed_message}} =
              Schema.parse(%{
                "review_convergence" => %{"enabled" => true, "repository" => "symphony"}

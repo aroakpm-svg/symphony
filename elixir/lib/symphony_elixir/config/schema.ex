@@ -166,6 +166,7 @@ defmodule SymphonyElixir.Config.Schema do
     @primary_key false
     embedded_schema do
       field(:enabled, :boolean, default: false)
+      field(:profile, Ecto.Enum, values: [:legacy, :aroak_autonomous_v1], default: :legacy)
       field(:database_url, :string)
       field(:ca_cert_file, :string)
       field(:node_id, :string)
@@ -227,6 +228,7 @@ defmodule SymphonyElixir.Config.Schema do
     @primary_key false
     embedded_schema do
       field(:enabled, :boolean, default: false)
+      field(:profile, Ecto.Enum, values: [:legacy, :aroak_autonomous_v1], default: :legacy)
       field(:repository, :string)
       field(:review_state, :string, default: "In Review")
       field(:in_progress_state, :string, default: "In Progress")
@@ -239,7 +241,7 @@ defmodule SymphonyElixir.Config.Schema do
       schema
       |> cast(
         attrs,
-        [:enabled, :repository, :review_state, :in_progress_state, :max_fix_rounds, :human_owner],
+        [:enabled, :profile, :repository, :review_state, :in_progress_state, :max_fix_rounds, :human_owner],
         empty_values: []
       )
       |> validate_number(:max_fix_rounds, greater_than: 0)

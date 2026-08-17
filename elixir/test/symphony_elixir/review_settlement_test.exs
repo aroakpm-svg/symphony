@@ -67,6 +67,15 @@ defmodule SymphonyElixir.ReviewSettlementTest do
                decision,
                put_in(context, [:native_readback, :newer_trusted_actionable?], true)
              )
+
+    assert {:blocked, :review_thread_reopen_status_unverified} =
+             ReviewSettlement.settle(decision, put_in(context, [:native_readback, :reopened?], nil))
+
+    assert {:blocked, :newer_actionable_status_unverified} =
+             ReviewSettlement.settle(
+               decision,
+               put_in(context, [:native_readback, :newer_trusted_actionable?], nil)
+             )
   end
 
   test "fix settlement requires publish regression and accepted exact-head review" do
@@ -76,6 +85,49 @@ defmodule SymphonyElixir.ReviewSettlementTest do
 
     assert {:blocked, :fix_settlement_evidence_unverified} =
              ReviewSettlement.settle(decision, put_in(context, [:path_evidence, :regression_status], :fail))
+
+    without_publish = Enum.reject(context.operations, &(&1.effect_type == :github_pr_update))
+
+    assert {:blocked, {:settlement_effect_missing, :publish}} =
+             ReviewSettlement.settle(decision, %{context | operations: without_publish})
+
+    assert {:blocked, {:settlement_native_resource_mismatch, :publish}} =
+             ReviewSettlement.settle(
+               decision,
+               put_in(context, [:native_readback, :publish, :commit_sha], sha("d"))
+             )
+  end
+
+  test "follow-up destination comes from the canonical decision" do
+    {decision, context} = fixture(:follow_up_required)
+    destination = "ARO-999"
+    decision = %{decision | follow_up_destination: destination}
+
+    {:ok, operation_id} =
+      FindingDisposition.operation_id(:linear_issue_create, %{
+        repository: decision.finding_key.repository,
+        pull_request_number: decision.finding_key.pull_request_number,
+        finding_lineage_key: decision.finding_lineage_key,
+        destination: destination,
+        effect_type: :linear_issue_create
+      })
+
+    operations =
+      Enum.map(context.operations, fn
+        %{effect_type: :linear_issue_create} = operation ->
+          %{operation | operation_id: context.claim.issue_id <> ":" <> operation_id}
+
+        operation ->
+          operation
+      end)
+
+    context =
+      context
+      |> put_in([:operation_ids, :follow_up_issue], operation_id)
+      |> put_in([:native_readback, :follow_up, :destination], destination)
+      |> Map.put(:operations, operations)
+
+    assert {:settled, %{status: :follow_up_settled}} = ReviewSettlement.settle(decision, context)
   end
 
   test "rejected reaches rejected_settled only with canonical proof and final readback" do
@@ -200,6 +252,7 @@ defmodule SymphonyElixir.ReviewSettlementTest do
 
     decision = %{
       disposition: disposition,
+      follow_up_destination: "Backlog",
       finding_key: finding_key,
       finding_lineage_key: lineage_key,
       finding_key_digest: finding_key.digest,
@@ -230,11 +283,24 @@ defmodule SymphonyElixir.ReviewSettlementTest do
         repository: finding_key.repository,
         pull_request_number: finding_key.pull_request_number,
         review_thread_id: finding_key.review_thread_id,
-        finding_lineage_key: lineage_key,
+        finding_key: finding_key,
         effect_type: :github_review_thread_resolve
       })
 
-    operation_ids = %{follow_up_issue: linear_id, reply: reply_id, resolve: resolve_id}
+    finding_set_digest = sha256(finding_key.digest)
+    authorization_identity = "authorization-245"
+
+    {:ok, publish_id} =
+      FindingDisposition.operation_id(:github_pr_update, %{
+        repository: finding_key.repository,
+        pull_request_number: finding_key.pull_request_number,
+        evaluated_head_sha: finding_key.source_head_sha,
+        finding_set_digest: finding_set_digest,
+        authorization_identity: authorization_identity,
+        effect_type: :github_pr_update
+      })
+
+    operation_ids = %{follow_up_issue: linear_id, reply: reply_id, resolve: resolve_id, publish: publish_id}
 
     fingerprint = fingerprint(decision)
 
@@ -243,6 +309,10 @@ defmodule SymphonyElixir.ReviewSettlementTest do
     operations = [
       operation(issue_id, linear_id, :linear_issue_create, fingerprint, %{id: "ARO-999"}),
       operation(issue_id, reply_id, :github_comment, fingerprint, %{comment_id: "reply-1"}),
+      operation(issue_id, publish_id, :github_pr_update, fingerprint, %{
+        commit_sha: finding_key.source_head_sha,
+        tree_sha: sha("c")
+      }),
       operation(issue_id, resolve_id, :github_review_thread_resolve, fingerprint, %{
         review_thread_id: finding_key.review_thread_id,
         resolved?: true
@@ -258,9 +328,12 @@ defmodule SymphonyElixir.ReviewSettlementTest do
       path_evidence: %{
         managed_publish_confirmed?: true,
         regression_status: :pass,
-        accepted_review_head_sha: finding_key.source_head_sha
+        accepted_review_head_sha: finding_key.source_head_sha,
+        finding_set_digest: finding_set_digest,
+        authorization_identity: authorization_identity
       },
       native_readback: %{
+        publish: %{commit_sha: finding_key.source_head_sha, tree_sha: sha("c")},
         follow_up: %{
           id: "ARO-999",
           url: "https://linear.app/issue/ARO-999",
