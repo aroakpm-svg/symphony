@@ -6,7 +6,8 @@ defmodule SymphonyElixir.FindingDisposition do
   GitHub, Linear, claim, ledger, persistence, or callback dependency.
   """
 
-  @type disposition :: :fix_in_current_pr | :follow_up_required | :blocked_unverified
+  @type disposition ::
+          :fix_in_current_pr | :follow_up_required | :blocked_unverified | :rejected
   @type effect_type ::
           :github_pr_update
           | :linear_issue_create
@@ -43,6 +44,7 @@ defmodule SymphonyElixir.FindingDisposition do
           fix_decisions: [decision()],
           follow_up_decisions: [decision()],
           blocked_decisions: [decision()],
+          rejected_decisions: [decision()],
           merge_ready_blocked?: boolean(),
           preflight: map()
         }
@@ -51,6 +53,13 @@ defmodule SymphonyElixir.FindingDisposition do
   @type managed_publish_identity :: map()
 
   @supported_message_kinds [:follow_up]
+  @rejection_receipt_fields [
+    :disposition,
+    :rejection_basis,
+    :evidence_references,
+    :review_action,
+    :validation_receipt_status
+  ]
 
   @spec build_finding_key(map()) :: {:ok, finding_key()} | {:error, term()}
   def build_finding_key(input) when is_map(input) do
@@ -118,12 +127,12 @@ defmodule SymphonyElixir.FindingDisposition do
   def select_review_comment(_thread, _options), do: {:error, :invalid_review_thread}
 
   @spec classify(map(), map()) :: {:ok, decision()} | {:error, term()}
-  def classify(facts, _preflight) when is_map(facts) do
+  def classify(facts, preflight) when is_map(facts) and is_map(preflight) do
     case canonical_identity(facts) do
       {:ok, {finding_key, finding_lineage_key, finding_key_digest}} ->
         {:ok,
          %{
-           disposition: classify_disposition(facts),
+           disposition: classify_disposition(facts, finding_key, finding_lineage_key, preflight),
            finding_key: finding_key,
            finding_key_digest: finding_key_digest,
            finding_lineage_key: finding_lineage_key,
@@ -153,6 +162,7 @@ defmodule SymphonyElixir.FindingDisposition do
         fix_decisions = Enum.filter(decisions, &(&1.disposition == :fix_in_current_pr))
         follow_up_decisions = Enum.filter(decisions, &(&1.disposition == :follow_up_required))
         blocked_decisions = Enum.filter(decisions, &(&1.disposition == :blocked_unverified))
+        rejected_decisions = Enum.filter(decisions, &(&1.disposition == :rejected))
 
         {:ok,
          %{
@@ -160,7 +170,8 @@ defmodule SymphonyElixir.FindingDisposition do
            fix_decisions: fix_decisions,
            follow_up_decisions: follow_up_decisions,
            blocked_decisions: blocked_decisions,
-           merge_ready_blocked?: blocked_decisions != [],
+           rejected_decisions: rejected_decisions,
+           merge_ready_blocked?: blocked_decisions != [] or rejected_decisions != [],
            preflight: preflight
          }}
 
@@ -270,9 +281,11 @@ defmodule SymphonyElixir.FindingDisposition do
     follow_up_decisions = Map.get(plan, :follow_up_decisions, filter_disposition(decisions, :follow_up_required))
     fix_decisions = Map.get(plan, :fix_decisions, filter_disposition(decisions, :fix_in_current_pr))
     blocked_decisions = Map.get(plan, :blocked_decisions, filter_disposition(decisions, :blocked_unverified))
+    rejected_decisions = Map.get(plan, :rejected_decisions, filter_disposition(decisions, :rejected))
 
     [
       :reconcile,
+      {:retain_rejected_for_settlement, rejected_decisions},
       {:settle_follow_up, follow_up_decisions},
       :refetch,
       :recompute_remaining,
@@ -304,12 +317,59 @@ defmodule SymphonyElixir.FindingDisposition do
     decision
   end
 
-  defp classify_disposition(facts) do
+  defp classify_disposition(facts, finding_key, finding_lineage_key, preflight) do
     cond do
+      rejected_facts?(facts, finding_key, finding_lineage_key, preflight) -> :rejected
+      reject_receipt_attempted?(facts) -> :blocked_unverified
       fix_facts?(facts) -> :fix_in_current_pr
       follow_up_facts?(facts) -> :follow_up_required
       true -> :blocked_unverified
     end
+  end
+
+  defp reject_receipt_attempted?(facts) do
+    case value(facts, :root_cause_receipt) do
+      receipt when is_map(receipt) -> Enum.any?(@rejection_receipt_fields, &present?(receipt, &1))
+      _receipt -> false
+    end
+  end
+
+  defp rejected_facts?(facts, finding_key, finding_lineage_key, preflight) do
+    with receipt when is_map(receipt) <- value(facts, :root_cause_receipt),
+         disposition when disposition in [:reject, "reject"] <- value(receipt, :disposition),
+         true <- true_value?(value(receipt, :verified?)),
+         true <- true_value?(value(receipt, :valid?)),
+         true <- no_evidence_conflict?(facts),
+         true <- no_evidence_conflict?(receipt),
+         true <- non_blank_string?(value(receipt, :rejection_basis)),
+         true <- non_blank_string_list?(value(receipt, :evidence_references)),
+         true <- value(receipt, :review_action) in [:unresolved_with_reason, "unresolved_with_reason"],
+         true <- value(receipt, :validation_receipt_status) in [:pass, "PASS"],
+         false <- value(receipt, :hypothesis_rejected?),
+         {:ok, receipt_finding_key} <- canonical_finding_key(value(receipt, :finding_key)),
+         {:ok, receipt_lineage_key} <- canonical_lineage_key(value(receipt, :finding_lineage_key)),
+         true <- receipt_finding_key == finding_key,
+         true <- receipt_lineage_key == finding_lineage_key,
+         source_head_sha when is_binary(source_head_sha) <- finding_key.source_head_sha,
+         true <- value(preflight, :current_head_sha) == source_head_sha,
+         true <- value(receipt, :evaluated_head_sha) == source_head_sha,
+         true <- value(receipt, :current_head_sha) == source_head_sha,
+         native_readback when is_map(native_readback) <- value(receipt, :native_readback),
+         true <- rejection_readback_matches?(native_readback, finding_key, finding_lineage_key) do
+      true
+    else
+      _ -> false
+    end
+  end
+
+  defp rejection_readback_matches?(readback, finding_key, finding_lineage_key) do
+    true_value?(value(readback, :verified?)) and
+      value(readback, :repository) == finding_key.repository and
+      value(readback, :pull_request_number) == finding_key.pull_request_number and
+      value(readback, :review_thread_id) == finding_key.review_thread_id and
+      value(readback, :current_head_sha) == finding_key.source_head_sha and
+      value(readback, :finding_key_digest) == finding_key.digest and
+      value(readback, :finding_lineage_key_digest) == finding_lineage_key.digest
   end
 
   defp fix_facts?(facts) do
@@ -937,7 +997,8 @@ defmodule SymphonyElixir.FindingDisposition do
        when disposition in [
               :fix_in_current_pr,
               :follow_up_required,
-              :blocked_unverified
+              :blocked_unverified,
+              :rejected
             ],
        do: :ok
 
@@ -960,6 +1021,14 @@ defmodule SymphonyElixir.FindingDisposition do
   end
 
   defp non_empty_string?(value), do: is_binary(value) and byte_size(value) > 0
+
+  defp non_blank_string?(value),
+    do: is_binary(value) and String.valid?(value) and String.trim(value) != ""
+
+  defp non_blank_string_list?(values) when is_list(values) and values != [],
+    do: Enum.all?(values, &non_blank_string?/1)
+
+  defp non_blank_string_list?(_values), do: false
 
   defp false_value?(value), do: is_boolean(value) and not value
 

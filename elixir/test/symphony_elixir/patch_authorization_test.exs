@@ -36,6 +36,15 @@ defmodule SymphonyElixir.PatchAuthorizationTest do
                runtime
              )
 
+    assert {:blocked, :rejected_not_settled} =
+             PatchAuthorization.authorize(
+               %{decision | disposition: :rejected},
+               receipt,
+               claim,
+               effects,
+               runtime
+             )
+
     for change <- [
           %{verified?: false},
           %{valid?: false},

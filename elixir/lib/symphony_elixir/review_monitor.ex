@@ -438,7 +438,12 @@ defmodule SymphonyElixir.ReviewMonitor do
     with {:ok, scope_contract} <- parse_scope_contract(snapshot),
          {:ok, events} <- review_events(snapshot),
          {:ok, findings} <- selected_findings(snapshot, events, settings),
-         {:ok, plan} <- FindingDisposition.classify_all(findings, %{verified?: true, valid?: true}) do
+         {:ok, plan} <-
+           FindingDisposition.classify_all(findings, %{
+             verified?: true,
+             valid?: true,
+             current_head_sha: snapshot[:current_head_sha]
+           }) do
       {:ok,
        Map.merge(plan, %{
          requires_lifecycle?: plan.decisions != [],

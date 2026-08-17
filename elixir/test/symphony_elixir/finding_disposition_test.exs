@@ -154,7 +154,7 @@ defmodule SymphonyElixir.FindingDispositionTest do
              FindingDisposition.select_review_comment(%{resolved?: false, comments: [:bad]}, %{})
   end
 
-  test "three findings are classified independently" do
+  test "four canonical findings are classified independently" do
     fix_facts = %{
       introduced_by_pr?: true,
       still_applies?: true,
@@ -174,11 +174,14 @@ defmodule SymphonyElixir.FindingDispositionTest do
       root_cause_bounded?: true
     }
 
+    rejected_facts = rejected_finding_facts("rejected")
+
     assert {:ok, plan} =
              FindingDisposition.classify_all(
                [
                  finding_facts("fix", fix_facts),
                  finding_facts("follow", follow_up_facts),
+                 rejected_facts,
                  finding_facts("blocked", %{introduced_by_pr?: :unknown, still_applies?: :unknown})
                ],
                preflight_facts()
@@ -187,10 +190,146 @@ defmodule SymphonyElixir.FindingDispositionTest do
     assert Enum.frequencies(Enum.map(plan.decisions, & &1.disposition)) == %{
              blocked_unverified: 1,
              fix_in_current_pr: 1,
-             follow_up_required: 1
+             follow_up_required: 1,
+             rejected: 1
            }
 
     assert plan.merge_ready_blocked?
+    assert [%{disposition: :rejected}] = plan.rejected_decisions
+  end
+
+  test "reject receipt maps to rejected only with complete exact-head native evidence" do
+    facts =
+      rejected_finding_facts("strict-reject")
+      |> Map.merge(%{
+        introduced_by_pr?: true,
+        invariant_violation?: false,
+        still_applies?: true,
+        root_cause_bounded?: true,
+        requires_new_decision?: false
+      })
+
+    assert {:ok, %{disposition: :rejected}} = FindingDisposition.classify(facts, preflight_facts())
+
+    receipt = facts.root_cause_receipt
+
+    invalid_receipts = [
+      Map.delete(receipt, :disposition),
+      %{receipt | disposition: nil},
+      %{receipt | disposition: :unknown},
+      Map.delete(receipt, :disposition)
+      |> Map.new(fn {key, value} -> {Atom.to_string(key), value} end),
+      Map.delete(receipt, :rejection_basis),
+      %{receipt | rejection_basis: "  \t\n"},
+      %{receipt | rejection_basis: <<255>>},
+      %{receipt | evidence_references: []},
+      %{receipt | evidence_references: ["spec:design-2a", " \r\n"]},
+      %{receipt | evidence_references: ["spec:design-2a", <<255>>]},
+      %{receipt | evidence_conflict?: true},
+      %{receipt | current_head_sha: full_sha("2")},
+      %{receipt | finding_key: Map.put(receipt.finding_key, :digest, String.duplicate("f", 64))},
+      %{receipt | native_readback: %{receipt.native_readback | verified?: false}},
+      %{receipt | native_readback: %{receipt.native_readback | current_head_sha: full_sha("2")}},
+      %{receipt | review_action: :resolved},
+      %{receipt | validation_receipt_status: "UNVERIFIED"},
+      %{receipt | hypothesis_rejected?: true},
+      Map.delete(receipt, :hypothesis_rejected?),
+      %{receipt | hypothesis_rejected?: :unknown},
+      %{receipt | hypothesis_rejected?: "true"},
+      %{receipt | hypothesis_rejected?: "false"},
+      %{receipt | hypothesis_rejected?: nil}
+    ]
+
+    for invalid <- invalid_receipts do
+      assert {:ok, %{disposition: :blocked_unverified}} =
+               FindingDisposition.classify(%{facts | root_cause_receipt: invalid}, preflight_facts())
+    end
+
+    assert {:ok, %{disposition: :blocked_unverified}} =
+             FindingDisposition.classify(facts, %{preflight_facts() | current_head_sha: full_sha("2")})
+
+    assert {:ok, %{disposition: :blocked_unverified}} =
+             FindingDisposition.classify(facts, Map.delete(preflight_facts(), :current_head_sha))
+  end
+
+  test "an invalid attempted reject cannot fall through to follow-up routing" do
+    facts =
+      rejected_finding_facts("invalid-reject-follow-up")
+      |> Map.merge(%{
+        introduced_by_pr?: false,
+        invariant_violation?: false,
+        safe_follow_up?: true,
+        in_scope?: false,
+        follow_up_destination: "ARO-999",
+        still_applies?: true,
+        root_cause_bounded?: true,
+        requires_new_decision?: false
+      })
+
+    stale_receipt = %{facts.root_cause_receipt | current_head_sha: full_sha("2")}
+
+    assert {:ok, %{disposition: :blocked_unverified}} =
+             FindingDisposition.classify(%{facts | root_cause_receipt: stale_receipt}, preflight_facts())
+  end
+
+  test "causal hypothesis receipt flags alone do not masquerade as review rejection" do
+    for hypothesis_rejected? <- [false, true] do
+      fix =
+        finding_facts("hypothesis-receipt-fix-#{hypothesis_rejected?}", %{
+          introduced_by_pr?: true,
+          invariant_violation?: false,
+          still_applies?: true,
+          root_cause_bounded?: true,
+          requires_new_decision?: false,
+          root_cause_receipt: %{hypothesis_rejected?: hypothesis_rejected?}
+        })
+
+      follow_up =
+        finding_facts("hypothesis-receipt-follow-up-#{hypothesis_rejected?}", %{
+          introduced_by_pr?: false,
+          invariant_violation?: false,
+          safe_follow_up?: true,
+          in_scope?: false,
+          follow_up_destination: "ARO-999",
+          still_applies?: true,
+          root_cause_bounded?: true,
+          requires_new_decision?: false,
+          root_cause_receipt: %{hypothesis_rejected?: hypothesis_rejected?}
+        })
+
+      assert {:ok, %{disposition: :fix_in_current_pr}} =
+               FindingDisposition.classify(fix, preflight_facts())
+
+      assert {:ok, %{disposition: :follow_up_required}} =
+               FindingDisposition.classify(follow_up, preflight_facts())
+    end
+  end
+
+  test "real out-of-scope findings remain follow-up and causal hypothesis rejection is not review rejection" do
+    follow_up =
+      finding_facts("real-follow-up", %{
+        introduced_by_pr?: false,
+        invariant_violation?: false,
+        safe_follow_up?: true,
+        in_scope?: false,
+        follow_up_destination: "ARO-999",
+        requires_new_decision?: false,
+        still_applies?: true,
+        root_cause_bounded?: true
+      })
+
+    assert {:ok, %{disposition: :follow_up_required}} =
+             FindingDisposition.classify(follow_up, preflight_facts())
+
+    hypothesis_only =
+      finding_facts("hypothesis-only", %{
+        introduced_by_pr?: false,
+        invariant_violation?: false,
+        hypothesis_rejected?: true
+      })
+
+    assert {:ok, %{disposition: :blocked_unverified}} =
+             FindingDisposition.classify(hypothesis_only, preflight_facts())
   end
 
   test "unsafe or missing local facts are blocked and global preflight fails closed" do
@@ -358,6 +497,7 @@ defmodule SymphonyElixir.FindingDispositionTest do
 
     assert FindingDisposition.execution_steps(plan) == [
              :reconcile,
+             {:retain_rejected_for_settlement, []},
              {:settle_follow_up, []},
              :refetch,
              :recompute_remaining,
@@ -830,7 +970,58 @@ defmodule SymphonyElixir.FindingDispositionTest do
     )
   end
 
-  defp preflight_facts, do: %{verified?: true, valid?: true, repository: "openai/symphony", pull_request_number: 21}
+  defp rejected_finding_facts(name) do
+    facts =
+      finding_facts(name, %{
+        introduced_by_pr?: false,
+        invariant_violation?: false,
+        still_applies?: true,
+        in_scope?: true,
+        root_cause_bounded?: true,
+        requires_new_decision?: false
+      })
+
+    {:ok, finding_key} = FindingDisposition.build_finding_key(facts)
+    {:ok, finding_lineage_key} = FindingDisposition.build_lineage_key(facts)
+
+    native_readback = %{
+      verified?: true,
+      repository: finding_key.repository,
+      pull_request_number: finding_key.pull_request_number,
+      review_thread_id: finding_key.review_thread_id,
+      current_head_sha: finding_key.source_head_sha,
+      finding_key_digest: finding_key.digest,
+      finding_lineage_key_digest: finding_lineage_key.digest
+    }
+
+    receipt = %{
+      disposition: :reject,
+      verified?: true,
+      valid?: true,
+      evidence_conflict?: false,
+      rejection_basis: "Exact contract evidence contradicts the review claim",
+      evidence_references: ["spec:design-2a", "test:rejected-contract"],
+      review_action: :unresolved_with_reason,
+      validation_receipt_status: "PASS",
+      hypothesis_rejected?: false,
+      finding_key: finding_key,
+      finding_lineage_key: finding_lineage_key,
+      evaluated_head_sha: finding_key.source_head_sha,
+      current_head_sha: finding_key.source_head_sha,
+      native_readback: native_readback
+    }
+
+    Map.put(facts, :root_cause_receipt, receipt)
+  end
+
+  defp preflight_facts,
+    do: %{
+      verified?: true,
+      valid?: true,
+      repository: "openai/symphony",
+      pull_request_number: 21,
+      current_head_sha: full_sha("1")
+    }
 
   defp trusted_comment(id, body, connection_index), do: %{id: id, body: body, trusted_review_source?: true, managed_agent_reply?: false, settlement_marker?: false, connection_index: connection_index}
 
