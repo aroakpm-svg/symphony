@@ -1,7 +1,7 @@
 defmodule SymphonyElixir.ReviewSettlementReceipt do
   @moduledoc "Persists the terminal ReviewSettlement proof in EffectLedger."
 
-  alias SymphonyElixir.{EffectLedger, FindingDisposition}
+  alias SymphonyElixir.FindingDisposition
 
   @spec reconcile_pending(term(), module(), map(), [map()]) :: :ok | {:error, term()}
   def reconcile_pending(connection, ledger, claim, operations) when is_list(operations) do
@@ -52,7 +52,7 @@ defmodule SymphonyElixir.ReviewSettlementReceipt do
   end
 
   @spec record(term(), module(), map(), map(), map(), [map()]) :: {:ok, map()} | {:error, term()}
-  def record(connection, ledger \\ EffectLedger, claim, decision, evidence, operations) do
+  def record(connection, ledger, claim, decision, evidence, operations) do
     with finding_key when is_map(finding_key) <- decision[:finding_key],
          disposition when disposition in [:fix_in_current_pr, :follow_up_required, :rejected] <-
            decision[:disposition],
