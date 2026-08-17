@@ -6,6 +6,8 @@ defmodule SymphonyElixir.FindingDisposition do
   GitHub, Linear, claim, ledger, persistence, or callback dependency.
   """
 
+  alias SymphonyElixir.ReviewIdentity
+
   @type disposition ::
           :fix_in_current_pr | :follow_up_required | :blocked_unverified | :rejected
   @type effect_type ::
@@ -17,7 +19,6 @@ defmodule SymphonyElixir.FindingDisposition do
   @type finding_key :: %{
           repository: String.t(),
           pull_request_number: pos_integer(),
-          source_head_sha: String.t(),
           review_thread_id: String.t(),
           selected_review_comment_id: String.t(),
           body_sha256: String.t(),
@@ -52,7 +53,7 @@ defmodule SymphonyElixir.FindingDisposition do
   @type effect_intent :: map()
   @type managed_publish_identity :: map()
 
-  @supported_message_kinds [:follow_up]
+  @supported_message_kinds [:follow_up, :fix, :rejected]
   @rejection_receipt_fields [
     :disposition,
     :rejection_basis,
@@ -65,46 +66,23 @@ defmodule SymphonyElixir.FindingDisposition do
   def build_finding_key(input) when is_map(input) do
     with {:ok, repository} <- required_string(input, :repository),
          {:ok, pull_request_number} <- required_positive_integer(input, :pull_request_number),
-         {:ok, source_head_sha} <- required_sha(input, :source_head_sha),
          {:ok, review_thread_id} <- required_string(input, :review_thread_id),
          {:ok, selected_review_comment_id} <- required_string(input, :selected_review_comment_id),
-         {:ok, body} <- required_binary(input, :body) do
-      body_sha256 = sha256(body)
-
-      ordered_identity =
-        {repository, pull_request_number, source_head_sha, review_thread_id, selected_review_comment_id, body_sha256}
-
-      {:ok,
-       %{
-         repository: repository,
-         pull_request_number: pull_request_number,
-         source_head_sha: source_head_sha,
-         review_thread_id: review_thread_id,
-         selected_review_comment_id: selected_review_comment_id,
-         body_sha256: body_sha256,
-         digest: digest(:symphony_finding_identity_v1, ordered_identity)
-       }}
+         {:ok, body_sha256} <- finding_body_digest(input) do
+      ReviewIdentity.build_finding_key(%{
+        repository: repository,
+        pull_request_number: pull_request_number,
+        review_thread_id: review_thread_id,
+        selected_review_comment_id: selected_review_comment_id,
+        body_sha256: body_sha256
+      })
     end
   end
 
   def build_finding_key(_input), do: {:error, :invalid_finding_key_input}
 
   @spec build_lineage_key(map()) :: {:ok, finding_lineage_key()} | {:error, term()}
-  def build_lineage_key(input) when is_map(input) do
-    with {:ok, repository} <- required_string(input, :repository),
-         {:ok, pull_request_number} <- required_positive_integer(input, :pull_request_number),
-         {:ok, review_thread_id} <- required_string(input, :review_thread_id) do
-      identity = {repository, pull_request_number, review_thread_id}
-
-      {:ok,
-       %{
-         repository: repository,
-         pull_request_number: pull_request_number,
-         review_thread_id: review_thread_id,
-         digest: digest(:symphony_finding_lineage_v1, identity)
-       }}
-    end
-  end
+  def build_lineage_key(input) when is_map(input), do: ReviewIdentity.build_lineage_key(input)
 
   def build_lineage_key(_input), do: {:error, :invalid_finding_lineage_input}
 
@@ -350,24 +328,24 @@ defmodule SymphonyElixir.FindingDisposition do
          {:ok, receipt_lineage_key} <- canonical_lineage_key(value(receipt, :finding_lineage_key)),
          true <- receipt_finding_key == finding_key,
          true <- receipt_lineage_key == finding_lineage_key,
-         source_head_sha when is_binary(source_head_sha) <- finding_key.source_head_sha,
-         true <- value(preflight, :current_head_sha) == source_head_sha,
-         true <- value(receipt, :evaluated_head_sha) == source_head_sha,
-         true <- value(receipt, :current_head_sha) == source_head_sha,
+         expected_head when is_binary(expected_head) <- value(preflight, :current_head_sha),
+         true <- value(receipt, :evaluated_head_sha) == expected_head,
+         true <- value(receipt, :current_head_sha) == expected_head,
+         true <- value(facts, :source_head_sha) in [nil, expected_head],
          native_readback when is_map(native_readback) <- value(receipt, :native_readback),
-         true <- rejection_readback_matches?(native_readback, finding_key, finding_lineage_key) do
+         true <- rejection_readback_matches?(native_readback, finding_key, finding_lineage_key, expected_head) do
       true
     else
       _ -> false
     end
   end
 
-  defp rejection_readback_matches?(readback, finding_key, finding_lineage_key) do
+  defp rejection_readback_matches?(readback, finding_key, finding_lineage_key, expected_head) do
     true_value?(value(readback, :verified?)) and
       value(readback, :repository) == finding_key.repository and
       value(readback, :pull_request_number) == finding_key.pull_request_number and
       value(readback, :review_thread_id) == finding_key.review_thread_id and
-      value(readback, :current_head_sha) == finding_key.source_head_sha and
+      value(readback, :current_head_sha) == expected_head and
       value(readback, :finding_key_digest) == finding_key.digest and
       value(readback, :finding_lineage_key_digest) == finding_lineage_key.digest
   end
@@ -846,49 +824,34 @@ defmodule SymphonyElixir.FindingDisposition do
   end
 
   defp canonical_finding_key(key) when is_map(key) do
-    with {:ok, repository} <- required_string(key, :repository),
-         {:ok, pull_request_number} <- required_positive_integer(key, :pull_request_number),
-         {:ok, source_head_sha} <- required_sha(key, :source_head_sha),
-         {:ok, review_thread_id} <- required_string(key, :review_thread_id),
-         {:ok, selected_review_comment_id} <- required_string(key, :selected_review_comment_id),
-         {:ok, body_sha256} <- required_digest(key, :body_sha256),
-         {:ok, _digest_value} <- required_digest(key, :digest) do
-      identity =
-        {repository, pull_request_number, source_head_sha, review_thread_id, selected_review_comment_id, body_sha256}
-
-      expected = %{
-        repository: repository,
-        pull_request_number: pull_request_number,
-        source_head_sha: source_head_sha,
-        review_thread_id: review_thread_id,
-        selected_review_comment_id: selected_review_comment_id,
-        body_sha256: body_sha256,
-        digest: digest(:symphony_finding_identity_v1, identity)
-      }
-
-      if key == expected, do: {:ok, expected}, else: {:error, :non_canonical_finding_key}
+    with {:ok, rebuilt} <- ReviewIdentity.build_finding_key(key),
+         {:ok, digest} <- required_digest(key, :digest) do
+      if rebuilt.digest == digest, do: {:ok, rebuilt}, else: {:error, :non_canonical_finding_key}
     end
   end
 
   defp canonical_finding_key(_key), do: {:error, :invalid_finding_key}
 
   defp canonical_lineage_key(key) when is_map(key) do
-    with {:ok, repository} <- required_string(key, :repository),
-         {:ok, pull_request_number} <- required_positive_integer(key, :pull_request_number),
-         {:ok, review_thread_id} <- required_string(key, :review_thread_id),
-         {:ok, _digest_value} <- required_digest(key, :digest) do
-      expected = %{
-        repository: repository,
-        pull_request_number: pull_request_number,
-        review_thread_id: review_thread_id,
-        digest: digest(:symphony_finding_lineage_v1, {repository, pull_request_number, review_thread_id})
-      }
-
-      if key == expected, do: {:ok, expected}, else: {:error, :non_canonical_finding_lineage_key}
+    with {:ok, rebuilt} <- ReviewIdentity.build_lineage_key(key),
+         {:ok, digest} <- required_digest(key, :digest) do
+      if rebuilt.digest == digest, do: {:ok, rebuilt}, else: {:error, :non_canonical_finding_lineage_key}
     end
   end
 
   defp canonical_lineage_key(_key), do: {:error, :invalid_finding_lineage_key}
+
+  defp finding_body_digest(input) do
+    case value(input, :body_sha256) do
+      digest when is_binary(digest) ->
+        required_digest(input, :body_sha256)
+
+      _missing ->
+        with {:ok, body} <- required_binary(input, :body) do
+          {:ok, sha256(body)}
+        end
+    end
+  end
 
   defp matching_lineage_identity(finding_key, lineage_key) do
     if finding_key.repository == lineage_key.repository and
@@ -960,19 +923,6 @@ defmodule SymphonyElixir.FindingDisposition do
     case value(input, key) do
       value when is_integer(value) and value > 0 -> {:ok, value}
       _ -> {:error, {:missing_or_invalid_field, key}}
-    end
-  end
-
-  defp required_sha(input, key) do
-    case value(input, key) do
-      value when is_binary(value) ->
-        case validate_sha(value, key) do
-          :ok -> {:ok, value}
-          error -> error
-        end
-
-      _ ->
-        {:error, {:missing_or_invalid_field, key}}
     end
   end
 

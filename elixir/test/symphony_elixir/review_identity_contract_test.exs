@@ -100,11 +100,7 @@ defmodule SymphonyElixir.ReviewIdentityContractTest do
              })
 
     assert {:error, :synthetic_terminal_evidence} =
-             ReviewIdentity.evidence_digest(%{
-               status: :fix_settled,
-               native_confirmed?: true,
-               recovered_from_pending_receipt?: true
-             })
+             ReviewIdentity.evidence_digest(Map.put(terminal_evidence_input(), :recovered_from_pending_receipt?, true))
   end
 
   test "supplied synthetic evidence_sha256 is rejected unless it recomputes from evidence" do
@@ -151,7 +147,7 @@ defmodule SymphonyElixir.ReviewIdentityContractTest do
 
   test "component effects without terminal evidence cannot become a settlement receipt" do
     assert {:error, :invalid_settlement_evidence} =
-             ReviewIdentity.evidence_digest(%{reply_succeeded?: true, resolve_succeeded?: false})
+             ReviewIdentity.evidence_digest(%{status: :fix_settled, native_confirmed?: true})
   end
 
   test "mixed findings keep independent evaluation and resolve identities" do
@@ -287,13 +283,9 @@ defmodule SymphonyElixir.ReviewIdentityContractTest do
     assert {:ok, _} = ReviewIdentity.derive_reopen_epoch(with_node)
 
     assert {:error, :synthetic_terminal_evidence} =
-             ReviewIdentity.evidence_digest(%{
-               "status" => :fix_settled,
-               "native_confirmed?" => true,
-               "recovered_from_pending_receipt?" => true
-             })
+             ReviewIdentity.evidence_digest(Map.put(terminal_evidence_input(), "recovered_from_pending_receipt?", true))
 
-    {:ok, matching} = ReviewIdentity.evidence_digest(%{status: :fix_settled, native_confirmed?: true})
+    {:ok, matching} = ReviewIdentity.evidence_digest(terminal_evidence_input())
 
     assert {:ok, _} =
              ReviewIdentity.build_settlement_receipt(Map.put(receipt_input(), :evidence_sha256, matching))
@@ -336,6 +328,58 @@ defmodule SymphonyElixir.ReviewIdentityContractTest do
              ReviewIdentity.build_settlement_receipt(Map.delete(receipt_input(), :published_head_sha))
 
     assert omitted_publish.published_head_sha == nil
+
+    assert {:error, :settlement_native_resource_mismatch} =
+             ReviewIdentity.build_settlement_receipt(
+               Map.put(receipt_input(), :native_readbacks, %{
+                 reply: native_paths().reply,
+                 resolve: Map.put(native_paths().resolve, :resolved, false),
+                 publish: native_paths().publish
+               })
+             )
+
+    assert {:error, {:unknown_native_path, :thread}} =
+             ReviewIdentity.build_settlement_receipt(Map.put(receipt_input(), :native_resources, %{thread: native_paths().resolve}))
+
+    string_paths = %{
+      "reply" => native_paths().reply,
+      "resolve" => native_paths().resolve,
+      "follow_up" => %{
+        issue_id: "ARO-1",
+        identifier: "ARO-1",
+        destination: "Backlog",
+        state: "Backlog",
+        lineage_digest: digest_char("1")
+      },
+      "publish" => native_paths().publish
+    }
+
+    assert {:ok, _} = ReviewIdentity.project_native_paths(string_paths)
+    assert {:error, {:invalid_native_path, :reply}} = ReviewIdentity.project_native_paths(%{reply: %{}})
+    assert {:error, {:invalid_native_path, :resolve}} = ReviewIdentity.project_native_paths(%{resolve: %{}})
+    assert {:error, {:invalid_native_path, :follow_up}} = ReviewIdentity.project_native_paths(%{follow_up: %{}})
+    assert {:error, {:invalid_native_path, :publish}} = ReviewIdentity.project_native_paths(%{publish: %{}})
+    assert {:error, {:invalid_native_path, :reply}} = ReviewIdentity.project_native_paths(%{reply: :no})
+    assert {:error, :settlement_native_resources_unverified} = ReviewIdentity.project_native_paths(:no)
+
+    assert {:error, :invalid_settlement_evidence} =
+             ReviewIdentity.evidence_digest(Map.put(terminal_evidence_input(), :reopened?, true))
+
+    assert {:error, :settlement_native_resources_unverified} =
+             ReviewIdentity.build_settlement_receipt(Map.delete(receipt_input(), :native_readbacks))
+
+    assert {:error, :invalid_settlement_evidence} =
+             ReviewIdentity.evidence_digest(Map.delete(terminal_evidence_input(), :status))
+
+    string_evidence =
+      terminal_evidence_input()
+      |> Map.delete(:status)
+      |> Map.put("status", :fix_settled)
+
+    assert {:ok, _} = ReviewIdentity.evidence_digest(string_evidence)
+
+    assert {:error, {:duplicate_native_path, :reply}} =
+             ReviewIdentity.project_native_paths(Map.put(%{reply: native_paths().reply}, "reply", native_paths().reply))
   end
 
   defp receipt_input do
@@ -357,11 +401,40 @@ defmodule SymphonyElixir.ReviewIdentityContractTest do
         resolve: digest_char("2"),
         receipt: digest_char("3")
       },
-      native_resources: %{
-        reply: %{id: "reply-1"},
-        resolve: %{thread_id: "thread-1", state: :resolved}
+      native_resources: native_paths(),
+      native_readbacks: native_paths(),
+      evidence: %{status: :fix_settled, reopened?: false, newer_actionable?: false}
+    }
+  end
+
+  defp terminal_evidence_input do
+    {:ok, receipt} = ReviewIdentity.build_settlement_receipt(receipt_input())
+    receipt.evidence
+  end
+
+  defp native_paths do
+    %{
+      reply: %{
+        comment_id: "reply-1",
+        repository: "aroakpm-svg/symphony",
+        pull_request_number: 39,
+        thread_id: "thread-1",
+        body_sha256: digest_char("b"),
+        head_sha: sha("a")
       },
-      evidence: %{status: :fix_settled, native_confirmed?: true}
+      resolve: %{
+        review_thread_id: "thread-1",
+        repository: "aroakpm-svg/symphony",
+        pull_request_number: 39,
+        resolved: true,
+        observed_head_sha: sha("a")
+      },
+      publish: %{
+        commit_sha: sha("a"),
+        tree_sha: sha("c"),
+        repository: "aroakpm-svg/symphony",
+        pull_request_number: 39
+      }
     }
   end
 

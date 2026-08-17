@@ -11,6 +11,25 @@ defmodule SymphonyElixir.ReviewIdentity do
   @digest_re ~r/\A[0-9a-f]{64}\z/
   @dispositions [:fix_in_current_pr, :follow_up_required, :rejected]
   @thread_states [:resolved, :unresolved]
+  @native_roles [:reply, :resolve, :follow_up, :publish]
+  @receipt_fields [
+    :finding_key,
+    :finding_lineage_key,
+    :evaluation_key,
+    :resolve_attempt_key,
+    :disposition,
+    :source_head_sha,
+    :evaluated_head_sha,
+    :current_head_sha,
+    :published_head_sha,
+    :settled_head_sha,
+    :operation_ids,
+    :native_resources,
+    :native_readbacks,
+    :evidence,
+    :evidence_sha256,
+    :digest
+  ]
 
   @type finding_key :: %{
           repository: String.t(),
@@ -57,6 +76,7 @@ defmodule SymphonyElixir.ReviewIdentity do
           settled_head_sha: String.t(),
           operation_ids: map(),
           native_resources: map(),
+          native_readbacks: map(),
           evidence: map(),
           evidence_sha256: String.t(),
           digest: String.t()
@@ -190,16 +210,22 @@ defmodule SymphonyElixir.ReviewIdentity do
 
   def build_resolve_attempt_key(_input), do: {:error, :invalid_resolve_attempt_key_input}
 
+  @spec project_native_paths(map()) :: {:ok, map()} | {:error, term()}
+  def project_native_paths(paths) when is_map(paths) and map_size(paths) > 0 do
+    Enum.reduce_while(paths, {:ok, %{}}, fn {key, value}, {:ok, acc} ->
+      collect_native_path(acc, key, value)
+    end)
+  end
+
+  def project_native_paths(_paths), do: {:error, :settlement_native_resources_unverified}
+
   @spec evidence_digest(map()) :: {:ok, String.t()} | {:error, term()}
   def evidence_digest(evidence) when is_map(evidence) do
-    if Map.get(evidence, :recovered_from_pending_receipt?) == true or
-         Map.get(evidence, "recovered_from_pending_receipt?") == true do
+    if recovered_from_pending?(evidence) do
       {:error, :synthetic_terminal_evidence}
     else
-      with {:ok, status} <- required_atom(evidence, :status),
-           {:ok, native_confirmed?} <- required_boolean(evidence, :native_confirmed?) do
-        {:ok, digest(:symphony_settlement_evidence_v1, {status, native_confirmed?})}
-      else
+      case terminal_evidence_tuple(evidence) do
+        {:ok, payload} -> {:ok, digest(:symphony_settlement_evidence_v2, payload)}
         {:error, _reason} -> {:error, :invalid_settlement_evidence}
       end
     end
@@ -218,9 +244,25 @@ defmodule SymphonyElixir.ReviewIdentity do
          {:ok, settled_head_sha} <- required_sha(input, :settled_head_sha),
          :ok <- matching_settled_head(evaluation_key, settled_head_sha),
          {:ok, operation_ids} <- required_operation_ids(input),
-         {:ok, native_resources} <- required_native_resources(input),
+         {:ok, native_resources} <- required_projected_paths(input, :native_resources),
+         {:ok, native_readbacks} <- required_projected_paths(input, :native_readbacks),
+         :ok <- matching_native_projections(native_resources, native_readbacks),
          {:ok, evidence} <- required_map(input, :evidence),
-         {:ok, evidence_sha256} <- evidence_digest(evidence),
+         {:ok, terminal_evidence} <-
+           assemble_terminal_evidence(%{
+             finding_key: finding_key,
+             finding_lineage_key: finding_lineage_key,
+             evaluation_key: evaluation_key,
+             resolve_attempt_key: resolve_attempt_key,
+             disposition: disposition,
+             settled_head_sha: settled_head_sha,
+             published_head_sha: optional_sha(input, :published_head_sha),
+             operation_ids: operation_ids,
+             native_resources: native_resources,
+             native_readbacks: native_readbacks,
+             evidence: evidence
+           }),
+         {:ok, evidence_sha256} <- evidence_digest(terminal_evidence),
          :ok <- matching_supplied_evidence_digest(input, evidence_sha256) do
       published_head_sha = optional_sha(input, :published_head_sha)
 
@@ -237,7 +279,8 @@ defmodule SymphonyElixir.ReviewIdentity do
           published_head_sha,
           settled_head_sha,
           canonical_operation_ids(operation_ids),
-          canonical_native_resources(native_resources),
+          canonical_native_paths(native_resources),
+          canonical_native_paths(native_readbacks),
           evidence_sha256
         })
 
@@ -255,7 +298,8 @@ defmodule SymphonyElixir.ReviewIdentity do
          settled_head_sha: settled_head_sha,
          operation_ids: operation_ids,
          native_resources: native_resources,
-         evidence: evidence,
+         native_readbacks: native_readbacks,
+         evidence: terminal_evidence,
          evidence_sha256: evidence_sha256,
          digest: digest
        }}
@@ -269,10 +313,9 @@ defmodule SymphonyElixir.ReviewIdentity do
     case fetch_original_receipt(input) do
       {:ok, original} ->
         with {:ok, rebuilt} <- build_settlement_receipt(original),
-             true <- rebuilt == original do
+             :ok <- matching_rebuilt_receipt(rebuilt, original) do
           {:ok, rebuilt}
         else
-          false -> {:error, :terminal_receipt_evidence_unavailable}
           {:error, _reason} -> {:error, :terminal_receipt_evidence_unavailable}
         end
 
@@ -400,6 +443,112 @@ defmodule SymphonyElixir.ReviewIdentity do
     end
   end
 
+  defp matching_rebuilt_receipt(rebuilt, original) do
+    compared = Map.take(original, @receipt_fields)
+
+    if rebuilt == compared and map_size(original) == map_size(compared) do
+      :ok
+    else
+      {:error, :terminal_receipt_evidence_unavailable}
+    end
+  end
+
+  defp collect_native_path(acc, key, value) do
+    role = normalize_native_role(key)
+
+    cond do
+      role not in @native_roles -> {:halt, {:error, {:unknown_native_path, key}}}
+      Map.has_key?(acc, role) -> {:halt, {:error, {:duplicate_native_path, role}}}
+      true -> put_projected_path(acc, role, value)
+    end
+  end
+
+  defp put_projected_path(acc, role, value) do
+    case project_native_path(role, value) do
+      {:ok, projected} -> {:cont, {:ok, Map.put(acc, role, projected)}}
+      {:error, reason} -> {:halt, {:error, reason}}
+    end
+  end
+
+  defp assemble_terminal_evidence(parts) do
+    evidence = parts.evidence
+
+    if recovered_from_pending?(evidence) do
+      {:error, :synthetic_terminal_evidence}
+    else
+      with {:ok, status} <- required_atom(evidence, :status),
+           {:ok, reopened?} <- required_false(evidence, :reopened?),
+           {:ok, newer_actionable?} <- required_false(evidence, :newer_actionable?) do
+        {:ok,
+         %{
+           finding_key_digest: parts.finding_key.digest,
+           finding_lineage_key_digest: parts.finding_lineage_key.digest,
+           evaluation_key_digest: parts.evaluation_key.digest,
+           resolve_attempt_key_digest: parts.resolve_attempt_key.digest,
+           disposition: parts.disposition,
+           status: status,
+           claim_id: parts.evaluation_key.claim_id,
+           generation: parts.evaluation_key.generation,
+           source_head_sha: parts.evaluation_key.source_head_sha,
+           evaluated_head_sha: parts.evaluation_key.evaluated_head_sha,
+           current_head_sha: parts.evaluation_key.current_head_sha,
+           published_head_sha: parts.published_head_sha,
+           settled_head_sha: parts.settled_head_sha,
+           operation_ids: Map.new(canonical_operation_ids(parts.operation_ids)),
+           native_resources: parts.native_resources,
+           native_readbacks: parts.native_readbacks,
+           reopened?: reopened?,
+           newer_actionable?: newer_actionable?
+         }}
+      end
+    end
+  end
+
+  defp terminal_evidence_tuple(evidence) do
+    with {:ok, finding_key_digest} <- required_digest(evidence, :finding_key_digest),
+         {:ok, finding_lineage_key_digest} <- required_digest(evidence, :finding_lineage_key_digest),
+         {:ok, evaluation_key_digest} <- required_digest(evidence, :evaluation_key_digest),
+         {:ok, resolve_attempt_key_digest} <- required_digest(evidence, :resolve_attempt_key_digest),
+         {:ok, disposition} <- required_disposition(evidence),
+         {:ok, status} <- required_atom(evidence, :status),
+         {:ok, claim_id} <- required_string(evidence, :claim_id),
+         {:ok, generation} <- required_positive_integer(evidence, :generation),
+         {:ok, source_head_sha} <- required_sha(evidence, :source_head_sha),
+         {:ok, evaluated_head_sha} <- required_sha(evidence, :evaluated_head_sha),
+         {:ok, current_head_sha} <- required_sha(evidence, :current_head_sha),
+         {:ok, settled_head_sha} <- required_sha(evidence, :settled_head_sha),
+         {:ok, operation_ids} <- required_operation_ids(evidence),
+         {:ok, native_resources} <- required_projected_paths(evidence, :native_resources),
+         {:ok, native_readbacks} <- required_projected_paths(evidence, :native_readbacks),
+         :ok <- matching_native_projections(native_resources, native_readbacks),
+         {:ok, reopened?} <- required_false(evidence, :reopened?),
+         {:ok, newer_actionable?} <- required_false(evidence, :newer_actionable?) do
+      published_head_sha = optional_sha(evidence, :published_head_sha)
+
+      {:ok,
+       {
+         finding_key_digest,
+         finding_lineage_key_digest,
+         evaluation_key_digest,
+         resolve_attempt_key_digest,
+         disposition,
+         status,
+         claim_id,
+         generation,
+         source_head_sha,
+         evaluated_head_sha,
+         current_head_sha,
+         published_head_sha,
+         settled_head_sha,
+         canonical_operation_ids(operation_ids),
+         canonical_native_paths(native_resources),
+         canonical_native_paths(native_readbacks),
+         reopened?,
+         newer_actionable?
+       }}
+    end
+  end
+
   defp native_observation(
          repository,
          pull_request_number,
@@ -490,6 +639,106 @@ defmodule SymphonyElixir.ReviewIdentity do
     end
   end
 
+  defp required_projected_paths(input, key) do
+    case Map.get(input, key) || Map.get(input, Atom.to_string(key)) do
+      paths when is_map(paths) -> project_native_paths(paths)
+      _missing -> {:error, :settlement_native_resources_unverified}
+    end
+  end
+
+  defp matching_native_projections(resources, readbacks) do
+    if resources == readbacks do
+      :ok
+    else
+      {:error, :settlement_native_resource_mismatch}
+    end
+  end
+
+  defp normalize_native_role(role) when role in @native_roles, do: role
+  defp normalize_native_role("reply"), do: :reply
+  defp normalize_native_role("resolve"), do: :resolve
+  defp normalize_native_role("follow_up"), do: :follow_up
+  defp normalize_native_role("publish"), do: :publish
+  defp normalize_native_role(_role), do: :unknown
+
+  defp project_native_path(:reply, value) when is_map(value) do
+    with {:ok, comment_id} <- required_string(value, :comment_id),
+         {:ok, repository} <- required_string(value, :repository),
+         {:ok, pull_request_number} <- required_positive_integer(value, :pull_request_number),
+         {:ok, thread_id} <- required_string(value, :thread_id),
+         {:ok, body_sha256} <- required_digest(value, :body_sha256),
+         {:ok, head_sha} <- required_sha(value, :head_sha) do
+      {:ok,
+       %{
+         comment_id: comment_id,
+         repository: repository,
+         pull_request_number: pull_request_number,
+         thread_id: thread_id,
+         body_sha256: body_sha256,
+         head_sha: head_sha
+       }}
+    else
+      {:error, _reason} -> {:error, {:invalid_native_path, :reply}}
+    end
+  end
+
+  defp project_native_path(:resolve, value) when is_map(value) do
+    with {:ok, review_thread_id} <- required_string(value, :review_thread_id),
+         {:ok, repository} <- required_string(value, :repository),
+         {:ok, pull_request_number} <- required_positive_integer(value, :pull_request_number),
+         {:ok, resolved} <- required_boolean(value, :resolved),
+         {:ok, observed_head_sha} <- required_sha(value, :observed_head_sha) do
+      {:ok,
+       %{
+         review_thread_id: review_thread_id,
+         repository: repository,
+         pull_request_number: pull_request_number,
+         resolved: resolved,
+         observed_head_sha: observed_head_sha
+       }}
+    else
+      {:error, _reason} -> {:error, {:invalid_native_path, :resolve}}
+    end
+  end
+
+  defp project_native_path(:follow_up, value) when is_map(value) do
+    with {:ok, issue_id} <- required_string(value, :issue_id),
+         {:ok, identifier} <- required_string(value, :identifier),
+         {:ok, destination} <- required_string(value, :destination),
+         {:ok, state} <- required_string(value, :state),
+         {:ok, lineage_digest} <- required_digest(value, :lineage_digest) do
+      {:ok,
+       %{
+         issue_id: issue_id,
+         identifier: identifier,
+         destination: destination,
+         state: state,
+         lineage_digest: lineage_digest
+       }}
+    else
+      {:error, _reason} -> {:error, {:invalid_native_path, :follow_up}}
+    end
+  end
+
+  defp project_native_path(:publish, value) when is_map(value) do
+    with {:ok, commit_sha} <- required_sha(value, :commit_sha),
+         {:ok, tree_sha} <- required_sha(value, :tree_sha),
+         {:ok, repository} <- required_string(value, :repository),
+         {:ok, pull_request_number} <- required_positive_integer(value, :pull_request_number) do
+      {:ok,
+       %{
+         commit_sha: commit_sha,
+         tree_sha: tree_sha,
+         repository: repository,
+         pull_request_number: pull_request_number
+       }}
+    else
+      {:error, _reason} -> {:error, {:invalid_native_path, :publish}}
+    end
+  end
+
+  defp project_native_path(role, _value), do: {:error, {:invalid_native_path, role}}
+
   defp required_operation_ids(input) do
     ids = Map.get(input, :operation_ids) || Map.get(input, "operation_ids")
 
@@ -497,16 +746,6 @@ defmodule SymphonyElixir.ReviewIdentity do
       {:ok, ids}
     else
       {:error, :settlement_operation_ids_unverified}
-    end
-  end
-
-  defp required_native_resources(input) do
-    resources = Map.get(input, :native_resources) || Map.get(input, "native_resources")
-
-    if is_map(resources) and map_size(resources) > 0 do
-      {:ok, resources}
-    else
-      {:error, :settlement_native_resources_unverified}
     end
   end
 
@@ -523,13 +762,33 @@ defmodule SymphonyElixir.ReviewIdentity do
   end
 
   defp required_atom(input, key) do
-    value = Map.get(input, key) || Map.get(input, Atom.to_string(key))
+    value = fetch_field(input, key)
     if is_atom(value) and not is_nil(value), do: {:ok, value}, else: {:error, {:missing_field, key}}
   end
 
   defp required_boolean(input, key) do
-    value = Map.get(input, key) || Map.get(input, Atom.to_string(key))
+    value = fetch_field(input, key)
     if is_boolean(value), do: {:ok, value}, else: {:error, {:missing_field, key}}
+  end
+
+  defp required_false(input, key) do
+    case fetch_field(input, key) do
+      false -> {:ok, false}
+      _other -> {:error, {:missing_field, key}}
+    end
+  end
+
+  defp fetch_field(input, key) do
+    cond do
+      is_map(input) and Map.has_key?(input, key) ->
+        Map.get(input, key)
+
+      is_map(input) and is_atom(key) and Map.has_key?(input, Atom.to_string(key)) ->
+        Map.get(input, Atom.to_string(key))
+
+      true ->
+        nil
+    end
   end
 
   defp required_string(input, key) do
@@ -587,6 +846,11 @@ defmodule SymphonyElixir.ReviewIdentity do
     if digest?(value), do: value, else: nil
   end
 
+  defp recovered_from_pending?(evidence) do
+    Map.get(evidence, :recovered_from_pending_receipt?) == true or
+      Map.get(evidence, "recovered_from_pending_receipt?") == true
+  end
+
   defp digest?(value), do: is_binary(value) and Regex.match?(@digest_re, value)
 
   defp canonical_operation_ids(ids) do
@@ -595,10 +859,39 @@ defmodule SymphonyElixir.ReviewIdentity do
     |> Enum.sort()
   end
 
-  defp canonical_native_resources(resources) do
-    resources
-    |> Enum.map(fn {key, value} -> {to_string(key), inspect(value, custom_options: [])} end)
+  defp canonical_native_paths(paths) do
+    paths
+    |> Enum.map(fn {role, projected} -> {role, native_path_tuple(role, projected)} end)
     |> Enum.sort()
+  end
+
+  defp native_path_tuple(:reply, projected) do
+    {
+      projected.comment_id,
+      projected.repository,
+      projected.pull_request_number,
+      projected.thread_id,
+      projected.body_sha256,
+      projected.head_sha
+    }
+  end
+
+  defp native_path_tuple(:resolve, projected) do
+    {
+      projected.review_thread_id,
+      projected.repository,
+      projected.pull_request_number,
+      projected.resolved,
+      projected.observed_head_sha
+    }
+  end
+
+  defp native_path_tuple(:follow_up, projected) do
+    {projected.issue_id, projected.identifier, projected.destination, projected.state, projected.lineage_digest}
+  end
+
+  defp native_path_tuple(:publish, projected) do
+    {projected.commit_sha, projected.tree_sha, projected.repository, projected.pull_request_number}
   end
 
   defp digest(tag, value) do

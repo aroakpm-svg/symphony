@@ -11,6 +11,8 @@ defmodule SymphonyElixir.ReviewMonitor do
     GitHubReviewClient,
     PatchAuthorization,
     ReviewConvergence,
+    ReviewIdentity,
+    ReviewSettlementReceipt,
     ScopeContract,
     Tracker
   }
@@ -261,7 +263,9 @@ defmodule SymphonyElixir.ReviewMonitor do
   defp reconcile_new_claim(entry, issue, snapshot, claim, settings, review_client, options, binding) do
     with {:ok, connection, claim_context} <- claimed_context(options, issue, claim, binding),
          {:ok, operations} <- list_effect_operations(options, connection, claim_context),
-         {:ok, summary} <- finding_summary(snapshot, settings),
+         {:ok, operations} <-
+           reconcile_pending_settlement_receipts(options, connection, claim_context, operations),
+         {:ok, summary} <- finding_summary(snapshot, settings, entry, operations, options),
          :ok <- reconcile_operation_locks(operations),
          :ok <- verify_live_head(review_client, settings, snapshot) do
       autonomous_claimed_result(
@@ -301,6 +305,8 @@ defmodule SymphonyElixir.ReviewMonitor do
         authorization_required: false,
         authorization_attempts: %{},
         authorization_results: %{},
+        settlement_attempts: %{},
+        settlement_results: %{},
         causal_attempts: [],
         pending_causal_attempts: [],
         global_blocker: nil,
@@ -401,6 +407,25 @@ defmodule SymphonyElixir.ReviewMonitor do
     end
   end
 
+  defp reconcile_pending_settlement_receipts(options, connection, claim_context, operations) do
+    recorder = Map.get(options, :settlement_receipt, ReviewSettlementReceipt)
+    ledger = Map.get(options, :effect_ledger, EffectLedger)
+
+    pending? =
+      Enum.any?(
+        operations,
+        &(&1[:effect_type] == :review_settlement_receipt and &1[:status] in [:pending, :unknown])
+      )
+
+    if pending? and loaded_function_exported?(recorder, :reconcile_pending, 4) do
+      with :ok <- recorder.reconcile_pending(connection, ledger, claim_context, operations) do
+        list_effect_operations(options, connection, claim_context)
+      end
+    else
+      {:ok, operations}
+    end
+  end
+
   defp reconcile_operation_locks(operations) do
     entries =
       operations
@@ -430,14 +455,16 @@ defmodule SymphonyElixir.ReviewMonitor do
     end
   end
 
-  defp finding_summary(%{finding_summary: summary}, _settings) when is_map(summary) do
+  defp finding_summary(%{finding_summary: summary}, _settings, _entry, _operations, _options)
+       when is_map(summary) do
     if is_list(summary[:decisions]), do: {:ok, summary}, else: {:error, :finding_summary_invalid}
   end
 
-  defp finding_summary(snapshot, settings) do
+  defp finding_summary(snapshot, settings, entry, operations, _options) do
     with {:ok, scope_contract} <- parse_scope_contract(snapshot),
          {:ok, events} <- review_events(snapshot),
-         {:ok, findings} <- selected_findings(snapshot, events, settings),
+         {:ok, findings} <-
+           selected_findings(snapshot, events, settings, settled_threads(entry, operations, snapshot)),
          {:ok, plan} <-
            FindingDisposition.classify_all(findings, %{
              verified?: true,
@@ -460,13 +487,13 @@ defmodule SymphonyElixir.ReviewMonitor do
   defp review_events(%{review_events: events}) when is_list(events), do: {:ok, events}
   defp review_events(_snapshot), do: {:error, :review_events_unavailable}
 
-  defp selected_findings(snapshot, events, settings) do
+  defp selected_findings(snapshot, events, settings, settled) do
     repository = snapshot[:repository] || settings.repository
     pull_request_number = snapshot[:pull_request_number]
     head_sha = snapshot[:current_head_sha]
 
     Enum.reduce_while(events, {:ok, []}, fn event, {:ok, acc} ->
-      case FindingDisposition.select_review_comment(event, %{resolved?: event[:resolved?], settled: %{}}) do
+      case FindingDisposition.select_review_comment(event, %{resolved?: event[:resolved?], settled: settled}) do
         {:ok, comment} ->
           facts = %{
             repository: repository,
@@ -508,7 +535,7 @@ defmodule SymphonyElixir.ReviewMonitor do
        ) do
     pending_effect_ids =
       operations
-      |> Enum.filter(&(&1.status in [:pending, :unknown]))
+      |> Enum.filter(&(&1.status in [:pending, :unknown] and &1[:effect_type] != :review_settlement_receipt))
       |> Enum.map(& &1.operation_id)
 
     updated =
@@ -536,7 +563,17 @@ defmodule SymphonyElixir.ReviewMonitor do
         {:blocked, :owner_api_unavailable, updated}
 
       true ->
-        authorize_causal_patches(updated, summary[:decisions], operations, snapshot, claim_context, options)
+        settle_or_authorize(
+          updated,
+          summary[:decisions],
+          %{
+            connection: Map.get(options, :connection),
+            operations: operations,
+            snapshot: snapshot,
+            claim_context: claim_context,
+            options: options
+          }
+        )
     end
   end
 
@@ -549,6 +586,218 @@ defmodule SymphonyElixir.ReviewMonitor do
 
     loaded_function_exported?(authorization, :authorize, 5) and
       loaded_function_exported?(settlement, :settle, 2)
+  end
+
+  defp settle_or_authorize(entry, decisions, runtime) do
+    contexts = Map.get(runtime.options, :settlement_contexts, %{})
+
+    if is_map(contexts) do
+      {settlement_decisions, remaining_decisions} =
+        Enum.split_with(decisions, &Map.has_key?(contexts, &1.finding_key_digest))
+
+      {authorization_decisions, missing_settlement_decisions} =
+        Enum.split_with(remaining_decisions, &(&1.disposition == :fix_in_current_pr))
+
+      if missing_settlement_decisions == [] do
+        settle_then_authorize(
+          entry,
+          settlement_decisions,
+          authorization_decisions,
+          Map.put(runtime, :contexts, contexts)
+        )
+      else
+        {:blocked, :settlement_context_unavailable, entry}
+      end
+    else
+      {:blocked, :invalid_settlement_contexts, entry}
+    end
+  end
+
+  defp settle_then_authorize(entry, [], authorization_decisions, runtime) do
+    authorize_causal_patches(
+      entry,
+      authorization_decisions,
+      runtime.operations,
+      runtime.snapshot,
+      runtime.claim_context,
+      runtime.options
+    )
+  end
+
+  defp settle_then_authorize(entry, settlement_decisions, [], runtime) do
+    settle_decisions(entry, settlement_decisions, runtime)
+  end
+
+  defp settle_then_authorize(entry, settlement_decisions, authorization_decisions, runtime) do
+    with {:ok, settled_entry} <- reduce_settlements(entry, settlement_decisions, runtime) do
+      authorize_causal_patches(
+        settled_entry,
+        authorization_decisions,
+        runtime.operations,
+        runtime.snapshot,
+        runtime.claim_context,
+        runtime.options
+      )
+    end
+  end
+
+  defp settle_decisions(entry, decisions, runtime) do
+    decisions
+    |> then(&reduce_settlements(entry, &1, runtime))
+    |> settlement_result(MapSet.new(decisions, & &1.finding_key_digest))
+  end
+
+  defp reduce_settlements(entry, decisions, runtime) do
+    settlement = Map.fetch!(runtime.options, :review_settlement)
+    sorted = FindingDisposition.sort_decisions(decisions)
+
+    Enum.reduce_while(sorted, {:ok, entry}, fn decision, {:ok, acc} ->
+      settle_decision(acc, decision, settlement, runtime)
+    end)
+  end
+
+  defp settle_decision(entry, decision, settlement, runtime) do
+    digest = decision.finding_key_digest
+
+    case runtime.contexts[digest] do
+      context when is_map(context) ->
+        authoritative = %{
+          current_head_sha: runtime.snapshot[:current_head_sha],
+          claim:
+            runtime.claim_context
+            |> Map.take([:issue_id, :claim_id, :generation])
+            |> Map.put(:active?, true),
+          operations: runtime.operations
+        }
+
+        context = Map.merge(context, authoritative)
+        key = :crypto.hash(:sha256, :erlang.term_to_binary({decision, context}))
+        result = Map.get(entry.settlement_attempts, key) || settlement.settle(decision, context)
+        attempted = put_in(entry, [:settlement_attempts, key], result)
+        commit_settlement_result(attempted, decision, result, runtime)
+
+      _missing ->
+        {:halt, {:blocked, :settlement_context_unavailable, entry}}
+    end
+  end
+
+  defp commit_settlement_result(entry, decision, {:settled, evidence} = result, runtime) do
+    recorder = Map.get(runtime.options, :settlement_receipt, ReviewSettlementReceipt)
+    ledger = Map.get(runtime.options, :effect_ledger, EffectLedger)
+
+    case recorder.record(
+           runtime.connection,
+           ledger,
+           runtime.claim_context,
+           decision,
+           evidence,
+           runtime.operations
+         ) do
+      {:ok, _receipt} ->
+        committed = put_in(entry, [:settlement_results, decision.finding_key_digest], result)
+        {:cont, {:ok, committed}}
+
+      {:error, reason} ->
+        {:halt, {:blocked, {:settlement_receipt_failed, reason}, entry}}
+    end
+  end
+
+  defp commit_settlement_result(entry, decision, {:blocked, reason} = result, _runtime) do
+    blocked = put_in(entry, [:settlement_results, decision.finding_key_digest], result)
+    {:halt, {:blocked, reason, blocked}}
+  end
+
+  defp commit_settlement_result(entry, _decision, _invalid, _runtime),
+    do: {:halt, {:blocked, :invalid_review_settlement_result, entry}}
+
+  defp settlement_result({:ok, entry}, current_digests) do
+    evidence =
+      entry.settlement_results
+      |> Map.take(MapSet.to_list(current_digests))
+      |> Enum.reduce(%{}, fn
+        {digest, {:settled, item}}, acc -> Map.put(acc, digest, item)
+        {_digest, _unsettled}, acc -> acc
+      end)
+
+    {:ok,
+     %{
+       entry
+       | authorization_required: false,
+         authorization_results: %{},
+         terminal_result: {:settled, evidence},
+         global_blocker: nil
+     }}
+  end
+
+  defp settlement_result({:blocked, reason, entry}, _current_digests) do
+    {:blocked, reason, %{entry | global_blocker: reason}}
+  end
+
+  defp settled_threads(entry, operations, snapshot) do
+    local =
+      (entry[:settlement_results] || %{})
+      |> Map.values()
+      |> Enum.reduce(%{}, fn
+        {:settled, %{finding_key: finding_key}}, settled when is_map(finding_key) ->
+          if settlement_snapshot_identity?(snapshot, finding_key),
+            do: put_settled_thread(settled, finding_key),
+            else: settled
+
+        _unsettled, settled ->
+          settled
+      end)
+
+    Map.merge(durable_settled_threads(operations, snapshot), local)
+  end
+
+  defp durable_settled_threads(operations, snapshot) do
+    operations
+    |> Enum.filter(&(&1[:status] == :succeeded))
+    |> Enum.group_by(& &1[:request_fingerprint])
+    |> Enum.reduce(%{}, fn {_fingerprint, entries}, settled ->
+      case durable_settlement_finding(entries, snapshot) do
+        {:ok, finding_key} -> put_settled_thread(settled, finding_key)
+        :error -> settled
+      end
+    end)
+  end
+
+  defp durable_settlement_finding(entries, snapshot) do
+    fingerprint = entries |> List.first() |> Map.get(:request_fingerprint)
+
+    with {:ok, intent} <- FindingDisposition.decode_request_fingerprint(fingerprint),
+         disposition when disposition in [:fix_in_current_pr, :follow_up_required, :rejected] <-
+           intent[:disposition],
+         finding_key when is_map(finding_key) <- intent[:finding_key],
+         true <- durable_receipt?(entries, finding_key, disposition),
+         true <- settlement_snapshot_identity?(snapshot, finding_key) do
+      {:ok, finding_key}
+    else
+      _invalid -> :error
+    end
+  end
+
+  defp durable_receipt?(entries, finding_key, disposition) do
+    case Enum.filter(entries, &(&1[:effect_type] == :review_settlement_receipt)) do
+      [%{native_resource: resource}] when is_map(resource) ->
+        match?({:ok, _}, ReviewIdentity.reconcile_receipt(%{original_receipt: resource})) and
+          get_in(resource, [:finding_key, :digest]) == finding_key.digest and
+          resource[:disposition] == disposition
+
+      _missing ->
+        false
+    end
+  end
+
+  defp put_settled_thread(settled, finding_key) do
+    Map.put(settled, finding_key.review_thread_id, %{
+      comment_id: finding_key.selected_review_comment_id,
+      body_sha256: finding_key.body_sha256
+    })
+  end
+
+  defp settlement_snapshot_identity?(snapshot, finding_key) do
+    finding_key.pull_request_number == snapshot[:pull_request_number]
   end
 
   defp authorize_causal_patches(entry, decisions, operations, snapshot, claim_context, options) do

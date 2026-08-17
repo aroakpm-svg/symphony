@@ -56,17 +56,28 @@ defmodule SymphonyElixir.FindingDispositionTest do
     assert {:error, {:missing_or_invalid_field, :pull_request_number}} =
              FindingDisposition.build_finding_key(finding_input(%{pull_request_number: 0}))
 
-    assert {:error, :invalid_head_sha} =
-             FindingDisposition.build_finding_key(finding_input(%{source_head_sha: String.duplicate("A", 40)}))
-
     assert {:error, {:missing_or_invalid_field, :body}} =
              FindingDisposition.build_finding_key(finding_input(%{body: nil}))
 
-    assert {:error, {:missing_or_invalid_field, :source_head_sha}} =
+    assert {:ok, without_head} =
              FindingDisposition.build_finding_key(finding_input(%{source_head_sha: nil}))
+
+    refute Map.has_key?(without_head, :source_head_sha)
 
     assert {:error, :invalid_finding_key_input} = FindingDisposition.build_finding_key([])
     assert {:error, :invalid_finding_lineage_input} = FindingDisposition.build_lineage_key([])
+    assert {:error, {:missing_field, :repository}} = FindingDisposition.build_lineage_key(%{})
+
+    {:ok, from_digest} =
+      FindingDisposition.build_finding_key(%{
+        repository: "openai/symphony",
+        pull_request_number: 21,
+        review_thread_id: "thread-1",
+        selected_review_comment_id: "comment-1",
+        body_sha256: sha256("P1 issue")
+      })
+
+    assert from_digest.body_sha256 == sha256("P1 issue")
   end
 
   test "selection uses provider connection order and excludes managed comments" do
@@ -989,7 +1000,7 @@ defmodule SymphonyElixir.FindingDispositionTest do
       repository: finding_key.repository,
       pull_request_number: finding_key.pull_request_number,
       review_thread_id: finding_key.review_thread_id,
-      current_head_sha: finding_key.source_head_sha,
+      current_head_sha: facts.source_head_sha,
       finding_key_digest: finding_key.digest,
       finding_lineage_key_digest: finding_lineage_key.digest
     }
@@ -1006,8 +1017,8 @@ defmodule SymphonyElixir.FindingDispositionTest do
       hypothesis_rejected?: false,
       finding_key: finding_key,
       finding_lineage_key: finding_lineage_key,
-      evaluated_head_sha: finding_key.source_head_sha,
-      current_head_sha: finding_key.source_head_sha,
+      evaluated_head_sha: facts.source_head_sha,
+      current_head_sha: facts.source_head_sha,
       native_readback: native_readback
     }
 
