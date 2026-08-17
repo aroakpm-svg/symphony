@@ -220,13 +220,38 @@ defmodule SymphonyElixir.ReviewConvergenceTest do
        %{
          settlement_contexts: %{},
          root_cause_receipts: %{},
-         authorization_runtime: %{causal_history_complete?: true, prior_attempts: []}
+         authorization_runtime: %{causal_history_complete?: true, prior_attempts: []},
+         finding_facts: %{}
        }}
     end
   end
 
   defmodule InvalidOwnerRuntime do
     def readback(_snapshot, _summary, _operations, _claim), do: {:ok, %{}}
+  end
+
+  defmodule ClassifyingOwnerRuntime do
+    def readback(_snapshot, %{review_events: events}, _operations, _claim) do
+      comment_id = events |> hd() |> Map.fetch!(:comments) |> hd() |> Map.fetch!(:id)
+
+      {:ok,
+       %{
+         finding_facts: %{
+           comment_id => %{
+             introduced_by_pr?: true,
+             invariant_violation?: false,
+             still_applies?: true,
+             in_scope?: true,
+             root_cause_bounded?: true,
+             requires_new_decision?: false,
+             safe_follow_up?: false
+           }
+         },
+         settlement_contexts: %{},
+         root_cause_receipts: %{},
+         authorization_runtime: %{causal_history_complete?: true, prior_attempts: []}
+       }}
+    end
   end
 
   defmodule CountingMixedPatchAuthorization do
@@ -390,6 +415,55 @@ defmodule SymphonyElixir.ReviewConvergenceTest do
       )
 
     assert invalid["issue-160"].global_blocker == :invalid_owner_runtime_readback
+  end
+
+  test "production owner facts are hydrated before Design 2 classification" do
+    head = String.duplicate("a", 40)
+
+    event = %{
+      review_thread_id: "thread-owner-facts",
+      resolved?: false,
+      comments: [
+        %{
+          id: "comment-owner-facts",
+          body: "The managed change violates the invariant",
+          commit_sha: head,
+          trusted_review_source?: true,
+          managed_agent_reply?: false,
+          settlement_marker?: false,
+          connection_index: 0
+        }
+      ]
+    }
+
+    Application.put_env(
+      :symphony_elixir,
+      :review_snapshot,
+      {:ok,
+       snapshot(%{
+         current_head_sha: head,
+         reviewed_head_sha: head,
+         pull_request_body: complete_scope_contract(),
+         review_events: [event]
+       })}
+    )
+
+    state =
+      ReviewMonitor.run_with(
+        %{},
+        settings(),
+        ReviewClient,
+        Tracker,
+        %{
+          profile: :aroak_autonomous_v1,
+          claim_service: AutonomousClaimService,
+          effect_ledger: AutonomousEffectLedger,
+          owner_runtime: ClassifyingOwnerRuntime,
+          patch_authorization: CountingPatchAuthorization
+        }
+      )
+
+    assert [%{disposition: :fix_in_current_pr}] = Map.values(state["issue-160"].decisions)
   end
 
   test "successful autonomous recovery clears a stale global blocker" do

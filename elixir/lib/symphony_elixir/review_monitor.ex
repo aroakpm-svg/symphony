@@ -288,8 +288,8 @@ defmodule SymphonyElixir.ReviewMonitor do
          {:ok, operations} <-
            reconcile_pending_settlement_receipts(options, connection, claim_context, operations),
          :ok <- reconcile_operation_locks(operations),
-         {:ok, summary} <- finding_summary(snapshot, settings, entry, operations),
-         {:ok, options} <- hydrate_owner_runtime(options, snapshot, summary, operations, claim_context),
+         {:ok, options} <- hydrate_owner_runtime(options, snapshot, operations, claim_context),
+         {:ok, summary} <- finding_summary(snapshot, settings, entry, operations, options),
          :ok <- verify_live_head(review_client, settings, snapshot) do
       autonomous_claimed_result(
         connection,
@@ -305,7 +305,7 @@ defmodule SymphonyElixir.ReviewMonitor do
     end
   end
 
-  defp hydrate_owner_runtime(options, snapshot, summary, operations, claim_context) do
+  defp hydrate_owner_runtime(options, snapshot, operations, claim_context) do
     cond do
       complete_owner_evidence?(options) ->
         {:ok, options}
@@ -313,7 +313,12 @@ defmodule SymphonyElixir.ReviewMonitor do
       owner_runtime_available?(options) ->
         owner_runtime = options.owner_runtime
 
-        owner_runtime.readback(snapshot, summary, operations, claim_context)
+        owner_runtime.readback(
+          snapshot,
+          %{review_events: snapshot[:review_events] || []},
+          operations,
+          claim_context
+        )
         |> owner_runtime_result(options)
 
       Map.has_key?(options, :owner_runtime) ->
@@ -339,16 +344,18 @@ defmodule SymphonyElixir.ReviewMonitor do
           %{
             settlement_contexts: contexts,
             root_cause_receipts: receipts,
-            authorization_runtime: runtime
+            authorization_runtime: runtime,
+            finding_facts: finding_facts
           }},
          options
        )
-       when is_map(contexts) and is_map(receipts) and is_map(runtime) do
+       when is_map(contexts) and is_map(receipts) and is_map(runtime) and is_map(finding_facts) do
     {:ok,
      Map.merge(options, %{
        settlement_contexts: contexts,
        root_cause_receipts: receipts,
-       authorization_runtime: runtime
+       authorization_runtime: runtime,
+       finding_facts: finding_facts
      })}
   end
 
@@ -529,15 +536,22 @@ defmodule SymphonyElixir.ReviewMonitor do
     end
   end
 
-  defp finding_summary(%{finding_summary: summary}, _settings, _entry, _operations) when is_map(summary) do
+  defp finding_summary(%{finding_summary: summary}, _settings, _entry, _operations, _options)
+       when is_map(summary) do
     if is_list(summary[:decisions]), do: {:ok, summary}, else: {:error, :finding_summary_invalid}
   end
 
-  defp finding_summary(snapshot, settings, entry, operations) do
+  defp finding_summary(snapshot, settings, entry, operations, options) do
     with {:ok, scope_contract} <- parse_scope_contract(snapshot),
          {:ok, events} <- review_events(snapshot),
          {:ok, findings} <-
-           selected_findings(snapshot, events, settings, settled_threads(entry, operations, snapshot)),
+           selected_findings(
+             snapshot,
+             events,
+             settings,
+             settled_threads(entry, operations, snapshot),
+             options[:finding_facts] || %{}
+           ),
          {:ok, plan} <-
            FindingDisposition.classify_all(findings, %{
              verified?: true,
@@ -560,7 +574,7 @@ defmodule SymphonyElixir.ReviewMonitor do
   defp review_events(%{review_events: events}) when is_list(events), do: {:ok, events}
   defp review_events(_snapshot), do: {:error, :review_events_unavailable}
 
-  defp selected_findings(snapshot, events, settings, settled) do
+  defp selected_findings(snapshot, events, settings, settled, finding_facts) do
     repository = snapshot[:repository] || settings.repository
     pull_request_number = snapshot[:pull_request_number]
     head_sha = snapshot[:current_head_sha]
@@ -584,6 +598,12 @@ defmodule SymphonyElixir.ReviewMonitor do
             safe_follow_up?: :unknown,
             follow_up_destination: nil
           }
+
+          owner_facts =
+            Map.get(finding_facts, comment[:id]) ||
+              Map.get(finding_facts, event[:review_thread_id]) || %{}
+
+          facts = Map.merge(facts, Map.take(owner_facts, Map.keys(facts)))
 
           {:cont, {:ok, [facts | acc]}}
 

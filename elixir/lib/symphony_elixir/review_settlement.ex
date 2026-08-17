@@ -401,50 +401,52 @@ defmodule SymphonyElixir.ReviewSettlement do
   defp rejected_evidence(decision, context) do
     receipt = get_in(decision, [:facts, :root_cause_receipt]) || %{}
 
-    case receipt do
-      %{
-        disposition: :reject,
-        verified?: true,
-        valid?: true,
-        evidence_conflict?: false,
-        rejection_basis: basis,
-        evidence_references: references,
-        validation_receipt_status: "PASS",
-        finding_key: finding_key,
-        finding_lineage_key: lineage_key,
-        evaluated_head_sha: head_sha
-      } ->
-        validate_rejection_identity(
-          {finding_key, lineage_key, head_sha},
-          {basis, references},
-          decision,
-          context
-        )
-
-      _invalid ->
-        {:error, :rejection_proof_unverified}
-    end
+    validate_rejection_identity(
+      {value(receipt, :finding_key), value(receipt, :finding_lineage_key),
+       value(receipt, :evaluated_head_sha)},
+      {value(receipt, :rejection_basis), value(receipt, :evidence_references)},
+      decision,
+      context,
+      receipt
+    )
   end
 
   defp validate_rejection_identity(
          {finding_key, lineage_key, head_sha},
          {basis, references},
          decision,
-         context
+         context,
+         receipt
        ) do
-    if rejection_identity_matches?(finding_key, lineage_key, head_sha, decision, context) and
+    if rejection_receipt_shape?(receipt) and
+         rejection_identity_matches?(finding_key, lineage_key, head_sha, decision, context) and
          rejection_evidence_complete?(basis, references),
        do: :ok,
        else: {:error, :rejection_proof_unverified}
   end
 
   defp rejection_identity_matches?(finding_key, lineage_key, head_sha, decision, context) do
-    is_map(finding_key) and is_binary(finding_key[:digest]) and
-      is_map(lineage_key) and is_binary(lineage_key[:digest]) and
-      finding_key[:digest] == decision.finding_key_digest and
-      lineage_key[:digest] == decision.finding_lineage_key.digest and
-      head_sha == context[:current_head_sha]
+    with {:ok, {receipt_finding_key, receipt_lineage_key}} <-
+           FindingDisposition.validate_canonical_keys(finding_key, lineage_key),
+         {:ok, {decision_finding_key, decision_lineage_key}} <-
+           FindingDisposition.validate_canonical_keys(decision.finding_key, decision.finding_lineage_key) do
+      receipt_finding_key == decision_finding_key and
+        receipt_lineage_key == decision_lineage_key and
+        head_sha == context[:current_head_sha]
+    else
+      _invalid -> false
+    end
   end
+
+  defp rejection_receipt_shape?(receipt) do
+    value(receipt, :disposition) in [:reject, "reject"] and
+      value(receipt, :verified?) == true and value(receipt, :valid?) == true and
+      value(receipt, :evidence_conflict?) in [nil, false] and
+      value(receipt, :validation_receipt_status) in [:pass, "PASS"]
+  end
+
+  defp value(map, key) when is_map(map), do: Map.get(map, key, Map.get(map, Atom.to_string(key)))
+  defp value(_map, _key), do: nil
 
   defp rejection_evidence_complete?(basis, references),
     do: is_binary(basis) and basis != "" and is_list(references) and references != []

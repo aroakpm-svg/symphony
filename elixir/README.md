@@ -307,7 +307,8 @@ Notes:
 - `review_convergence.enabled` defaults to `false`. `review_convergence.profile` defaults to
   `legacy`; set it explicitly to `aroak_autonomous_v1` only when the claim, ledger, Design 3, and
   Design 4 owner runtime is installed. The autonomous profile also requires
-  `owner_runtime_module`; that module must export `readback/4` and return the claim-bound settlement
+  `owner_runtime_module`; that module must export `readback/4` and return pre-classification finding
+  facts together with the claim-bound settlement
   contexts, finding-keyed root-cause receipts, and complete durable authorization runtime. When enabled,
   `repository` is required in
   `owner/name` form. `review_state`, `in_progress_state`, `max_fix_rounds`, and `human_owner`
