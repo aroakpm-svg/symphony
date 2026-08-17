@@ -68,5 +68,22 @@ defmodule SymphonyElixir.ReviewSettlementReceiptTest do
                %{status: :fix_settled},
                operations
              )
+
+    pending = [
+      %{
+        operation_id: "ARO-245:review-settlement-receipt-1",
+        effect_type: :review_settlement_receipt,
+        request_fingerprint: fingerprint,
+        status: :pending
+      }
+    ]
+
+    assert :ok =
+             ReviewSettlementReceipt.reconcile_pending(
+               :connection,
+               ReconcilingLedger,
+               claim,
+               pending
+             )
   end
 end

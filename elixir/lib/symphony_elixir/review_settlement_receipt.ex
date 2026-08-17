@@ -3,6 +3,41 @@ defmodule SymphonyElixir.ReviewSettlementReceipt do
 
   alias SymphonyElixir.{EffectLedger, FindingDisposition}
 
+  @spec reconcile_pending(term(), module(), map(), [map()]) :: :ok | {:error, term()}
+  def reconcile_pending(connection, ledger \\ EffectLedger, claim, operations) when is_list(operations) do
+    operations
+    |> Enum.filter(&(&1[:effect_type] == :review_settlement_receipt and &1[:status] in [:pending, :unknown]))
+    |> Enum.reduce_while(:ok, fn operation, :ok ->
+      with {:ok, intent} <- FindingDisposition.decode_request_fingerprint(operation[:request_fingerprint]),
+           finding_key when is_map(finding_key) <- intent[:finding_key],
+           disposition when disposition in [:fix_in_current_pr, :follow_up_required, :rejected] <-
+             intent[:disposition],
+           resource <- resource(%{recovered_from_pending_receipt?: true}, finding_key, disposition),
+           context <-
+             Map.merge(claim, %{
+               operation_id: bare_operation_id(operation[:operation_id], claim[:issue_id]),
+               request_fingerprint: operation[:request_fingerprint]
+             }),
+           {:ok, stored} <-
+             ledger.execute(
+               connection,
+               :review_settlement_receipt,
+               context,
+               fn -> {:ok, resource} end,
+               fn -> {:found, resource} end
+             ),
+           true <- stored == resource do
+        {:cont, :ok}
+      else
+        false -> {:halt, {:error, :settlement_receipt_mismatch}}
+        _invalid -> {:halt, {:error, :invalid_pending_settlement_receipt}}
+      end
+    end)
+  end
+
+  def reconcile_pending(_connection, _ledger, _claim, _operations),
+    do: {:error, :invalid_pending_settlement_operations}
+
   @spec record(term(), module(), map(), map(), map(), [map()]) :: {:ok, map()} | {:error, term()}
   def record(connection, ledger \\ EffectLedger, claim, decision, evidence, operations) do
     with finding_key when is_map(finding_key) <- decision[:finding_key],
@@ -46,6 +81,11 @@ defmodule SymphonyElixir.ReviewSettlementReceipt do
 
   defp operation_id(fingerprint),
     do: "review-settlement-receipt-" <> Base.encode16(:crypto.hash(:sha256, fingerprint), case: :lower)
+
+  defp bare_operation_id(operation_id, issue_id)
+       when is_binary(operation_id) and is_binary(issue_id) do
+    String.replace_prefix(operation_id, issue_id <> ":", "")
+  end
 
   defp resource(evidence, key, disposition) do
     %{

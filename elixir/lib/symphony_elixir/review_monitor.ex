@@ -262,6 +262,8 @@ defmodule SymphonyElixir.ReviewMonitor do
   defp reconcile_new_claim(entry, issue, snapshot, claim, settings, review_client, options, binding) do
     with {:ok, connection, claim_context} <- claimed_context(options, issue, claim, binding),
          {:ok, operations} <- list_effect_operations(options, connection, claim_context),
+         {:ok, operations} <-
+           reconcile_pending_settlement_receipts(options, connection, claim_context, operations),
          :ok <- reconcile_operation_locks(operations),
          {:ok, summary} <- finding_summary(snapshot, settings, entry, operations),
          :ok <- verify_live_head(review_client, settings, snapshot) do
@@ -402,6 +404,21 @@ defmodule SymphonyElixir.ReviewMonitor do
       ledger.list_operations(connection, claim_context)
     else
       {:error, :effect_ledger_readback_unavailable}
+    end
+  end
+
+  defp reconcile_pending_settlement_receipts(options, connection, claim_context, operations) do
+    recorder = Map.get(options, :settlement_receipt, ReviewSettlementReceipt)
+    ledger = Map.get(options, :effect_ledger, EffectLedger)
+    pending? =
+      Enum.any?(operations, &(&1[:effect_type] == :review_settlement_receipt and &1[:status] in [:pending, :unknown]))
+
+    if pending? and loaded_function_exported?(recorder, :reconcile_pending, 4) do
+      with :ok <- recorder.reconcile_pending(connection, ledger, claim_context, operations) do
+        list_effect_operations(options, connection, claim_context)
+      end
+    else
+      {:ok, operations}
     end
   end
 
