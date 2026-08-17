@@ -115,16 +115,12 @@ defmodule SymphonyElixir.ReviewIdentityContractTest do
              })
 
     assert {:error, :synthetic_terminal_evidence} =
-             ReviewIdentity.evidence_digest(
-               Map.put(terminal_evidence_input(), :recovered_from_pending_receipt?, true)
-             )
+             ReviewIdentity.evidence_digest(Map.put(terminal_evidence_input(), :recovered_from_pending_receipt?, true))
   end
 
   test "supplied synthetic evidence_sha256 is rejected unless it recomputes from evidence" do
     assert {:error, :evidence_digest_mismatch} =
-             ReviewIdentity.build_settlement_receipt(
-               Map.put(receipt_input(), :evidence_sha256, String.duplicate("e", 64))
-             )
+             ReviewIdentity.build_settlement_receipt(Map.put(receipt_input(), :evidence_sha256, String.duplicate("e", 64)))
   end
 
   test "process restart on the same head with a complete receipt replays the same digest" do
@@ -204,14 +200,10 @@ defmodule SymphonyElixir.ReviewIdentityContractTest do
       ReviewIdentity.build_finding_key(Map.put(finding_input(), :repository, "aroakpm-svg/other"))
 
     assert {:error, :evaluation_finding_mismatch} =
-             ReviewIdentity.build_settlement_receipt(
-               Map.put(receipt_input(), :finding_key, other_finding)
-             )
+             ReviewIdentity.build_settlement_receipt(Map.put(receipt_input(), :finding_key, other_finding))
 
     assert {:error, :settled_head_not_current_evaluation} =
-             ReviewIdentity.build_settlement_receipt(
-               Map.put(receipt_input(), :settled_head_sha, sha("b"))
-             )
+             ReviewIdentity.build_settlement_receipt(Map.put(receipt_input(), :settled_head_sha, sha("b")))
   end
 
   test "malformed nested rejection keys and missing native reopen status are blocked" do
@@ -283,9 +275,7 @@ defmodule SymphonyElixir.ReviewIdentityContractTest do
     }
 
     assert {:error, :lineage_scope_mismatch} =
-             ReviewIdentity.build_settlement_receipt(
-               Map.put(receipt_input(), :finding_lineage_key, other_lineage)
-             )
+             ReviewIdentity.build_settlement_receipt(Map.put(receipt_input(), :finding_lineage_key, other_lineage))
 
     {:ok, other_eval} =
       ReviewIdentity.build_evaluation_key(evaluation_input(sha("a"), sha("b"), sha("b")))
@@ -304,40 +294,28 @@ defmodule SymphonyElixir.ReviewIdentityContractTest do
       })
 
     assert {:error, :resolve_attempt_evaluation_mismatch} =
-             ReviewIdentity.build_settlement_receipt(
-               Map.put(receipt_input(), :resolve_attempt_key, other_attempt)
-             )
+             ReviewIdentity.build_settlement_receipt(Map.put(receipt_input(), :resolve_attempt_key, other_attempt))
 
     assert {:error, :settlement_operation_ids_unverified} =
-             ReviewIdentity.build_settlement_receipt(
-               Map.put(receipt_input(), :operation_ids, %{})
-             )
+             ReviewIdentity.build_settlement_receipt(Map.put(receipt_input(), :operation_ids, %{}))
 
     assert {:error, :settlement_native_resources_unverified} =
-             ReviewIdentity.build_settlement_receipt(
-               Map.put(receipt_input(), :native_resources, %{})
-             )
+             ReviewIdentity.build_settlement_receipt(Map.put(receipt_input(), :native_resources, %{}))
 
     assert {:error, :unsupported_settlement_disposition} =
-             ReviewIdentity.build_settlement_receipt(
-               Map.put(receipt_input(), :disposition, :blocked_unverified)
-             )
+             ReviewIdentity.build_settlement_receipt(Map.put(receipt_input(), :disposition, :blocked_unverified))
 
     assert {:error, {:missing_field, :evidence}} =
              ReviewIdentity.build_settlement_receipt(Map.delete(receipt_input(), :evidence))
 
     assert {:error, {:invalid_sha, :source_head_sha}} =
-             ReviewIdentity.build_evaluation_key(
-               Map.put(evaluation_input(), :source_head_sha, "nope")
-             )
+             ReviewIdentity.build_evaluation_key(Map.put(evaluation_input(), :source_head_sha, "nope"))
 
     assert {:error, {:invalid_digest, :body_sha256}} =
              ReviewIdentity.build_finding_key(Map.put(finding_input(), :body_sha256, "nope"))
 
     assert {:ok, without_publish} =
-             ReviewIdentity.build_settlement_receipt(
-               Map.put(receipt_input(), :published_head_sha, "nope")
-             )
+             ReviewIdentity.build_settlement_receipt(Map.put(receipt_input(), :published_head_sha, "nope"))
 
     assert without_publish.published_head_sha == nil
 
@@ -368,9 +346,7 @@ defmodule SymphonyElixir.ReviewIdentityContractTest do
     {:ok, epoch} = ReviewIdentity.derive_reopen_epoch(resolve_input(:unresolved, nil))
 
     {:ok, explicit} =
-      ReviewIdentity.build_resolve_attempt_key(
-        Map.put(resolve_input(:unresolved, nil), :reopen_epoch, epoch)
-      )
+      ReviewIdentity.build_resolve_attempt_key(Map.put(resolve_input(:unresolved, nil), :reopen_epoch, epoch))
 
     assert explicit.reopen_epoch == epoch
 
@@ -378,16 +354,12 @@ defmodule SymphonyElixir.ReviewIdentityContractTest do
     assert {:ok, _} = ReviewIdentity.derive_reopen_epoch(with_node)
 
     assert {:error, :synthetic_terminal_evidence} =
-             ReviewIdentity.evidence_digest(
-               Map.put(terminal_evidence_input(), "recovered_from_pending_receipt?", true)
-             )
+             ReviewIdentity.evidence_digest(Map.put(terminal_evidence_input(), "recovered_from_pending_receipt?", true))
 
     {:ok, matching} = ReviewIdentity.evidence_digest(terminal_evidence_input())
 
     assert {:ok, _} =
-             ReviewIdentity.build_settlement_receipt(
-               Map.put(receipt_input(), :evidence_sha256, matching)
-             )
+             ReviewIdentity.build_settlement_receipt(Map.put(receipt_input(), :evidence_sha256, matching))
 
     assert {:ok, _} =
              ReviewIdentity.build_settlement_receipt(
@@ -403,9 +375,7 @@ defmodule SymphonyElixir.ReviewIdentityContractTest do
              ReviewIdentity.build_evaluation_key(%{finding_key: %{digest: digest_char("a")}})
 
     assert {:error, {:missing_field, :repository}} =
-             ReviewIdentity.build_settlement_receipt(
-               Map.delete(receipt_input(), :finding_lineage_key)
-             )
+             ReviewIdentity.build_settlement_receipt(Map.delete(receipt_input(), :finding_lineage_key))
 
     resolve_fields = resolve_input(:unresolved, nil)
 
@@ -425,14 +395,10 @@ defmodule SymphonyElixir.ReviewIdentityContractTest do
              ReviewIdentity.derive_reopen_epoch(bad_sha)
 
     assert {:error, :native_thread_state_unverified} =
-             ReviewIdentity.derive_reopen_epoch(
-               Map.put(resolve_input(:unresolved, nil), :thread_state, :nope)
-             )
+             ReviewIdentity.derive_reopen_epoch(Map.put(resolve_input(:unresolved, nil), :thread_state, :nope))
 
     assert {:ok, omitted_publish} =
-             ReviewIdentity.build_settlement_receipt(
-               Map.delete(receipt_input(), :published_head_sha)
-             )
+             ReviewIdentity.build_settlement_receipt(Map.delete(receipt_input(), :published_head_sha))
 
     assert omitted_publish.published_head_sha == nil
 
@@ -446,9 +412,7 @@ defmodule SymphonyElixir.ReviewIdentityContractTest do
              )
 
     assert {:error, {:unknown_native_path, :thread}} =
-             ReviewIdentity.build_settlement_receipt(
-               Map.put(receipt_input(), :native_resources, %{thread: native_paths().resolve})
-             )
+             ReviewIdentity.build_settlement_receipt(Map.put(receipt_input(), :native_resources, %{thread: native_paths().resolve}))
 
     string_paths = %{
       "reply" => native_paths().reply,
@@ -487,9 +451,7 @@ defmodule SymphonyElixir.ReviewIdentityContractTest do
              ReviewIdentity.evidence_digest(Map.put(terminal_evidence_input(), :reopened?, true))
 
     assert {:error, :settlement_native_resources_unverified} =
-             ReviewIdentity.build_settlement_receipt(
-               Map.delete(receipt_input(), :native_readbacks)
-             )
+             ReviewIdentity.build_settlement_receipt(Map.delete(receipt_input(), :native_readbacks))
 
     assert {:error, :invalid_settlement_evidence} =
              ReviewIdentity.evidence_digest(Map.delete(terminal_evidence_input(), :status))
@@ -502,9 +464,7 @@ defmodule SymphonyElixir.ReviewIdentityContractTest do
     assert {:ok, _} = ReviewIdentity.evidence_digest(string_evidence)
 
     assert {:error, {:duplicate_native_path, :reply}} =
-             ReviewIdentity.project_native_paths(
-               Map.put(%{reply: native_paths().reply}, "reply", native_paths().reply)
-             )
+             ReviewIdentity.project_native_paths(Map.put(%{reply: native_paths().reply}, "reply", native_paths().reply))
   end
 
   defp receipt_input do
