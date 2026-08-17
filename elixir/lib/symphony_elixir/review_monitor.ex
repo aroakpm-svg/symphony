@@ -711,7 +711,8 @@ defmodule SymphonyElixir.ReviewMonitor do
   defp durable_receipt?(entries, finding_key, disposition) do
     case Enum.filter(entries, &(&1[:effect_type] == :review_settlement_receipt)) do
       [%{native_resource: resource}] when is_map(resource) ->
-        receipt_identity(resource) == expected_receipt_identity(finding_key, disposition)
+        receipt_identity(resource) == expected_receipt_identity(finding_key, disposition) and
+          valid_evidence_digest?(resource_value(resource, [:evidence_sha256]))
 
       _ ->
         false
@@ -749,6 +750,11 @@ defmodule SymphonyElixir.ReviewMonitor do
       :exact_head_sha
     ]
   end
+
+  defp valid_evidence_digest?(digest) when is_binary(digest),
+    do: Regex.match?(~r/\A[0-9a-f]{64}\z/, digest)
+
+  defp valid_evidence_digest?(_digest), do: false
 
   defp settlement_snapshot_identity?(snapshot, finding_key) do
     finding_key.repository == snapshot[:repository] and
@@ -949,9 +955,11 @@ defmodule SymphonyElixir.ReviewMonitor do
   defp commit_settlement_result(entry, _decision, _invalid, _runtime),
     do: {:halt, {:blocked, :invalid_review_settlement_result, entry}}
 
-  defp settlement_result({:ok, entry}, _current_digests) do
+  defp settlement_result({:ok, entry}, current_digests) do
     evidence =
-      Enum.reduce(entry.settlement_results, %{}, fn
+      entry.settlement_results
+      |> Map.take(MapSet.to_list(current_digests))
+      |> Enum.reduce(%{}, fn
         {digest, {:settled, item}}, acc -> Map.put(acc, digest, item)
         {_digest, _unsettled}, acc -> acc
       end)

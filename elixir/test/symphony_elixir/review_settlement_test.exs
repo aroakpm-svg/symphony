@@ -113,6 +113,12 @@ defmodule SymphonyElixir.ReviewSettlementTest do
 
     assert {:blocked, {:settlement_native_resource_mismatch, :publish}} =
              ReviewSettlement.settle(decision, stale_context)
+
+    assert {:blocked, {:settlement_native_resource_mismatch, :publish}} =
+             ReviewSettlement.settle(
+               decision,
+               put_in(context, [:finding_key, :source_head_sha], sha("d"))
+             )
   end
 
   test "follow-up destination comes from the canonical decision" do

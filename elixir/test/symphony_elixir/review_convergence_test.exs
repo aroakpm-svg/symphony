@@ -720,7 +720,13 @@ defmodule SymphonyElixir.ReviewConvergenceTest do
       }
     ])
 
-    state = ReviewMonitor.run_with(%{}, settings(), ReviewClient, Tracker, options)
+    initial_state = %{
+      "issue-160" => %{
+        settlement_results: %{"historical" => {:settled, %{disposition: :rejected}}}
+      }
+    }
+
+    state = ReviewMonitor.run_with(initial_state, settings(), ReviewClient, Tracker, options)
     assert {:settled, %{"finding-1" => evidence}} = state["issue-160"].terminal_result
     assert evidence.disposition == :follow_up_required
     assert evidence.head_sha == head
@@ -958,13 +964,16 @@ defmodule SymphonyElixir.ReviewConvergenceTest do
         review_thread_id: finding_key.review_thread_id,
         selected_review_comment_id: finding_key.selected_review_comment_id,
         body_sha256: finding_key.body_sha256,
-        exact_head_sha: finding_key.source_head_sha
+        exact_head_sha: finding_key.source_head_sha,
+        evidence_sha256: String.duplicate("e", 64)
       }
     }
 
     for corrupted <- [
           put_in(receipt, [:native_resource, :repository], "other/repository"),
-          put_in(receipt, [:native_resource, :pull_request_number], 999)
+          put_in(receipt, [:native_resource, :pull_request_number], 999),
+          put_in(receipt, [:native_resource, :evidence_sha256], nil),
+          put_in(receipt, [:native_resource, :evidence_sha256], "invalid")
         ] do
       Application.put_env(:symphony_elixir, :autonomous_operations, component_effects ++ [corrupted])
       invalid = ReviewMonitor.run_with(%{}, settings(), ReviewClient, Tracker, options)

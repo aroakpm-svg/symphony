@@ -192,7 +192,7 @@ defmodule SymphonyElixir.ReviewSettlement do
       [%{status: :succeeded, request_fingerprint: fingerprint, native_resource: native}]
       when is_binary(fingerprint) and fingerprint != "" and is_map(native) ->
         with :ok <- validate_fingerprint(fingerprint, disposition, finding_key, lineage_key),
-             do: validate_native_resource(role, native, context)
+             do: validate_native_resource(role, native, context, finding_key)
 
       [] ->
         {:error, {:settlement_effect_missing, role}}
@@ -205,7 +205,7 @@ defmodule SymphonyElixir.ReviewSettlement do
     end
   end
 
-  defp validate_native_resource(:follow_up_issue, native, context) do
+  defp validate_native_resource(:follow_up_issue, native, context, _finding_key) do
     readback = get_in(context, [:native_readback, :follow_up]) || %{}
 
     if same_resource_id?(resource_value(native, :id), resource_value(readback, :id)),
@@ -213,7 +213,7 @@ defmodule SymphonyElixir.ReviewSettlement do
       else: {:error, {:settlement_native_resource_mismatch, :follow_up_issue}}
   end
 
-  defp validate_native_resource(:reply, native, context) do
+  defp validate_native_resource(:reply, native, context, _finding_key) do
     readback = get_in(context, [:native_readback, :reply]) || %{}
     native_id = resource_value(native, :comment_id) || resource_value(native, :id)
 
@@ -222,7 +222,7 @@ defmodule SymphonyElixir.ReviewSettlement do
       else: {:error, {:settlement_native_resource_mismatch, :reply}}
   end
 
-  defp validate_native_resource(:resolve, native, context) do
+  defp validate_native_resource(:resolve, native, context, _finding_key) do
     readback = get_in(context, [:native_readback, :thread]) || %{}
 
     native_id =
@@ -234,9 +234,9 @@ defmodule SymphonyElixir.ReviewSettlement do
       else: {:error, {:settlement_native_resource_mismatch, :resolve}}
   end
 
-  defp validate_native_resource(:publish, native, context) do
+  defp validate_native_resource(:publish, native, context, finding_key) do
     readback = get_in(context, [:native_readback, :publish]) || %{}
-    expected_head = get_in(context, [:finding_key, :source_head_sha]) || context[:current_head_sha]
+    expected_head = finding_key.source_head_sha
     native_commit = resource_value(native, :commit_sha)
     readback_commit = resource_value(readback, :commit_sha)
 
