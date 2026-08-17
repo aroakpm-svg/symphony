@@ -268,6 +268,14 @@ defmodule SymphonyElixir.ReviewIdentityContractTest do
                )
              )
 
+    {:ok, rebuilt_without_digest} =
+      ReviewIdentity.build_evaluation_key(
+        evaluation_input()
+        |> Map.put(:finding_key, Map.delete(finding, :digest))
+      )
+
+    assert rebuilt_without_digest.finding_key.digest == finding.digest
+
     other_lineage = %{
       repository: "aroakpm-svg/other",
       pull_request_number: 1,

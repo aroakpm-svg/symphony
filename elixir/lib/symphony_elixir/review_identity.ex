@@ -795,10 +795,10 @@ defmodule SymphonyElixir.ReviewIdentity do
 
   defp fetch_field(input, key) do
     cond do
-      is_map(input) and Map.has_key?(input, key) ->
+      Map.has_key?(input, key) ->
         Map.get(input, key)
 
-      is_map(input) and is_atom(key) and Map.has_key?(input, Atom.to_string(key)) ->
+      Map.has_key?(input, Atom.to_string(key)) ->
         Map.get(input, Atom.to_string(key))
 
       true ->
