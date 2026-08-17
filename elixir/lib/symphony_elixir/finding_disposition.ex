@@ -52,7 +52,7 @@ defmodule SymphonyElixir.FindingDisposition do
   @type effect_intent :: map()
   @type managed_publish_identity :: map()
 
-  @supported_message_kinds [:follow_up]
+  @supported_message_kinds [:fix, :follow_up, :rejected]
   @rejection_receipt_fields [
     :disposition,
     :rejection_basis,

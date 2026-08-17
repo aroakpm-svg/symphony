@@ -19,6 +19,14 @@ defmodule SymphonyElixir.EffectLedgerMigrationTest do
                                "../../priv/symphony_migrations/20260809000000_finding_effect_readback.down.sql",
                                __DIR__
                              )
+  @settlement_effects_migration Path.expand(
+                                  "../../priv/symphony_migrations/20260817000000_aro_245_review_settlement_effects.sql",
+                                  __DIR__
+                                )
+  @settlement_effects_rollback Path.expand(
+                                 "../../priv/symphony_migrations/20260817000000_aro_245_review_settlement_effects.down.sql",
+                                 __DIR__
+                               )
   @effect_ledger Path.expand("../../lib/symphony_elixir/effect_ledger.ex", __DIR__)
   @dynamic_tool Path.expand("../../lib/symphony_elixir/codex/dynamic_tool.ex", __DIR__)
   @agent_runner Path.expand("../../lib/symphony_elixir/agent_runner.ex", __DIR__)
@@ -127,6 +135,30 @@ defmodule SymphonyElixir.EffectLedgerMigrationTest do
 
     assert sql =~ "grant_finding_readback_api_to_node_login"
     assert sql =~ "after insert or update of login_role on symphony_staging.node_login_principals"
+  end
+
+  test "ARO-245 appends only the settlement effect types and updates begin_effect" do
+    sql = File.read!(@settlement_effects_migration)
+
+    assert sql =~ "'linear_issue_create'"
+    assert sql =~ "'github_review_thread_resolve'"
+    assert sql =~ "pg_get_functiondef"
+    assert sql =~ "begin_effect allowlist shape is incompatible"
+    assert sql =~ "'effect-ledger', 2"
+    refute sql =~ "drop table"
+    refute sql =~ "drop function"
+    refute sql =~ "symphony_production"
+  end
+
+  test "ARO-245 rollback refuses to discard settlement operations" do
+    rollback = File.read!(@settlement_effects_rollback)
+
+    assert rollback =~ "where effect_type in ('linear_issue_create', 'github_review_thread_resolve')"
+    assert rollback =~ "cannot remove ARO-245 effect types while settlement operations exist"
+    assert rollback =~ "set contract_version = 1"
+    refute rollback =~ "drop table"
+    refute rollback =~ "drop function"
+    refute rollback =~ "symphony_production"
   end
 
   test "rollback removes only ARO-165 objects" do

@@ -191,6 +191,14 @@ defmodule SymphonyElixir.ReviewConvergenceTest do
     def settle(_finding, _context), do: :ok
   end
 
+  defmodule CountingReviewSettlement do
+    @spec settle(map(), map()) :: {:settled, map()}
+    def settle(decision, context) do
+      send(Application.fetch_env!(:symphony_elixir, :review_recipient), {:autonomous_call, :settle})
+      {:settled, %{disposition: decision.disposition, head_sha: context.current_head_sha}}
+    end
+  end
+
   setup do
     Application.put_env(:symphony_elixir, :review_recipient, self())
     Application.put_env(:symphony_elixir, :review_issues, [issue()])
@@ -463,6 +471,45 @@ defmodule SymphonyElixir.ReviewConvergenceTest do
       )
 
     assert state["issue-160"].global_blocker == :root_cause_receipt_unavailable
+  end
+
+  test "autonomous monitor invokes Design 4 once after claim binding and caches settlement" do
+    head = String.duplicate("a", 40)
+
+    decision = %{
+      finding_key_digest: "finding-1",
+      disposition: :follow_up_required
+    }
+
+    Application.put_env(
+      :symphony_elixir,
+      :review_snapshot,
+      {:ok,
+       snapshot(%{
+         current_head_sha: head,
+         finding_summary: %{decisions: [decision], requires_lifecycle?: true}
+       })}
+    )
+
+    options = %{
+      profile: :aroak_autonomous_v1,
+      claim_service: AutonomousClaimService,
+      effect_ledger: AutonomousEffectLedger,
+      patch_authorization: CountingPatchAuthorization,
+      review_settlement: CountingReviewSettlement,
+      settlement_contexts: %{"finding-1" => %{}}
+    }
+
+    state = ReviewMonitor.run_with(%{}, settings(), ReviewClient, Tracker, options)
+    assert {:settled, %{"finding-1" => evidence}} = state["issue-160"].terminal_result
+    assert evidence.disposition == :follow_up_required
+    assert evidence.head_sha == head
+    assert_receive {:autonomous_call, :settle}
+    refute_received {:autonomous_call, :authorize}
+
+    replayed = ReviewMonitor.run_with(state, settings(), ReviewClient, Tracker, options)
+    assert replayed["issue-160"].terminal_result == state["issue-160"].terminal_result
+    refute_receive {:autonomous_call, :settle}
   end
 
   test "autonomous monitor invokes Design 3 once after claim binding and returns an opaque grant" do

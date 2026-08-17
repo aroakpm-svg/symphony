@@ -131,6 +131,13 @@ contradict the review finding. It is distinct from `hypothesis_rejected`, remain
 while classified, and cannot authorize a patch. Design 4 alone may later confirm the reply and
 Resolve readback required for `rejected_settled`.
 
+Design 4 is implemented by the single `ReviewSettlement.settle/2` boundary invoked by
+`ReviewMonitor` after claim binding. It consumes caller-supplied canonical operation identities,
+EffectLedger rows, and native GitHub/Linear readback. It never reclassifies findings or grants
+merge authority. Follow-up uses the append-only `linear_issue_create` ledger effect, replies reuse
+`github_comment`, and Resolve uses `github_review_thread_resolve`; pending/unknown effects and any
+readback mismatch fail closed.
+
 A technical pass, finding disposition, or `MergeReadyCandidate` does not authorize merge. Merge,
 deployment, Linear `Done`, and Landing remain human/owner actions outside Design 2.
 

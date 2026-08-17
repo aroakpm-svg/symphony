@@ -8,7 +8,7 @@ defmodule SymphonyElixir.EffectLedger do
 
   @effect_types ~w(
     linear_comment github_comment git_commit git_push github_pr_create
-    github_pr_update linear_state
+    github_pr_update linear_state linear_issue_create github_review_thread_resolve
   )a
   @attempt_lease_ms 300_000
   @list_operations_sql """
@@ -28,6 +28,8 @@ defmodule SymphonyElixir.EffectLedger do
           | :github_pr_create
           | :github_pr_update
           | :linear_state
+          | :linear_issue_create
+          | :github_review_thread_resolve
 
   @type context :: %{
           operation_id: String.t(),

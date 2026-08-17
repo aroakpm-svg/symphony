@@ -448,6 +448,16 @@ the runtime MUST fail closed and MUST NOT add local stubs. `aroak_autonomous_v1`
 by default; Design 2 validation MUST NOT start workers, use shared staging credentials, deploy, or
 touch Production.
 
+Design 4 settlement consumes canonical Design 2 decisions and supplied immutable operation
+identities/fingerprints. `ReviewSettlement.settle/2` MUST validate the active claim/generation,
+exact current head, canonical FindingKey/LineageKey, durable EffectLedger status, path-specific
+evidence, and GitHub/Linear native readback. It MUST NOT reclassify a finding or authorize merge.
+`linear_issue_create` and `github_review_thread_resolve` extend the existing ledger allowlist;
+`github_comment` remains the single reply effect. Pending/unknown/conflicting effects, response
+loss, identity mismatch, head drift, reopen, or newer trusted actionable evidence MUST remain
+blocked. Only native-confirmed `fix_settled`, `follow_up_settled`, or `rejected_settled` evidence
+is terminal; `blocked_unverified` never resolves a conversation.
+
 Design 3 provides one pure causal patch authorization boundary through `PatchAuthorization.authorize/5`.
 It consumes the canonical Design 2 finding/lineage contract, normalized readback-capable root-cause
 receipt, active claim/generation, exact current head, managed-effect readback, causal history, and runtime

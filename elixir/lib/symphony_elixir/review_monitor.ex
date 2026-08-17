@@ -301,6 +301,8 @@ defmodule SymphonyElixir.ReviewMonitor do
         authorization_required: false,
         authorization_attempts: %{},
         authorization_results: %{},
+        settlement_attempts: %{},
+        settlement_results: %{},
         causal_attempts: [],
         pending_causal_attempts: [],
         global_blocker: nil,
@@ -536,7 +538,7 @@ defmodule SymphonyElixir.ReviewMonitor do
         {:blocked, :owner_api_unavailable, updated}
 
       true ->
-        authorize_causal_patches(updated, summary[:decisions], operations, snapshot, claim_context, options)
+        settle_or_authorize(updated, summary[:decisions], operations, snapshot, claim_context, options)
     end
   end
 
@@ -549,6 +551,84 @@ defmodule SymphonyElixir.ReviewMonitor do
 
     loaded_function_exported?(authorization, :authorize, 5) and
       loaded_function_exported?(settlement, :settle, 2)
+  end
+
+  defp settle_or_authorize(entry, decisions, operations, snapshot, claim_context, options) do
+    case Map.get(options, :settlement_contexts) do
+      contexts when is_map(contexts) and map_size(contexts) > 0 ->
+        settle_decisions(entry, decisions, operations, snapshot, claim_context, contexts, options)
+
+      _missing ->
+        authorize_causal_patches(entry, decisions, operations, snapshot, claim_context, options)
+    end
+  end
+
+  defp settle_decisions(entry, decisions, operations, snapshot, claim_context, contexts, options) do
+    settlement = Map.fetch!(options, :review_settlement)
+    sorted = FindingDisposition.sort_decisions(decisions)
+    current_digests = MapSet.new(sorted, & &1.finding_key_digest)
+    entry = %{entry | settlement_results: %{}}
+
+    sorted
+    |> Enum.reduce_while({:ok, entry}, fn decision, {:ok, acc} ->
+      settle_decision(acc, decision, operations, snapshot, claim_context, contexts, settlement)
+    end)
+    |> settlement_result(current_digests)
+  end
+
+  defp settle_decision(entry, decision, operations, snapshot, claim_context, contexts, settlement) do
+    digest = decision.finding_key_digest
+
+    case contexts[digest] do
+      context when is_map(context) ->
+        authoritative = %{
+          current_head_sha: snapshot[:current_head_sha],
+          claim: Map.put(claim_identity(claim_context), :active?, true),
+          operations: operations
+        }
+
+        context = Map.merge(context, authoritative)
+        key = :crypto.hash(:sha256, :erlang.term_to_binary({decision, context}))
+        result = Map.get(entry.settlement_attempts, key) || settlement.settle(decision, context)
+
+        updated =
+          entry
+          |> put_in([:settlement_attempts, key], result)
+          |> put_in([:settlement_results, digest], result)
+
+        case result do
+          {:settled, _evidence} -> {:cont, {:ok, updated}}
+          {:blocked, reason} -> {:halt, {:blocked, reason, updated}}
+          _invalid -> {:halt, {:blocked, :invalid_review_settlement_result, updated}}
+        end
+
+      _missing ->
+        {:halt, {:blocked, :settlement_context_unavailable, entry}}
+    end
+  end
+
+  defp settlement_result({:ok, entry}, current_digests) do
+    current_results = Map.take(entry.settlement_results, MapSet.to_list(current_digests))
+    evidence = Map.new(current_results, fn {digest, {:settled, item}} -> {digest, item} end)
+
+    {:ok,
+     %{
+       entry
+       | authorization_required: false,
+         authorization_results: %{},
+         settlement_results: current_results,
+         terminal_result: {:settled, evidence},
+         global_blocker: nil
+     }}
+  end
+
+  defp settlement_result({:blocked, reason, entry}, _current_digests) do
+    {:blocked, reason,
+     %{
+       entry
+       | authorization_required: false,
+         terminal_result: {:blocked, reason}
+     }}
   end
 
   defp authorize_causal_patches(entry, decisions, operations, snapshot, claim_context, options) do
