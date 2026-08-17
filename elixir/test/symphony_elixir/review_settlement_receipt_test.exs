@@ -66,6 +66,51 @@ defmodule SymphonyElixir.ReviewSettlementReceiptTest do
              )
   end
 
+  test "recording rejects mismatched storage and invalid settlement identity" do
+    %{claim: claim, decision: decision, fingerprint: fingerprint} = settlement_fixture()
+    evidence = %{status: :fix_settled}
+
+    assert {:error, :settlement_receipt_mismatch} =
+             ReviewSettlementReceipt.record(
+               :connection,
+               MismatchingLedger,
+               claim,
+               decision,
+               evidence,
+               [%{request_fingerprint: "not-a-fingerprint"}, %{request_fingerprint: fingerprint}]
+             )
+
+    assert {:error, :invalid_settlement_receipt} =
+             ReviewSettlementReceipt.record(
+               :connection,
+               ReconcilingLedger,
+               claim,
+               decision,
+               evidence,
+               []
+             )
+
+    assert {:error, :invalid_settlement_receipt} =
+             ReviewSettlementReceipt.record(
+               :connection,
+               ReconcilingLedger,
+               claim,
+               decision,
+               evidence,
+               :invalid_operations
+             )
+
+    assert {:error, :invalid_settlement_receipt} =
+             ReviewSettlementReceipt.record(
+               :connection,
+               ReconcilingLedger,
+               claim,
+               %{decision | disposition: :unsupported},
+               evidence,
+               [%{request_fingerprint: fingerprint}]
+             )
+  end
+
   defp settlement_fixture do
     head = String.duplicate("a", 40)
 
