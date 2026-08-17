@@ -4,7 +4,9 @@ defmodule SymphonyElixir.ReviewSettlementReceipt do
   alias SymphonyElixir.{EffectLedger, FindingDisposition}
 
   @spec reconcile_pending(term(), module(), map(), [map()]) :: :ok | {:error, term()}
-  def reconcile_pending(connection, ledger \\ EffectLedger, claim, operations) when is_list(operations) do
+  def reconcile_pending(connection, ledger \\ EffectLedger, claim, operations)
+
+  def reconcile_pending(connection, ledger, claim, operations) when is_list(operations) do
     operations
     |> Enum.filter(&(&1[:effect_type] == :review_settlement_receipt and &1[:status] in [:pending, :unknown]))
     |> Enum.reduce_while(:ok, fn operation, :ok ->
@@ -72,7 +74,8 @@ defmodule SymphonyElixir.ReviewSettlementReceipt do
         when digest == decision.finding_key_digest and disposition == decision.disposition ->
           {:ok, fingerprint}
 
-        _ -> nil
+        _ ->
+          nil
       end
     end)
   end

@@ -410,8 +410,12 @@ defmodule SymphonyElixir.ReviewMonitor do
   defp reconcile_pending_settlement_receipts(options, connection, claim_context, operations) do
     recorder = Map.get(options, :settlement_receipt, ReviewSettlementReceipt)
     ledger = Map.get(options, :effect_ledger, EffectLedger)
+
     pending? =
-      Enum.any?(operations, &(&1[:effect_type] == :review_settlement_receipt and &1[:status] in [:pending, :unknown]))
+      Enum.any?(
+        operations,
+        &(&1[:effect_type] == :review_settlement_receipt and &1[:status] in [:pending, :unknown])
+      )
 
     if pending? and loaded_function_exported?(recorder, :reconcile_pending, 4) do
       with :ok <- recorder.reconcile_pending(connection, ledger, claim_context, operations) do
@@ -575,7 +579,8 @@ defmodule SymphonyElixir.ReviewMonitor do
           resource_value(resource, [:body_sha256]) == finding_key.body_sha256 and
           resource_value(resource, [:exact_head_sha]) == finding_key.source_head_sha
 
-      _ -> false
+      _ ->
+        false
     end
   end
 
