@@ -254,6 +254,15 @@ defmodule SymphonyElixir.ReviewConvergenceTest do
     end
   end
 
+  defmodule ConflictingOwnerRuntime do
+    def readback(snapshot, review_input, operations, claim) do
+      {:ok, result} = ClassifyingOwnerRuntime.readback(snapshot, review_input, operations, claim)
+      [comment_id] = Map.keys(result.finding_facts)
+
+      {:ok, put_in(result, [:finding_facts, comment_id, :evidence_conflict?], true)}
+    end
+  end
+
   defmodule CountingMixedPatchAuthorization do
     @spec authorize(map(), map(), map(), [map()], map()) :: {:ok, map()}
     def authorize(decision, _receipt, claim, _effects, _runtime) do
@@ -427,7 +436,7 @@ defmodule SymphonyElixir.ReviewConvergenceTest do
         %{
           id: "comment-owner-facts",
           body: "The managed change violates the invariant",
-          commit_sha: head,
+          commit_sha: String.duplicate("b", 40),
           trusted_review_source?: true,
           managed_agent_reply?: false,
           settlement_marker?: false,
@@ -463,7 +472,24 @@ defmodule SymphonyElixir.ReviewConvergenceTest do
         }
       )
 
-    assert [%{disposition: :fix_in_current_pr}] = Map.values(state["issue-160"].decisions)
+    assert [%{disposition: :fix_in_current_pr, finding_key: %{source_head_sha: ^head}}] =
+             Map.values(state["issue-160"].decisions)
+
+    conflicting =
+      ReviewMonitor.run_with(
+        %{},
+        settings(),
+        ReviewClient,
+        Tracker,
+        %{
+          profile: :aroak_autonomous_v1,
+          claim_service: AutonomousClaimService,
+          effect_ledger: AutonomousEffectLedger,
+          owner_runtime: ConflictingOwnerRuntime
+        }
+      )
+
+    assert [%{disposition: :blocked_unverified}] = Map.values(conflicting["issue-160"].decisions)
   end
 
   test "successful autonomous recovery clears a stale global blocker" do

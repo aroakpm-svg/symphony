@@ -205,6 +205,34 @@ defmodule SymphonyElixir.ReviewSettlementTest do
       })
 
     assert {:blocked, :rejection_proof_unverified} = ReviewSettlement.settle(partial_key, context)
+
+    for {field, invalid} <- [rejection_basis: "", evidence_references: []] do
+      malformed = put_in(decision, [:facts, :root_cause_receipt, field], invalid)
+      assert {:blocked, :rejection_proof_unverified} = ReviewSettlement.settle(malformed, context)
+    end
+
+    assert {:blocked, :rejection_proof_unverified} =
+             ReviewSettlement.settle(
+               put_in(
+                 decision,
+                 [:facts, :root_cause_receipt, :evaluated_head_sha],
+                 String.duplicate("c", 40)
+               ),
+               context
+             )
+
+    other_facts =
+      decision.facts.root_cause_receipt.finding_key
+      |> Map.delete(:digest)
+      |> Map.put(:source_head_sha, String.duplicate("c", 40))
+
+    {:ok, other_finding_key} = FindingDisposition.build_finding_key(other_facts)
+
+    assert {:blocked, :rejection_proof_unverified} =
+             ReviewSettlement.settle(
+               put_in(decision, [:facts, :root_cause_receipt, :finding_key], other_finding_key),
+               context
+             )
   end
 
   test "claim and identity mismatches fail before effects" do

@@ -17,6 +17,19 @@ defmodule SymphonyElixir.ReviewMonitor do
     Tracker
   }
 
+  @owner_finding_fact_keys [
+    :introduced_by_pr?,
+    :invariant_violation?,
+    :still_applies?,
+    :in_scope?,
+    :root_cause_bounded?,
+    :requires_new_decision?,
+    :safe_follow_up?,
+    :follow_up_destination,
+    :evidence_conflict?,
+    :root_cause_receipt
+  ]
+
   alias SymphonyElixir.Linear.Issue
 
   @type state :: %{optional(String.t()) => map()}
@@ -585,7 +598,8 @@ defmodule SymphonyElixir.ReviewMonitor do
           facts = %{
             repository: repository,
             pull_request_number: pull_request_number,
-            source_head_sha: comment[:commit_sha] || head_sha,
+            source_head_sha: head_sha,
+            selected_review_comment_head_sha: comment[:commit_sha],
             review_thread_id: event[:review_thread_id],
             selected_review_comment_id: comment[:id],
             body: comment[:body],
@@ -603,7 +617,7 @@ defmodule SymphonyElixir.ReviewMonitor do
             Map.get(finding_facts, comment[:id]) ||
               Map.get(finding_facts, event[:review_thread_id]) || %{}
 
-          facts = Map.merge(facts, Map.take(owner_facts, Map.keys(facts)))
+          facts = Map.merge(facts, Map.take(owner_facts, @owner_finding_fact_keys))
 
           {:cont, {:ok, [facts | acc]}}
 

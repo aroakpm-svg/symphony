@@ -457,6 +457,9 @@ classification, the monitor calls that owner's `readback/4` boundary to obtain n
 facts, settlement contexts, exact finding-keyed Root-Cause Receipts,
 and complete durable authorization history; missing, malformed, or unavailable owner readback blocks
 the cycle before settlement or authorization.
+The canonical FindingKey is rebound to the current evaluated head after owner revalidation, while the
+original review-comment head remains provenance only. Owner facts may populate classification evidence
+and Root-Cause Receipts but MUST NOT replace repository, PR, thread, comment, body, or evaluated-head identity.
 
 Design 4 settlement consumes canonical Design 2 decisions and supplied immutable operation
 identities/fingerprints. `ReviewSettlement.settle/2` MUST validate the active claim/generation,
