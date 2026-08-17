@@ -639,22 +639,28 @@ defmodule SymphonyElixir.ReviewMonitor do
         {:ok, comment, false}
 
       {:error, :resolved_thread_settlement_unverified} = unresolved ->
-        if event[:resolved?] == true do
-          case FindingDisposition.select_review_comment(event, %{selection | resolved?: false}) do
-            {:ok, comment} ->
-              if comment[:commit_sha] != head_sha, do: {:ok, comment, true}, else: unresolved
-
-            other ->
-              other
-          end
-        else
-          unresolved
-        end
+        review_resolved_comment_for_evaluation(event, selection, head_sha, unresolved)
 
       other ->
         other
     end
   end
+
+  defp review_resolved_comment_for_evaluation(event, selection, head_sha, unresolved) do
+    if event[:resolved?] == true do
+      event
+      |> FindingDisposition.select_review_comment(%{selection | resolved?: false})
+      |> revalidate_resolved_comment_head(head_sha, unresolved)
+    else
+      unresolved
+    end
+  end
+
+  defp revalidate_resolved_comment_head({:ok, comment}, head_sha, unresolved) do
+    if comment[:commit_sha] != head_sha, do: {:ok, comment, true}, else: unresolved
+  end
+
+  defp revalidate_resolved_comment_head(other, _head_sha, _unresolved), do: other
 
   defp settled_threads(entry, operations, snapshot) do
     local =
