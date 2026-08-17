@@ -171,6 +171,34 @@ defmodule SymphonyElixir.ReviewSettlementTest do
     assert {:settled, %{status: :rejected_settled}} =
              ReviewSettlement.settle(string_receipt, context)
 
+    string_keyed_receipt =
+      string_receipt
+      |> get_in([:facts, :root_cause_receipt])
+      |> Map.new(fn {key, value} -> {Atom.to_string(key), value} end)
+
+    assert {:settled, %{status: :rejected_settled}} =
+             ReviewSettlement.settle(
+               put_in(decision, [:facts, :root_cause_receipt], string_keyed_receipt),
+               context
+             )
+
+    for {field, invalid} <- [
+          disposition: :approve,
+          verified?: false,
+          valid?: false,
+          evidence_conflict?: true,
+          validation_receipt_status: :fail
+        ] do
+      malformed = put_in(decision, [:facts, :root_cause_receipt, field], invalid)
+      assert {:blocked, :rejection_proof_unverified} = ReviewSettlement.settle(malformed, context)
+    end
+
+    assert {:blocked, :rejection_proof_unverified} =
+             ReviewSettlement.settle(
+               put_in(decision, [:facts, :root_cause_receipt], :invalid),
+               context
+             )
+
     partial_key =
       put_in(decision, [:facts, :root_cause_receipt, :finding_key], %{
         digest: decision.finding_key_digest
