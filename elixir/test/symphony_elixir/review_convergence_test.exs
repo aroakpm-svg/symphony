@@ -876,7 +876,17 @@ defmodule SymphonyElixir.ReviewConvergenceTest do
     )
 
     stale_local = ReviewMonitor.run_with(initial_state, settings(), ReviewClient, Tracker, options)
-    assert stale_local["issue-160"].global_blocker == :resolved_thread_settlement_unverified
+    refute stale_local["issue-160"].global_blocker == :resolved_thread_settlement_unverified
+
+    assert [
+             %{
+               disposition: :blocked_unverified,
+               finding_key: %{source_head_sha: source_head_sha},
+               facts: %{prior_settlement_revalidation_required?: true}
+             }
+           ] = Map.values(stale_local["issue-160"].decisions)
+
+    assert source_head_sha == String.duplicate("b", 40)
 
     Application.put_env(
       :symphony_elixir,

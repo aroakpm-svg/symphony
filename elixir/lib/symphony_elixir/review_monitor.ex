@@ -593,8 +593,8 @@ defmodule SymphonyElixir.ReviewMonitor do
     head_sha = snapshot[:current_head_sha]
 
     Enum.reduce_while(events, {:ok, []}, fn event, {:ok, acc} ->
-      case FindingDisposition.select_review_comment(event, %{resolved?: event[:resolved?], settled: settled}) do
-        {:ok, comment} ->
+      case review_comment_for_evaluation(event, settled, head_sha) do
+        {:ok, comment, revalidation_required?} ->
           facts = %{
             repository: repository,
             pull_request_number: pull_request_number,
@@ -603,6 +603,7 @@ defmodule SymphonyElixir.ReviewMonitor do
             review_thread_id: event[:review_thread_id],
             selected_review_comment_id: comment[:id],
             body: comment[:body],
+            prior_settlement_revalidation_required?: revalidation_required?,
             introduced_by_pr?: :unknown,
             invariant_violation?: :unknown,
             still_applies?: :unknown,
@@ -628,6 +629,25 @@ defmodule SymphonyElixir.ReviewMonitor do
           {:halt, {:error, reason}}
       end
     end)
+  end
+
+  defp review_comment_for_evaluation(event, settled, head_sha) do
+    selection = %{resolved?: event[:resolved?], settled: settled}
+
+    case FindingDisposition.select_review_comment(event, selection) do
+      {:ok, comment} ->
+        {:ok, comment, false}
+
+      {:error, :resolved_thread_settlement_unverified} when event[:resolved?] == true ->
+        case FindingDisposition.select_review_comment(event, %{selection | resolved?: false}) do
+          {:ok, comment} when comment[:commit_sha] != head_sha -> {:ok, comment, true}
+          {:ok, _same_head_comment} -> {:error, :resolved_thread_settlement_unverified}
+          other -> other
+        end
+
+      other ->
+        other
+    end
   end
 
   defp settled_threads(entry, operations, snapshot) do

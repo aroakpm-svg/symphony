@@ -460,6 +460,9 @@ the cycle before settlement or authorization.
 The canonical FindingKey is rebound to the current evaluated head after owner revalidation, while the
 original review-comment head remains provenance only. Owner facts may populate classification evidence
 and Root-Cause Receipts but MUST NOT replace repository, PR, thread, comment, body, or evaluated-head identity.
+When a previously settled resolved thread is observed on a newer head, the old receipt remains
+provenance only and the finding re-enters owner revalidation; an unverified same-head resolved thread
+continues to block fail-closed.
 
 Design 4 settlement consumes canonical Design 2 decisions and supplied immutable operation
 identities/fingerprints. `ReviewSettlement.settle/2` MUST validate the active claim/generation,

@@ -425,12 +425,11 @@ defmodule SymphonyElixir.ReviewSettlement do
   end
 
   defp rejection_identity_matches?(finding_key, lineage_key, head_sha, decision, context) do
-    with {:ok, {receipt_finding_key, receipt_lineage_key}} <-
+    with {:ok, {receipt_finding_key, _receipt_lineage_key}} <-
            FindingDisposition.validate_canonical_keys(finding_key, lineage_key),
-         {:ok, {decision_finding_key, decision_lineage_key}} <-
+         {:ok, {decision_finding_key, _decision_lineage_key}} <-
            FindingDisposition.validate_canonical_keys(decision.finding_key, decision.finding_lineage_key) do
       receipt_finding_key == decision_finding_key and
-        receipt_lineage_key == decision_lineage_key and
         head_sha == context[:current_head_sha]
     else
       _invalid -> false
