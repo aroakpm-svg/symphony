@@ -577,7 +577,8 @@ defmodule SymphonyElixir.ReviewMonitor do
 
   defp settlement_snapshot_identity?(snapshot, finding_key) do
     finding_key.repository == snapshot[:repository] and
-      finding_key.pull_request_number == snapshot[:pull_request_number]
+      finding_key.pull_request_number == snapshot[:pull_request_number] and
+      finding_key.source_head_sha == snapshot[:current_head_sha]
   end
 
   defp resource_value(resource, keys) when is_map(resource) do

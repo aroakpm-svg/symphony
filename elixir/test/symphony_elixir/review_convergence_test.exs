@@ -746,6 +746,31 @@ defmodule SymphonyElixir.ReviewConvergenceTest do
 
     Application.put_env(:symphony_elixir, :autonomous_operations, component_effects ++ [receipt])
 
+    Application.put_env(
+      :symphony_elixir,
+      :review_snapshot,
+      {:ok,
+       snapshot(%{
+         current_head_sha: String.duplicate("b", 40),
+         pull_request_body: complete_scope_contract(),
+         review_events: [event]
+       })}
+    )
+
+    stale = ReviewMonitor.run_with(%{}, settings(), ReviewClient, Tracker, options)
+    assert stale["issue-160"].global_blocker == :resolved_thread_settlement_unverified
+
+    Application.put_env(
+      :symphony_elixir,
+      :review_snapshot,
+      {:ok,
+       snapshot(%{
+         current_head_sha: head,
+         pull_request_body: complete_scope_contract(),
+         review_events: [event]
+       })}
+    )
+
     restarted = ReviewMonitor.run_with(%{}, settings(), ReviewClient, Tracker, options)
     assert restarted["issue-160"].global_blocker == nil
     assert restarted["issue-160"].decisions == %{}
