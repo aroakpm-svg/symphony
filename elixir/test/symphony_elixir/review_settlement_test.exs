@@ -222,6 +222,12 @@ defmodule SymphonyElixir.ReviewSettlementTest do
                put_in(context, [:native_readback, :follow_up, :url], "")
              )
 
+    assert {:blocked, :follow_up_readback_unverified} =
+             ReviewSettlement.settle(
+               decision,
+               put_in(context, [:native_readback, :follow_up, :destination], "wrong-destination")
+             )
+
     assert {:blocked, :reply_readback_unverified} =
              ReviewSettlement.settle(
                decision,
