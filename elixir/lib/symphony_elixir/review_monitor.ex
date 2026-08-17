@@ -589,7 +589,7 @@ defmodule SymphonyElixir.ReviewMonitor do
        ) do
     pending_effect_ids =
       operations
-      |> Enum.filter(&(&1.status in [:pending, :unknown]))
+      |> Enum.filter(&(&1.status in [:pending, :unknown] and &1.effect_type != :review_settlement_receipt))
       |> Enum.map(& &1.operation_id)
 
     updated =

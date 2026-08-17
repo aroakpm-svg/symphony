@@ -529,6 +529,16 @@ defmodule SymphonyElixir.ReviewConvergenceTest do
       settlement_contexts: %{"finding-1" => %{}}
     }
 
+    Application.put_env(:symphony_elixir, :autonomous_operations, [
+      %{
+        operation_id: "issue-160:pending-receipt",
+        effect_type: :review_settlement_receipt,
+        request_fingerprint: "receipt-retry",
+        status: :pending,
+        native_resource: nil
+      }
+    ])
+
     state = ReviewMonitor.run_with(%{}, settings(), ReviewClient, Tracker, options)
     assert {:settled, %{"finding-1" => evidence}} = state["issue-160"].terminal_result
     assert evidence.disposition == :follow_up_required

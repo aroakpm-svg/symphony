@@ -17,7 +17,7 @@ defmodule SymphonyElixir.ReviewSettlementReceipt do
              :review_settlement_receipt,
              context,
              fn -> {:ok, resource} end,
-             fn -> :not_found end
+             fn -> {:found, resource} end
            ),
          true <- stored == resource do
       {:ok, stored}
