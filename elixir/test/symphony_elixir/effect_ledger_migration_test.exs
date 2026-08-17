@@ -27,6 +27,14 @@ defmodule SymphonyElixir.EffectLedgerMigrationTest do
                                  "../../priv/symphony_migrations/20260817000000_aro_245_review_settlement_effects.down.sql",
                                  __DIR__
                                )
+  @durable_settlement_readback Path.expand(
+                                 "../../priv/symphony_migrations/20260817000001_aro_245_durable_settlement_readback.sql",
+                                 __DIR__
+                               )
+  @durable_settlement_readback_rollback Path.expand(
+                                          "../../priv/symphony_migrations/20260817000001_aro_245_durable_settlement_readback.down.sql",
+                                          __DIR__
+                                        )
   @effect_ledger Path.expand("../../lib/symphony_elixir/effect_ledger.ex", __DIR__)
   @dynamic_tool Path.expand("../../lib/symphony_elixir/codex/dynamic_tool.ex", __DIR__)
   @agent_runner Path.expand("../../lib/symphony_elixir/agent_runner.ex", __DIR__)
@@ -159,6 +167,27 @@ defmodule SymphonyElixir.EffectLedgerMigrationTest do
     refute rollback =~ "drop table"
     refute rollback =~ "drop function"
     refute rollback =~ "symphony_production"
+  end
+
+  test "ARO-245 durable readback includes only succeeded settlement effects" do
+    sql = File.read!(@durable_settlement_readback)
+
+    assert sql =~ "operations.status in ('pending', 'unknown')"
+    assert sql =~ "operations.status = 'succeeded'"
+    assert sql =~ "'github_comment', 'linear_issue_create', 'github_review_thread_resolve'"
+    assert sql =~ "'finding-effect-readback', 2"
+    assert sql =~ "operations.generation <= requested_generation"
+    assert sql =~ "claims.claim_id = requested_claim_id"
+    refute sql =~ "grant select on table symphony_staging.effect_operations"
+  end
+
+  test "ARO-245 durable readback rollback restores reconciliation-only visibility" do
+    rollback = File.read!(@durable_settlement_readback_rollback)
+
+    assert rollback =~ "operations.status in ('pending', 'unknown')"
+    refute rollback =~ "operations.status = 'succeeded'"
+    assert rollback =~ "set contract_version = 1"
+    refute rollback =~ "drop table"
   end
 
   test "rollback removes only ARO-165 objects" do
