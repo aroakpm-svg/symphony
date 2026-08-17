@@ -182,6 +182,162 @@ defmodule SymphonyElixir.ReviewIdentityContractTest do
     assert {:error, {:missing_field, :repository}} = ReviewIdentity.derive_reopen_epoch(%{})
   end
 
+  test "remaining fail-closed clauses stay covered" do
+    {:ok, receipt} = ReviewIdentity.build_settlement_receipt(receipt_input())
+    {:ok, evaluation} = ReviewIdentity.build_evaluation_key(evaluation_input())
+    {:ok, finding} = ReviewIdentity.build_finding_key(finding_input())
+
+    assert {:error, :invalid_finding_key_input} = ReviewIdentity.build_finding_key(:no)
+    assert {:error, :invalid_lineage_key_input} = ReviewIdentity.build_lineage_key(:no)
+    assert {:error, :invalid_evaluation_key_input} = ReviewIdentity.build_evaluation_key(:no)
+    assert {:error, :invalid_reopen_epoch_input} = ReviewIdentity.derive_reopen_epoch(:no)
+    assert {:error, :invalid_resolve_attempt_key_input} = ReviewIdentity.build_resolve_attempt_key(:no)
+    assert {:error, :invalid_settlement_evidence} = ReviewIdentity.evidence_digest(:no)
+    assert {:error, :invalid_settlement_receipt_input} = ReviewIdentity.build_settlement_receipt(:no)
+    assert {:error, :terminal_receipt_evidence_unavailable} = ReviewIdentity.reconcile_receipt(:no)
+    assert {:error, :invalid_resolve_operation_identity} = ReviewIdentity.resolve_operation_identity(%{})
+
+    assert {:error, :source_head_mismatch} = ReviewIdentity.exact_head(:source, evaluation, sha("b"))
+    assert :ok = ReviewIdentity.exact_head(:published, receipt, sha("a"))
+    assert {:error, :published_head_mismatch} = ReviewIdentity.exact_head(:published, receipt, sha("b"))
+    assert :ok = ReviewIdentity.exact_head(:settled, receipt, sha("a"))
+    assert {:error, :settled_head_mismatch} = ReviewIdentity.exact_head(:settled, receipt, sha("b"))
+    assert {:error, :exact_head_unverified} = ReviewIdentity.exact_head(:current, evaluation, :bad)
+
+    assert {:error, :non_canonical_finding_key} =
+             ReviewIdentity.build_evaluation_key(
+               evaluation_input()
+               |> Map.put(:finding_key, Map.put(finding, :digest, digest_char("9")))
+             )
+
+    other_lineage = %{
+      repository: "aroakpm-svg/other",
+      pull_request_number: 1,
+      review_thread_id: "thread-x"
+    }
+
+    assert {:error, :lineage_scope_mismatch} =
+             ReviewIdentity.build_settlement_receipt(Map.put(receipt_input(), :finding_lineage_key, other_lineage))
+
+    {:ok, other_eval} =
+      ReviewIdentity.build_evaluation_key(evaluation_input(sha("a"), sha("b"), sha("b")))
+
+    {:ok, other_attempt} =
+      ReviewIdentity.build_resolve_attempt_key(%{
+        evaluation_key: other_eval,
+        thread_state: :unresolved,
+        native_thread: %{
+          repository: "aroakpm-svg/symphony",
+          pull_request_number: 39,
+          review_thread_id: "thread-1",
+          thread_state: :unresolved,
+          observed_head_sha: sha("b")
+        }
+      })
+
+    assert {:error, :resolve_attempt_evaluation_mismatch} =
+             ReviewIdentity.build_settlement_receipt(Map.put(receipt_input(), :resolve_attempt_key, other_attempt))
+
+    assert {:error, :settlement_operation_ids_unverified} =
+             ReviewIdentity.build_settlement_receipt(Map.put(receipt_input(), :operation_ids, %{}))
+
+    assert {:error, :settlement_native_resources_unverified} =
+             ReviewIdentity.build_settlement_receipt(Map.put(receipt_input(), :native_resources, %{}))
+
+    assert {:error, :unsupported_settlement_disposition} =
+             ReviewIdentity.build_settlement_receipt(Map.put(receipt_input(), :disposition, :blocked_unverified))
+
+    assert {:error, {:missing_field, :evidence}} =
+             ReviewIdentity.build_settlement_receipt(Map.delete(receipt_input(), :evidence))
+
+    assert {:error, {:invalid_sha, :source_head_sha}} =
+             ReviewIdentity.build_evaluation_key(Map.put(evaluation_input(), :source_head_sha, "nope"))
+
+    assert {:error, {:invalid_digest, :body_sha256}} =
+             ReviewIdentity.build_finding_key(Map.put(finding_input(), :body_sha256, "nope"))
+
+    assert {:ok, without_publish} =
+             ReviewIdentity.build_settlement_receipt(Map.put(receipt_input(), :published_head_sha, "nope"))
+
+    assert without_publish.published_head_sha == nil
+
+    assert {:ok, ^receipt} = ReviewIdentity.reconcile_receipt(%{"original_receipt" => receipt})
+    assert {:ok, ^receipt} = ReviewIdentity.reconcile_receipt(%{native_resource: receipt})
+
+    assert {:error, :terminal_receipt_evidence_unavailable} =
+             ReviewIdentity.reconcile_receipt(%{original_receipt: Map.put(receipt, :extra, true)})
+
+    mismatched_head = put_in(resolve_input(:unresolved, nil), [:native_thread, :observed_head_sha], sha("b"))
+    assert {:error, :native_thread_state_unverified} = ReviewIdentity.derive_reopen_epoch(mismatched_head)
+
+    mismatched_state = put_in(resolve_input(:unresolved, nil), [:native_thread, :thread_state], :resolved)
+    assert {:error, :native_thread_state_unverified} = ReviewIdentity.derive_reopen_epoch(mismatched_state)
+
+    mismatched_repo = put_in(resolve_input(:unresolved, nil), [:native_thread, :repository], "aroakpm-svg/other")
+    assert {:error, :native_thread_state_unverified} = ReviewIdentity.derive_reopen_epoch(mismatched_repo)
+
+    {:ok, epoch} = ReviewIdentity.derive_reopen_epoch(resolve_input(:unresolved, nil))
+
+    {:ok, explicit} =
+      ReviewIdentity.build_resolve_attempt_key(Map.put(resolve_input(:unresolved, nil), :reopen_epoch, epoch))
+
+    assert explicit.reopen_epoch == epoch
+
+    with_node = put_in(resolve_input(:unresolved, nil), [:native_thread, :node_id], "PRRT_1")
+    assert {:ok, _} = ReviewIdentity.derive_reopen_epoch(with_node)
+
+    assert {:error, :synthetic_terminal_evidence} =
+             ReviewIdentity.evidence_digest(%{
+               "status" => :fix_settled,
+               "native_confirmed?" => true,
+               "recovered_from_pending_receipt?" => true
+             })
+
+    {:ok, matching} = ReviewIdentity.evidence_digest(%{status: :fix_settled, native_confirmed?: true})
+
+    assert {:ok, _} =
+             ReviewIdentity.build_settlement_receipt(Map.put(receipt_input(), :evidence_sha256, matching))
+
+    assert {:ok, _} =
+             ReviewIdentity.build_settlement_receipt(
+               receipt_input()
+               |> Map.delete(:finding_lineage_key)
+               |> Map.put(:lineage_key, finding_input())
+             )
+
+    assert {:error, :terminal_receipt_evidence_unavailable} =
+             ReviewIdentity.reconcile_receipt(%{original_receipt: %{status: :incomplete}})
+
+    assert {:error, {:missing_field, :repository}} =
+             ReviewIdentity.build_evaluation_key(%{finding_key: %{digest: digest_char("a")}})
+
+    assert {:error, {:missing_field, :repository}} =
+             ReviewIdentity.build_settlement_receipt(Map.delete(receipt_input(), :finding_lineage_key))
+
+    resolve_fields = resolve_input(:unresolved, nil)
+
+    assert {:ok, _} =
+             ReviewIdentity.build_settlement_receipt(
+               receipt_input()
+               |> Map.delete(:resolve_attempt_key)
+               |> Map.merge(%{
+                 thread_state: :unresolved,
+                 native_thread: resolve_fields.native_thread
+               })
+             )
+
+    bad_sha = put_in(resolve_input(:unresolved, nil), [:native_thread, :observed_head_sha], "bad")
+    assert {:error, {:invalid_sha, :observed_head_sha}} = ReviewIdentity.derive_reopen_epoch(bad_sha)
+
+    assert {:error, :native_thread_state_unverified} =
+             ReviewIdentity.derive_reopen_epoch(Map.put(resolve_input(:unresolved, nil), :thread_state, :nope))
+
+    assert {:ok, omitted_publish} =
+             ReviewIdentity.build_settlement_receipt(Map.delete(receipt_input(), :published_head_sha))
+
+    assert omitted_publish.published_head_sha == nil
+  end
+
   defp receipt_input do
     {:ok, finding} = ReviewIdentity.build_finding_key(finding_input())
     {:ok, lineage} = ReviewIdentity.build_lineage_key(finding_input())
