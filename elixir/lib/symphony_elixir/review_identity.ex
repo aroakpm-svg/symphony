@@ -361,16 +361,23 @@ defmodule SymphonyElixir.ReviewIdentity do
   defp fetch_finding_key(input) do
     case Map.get(input, :finding_key) || Map.get(input, "finding_key") do
       %{} = key ->
-        with {:ok, rebuilt} <- build_finding_key(key),
-             true <- rebuilt.digest == key[:digest] || rebuilt.digest == key["digest"] || is_nil(key[:digest]) do
-          {:ok, rebuilt}
-        else
-          false -> {:error, :non_canonical_finding_key}
+        case build_finding_key(key) do
+          {:ok, rebuilt} -> accept_canonical_finding_key(rebuilt, key)
           {:error, reason} -> {:error, reason}
         end
 
       _missing ->
         build_finding_key(input)
+    end
+  end
+
+  defp accept_canonical_finding_key(rebuilt, key) do
+    supplied = Map.get(key, :digest) || Map.get(key, "digest")
+
+    cond do
+      is_nil(supplied) -> {:ok, rebuilt}
+      supplied == rebuilt.digest -> {:ok, rebuilt}
+      true -> {:error, :non_canonical_finding_key}
     end
   end
 
@@ -613,9 +620,7 @@ defmodule SymphonyElixir.ReviewIdentity do
          {:ok, review_thread_id} <- required_string(readback, :review_thread_id),
          {:ok, thread_state} <- required_thread_state(readback),
          {:ok, observed_head_sha} <- required_sha(readback, :observed_head_sha),
-         true <- repository == evaluation_key.finding_key.repository,
-         true <- pull_request_number == evaluation_key.finding_key.pull_request_number,
-         true <- review_thread_id == evaluation_key.finding_key.review_thread_id do
+         :ok <- matching_native_thread_identity(repository, pull_request_number, review_thread_id, evaluation_key) do
       {:ok,
        native_observation(
          repository,
@@ -627,8 +632,18 @@ defmodule SymphonyElixir.ReviewIdentity do
        )}
     else
       :missing -> {:error, :native_thread_state_unverified}
-      false -> {:error, :native_thread_state_unverified}
       {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp matching_native_thread_identity(repository, pull_request_number, review_thread_id, evaluation_key) do
+    finding = evaluation_key.finding_key
+
+    if repository == finding.repository and pull_request_number == finding.pull_request_number and
+         review_thread_id == finding.review_thread_id do
+      :ok
+    else
+      {:error, :native_thread_state_unverified}
     end
   end
 
