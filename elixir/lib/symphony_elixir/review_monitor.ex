@@ -616,8 +616,6 @@ defmodule SymphonyElixir.ReviewMonitor do
     Enum.find_value(keys, fn key -> Map.get(resource, key) || Map.get(resource, Atom.to_string(key)) end)
   end
 
-  defp resource_value(_resource, _keys), do: nil
-
   defp put_settled_thread(settled, finding_key) do
     Map.put(settled, finding_key.review_thread_id, %{
       comment_id: finding_key.selected_review_comment_id,
