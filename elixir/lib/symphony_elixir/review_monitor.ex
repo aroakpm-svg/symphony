@@ -638,11 +638,16 @@ defmodule SymphonyElixir.ReviewMonitor do
       {:ok, comment} ->
         {:ok, comment, false}
 
-      {:error, :resolved_thread_settlement_unverified} when event[:resolved?] == true ->
-        case FindingDisposition.select_review_comment(event, %{selection | resolved?: false}) do
-          {:ok, comment} when comment[:commit_sha] != head_sha -> {:ok, comment, true}
-          {:ok, _same_head_comment} -> {:error, :resolved_thread_settlement_unverified}
-          other -> other
+      {:error, :resolved_thread_settlement_unverified} = unresolved ->
+        if event[:resolved?] == true do
+          case FindingDisposition.select_review_comment(event, %{selection | resolved?: false}) do
+            {:ok, comment} ->
+              if comment[:commit_sha] != head_sha, do: {:ok, comment, true}, else: unresolved
+
+            other -> other
+          end
+        else
+          unresolved
         end
 
       other ->
