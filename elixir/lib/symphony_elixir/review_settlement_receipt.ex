@@ -4,8 +4,6 @@ defmodule SymphonyElixir.ReviewSettlementReceipt do
   alias SymphonyElixir.{EffectLedger, FindingDisposition}
 
   @spec reconcile_pending(term(), module(), map(), [map()]) :: :ok | {:error, term()}
-  def reconcile_pending(connection, ledger \\ EffectLedger, claim, operations)
-
   def reconcile_pending(connection, ledger, claim, operations) when is_list(operations) do
     operations
     |> Enum.filter(&(&1[:effect_type] == :review_settlement_receipt and &1[:status] in [:pending, :unknown]))
