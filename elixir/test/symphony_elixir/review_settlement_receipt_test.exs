@@ -14,7 +14,59 @@ defmodule SymphonyElixir.ReviewSettlementReceiptTest do
     end
   end
 
+  defmodule MismatchingLedger do
+    def execute(_connection, :review_settlement_receipt, _context, _adapter, _reconciler),
+      do: {:ok, %{unexpected: true}}
+  end
+
   test "pending or unknown receipt retries reconcile from deterministic terminal proof" do
+    %{claim: claim, decision: decision, fingerprint: fingerprint} = settlement_fixture()
+
+    operations = [%{request_fingerprint: fingerprint}]
+
+    assert {:ok, %{"verified" => true}} =
+             ReviewSettlementReceipt.record(
+               :connection,
+               ReconcilingLedger,
+               claim,
+               decision,
+               %{status: :fix_settled},
+               operations
+             )
+
+    assert :ok =
+             ReviewSettlementReceipt.reconcile_pending(
+               :connection,
+               ReconcilingLedger,
+               claim,
+               [pending_operation(fingerprint)]
+             )
+  end
+
+  test "pending receipt reconciliation fails closed for invalid inputs and mismatched proof" do
+    %{claim: claim, fingerprint: fingerprint} = settlement_fixture()
+
+    assert {:error, :invalid_pending_settlement_operations} =
+             ReviewSettlementReceipt.reconcile_pending(:connection, ReconcilingLedger, claim, :invalid)
+
+    assert {:error, :invalid_pending_settlement_receipt} =
+             ReviewSettlementReceipt.reconcile_pending(
+               :connection,
+               ReconcilingLedger,
+               claim,
+               [pending_operation("invalid-fingerprint")]
+             )
+
+    assert {:error, :settlement_receipt_mismatch} =
+             ReviewSettlementReceipt.reconcile_pending(
+               :connection,
+               MismatchingLedger,
+               claim,
+               [pending_operation(fingerprint)]
+             )
+  end
+
+  defp settlement_fixture do
     head = String.duplicate("a", 40)
 
     facts = %{
@@ -57,33 +109,15 @@ defmodule SymphonyElixir.ReviewSettlementReceiptTest do
       node_instance_id: "33333333-3333-4333-8333-333333333333"
     }
 
-    operations = [%{request_fingerprint: fingerprint}]
+    %{claim: claim, decision: decision, fingerprint: fingerprint}
+  end
 
-    assert {:ok, %{"verified" => true}} =
-             ReviewSettlementReceipt.record(
-               :connection,
-               ReconcilingLedger,
-               claim,
-               decision,
-               %{status: :fix_settled},
-               operations
-             )
-
-    pending = [
-      %{
-        operation_id: "ARO-245:review-settlement-receipt-1",
-        effect_type: :review_settlement_receipt,
-        request_fingerprint: fingerprint,
-        status: :pending
-      }
-    ]
-
-    assert :ok =
-             ReviewSettlementReceipt.reconcile_pending(
-               :connection,
-               ReconcilingLedger,
-               claim,
-               pending
-             )
+  defp pending_operation(fingerprint) do
+    %{
+      operation_id: "ARO-245:review-settlement-receipt-1",
+      effect_type: :review_settlement_receipt,
+      request_fingerprint: fingerprint,
+      status: :pending
+    }
   end
 end
