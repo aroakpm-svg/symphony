@@ -754,20 +754,31 @@ defmodule SymphonyElixir.ReviewConvergenceTest do
     assert unproven["issue-160"].global_blocker == :settlement_context_unavailable
 
     receipt = %{
-        operation_id: "issue-160:receipt",
-        effect_type: :review_settlement_receipt,
-        request_fingerprint: fingerprint,
-        status: :succeeded,
-        native_resource: %{
-          verified: true,
-          disposition: "fix_in_current_pr",
-          finding_key_digest: finding_key.digest,
-          review_thread_id: finding_key.review_thread_id,
-          selected_review_comment_id: finding_key.selected_review_comment_id,
-          body_sha256: finding_key.body_sha256,
-          exact_head_sha: finding_key.source_head_sha
-        }
+      operation_id: "issue-160:receipt",
+      effect_type: :review_settlement_receipt,
+      request_fingerprint: fingerprint,
+      status: :succeeded,
+      native_resource: %{
+        verified: true,
+        disposition: "fix_in_current_pr",
+        repository: finding_key.repository,
+        pull_request_number: finding_key.pull_request_number,
+        finding_key_digest: finding_key.digest,
+        review_thread_id: finding_key.review_thread_id,
+        selected_review_comment_id: finding_key.selected_review_comment_id,
+        body_sha256: finding_key.body_sha256,
+        exact_head_sha: finding_key.source_head_sha
       }
+    }
+
+    for corrupted <- [
+          put_in(receipt, [:native_resource, :repository], "other/repository"),
+          put_in(receipt, [:native_resource, :pull_request_number], 999)
+        ] do
+      Application.put_env(:symphony_elixir, :autonomous_operations, component_effects ++ [corrupted])
+      invalid = ReviewMonitor.run_with(%{}, settings(), ReviewClient, Tracker, options)
+      assert invalid["issue-160"].global_blocker == :resolved_thread_settlement_unverified
+    end
 
     Application.put_env(:symphony_elixir, :autonomous_operations, component_effects ++ [receipt])
 

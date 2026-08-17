@@ -567,6 +567,8 @@ defmodule SymphonyElixir.ReviewMonitor do
       [%{native_resource: resource}] when is_map(resource) ->
         resource_value(resource, [:verified]) == true and
           resource_value(resource, [:disposition]) == Atom.to_string(disposition) and
+          resource_value(resource, [:repository]) == finding_key.repository and
+          resource_value(resource, [:pull_request_number]) == finding_key.pull_request_number and
           resource_value(resource, [:finding_key_digest]) == finding_key.digest and
           resource_value(resource, [:review_thread_id]) == finding_key.review_thread_id and
           resource_value(resource, [:selected_review_comment_id]) == finding_key.selected_review_comment_id and
