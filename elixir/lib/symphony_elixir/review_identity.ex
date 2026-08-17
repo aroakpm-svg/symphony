@@ -5,6 +5,11 @@ defmodule SymphonyElixir.ReviewIdentity do
   FindingKey identifies a review finding without head. Heads live on
   EvaluationKey. Resolve attempts include a durable/native-derived
   reopen epoch. Settlement receipts are append-only and immutable.
+
+  `build_resolve_attempt_key/1` always derives `reopen_epoch` from native
+  thread state. Rebuilding a persisted nested `resolve_attempt_key` only
+  checks the stored epoch digest: reconcile has no attempt-time native
+  thread, so it cannot re-derive.
   """
 
   @sha_re ~r/\A[0-9a-f]{40}\z/
@@ -533,9 +538,14 @@ defmodule SymphonyElixir.ReviewIdentity do
     end)
   end
 
-  defp receipt_field(map, key) when is_map(map) do
-    Map.get(map, key, Map.get(map, Atom.to_string(key)))
+  defp receipt_field(map, key) when is_map(map) and is_atom(key) do
+    case Map.fetch(map, key) do
+      {:ok, value} -> value
+      :error -> Map.get(map, Atom.to_string(key))
+    end
   end
+
+  defp receipt_field(map, key) when is_map(map), do: Map.get(map, key)
 
   defp values_match?(left, right) do
     cond do

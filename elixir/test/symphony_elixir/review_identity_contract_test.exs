@@ -499,6 +499,20 @@ defmodule SymphonyElixir.ReviewIdentityContractTest do
     assert ReviewIdentity.receipt_matches_settlement(string_receipt, receipt.finding_key, receipt.disposition)
   end
 
+  test "tampered string-key operation_ids fail closed without raising" do
+    {:ok, receipt} = ReviewIdentity.build_settlement_receipt(receipt_input())
+    string_receipt = stringify_keys(receipt)
+    reply = get_in(string_receipt, ["evidence", "operation_ids", "reply"])
+    tampered = put_in(string_receipt, ["evidence", "operation_ids", "reply"], digest_char("9"))
+
+    assert is_binary(reply)
+
+    assert {:error, :terminal_receipt_evidence_unavailable} =
+             ReviewIdentity.reconcile_receipt(%{original_receipt: tampered})
+
+    refute ReviewIdentity.receipt_matches_settlement(tampered, receipt.finding_key, receipt.disposition)
+  end
+
   test "supplied reopen epoch must match the derived value" do
     assert {:error, :reopen_epoch_mismatch} =
              ReviewIdentity.build_resolve_attempt_key(Map.put(resolve_input(:unresolved, nil), :reopen_epoch, digest_char("9")))

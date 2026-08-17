@@ -815,7 +815,7 @@ defmodule SymphonyElixir.ReviewMonitor do
   end
 
   defp settlement_snapshot_identity?(snapshot, finding_key, settings) do
-    repository = snapshot[:repository] || settings[:repository] || settings.repository
+    repository = snapshot[:repository] || settings.repository
 
     finding_key.pull_request_number == snapshot[:pull_request_number] and
       is_binary(repository) and repository == finding_key.repository
