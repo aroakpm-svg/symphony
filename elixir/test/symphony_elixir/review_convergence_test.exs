@@ -652,6 +652,44 @@ defmodule SymphonyElixir.ReviewConvergenceTest do
     assert state["issue-160"].settlement_results == initial_state["issue-160"].settlement_results
     refute_receive {:autonomous_call, :settle}
     refute_receive {:autonomous_call, :authorize}
+
+    {:ok, lineage_key} = SymphonyElixir.FindingDisposition.build_lineage_key(facts)
+
+    {:ok, fingerprint} =
+      SymphonyElixir.FindingDisposition.request_fingerprint(%{
+        disposition: :fix_in_current_pr,
+        finding_key: finding_key,
+        finding_lineage_key: lineage_key,
+        evaluated_head_sha: head,
+        policy_version: "design-4-v1",
+        target: %{repository: finding_key.repository, pull_request_number: finding_key.pull_request_number},
+        payload: %{settlement: true},
+        resulting_tree_or_commit: head,
+        expected_transition: :settled
+      })
+
+    Application.put_env(:symphony_elixir, :autonomous_operations, [
+      %{
+        operation_id: "issue-160:reply",
+        effect_type: :github_comment,
+        request_fingerprint: fingerprint,
+        status: :succeeded,
+        native_resource: %{comment_id: "settlement-reply"}
+      },
+      %{
+        operation_id: "issue-160:resolve",
+        effect_type: :github_review_thread_resolve,
+        request_fingerprint: fingerprint,
+        status: :succeeded,
+        native_resource: %{review_thread_id: finding_key.review_thread_id}
+      }
+    ])
+
+    restarted = ReviewMonitor.run_with(%{}, settings(), ReviewClient, Tracker, options)
+    assert restarted["issue-160"].global_blocker == nil
+    assert restarted["issue-160"].decisions == %{}
+    refute_receive {:autonomous_call, :settle}
+    refute_receive {:autonomous_call, :authorize}
   end
 
   test "autonomous monitor invokes Design 3 once after claim binding and returns an opaque grant" do

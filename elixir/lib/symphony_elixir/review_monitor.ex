@@ -261,8 +261,8 @@ defmodule SymphonyElixir.ReviewMonitor do
   defp reconcile_new_claim(entry, issue, snapshot, claim, settings, review_client, options, binding) do
     with {:ok, connection, claim_context} <- claimed_context(options, issue, claim, binding),
          {:ok, operations} <- list_effect_operations(options, connection, claim_context),
-         {:ok, summary} <- finding_summary(snapshot, settings, entry),
          :ok <- reconcile_operation_locks(operations),
+         {:ok, summary} <- finding_summary(snapshot, settings, entry, operations),
          :ok <- verify_live_head(review_client, settings, snapshot) do
       autonomous_claimed_result(
         entry,
@@ -432,14 +432,15 @@ defmodule SymphonyElixir.ReviewMonitor do
     end
   end
 
-  defp finding_summary(%{finding_summary: summary}, _settings, _entry) when is_map(summary) do
+  defp finding_summary(%{finding_summary: summary}, _settings, _entry, _operations) when is_map(summary) do
     if is_list(summary[:decisions]), do: {:ok, summary}, else: {:error, :finding_summary_invalid}
   end
 
-  defp finding_summary(snapshot, settings, entry) do
+  defp finding_summary(snapshot, settings, entry, operations) do
     with {:ok, scope_contract} <- parse_scope_contract(snapshot),
          {:ok, events} <- review_events(snapshot),
-         {:ok, findings} <- selected_findings(snapshot, events, settings, settled_threads(entry)),
+         {:ok, findings} <-
+           selected_findings(snapshot, events, settings, settled_threads(entry, operations, snapshot)),
          {:ok, plan} <-
            FindingDisposition.classify_all(findings, %{
              verified?: true,
@@ -498,19 +499,81 @@ defmodule SymphonyElixir.ReviewMonitor do
     end)
   end
 
-  defp settled_threads(entry) do
-    entry.settlement_results
-    |> Map.values()
-    |> Enum.reduce(%{}, fn
-      {:settled, %{finding_key: finding_key}}, settled when is_map(finding_key) ->
-        Map.put(settled, finding_key.review_thread_id, %{
-          comment_id: finding_key.selected_review_comment_id,
-          body_sha256: finding_key.body_sha256
-        })
+  defp settled_threads(entry, operations, snapshot) do
+    local =
+      entry.settlement_results
+      |> Map.values()
+      |> Enum.reduce(%{}, fn
+        {:settled, %{finding_key: finding_key}}, settled when is_map(finding_key) ->
+          put_settled_thread(settled, finding_key)
 
-      _unsettled, settled ->
-        settled
+        _unsettled, settled ->
+          settled
+      end)
+
+    Map.merge(durable_settled_threads(operations, snapshot), local)
+  end
+
+  defp durable_settled_threads(operations, snapshot) do
+    operations
+    |> Enum.filter(&(&1[:status] == :succeeded))
+    |> Enum.group_by(& &1[:request_fingerprint])
+    |> Enum.reduce(%{}, fn {_fingerprint, entries}, settled ->
+      case durable_settlement_finding(entries, snapshot) do
+        {:ok, finding_key} -> put_settled_thread(settled, finding_key)
+        :error -> settled
+      end
     end)
+  end
+
+  defp durable_settlement_finding(entries, snapshot) do
+    fingerprint = entries |> List.first() |> Map.get(:request_fingerprint)
+
+    with {:ok, intent} <- FindingDisposition.decode_request_fingerprint(fingerprint),
+         disposition when disposition in [:fix_in_current_pr, :follow_up_required, :rejected] <-
+           intent[:disposition],
+         finding_key when is_map(finding_key) <- intent[:finding_key],
+         true <- durable_effect_set?(entries, disposition),
+         true <- durable_resource_identity?(entries, finding_key),
+         true <- settlement_snapshot_identity?(snapshot, finding_key) do
+      {:ok, finding_key}
+    else
+      _invalid -> :error
+    end
+  end
+
+  defp durable_effect_set?(entries, disposition) do
+    effect_types = MapSet.new(entries, & &1[:effect_type])
+    required = [:github_comment, :github_review_thread_resolve]
+    required = if disposition == :follow_up_required, do: [:linear_issue_create | required], else: required
+    Enum.all?(required, &MapSet.member?(effect_types, &1))
+  end
+
+  defp durable_resource_identity?(entries, finding_key) do
+    reply = Enum.find(entries, &(&1[:effect_type] == :github_comment))
+    resolve = Enum.find(entries, &(&1[:effect_type] == :github_review_thread_resolve))
+    reply_id = resource_value(reply[:native_resource], [:comment_id, :id])
+    thread_id = resource_value(resolve[:native_resource], [:review_thread_id, :thread_id, :id])
+
+    is_binary(reply_id) and reply_id != "" and thread_id == finding_key.review_thread_id
+  end
+
+  defp settlement_snapshot_identity?(snapshot, finding_key) do
+    finding_key.repository == snapshot[:repository] and
+      finding_key.pull_request_number == snapshot[:pull_request_number]
+  end
+
+  defp resource_value(resource, keys) when is_map(resource) do
+    Enum.find_value(keys, fn key -> Map.get(resource, key) || Map.get(resource, Atom.to_string(key)) end)
+  end
+
+  defp resource_value(_resource, _keys), do: nil
+
+  defp put_settled_thread(settled, finding_key) do
+    Map.put(settled, finding_key.review_thread_id, %{
+      comment_id: finding_key.selected_review_comment_id,
+      body_sha256: finding_key.body_sha256
+    })
   end
 
   defp autonomous_claimed_result(
