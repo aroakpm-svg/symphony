@@ -717,7 +717,7 @@ defmodule SymphonyElixir.ReviewMonitor do
   end
 
   defp publish_terminal_result(entry, terminal_result) do
-    %{entry | terminal_result: terminal_result, global_blocker: nil}
+    Map.merge(entry, %{terminal_result: terminal_result, global_blocker: nil})
   end
 
   defp merge_ready_dependencies(options) do
