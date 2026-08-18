@@ -9,6 +9,8 @@ defmodule SymphonyElixir.ReviewMonitor do
     EffectLedger,
     FindingDisposition,
     GitHubReviewClient,
+    MergeReadyCandidate,
+    MergeReadyEvidence,
     PatchAuthorization,
     ReviewConvergence,
     ReviewIdentity,
@@ -530,12 +532,12 @@ defmodule SymphonyElixir.ReviewMonitor do
 
   defp autonomous_claimed_result(
          entry,
-         _issue,
+         issue,
          snapshot,
          summary,
          operations,
          claim_context,
-         _settings,
+         settings,
          options
        ) do
     pending_effect_ids =
@@ -556,13 +558,14 @@ defmodule SymphonyElixir.ReviewMonitor do
         {:blocked, :pending_effects, Map.put(updated, :retained_claim, claim_identity(claim_context))}
 
       summary[:decisions] == [] ->
-        {:ok,
-         %{
-           updated
-           | authorization_required: false,
-             authorization_results: %{},
-             terminal_result: nil
-         }}
+        updated = %{
+          updated
+          | authorization_required: false,
+            authorization_results: %{},
+            terminal_result: nil
+        }
+
+        maybe_derive_merge_ready(updated, issue, settings, options)
 
       not owner_apis_available?(options) ->
         {:blocked, :owner_api_unavailable, updated}
@@ -580,6 +583,60 @@ defmodule SymphonyElixir.ReviewMonitor do
           }
         )
     end
+  end
+
+  defp maybe_derive_merge_ready(entry, issue, settings, options) do
+    case Map.get(options, :landing_evidence) do
+      landing_evidence when is_map(landing_evidence) ->
+        derive_merge_ready(entry, issue, landing_evidence, settings, options)
+
+      _not_activated ->
+        {:ok, entry}
+    end
+  end
+
+  @doc false
+  @spec derive_merge_ready_for_test(map(), Issue.t(), map(), map(), map()) :: {:ok, map()}
+  def derive_merge_ready_for_test(entry, issue, landing_evidence, settings, options) do
+    derive_merge_ready(entry, issue, landing_evidence, settings, options)
+  end
+
+  defp derive_merge_ready(entry, issue, landing_evidence, settings, options) do
+    provider = Map.get(options, :merge_ready_evidence, MergeReadyEvidence)
+    candidate_module = Map.get(options, :merge_ready_candidate, MergeReadyCandidate)
+    mode = Map.get(options, :landing_mode, :human)
+    deps = merge_ready_dependencies(options)
+
+    with {:ok, evidence, snapshot} <- provider.read(issue, landing_evidence, settings, deps),
+         {:ok, candidate} <- candidate_module.derive(evidence, snapshot, landing_mode: mode),
+         {:ok, _fresh_evidence, fresh_snapshot} <-
+           provider.read(issue, landing_evidence, settings, deps),
+         true <- candidate_module.matches_live_snapshot?(candidate, fresh_snapshot) do
+      {:ok, %{entry | terminal_result: {:merge_ready_candidate, candidate}}}
+    else
+      {:blocked, blockers} ->
+        {:ok, %{entry | terminal_result: {:merge_ready_blocked, blockers}}}
+
+      {:error, reason} ->
+        {:ok, %{entry | terminal_result: {:merge_ready_blocked, [%{code: reason, identity: %{}}]}}}
+
+      false ->
+        {:ok,
+         %{
+           entry
+           | terminal_result:
+               {:merge_ready_blocked, [%{code: :live_snapshot_changed, identity: %{}}]}
+         }}
+    end
+  end
+
+  defp merge_ready_dependencies(options) do
+    [
+      review_client: Map.get(options, :review_client, GitHubReviewClient),
+      tracker: Map.get(options, :tracker, Tracker),
+      required_compatibility_receipts: [:aro_143, :aro_170, :aro_171, :aro_167, :aro_135],
+      now: Map.get(options, :now, &DateTime.utc_now/0)
+    ]
   end
 
   defp decisions_by_digest(decisions),
