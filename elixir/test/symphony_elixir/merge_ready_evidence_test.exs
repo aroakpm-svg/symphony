@@ -256,6 +256,40 @@ defmodule SymphonyElixir.MergeReadyEvidenceTest do
     assert evidence.review_policy.status == :unsatisfied
   end
 
+  test "validates every issue, native identity, and GitHub state field" do
+    for invalid_issue <- [
+          %{issue() | id: ""},
+          %{issue() | identifier: ""},
+          %{issue() | updated_at: nil}
+        ] do
+      assert {:error, :linear_mapping_unverified} =
+               MergeReadyEvidence.read(invalid_issue, landing_evidence(), settings(), dependencies())
+    end
+
+    for {field, value} <- [
+          {:repository, "other/repo"},
+          {:base_ref_oid, sha("c")},
+          {:current_head_sha, sha("c")}
+        ] do
+      Process.put(:merge_ready_snapshot, {:ok, Map.put(github_snapshot(), field, value)})
+
+      assert {:error, :landing_evidence_incompatible} =
+               MergeReadyEvidence.read(issue(), landing_evidence(), settings(), dependencies())
+    end
+
+    for {field, value} <- [
+          {:draft?, nil},
+          {:mergeable?, nil},
+          {:conflict?, nil},
+          {:current_head_sha, nil}
+        ] do
+      Process.put(:merge_ready_snapshot, {:ok, Map.put(github_snapshot(), field, value)})
+
+      assert {:error, :github_readback_incompatible} =
+               MergeReadyEvidence.read(issue(), landing_evidence(), settings(), dependencies())
+    end
+  end
+
   defp dependencies do
     [
       review_client: ReviewClient,
