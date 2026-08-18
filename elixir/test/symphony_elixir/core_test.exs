@@ -697,9 +697,17 @@ defmodule SymphonyElixir.CoreTest do
     assert :ok = Orchestrator.finding_complete("issue-246", evidence, orchestrator_name)
 
     assert %{
-             landing_evidence: ^evidence,
-             terminal_result: {:finding_complete, ^evidence}
+             landing_evidence: ^evidence
            } = :sys.get_state(pid).review_convergence["issue-246"]
+
+    assert [
+             %{
+               issue_id: "issue-246",
+               handoff_recorded?: true,
+               terminal_result: nil,
+               blocker: nil
+             }
+           ] = GenServer.call(pid, :snapshot).review_convergence
 
     assert {:error, :invalid_finding_complete} =
              Orchestrator.finding_complete(nil, evidence, orchestrator_name)

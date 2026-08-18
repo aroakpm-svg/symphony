@@ -125,7 +125,7 @@ defmodule SymphonyElixir.ReviewMonitor do
     {result, acquisition} = reconcile_autonomous_entry(entry, issue, settings, review_client, options)
 
     grant_invalid? = releasable_result?(result)
-    release? = acquisition in [:new, :retained] and grant_invalid?
+    release? = acquisition in [:new, :retained, :retained_handoff] and grant_invalid?
 
     release_result =
       if release?,
@@ -178,8 +178,11 @@ defmodule SymphonyElixir.ReviewMonitor do
     |> Map.put(:retained_claim, retained_claim)
   end
 
-  defp invalidate_entry_grant(updated, _original, :drop_claim),
-    do: clear_grant_if_present(updated, :drop_claim)
+  defp invalidate_entry_grant(updated, _original, :drop_claim) do
+    updated
+    |> clear_grant_if_present(:drop_claim)
+    |> Map.put(:retained_claim, nil)
+  end
 
   defp clear_grant_if_present(%{terminal_result: {:grant, _grants}} = entry, :drop_claim),
     do: %{entry | terminal_result: nil, retained_claim: nil, authorization_required: false}
@@ -368,12 +371,18 @@ defmodule SymphonyElixir.ReviewMonitor do
     end
   end
 
+  defp release_reconciled_claim(options, issue_id, :retained_handoff, entry) do
+    release_reconciled_claim(options, issue_id, :retained, entry)
+  end
+
   defp release_reconciled_claim(options, issue_id, :new, _entry),
     do: release_claim(options, issue_id)
 
   defp release_retention(:retained, result) do
     if release_outcome(result) == :uncertain, do: :preserve_claim, else: :drop_claim
   end
+
+  defp release_retention(:retained_handoff, result), do: release_retention(:retained, result)
 
   defp release_retention(_acquisition, :not_released), do: :preserve_claim
   defp release_retention(_acquisition, _result), do: :drop_claim
@@ -584,7 +593,12 @@ defmodule SymphonyElixir.ReviewMonitor do
 
     case completed_landing_evidence(provider, entry, options) do
       {:ok, landing_evidence} ->
-        {derive_merge_ready(entry, issue, landing_evidence, settings, options), :none}
+        acquisition =
+          if match?({:ok, _identity}, retained_claim_identity(entry)),
+            do: :retained_handoff,
+            else: :none
+
+        {derive_merge_ready(entry, issue, landing_evidence, settings, options), acquisition}
 
       {:error, :landing_evidence_unavailable} ->
         reconcile_claimed_entry(entry, issue, settings, review_client, options)

@@ -1522,7 +1522,6 @@ defmodule SymphonyElixir.Orchestrator do
       state.review_convergence
       |> Map.get(issue_id, %{})
       |> Map.put(:landing_evidence, evidence)
-      |> Map.put(:terminal_result, {:finding_complete, evidence})
 
     review_convergence = Map.put(state.review_convergence, issue_id, entry)
     {:reply, :ok, %{state | review_convergence: review_convergence}}
@@ -1596,6 +1595,7 @@ defmodule SymphonyElixir.Orchestrator do
        running: running,
        retrying: retrying,
        blocked: blocked,
+       review_convergence: observable_review_convergence(state.review_convergence),
        codex_totals: state.codex_totals,
        rate_limits: Map.get(state, :codex_rate_limits),
        polling: %{
@@ -1619,6 +1619,19 @@ defmodule SymphonyElixir.Orchestrator do
        requested_at: DateTime.utc_now(),
        operations: ["poll", "reconcile"]
      }, state}
+  end
+
+  defp observable_review_convergence(review_convergence) do
+    review_convergence
+    |> Enum.map(fn {issue_id, entry} ->
+      %{
+        issue_id: issue_id,
+        handoff_recorded?: is_map(entry[:landing_evidence]),
+        terminal_result: entry[:terminal_result],
+        blocker: entry[:global_blocker]
+      }
+    end)
+    |> Enum.sort_by(& &1.issue_id)
   end
 
   defp blocked_issue_state(%{issue: %Issue{state: state}}), do: state

@@ -280,12 +280,20 @@ defmodule SymphonyElixir.ReviewConvergenceTest do
   end
 
   test "completed landing handoff is derived before claim acquisition" do
-    state = %{"issue-160" => %{landing_evidence: %{proof: :complete}}}
+    retained = %{claim_id: "11111111-1111-4111-8111-111111111111", generation: 1}
+
+    state = %{
+      "issue-160" => %{
+        landing_evidence: %{proof: :complete},
+        retained_claim: retained,
+        terminal_result: {:grant, %{"finding" => retained}}
+      }
+    }
 
     result =
       ReviewMonitor.run_with(state, settings(), ReviewClient, Tracker, %{
         profile: :aroak_autonomous_v1,
-        claim_service: FailingClaimService,
+        claim_service: AutonomousClaimService,
         merge_ready_evidence: CompletedLandingEvidence,
         merge_ready_candidate: CompletedLandingCandidate,
         landing_mode: :human
@@ -296,7 +304,9 @@ defmodule SymphonyElixir.ReviewConvergenceTest do
 
     assert_receive :terminal_evidence_read
     assert_receive :terminal_evidence_read
+    assert_receive {:autonomous_call, :release_if_owned}
     refute_received {:autonomous_call, :claim}
+    assert result["issue-160"].retained_claim == nil
   end
 
   test "review convergence config is disabled by default and fail-closed when enabled without a repository" do

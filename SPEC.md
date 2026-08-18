@@ -2454,6 +2454,9 @@ An already completed handoff is revalidated before claim acquisition, so the ter
 does not reacquire a claim or repeat finding classification. The candidate records every verified
 receipt contract version, and its digest length-prefixes every list element to preserve canonical
 boundaries even when names or references contain punctuation.
+If the issue still owns a retained claim, the terminal handoff conditionally releases that exact
+claim before exposing the claim-free result. Candidate and blocker terminal results are published
+through `Orchestrator.snapshot/2` under the per-issue `review_convergence` owner surface.
 
 After Design 4 terminal settlement, `MergeReadyCandidate.derive/3` may produce an immutable V1
 candidate only when complete internal evidence agrees with a fresh native GitHub and Linear

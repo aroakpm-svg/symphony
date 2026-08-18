@@ -445,6 +445,9 @@ entry for the next poll; missing handoff data fails closed. Handoff, acceptance,
 accepted only when their repository, PR, Linear, base, and exact-head identity matches the candidate.
 Completed handoffs are revalidated before claim acquisition. Candidate output retains the verified
 receipt contract versions and uses collision-safe, length-prefixed list encoding in its digest.
+Any retained claim is conditionally released before claim-free terminal derivation. Maintainers can
+observe the resulting candidate or blockers in `Orchestrator.snapshot/2` under
+`review_convergence`; this surface still performs no merge or other landing mutation.
 
 Configure the boundary explicitly:
 
