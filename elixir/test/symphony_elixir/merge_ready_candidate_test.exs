@@ -152,6 +152,7 @@ defmodule SymphonyElixir.MergeReadyCandidateTest do
     )
 
     duplicate_checks = [hd(valid_snapshot().required_checks), hd(valid_snapshot().required_checks)]
+
     assert_blocked(
       valid_evidence(),
       Map.put(valid_snapshot(), :required_checks, duplicate_checks),
@@ -159,6 +160,7 @@ defmodule SymphonyElixir.MergeReadyCandidateTest do
     )
 
     duplicate_settlements = List.duplicate(hd(valid_evidence().settled_findings), 2)
+
     assert_blocked(
       Map.put(valid_evidence(), :settled_findings, duplicate_settlements),
       valid_snapshot(),
