@@ -205,6 +205,23 @@ defmodule SymphonyElixir.MergeReadyCandidateTest do
     refute MergeReadyCandidate.matches_live_snapshot?(nil, valid_snapshot())
   end
 
+  test "live revalidation rejects tampered candidate and exact-head review fields" do
+    {:ok, candidate} = MergeReadyCandidate.derive(valid_evidence(), valid_snapshot(), landing_mode: :human)
+
+    for {field, value} <- [
+          {:candidate_schema_version, 2},
+          {:repository, "other/repo"},
+          {:required_checks, ["other-check"]}
+        ] do
+      refute MergeReadyCandidate.matches_live_snapshot?(Map.put(candidate, field, value), valid_snapshot())
+    end
+
+    refute MergeReadyCandidate.matches_live_snapshot?(
+             candidate,
+             put_in(valid_snapshot(), [:exact_head_review, :head_sha], sha("c"))
+           )
+  end
+
   defp assert_blocked(evidence, snapshot, reason) do
     assert {:blocked, blockers} =
              MergeReadyCandidate.derive(evidence, snapshot, landing_mode: :human)

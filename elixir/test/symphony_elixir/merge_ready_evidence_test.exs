@@ -173,6 +173,45 @@ defmodule SymphonyElixir.MergeReadyEvidenceTest do
     assert evidence.review_policy.status == :unsatisfied
   end
 
+  test "rejects wrong successful response shapes and missing current issue" do
+    Process.put(:merge_ready_snapshot, {:ok, []})
+
+    assert {:error, :github_readback_unavailable} =
+             MergeReadyEvidence.read(issue(), landing_evidence(), settings(), dependencies())
+
+    Process.put(:merge_ready_snapshot, {:ok, github_snapshot()})
+    Process.put(:merge_ready_issues, {:ok, %{}})
+
+    assert {:error, :linear_readback_unavailable} =
+             MergeReadyEvidence.read(issue(), landing_evidence(), settings(), dependencies())
+
+    Process.put(:merge_ready_issues, {:ok, [true]})
+
+    assert {:error, :linear_mapping_unverified} =
+             MergeReadyEvidence.read(issue(), landing_evidence(), settings(), dependencies())
+  end
+
+  test "rejects malformed nested receipts, native state fields, and a raising clock" do
+    malformed = Map.put(landing_evidence(), :compatibility_receipts, nil)
+
+    assert {:error, :landing_evidence_incompatible} =
+             MergeReadyEvidence.read(issue(), malformed, settings(), dependencies())
+
+    Process.put(
+      :merge_ready_snapshot,
+      {:ok, Map.put(github_snapshot(), :reviewed_head_sha, 42)}
+    )
+
+    assert {:error, :github_readback_incompatible} =
+             MergeReadyEvidence.read(issue(), landing_evidence(), settings(), dependencies())
+
+    Process.put(:merge_ready_snapshot, {:ok, github_snapshot()})
+    deps = Keyword.put(dependencies(), :now, fn -> raise("clock unavailable") end)
+
+    assert {:error, :landing_evidence_incompatible} =
+             MergeReadyEvidence.read(issue(), landing_evidence(), settings(), deps)
+  end
+
   defp dependencies do
     [
       review_client: ReviewClient,
