@@ -684,6 +684,30 @@ defmodule SymphonyElixir.CoreTest do
     assert_due_after(due_at_ms, scheduled_from_ms, 900, 1_100)
   end
 
+  test "production finding-complete handoff is stored on the owning issue runtime entry" do
+    orchestrator_name = Module.concat(__MODULE__, :FindingCompleteOrchestrator)
+    {:ok, pid} = Orchestrator.start_link(name: orchestrator_name)
+
+    on_exit(fn ->
+      if Process.alive?(pid), do: Process.exit(pid, :normal)
+    end)
+
+    evidence = %{repository: "aroakpm-svg/symphony", evaluated_head_sha: String.duplicate("a", 40)}
+
+    assert :ok = Orchestrator.finding_complete("issue-246", evidence, orchestrator_name)
+
+    assert %{
+             landing_evidence: ^evidence,
+             terminal_result: {:finding_complete, ^evidence}
+           } = :sys.get_state(pid).review_convergence["issue-246"]
+
+    assert {:error, :invalid_finding_complete} =
+             Orchestrator.finding_complete(nil, evidence, orchestrator_name)
+
+    assert {:error, :invalid_finding_complete} =
+             Orchestrator.finding_complete(" ", evidence, orchestrator_name)
+  end
+
   test "abnormal worker exit increments retry attempt progressively" do
     issue_id = "issue-crash"
     ref = make_ref()

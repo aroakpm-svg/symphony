@@ -50,6 +50,20 @@ defmodule SymphonyElixir.Orchestrator do
     GenServer.start_link(__MODULE__, opts, name: name)
   end
 
+  @doc "Records the owning issue's completed Design 4 landing evidence for the next production poll."
+  @spec finding_complete(String.t(), map(), GenServer.server()) :: :ok | {:error, :invalid_finding_complete}
+  def finding_complete(issue_id, evidence, server \\ __MODULE__)
+
+  def finding_complete(issue_id, evidence, server) when is_binary(issue_id) and is_map(evidence) do
+    if String.trim(issue_id) == "" do
+      {:error, :invalid_finding_complete}
+    else
+      GenServer.call(server, {:finding_complete, issue_id, evidence})
+    end
+  end
+
+  def finding_complete(_issue_id, _evidence, _server), do: {:error, :invalid_finding_complete}
+
   @impl true
   def init(_opts) do
     now_ms = System.monotonic_time(:millisecond)
@@ -1507,6 +1521,17 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   @impl true
+  def handle_call({:finding_complete, issue_id, evidence}, _from, state) do
+    entry =
+      state.review_convergence
+      |> Map.get(issue_id, %{})
+      |> Map.put(:landing_evidence, evidence)
+      |> Map.put(:terminal_result, {:finding_complete, evidence})
+
+    review_convergence = Map.put(state.review_convergence, issue_id, entry)
+    {:reply, :ok, %{state | review_convergence: review_convergence}}
+  end
+
   def handle_call(:snapshot, _from, state) do
     state = refresh_runtime_config(state)
     now = DateTime.utc_now()

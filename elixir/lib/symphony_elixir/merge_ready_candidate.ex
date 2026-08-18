@@ -174,7 +174,7 @@ defmodule SymphonyElixir.MergeReadyCandidate do
     acceptance = evidence[:acceptance]
 
     []
-    |> maybe_add(not valid_acceptance?(acceptance), :acceptance_incomplete)
+    |> maybe_add(not valid_acceptance?(acceptance, evidence), :acceptance_incomplete)
     |> maybe_add(evidence[:linear_revision] != snapshot[:linear_revision], :linear_mapping_unverified)
   end
 
@@ -344,10 +344,11 @@ defmodule SymphonyElixir.MergeReadyCandidate do
 
   defp valid_settlements?(_settlements), do: false
 
-  defp valid_acceptance?(acceptance) do
+  defp valid_acceptance?(acceptance, evidence) do
     is_map(acceptance) and acceptance[:status] == :complete and
       is_list(acceptance[:evidence_refs]) and acceptance[:evidence_refs] != [] and
-      Enum.all?(acceptance[:evidence_refs], &non_empty_binary?/1)
+      Enum.all?(acceptance[:evidence_refs], &non_empty_binary?/1) and
+      receipt_identity_matches?(acceptance, evidence)
   end
 
   defp non_empty?(value), do: not is_list(value) or value != []

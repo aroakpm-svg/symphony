@@ -380,7 +380,16 @@ defmodule SymphonyElixir.MergeReadyEvidenceTest do
       stale_evidence: [],
       conflicts: [],
       safety_stops: [],
-      acceptance: %{status: :complete, evidence_refs: ["test:merge-ready"]},
+      acceptance: %{
+        status: :complete,
+        evidence_refs: ["test:merge-ready"],
+        repository: "aroakpm-svg/symphony",
+        pull_request_number: 42,
+        linear_issue_id: "issue-246",
+        linear_issue_identifier: "ARO-246",
+        base_sha: sha("b"),
+        head_sha: sha("a")
+      },
       evidence_refs: ["receipt:design4"]
     }
   end

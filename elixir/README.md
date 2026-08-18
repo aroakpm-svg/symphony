@@ -439,6 +439,11 @@ The production poll consumes this contract from the owning issue's runtime entry
 `finding_complete` handoff. It does not accept one process-global evidence map or manufacture
 missing compatibility receipts.
 
+The Design 4 owner submits the completed per-issue contract with
+`SymphonyElixir.Orchestrator.finding_complete/3`. The handoff is stored on that issue's runtime
+entry for the next poll; missing handoff data fails closed. Acceptance and compatibility proof are
+accepted only when their repository, PR, Linear, base, and exact-head identity matches the candidate.
+
 Configure the boundary explicitly:
 
 ```yaml

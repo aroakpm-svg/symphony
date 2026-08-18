@@ -201,6 +201,20 @@ defmodule SymphonyElixir.MergeReadyCandidateTest do
     end
   end
 
+  test "acceptance evidence is bound to the exact candidate identity" do
+    for {field, value} <- [
+          {:repository, "other/repo"},
+          {:pull_request_number, 99},
+          {:linear_issue_id, "other-issue"},
+          {:linear_issue_identifier, "ARO-999"},
+          {:base_sha, sha("c")},
+          {:head_sha, sha("c")}
+        ] do
+      evidence = put_in(valid_evidence(), [:acceptance, field], value)
+      assert_blocked(evidence, valid_snapshot(), :acceptance_incomplete)
+    end
+  end
+
   test "live revalidation rejects all identity, PR, check, and review drift" do
     {:ok, candidate} = MergeReadyCandidate.derive(valid_evidence(), valid_snapshot(), landing_mode: :human)
 
@@ -281,7 +295,16 @@ defmodule SymphonyElixir.MergeReadyCandidateTest do
       stale_evidence: [],
       conflicts: [],
       safety_stops: [],
-      acceptance: %{status: :complete, evidence_refs: ["test:merge-ready"]},
+      acceptance: %{
+        status: :complete,
+        evidence_refs: ["test:merge-ready"],
+        repository: "aroakpm-svg/symphony",
+        pull_request_number: 42,
+        linear_issue_id: "issue-246",
+        linear_issue_identifier: "ARO-246",
+        base_sha: sha("b"),
+        head_sha: sha("a")
+      },
       review_policy: %{status: :satisfied, reviewed_head_sha: sha("a")},
       evidence_refs: ["receipt:design4"],
       derived_at: ~U[2026-08-18 00:00:00Z]
