@@ -193,6 +193,12 @@ defmodule SymphonyElixir.MergeReadyCandidateTest do
     )
 
     assert_blocked(
+      Map.put(valid_evidence(), :evidence_refs, []),
+      valid_snapshot(),
+      :evidence_incompatible
+    )
+
+    assert_blocked(
       put_in(valid_evidence(), [:handoff_receipt, :head_sha], sha("c")),
       valid_snapshot(),
       :handoff_receipt_unverified
