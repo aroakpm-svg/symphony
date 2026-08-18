@@ -604,8 +604,7 @@ defmodule SymphonyElixir.ReviewMonitor do
         {:ok,
          %{
            entry
-           | terminal_result:
-               {:merge_ready_blocked, [%{code: :landing_evidence_unavailable, identity: %{}}]}
+           | terminal_result: {:merge_ready_blocked, [%{code: :landing_evidence_unavailable, identity: %{}}]}
          }}
     end
   end

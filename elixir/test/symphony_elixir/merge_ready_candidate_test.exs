@@ -323,6 +323,7 @@ defmodule SymphonyElixir.MergeReadyCandidateTest do
       head_sha: sha("a")
     }
   end
+
   defp sha(character), do: String.duplicate(character, 40)
   defp digest(value), do: :crypto.hash(:sha256, value) |> Base.encode16(case: :lower)
 end

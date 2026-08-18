@@ -303,7 +303,8 @@ defmodule SymphonyElixir.MergeReadyCandidate do
         %{owner: ^owner} = receipt ->
           verified_receipt?(receipt) and receipt_identity_matches?(receipt, evidence)
 
-        _other -> false
+        _other ->
+          false
       end
     end)
   end
