@@ -20,6 +20,8 @@ defmodule SymphonyElixir.MergeReadyCandidate do
           derived_at: DateTime.t(),
           required_checks: [String.t()],
           settled_finding_digests: [String.t()],
+          handoff_contract_version: pos_integer(),
+          compatibility_contract_versions: %{atom() => pos_integer()},
           evidence_refs: [String.t()],
           candidate_digest: String.t()
         }
@@ -193,6 +195,8 @@ defmodule SymphonyElixir.MergeReadyCandidate do
       derived_at: evidence.derived_at,
       required_checks: snapshot.required_checks |> Enum.map(& &1.name) |> Enum.sort(),
       settled_finding_digests: evidence.settled_findings |> Enum.map(& &1.finding_key_digest) |> Enum.sort(),
+      handoff_contract_version: evidence.handoff_receipt.contract_version,
+      compatibility_contract_versions: compatibility_contract_versions(evidence.compatibility_receipts),
       evidence_refs: Enum.sort(evidence.evidence_refs)
     }
 
@@ -209,9 +213,11 @@ defmodule SymphonyElixir.MergeReadyCandidate do
       candidate.linear_revision,
       candidate.base_sha,
       candidate.head_sha,
-      Enum.join(candidate.required_checks, ","),
-      Enum.join(candidate.settled_finding_digests, ","),
-      Enum.join(candidate.evidence_refs, ",")
+      encode_sequence(candidate.required_checks),
+      encode_sequence(candidate.settled_finding_digests),
+      Integer.to_string(candidate.handoff_contract_version),
+      encode_contract_versions(candidate.compatibility_contract_versions),
+      encode_sequence(candidate.evidence_refs)
     ]
     |> Enum.map_join(&encode_component/1)
     |> then(&:crypto.hash(:sha256, &1))
@@ -219,6 +225,19 @@ defmodule SymphonyElixir.MergeReadyCandidate do
   end
 
   defp encode_component(value), do: "#{byte_size(value)}:#{value}"
+
+  defp encode_sequence(values), do: Enum.map_join(values, "", &encode_component/1)
+
+  defp encode_contract_versions(versions) do
+    @compatibility_receipts
+    |> Enum.sort()
+    |> Enum.map(fn owner -> encode_sequence([Atom.to_string(owner), Integer.to_string(versions[owner])]) end)
+    |> encode_sequence()
+  end
+
+  defp compatibility_contract_versions(receipts) do
+    Map.new(@compatibility_receipts, &{&1, receipts[&1].contract_version})
+  end
 
   defp live_snapshot_ready?(candidate, snapshot) do
     live_pull_request_ready?(snapshot) and

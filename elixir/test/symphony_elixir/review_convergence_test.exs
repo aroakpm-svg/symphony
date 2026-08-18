@@ -105,6 +105,23 @@ defmodule SymphonyElixir.ReviewConvergenceTest do
     def claim(_issue, _owner), do: {:error, :claim_service_unavailable}
   end
 
+  defmodule CompletedLandingEvidence do
+    def completed_landing_evidence(%{landing_evidence: evidence}), do: {:ok, evidence}
+
+    def read(_issue, %{proof: :complete}, _settings, _deps) do
+      send(Application.fetch_env!(:symphony_elixir, :review_recipient), :terminal_evidence_read)
+      {:ok, %{proof: :complete}, %{head: "head-1"}}
+    end
+  end
+
+  defmodule CompletedLandingCandidate do
+    def derive(%{proof: :complete}, %{head: head}, landing_mode: :human) do
+      {:ok, %{candidate_digest: "candidate-#{head}", head: head}}
+    end
+
+    def matches_live_snapshot?(candidate, snapshot), do: candidate.head == snapshot.head
+  end
+
   defmodule AutonomousClaimService do
     @spec claim(Issue.t(), pid()) :: {:ok, map()}
     def claim(issue, owner) do
@@ -260,6 +277,26 @@ defmodule SymphonyElixir.ReviewConvergenceTest do
       Application.delete_env(:symphony_elixir, :claim_worker)
       Application.delete_env(:symphony_elixir, :conditional_release_result)
     end)
+  end
+
+  test "completed landing handoff is derived before claim acquisition" do
+    state = %{"issue-160" => %{landing_evidence: %{proof: :complete}}}
+
+    result =
+      ReviewMonitor.run_with(state, settings(), ReviewClient, Tracker, %{
+        profile: :aroak_autonomous_v1,
+        claim_service: FailingClaimService,
+        merge_ready_evidence: CompletedLandingEvidence,
+        merge_ready_candidate: CompletedLandingCandidate,
+        landing_mode: :human
+      })
+
+    assert {:merge_ready_candidate, %{candidate_digest: "candidate-head-1"}} =
+             result["issue-160"].terminal_result
+
+    assert_receive :terminal_evidence_read
+    assert_receive :terminal_evidence_read
+    refute_received {:autonomous_call, :claim}
   end
 
   test "review convergence config is disabled by default and fail-closed when enabled without a repository" do

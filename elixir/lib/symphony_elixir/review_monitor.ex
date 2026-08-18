@@ -122,29 +122,14 @@ defmodule SymphonyElixir.ReviewMonitor do
   defp reconcile_autonomous_issue(%Issue{} = issue, state, settings, review_client, options) do
     entry = autonomous_entry(Map.get(state, issue.id, %{}))
 
-    {result, acquisition} =
-      with branch when is_binary(branch) and branch != "" <- issue.branch_name,
-           {:ok, snapshot} <- review_client.snapshot(settings.repository, branch),
-           {:ok, claim, claim_acquisition} <- claim_for(options, issue) do
-        reconcile_acquired_claim(
-          claim_acquisition,
-          entry,
-          issue,
-          snapshot,
-          claim,
-          settings,
-          review_client,
-          options
-        )
-      else
-        nil -> {{:blocked, :missing_branch_name}, :none}
-        "" -> {{:blocked, :missing_branch_name}, :none}
-        {:error, reason} -> {{:blocked, reason}, :none}
-      end
+    {result, acquisition} = reconcile_autonomous_entry(entry, issue, settings, review_client, options)
 
     grant_invalid? = releasable_result?(result)
     release? = acquisition in [:new, :retained] and grant_invalid?
-    release_result = if release?, do: release_reconciled_claim(options, issue.id, acquisition, entry), else: :not_released
+    release_result =
+      if release?,
+        do: release_reconciled_claim(options, issue.id, acquisition, entry),
+        else: :not_released
 
     result =
       if grant_invalid?,
@@ -593,6 +578,39 @@ defmodule SymphonyElixir.ReviewMonitor do
     end
   end
 
+  defp reconcile_autonomous_entry(entry, issue, settings, review_client, options) do
+    provider = Map.get(options, :merge_ready_evidence, MergeReadyEvidence)
+
+    case completed_landing_evidence(provider, entry, options) do
+      {:ok, landing_evidence} ->
+        {derive_merge_ready(entry, issue, landing_evidence, settings, options), :none}
+
+      {:error, :landing_evidence_unavailable} ->
+        reconcile_claimed_entry(entry, issue, settings, review_client, options)
+    end
+  end
+
+  defp reconcile_claimed_entry(entry, issue, settings, review_client, options) do
+    with branch when is_binary(branch) and branch != "" <- issue.branch_name,
+         {:ok, snapshot} <- review_client.snapshot(settings.repository, branch),
+         {:ok, claim, claim_acquisition} <- claim_for(options, issue) do
+      reconcile_acquired_claim(
+        claim_acquisition,
+        entry,
+        issue,
+        snapshot,
+        claim,
+        settings,
+        review_client,
+        options
+      )
+    else
+      nil -> {{:blocked, :missing_branch_name}, :none}
+      "" -> {{:blocked, :missing_branch_name}, :none}
+      {:error, reason} -> {{:blocked, reason}, :none}
+    end
+  end
+
   defp maybe_derive_merge_ready(entry, issue, settings, options) do
     provider = Map.get(options, :merge_ready_evidence, MergeReadyEvidence)
 
@@ -636,8 +654,10 @@ defmodule SymphonyElixir.ReviewMonitor do
 
     with {:ok, evidence, snapshot} <- provider.read(issue, landing_evidence, settings, deps),
          {:ok, candidate} <- candidate_module.derive(evidence, snapshot, landing_mode: mode),
-         {:ok, _fresh_evidence, fresh_snapshot} <-
+         {:ok, fresh_evidence, fresh_snapshot} <-
            provider.read(issue, landing_evidence, settings, deps),
+         {:ok, fresh_candidate} <- candidate_module.derive(fresh_evidence, fresh_snapshot, landing_mode: mode),
+         true <- candidate[:candidate_digest] == fresh_candidate[:candidate_digest],
          true <- candidate_module.matches_live_snapshot?(candidate, fresh_snapshot) do
       {:ok, %{entry | terminal_result: {:merge_ready_candidate, candidate}}}
     else

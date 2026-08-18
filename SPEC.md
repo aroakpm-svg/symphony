@@ -2450,6 +2450,10 @@ The production owner publishes that per-issue handoff through
 `Orchestrator.finding_complete/3`; the orchestrator stores it under the matching issue id before the
 next review-convergence poll. The handoff receipt, acceptance evidence, and compatibility receipts must each repeat and
 match the repository, PR, Linear issue id and identifier, base SHA, and exact evaluated head SHA.
+An already completed handoff is revalidated before claim acquisition, so the terminal human proof
+does not reacquire a claim or repeat finding classification. The candidate records every verified
+receipt contract version, and its digest length-prefixes every list element to preserve canonical
+boundaries even when names or references contain punctuation.
 
 After Design 4 terminal settlement, `MergeReadyCandidate.derive/3` may produce an immutable V1
 candidate only when complete internal evidence agrees with a fresh native GitHub and Linear

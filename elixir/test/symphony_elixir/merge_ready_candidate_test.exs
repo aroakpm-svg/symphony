@@ -14,6 +14,14 @@ defmodule SymphonyElixir.MergeReadyCandidateTest do
     assert candidate.head_sha == sha("a")
     assert candidate.required_checks == ["make-all", "validate-pr-description"]
     assert candidate.settled_finding_digests == [digest("finding-1")]
+    assert candidate.handoff_contract_version == 2
+    assert candidate.compatibility_contract_versions == %{
+             aro_135: 1,
+             aro_143: 1,
+             aro_167: 1,
+             aro_170: 1,
+             aro_171: 1
+           }
     assert candidate.candidate_digest =~ ~r/^[0-9a-f]{64}$/
 
     reordered =
@@ -25,6 +33,37 @@ defmodule SymphonyElixir.MergeReadyCandidateTest do
 
     assert {:ok, retried} = MergeReadyCandidate.derive(reordered, snapshot, landing_mode: :human)
     assert retried.candidate_digest == candidate.candidate_digest
+  end
+
+  test "candidate digest includes receipt versions and collision-safe list boundaries" do
+    {:ok, original} =
+      MergeReadyCandidate.derive(valid_evidence(), valid_snapshot(), landing_mode: :human)
+
+    versioned = put_in(valid_evidence(), [:handoff_receipt, :contract_version], 3)
+    {:ok, changed_version} = MergeReadyCandidate.derive(versioned, valid_snapshot(), landing_mode: :human)
+    refute original.candidate_digest == changed_version.candidate_digest
+
+    left_snapshot =
+      Map.put(valid_snapshot(), :required_checks, [
+        %{name: "a,b", status: :completed, conclusion: :success},
+        %{name: "c", status: :completed, conclusion: :success}
+      ])
+
+    right_snapshot =
+      Map.put(valid_snapshot(), :required_checks, [
+        %{name: "a", status: :completed, conclusion: :success},
+        %{name: "b,c", status: :completed, conclusion: :success}
+      ])
+
+    {:ok, left} = MergeReadyCandidate.derive(valid_evidence(), left_snapshot, landing_mode: :human)
+    {:ok, right} = MergeReadyCandidate.derive(valid_evidence(), right_snapshot, landing_mode: :human)
+    refute left.candidate_digest == right.candidate_digest
+
+    left_evidence = Map.put(valid_evidence(), :evidence_refs, ["a,b", "c"])
+    right_evidence = Map.put(valid_evidence(), :evidence_refs, ["a", "b,c"])
+    {:ok, left_refs} = MergeReadyCandidate.derive(left_evidence, valid_snapshot(), landing_mode: :human)
+    {:ok, right_refs} = MergeReadyCandidate.derive(right_evidence, valid_snapshot(), landing_mode: :human)
+    refute left_refs.candidate_digest == right_refs.candidate_digest
   end
 
   test "fails closed with canonically ordered blockers" do
