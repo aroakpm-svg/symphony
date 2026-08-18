@@ -1528,14 +1528,6 @@ defmodule SymphonyElixir.Orchestrator do
     {:reply, :ok, %{state | review_convergence: review_convergence}}
   end
 
-  defp invalidate_merge_ready_result(%{terminal_result: {:merge_ready_candidate, _candidate}} = entry),
-    do: %{entry | terminal_result: nil}
-
-  defp invalidate_merge_ready_result(%{terminal_result: {:merge_ready_blocked, _blockers}} = entry),
-    do: %{entry | terminal_result: nil}
-
-  defp invalidate_merge_ready_result(entry), do: entry
-
   def handle_call(:snapshot, _from, state) do
     state = refresh_runtime_config(state)
     now = DateTime.utc_now()
@@ -1629,6 +1621,14 @@ defmodule SymphonyElixir.Orchestrator do
        operations: ["poll", "reconcile"]
      }, state}
   end
+
+  defp invalidate_merge_ready_result(%{terminal_result: {:merge_ready_candidate, _candidate}} = entry),
+    do: %{entry | terminal_result: nil}
+
+  defp invalidate_merge_ready_result(%{terminal_result: {:merge_ready_blocked, _blockers}} = entry),
+    do: %{entry | terminal_result: nil}
+
+  defp invalidate_merge_ready_result(entry), do: entry
 
   defp observable_review_convergence(review_convergence) do
     review_convergence
