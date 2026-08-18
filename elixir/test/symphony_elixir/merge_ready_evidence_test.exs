@@ -212,6 +212,50 @@ defmodule SymphonyElixir.MergeReadyEvidenceTest do
              MergeReadyEvidence.read(issue(), landing_evidence(), settings(), deps)
   end
 
+  test "fails closed when required client dependencies are absent" do
+    assert {:error, :github_readback_unavailable} =
+             MergeReadyEvidence.read(
+               issue(),
+               landing_evidence(),
+               settings(),
+               Keyword.delete(dependencies(), :review_client)
+             )
+
+    assert {:error, :linear_readback_unavailable} =
+             MergeReadyEvidence.read(
+               issue(),
+               landing_evidence(),
+               settings(),
+               Keyword.delete(dependencies(), :tracker)
+             )
+  end
+
+  test "rejects an unassigned current issue and normalizes failed checks" do
+    Process.put(:merge_ready_issues, {:ok, [%{issue() | assigned_to_worker: false}]})
+
+    assert {:error, :linear_mapping_unverified} =
+             MergeReadyEvidence.read(issue(), landing_evidence(), settings(), dependencies())
+
+    Process.put(:merge_ready_issues, {:ok, [issue()]})
+
+    snapshot =
+      github_snapshot()
+      |> Map.put(:reviewed_head_sha, sha("c"))
+      |> Map.put(:required_checks, [%{name: "make-all", state: :failure}])
+
+    Process.put(:merge_ready_snapshot, {:ok, snapshot})
+
+    assert {:ok, evidence, native} =
+             MergeReadyEvidence.read(issue(), landing_evidence(), settings(), dependencies())
+
+    assert native.required_checks == [
+             %{name: "make-all", status: :completed, conclusion: :failure}
+           ]
+
+    assert native.exact_head_review.status == :missing
+    assert evidence.review_policy.status == :unsatisfied
+  end
+
   defp dependencies do
     [
       review_client: ReviewClient,

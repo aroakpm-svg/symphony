@@ -168,6 +168,12 @@ defmodule SymphonyElixir.MergeReadyCandidateTest do
     )
 
     assert_blocked(
+      Map.put(valid_evidence(), :settled_findings, []),
+      valid_snapshot(),
+      :finding_unsettled
+    )
+
+    assert_blocked(
       put_in(valid_evidence(), [:acceptance, :evidence_refs], []),
       valid_snapshot(),
       :acceptance_incomplete
