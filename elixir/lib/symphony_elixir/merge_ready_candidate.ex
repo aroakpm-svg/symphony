@@ -368,7 +368,7 @@ defmodule SymphonyElixir.MergeReadyCandidate do
   defp complete_settlements?(inventory, settlements) do
     valid_finding_inventory?(inventory) and valid_settlements?(settlements) and
       Enum.sort(inventory) ==
-        (settlements |> Enum.map(& &1.finding_key_digest) |> Enum.sort())
+        settlements |> Enum.map(& &1.finding_key_digest) |> Enum.sort()
   end
 
   defp valid_finding_inventory?(inventory) when is_list(inventory) do

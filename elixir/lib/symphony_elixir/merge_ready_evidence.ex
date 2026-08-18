@@ -126,8 +126,8 @@ defmodule SymphonyElixir.MergeReadyEvidence do
            evidence[:pull_request_number] == github[:pull_request_number] and
            evidence[:base_sha] == github[:base_ref_oid] and
            evidence[:evaluated_head_sha] == github[:current_head_sha],
-        do: :ok,
-        else: {:error, :landing_evidence_identity_stale}
+         do: :ok,
+         else: {:error, :landing_evidence_identity_stale}
     else
       {:error, :landing_evidence_incompatible}
     end
@@ -142,8 +142,8 @@ defmodule SymphonyElixir.MergeReadyEvidence do
       if evidence[:linear_issue_id] == issue.id and
            evidence[:linear_issue_identifier] == issue.identifier and
            evidence[:linear_revision] == revision,
-        do: :ok,
-        else: {:error, :landing_evidence_identity_stale}
+         do: :ok,
+         else: {:error, :landing_evidence_identity_stale}
     else
       {:error, :landing_evidence_incompatible}
     end
