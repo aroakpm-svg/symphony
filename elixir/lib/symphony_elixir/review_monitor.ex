@@ -619,7 +619,16 @@ defmodule SymphonyElixir.ReviewMonitor do
             do: :retained_handoff,
             else: :none
 
-        {derive_merge_ready(entry, issue, landing_evidence, settings, options), acquisition}
+        case derive_merge_ready(entry, issue, landing_evidence, settings, options) do
+          {:stale_landing_evidence, resumed_entry} ->
+            {claimed_result, claimed_acquisition} =
+              reconcile_claimed_entry(resumed_entry, issue, settings, review_client, options)
+
+            {retain_resumed_entry(claimed_result, resumed_entry), claimed_acquisition}
+
+          result ->
+            {result, acquisition}
+        end
 
       {:error, :landing_evidence_unavailable} ->
         reconcile_claimed_entry(entry, issue, settings, review_client, options)
@@ -697,6 +706,9 @@ defmodule SymphonyElixir.ReviewMonitor do
          true <- candidate_module.matches_live_snapshot?(candidate, fresh_snapshot) do
       {:ok, publish_terminal_result(entry, {:merge_ready_candidate, candidate})}
     else
+      {:error, :landing_evidence_identity_stale} ->
+        {:stale_landing_evidence, discard_stale_landing_evidence(entry)}
+
       {:blocked, blockers} ->
         {:ok, publish_terminal_result(entry, {:merge_ready_blocked, blockers})}
 
@@ -715,6 +727,28 @@ defmodule SymphonyElixir.ReviewMonitor do
          )}
     end
   end
+
+  defp discard_stale_landing_evidence(entry) do
+    entry
+    |> Map.delete(:landing_evidence)
+    |> clear_stale_merge_ready_result()
+  end
+
+  defp clear_stale_merge_ready_result(%{terminal_result: {:finding_complete, _evidence}} = entry),
+    do: %{entry | terminal_result: nil}
+
+  defp clear_stale_merge_ready_result(%{terminal_result: {:merge_ready_candidate, _candidate}} = entry),
+    do: %{entry | terminal_result: nil}
+
+  defp clear_stale_merge_ready_result(%{terminal_result: {:merge_ready_blocked, _blockers}} = entry),
+    do: %{entry | terminal_result: nil}
+
+  defp clear_stale_merge_ready_result(entry), do: entry
+
+  defp retain_resumed_entry({:blocked, reason}, resumed_entry),
+    do: {:blocked, reason, resumed_entry}
+
+  defp retain_resumed_entry(result, _resumed_entry), do: result
 
   defp publish_terminal_result(entry, terminal_result) do
     Map.merge(entry, %{terminal_result: terminal_result, global_blocker: nil})

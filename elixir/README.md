@@ -438,6 +438,10 @@ new authority.
 The production poll consumes this contract from the owning issue's runtime entry or its explicit
 `finding_complete` handoff. It does not accept one process-global evidence map or manufacture
 missing compatibility receipts.
+The contract includes the complete canonical finding digest inventory. `settled_findings: []` is
+accepted only with an explicitly empty inventory; otherwise every inventory digest must have one
+matching settlement. A repository, PR, Linear revision, base, or head change invalidates and clears
+the stored handoff before the monitor resumes the claimed convergence flow.
 
 The Design 4 owner submits the completed per-issue contract with
 `SymphonyElixir.Orchestrator.finding_complete/3`. The handoff is stored on that issue's runtime

@@ -133,8 +133,15 @@ defmodule SymphonyElixir.MergeReadyEvidenceTest do
     changed = Map.put(github_snapshot(), :pull_request_number, 99)
     Process.put(:merge_ready_snapshot, {:ok, changed})
 
-    assert {:error, :landing_evidence_incompatible} =
+    assert {:error, :landing_evidence_identity_stale} =
              MergeReadyEvidence.read(issue(), landing_evidence(), settings(), dependencies())
+
+    stale_linear = Map.put(landing_evidence(), :linear_revision, "2026-08-17T00:00:00Z")
+
+    Process.put(:merge_ready_snapshot, {:ok, github_snapshot()})
+
+    assert {:error, :landing_evidence_identity_stale} =
+             MergeReadyEvidence.read(issue(), stale_linear, settings(), dependencies())
   end
 
   test "rejects malformed GitHub checks, threads, state, and clock" do
@@ -287,7 +294,7 @@ defmodule SymphonyElixir.MergeReadyEvidenceTest do
         ] do
       Process.put(:merge_ready_snapshot, {:ok, Map.put(github_snapshot(), field, value)})
 
-      assert {:error, :landing_evidence_incompatible} =
+      assert {:error, :landing_evidence_identity_stale} =
                MergeReadyEvidence.read(issue(), landing_evidence(), settings(), dependencies())
     end
 
@@ -360,6 +367,9 @@ defmodule SymphonyElixir.MergeReadyEvidenceTest do
     %{
       repository: "aroakpm-svg/symphony",
       pull_request_number: 42,
+      linear_issue_id: "issue-246",
+      linear_issue_identifier: "ARO-246",
+      linear_revision: "2026-08-18T00:00:00Z",
       base_sha: sha("b"),
       evaluated_head_sha: sha("a"),
       tested_head_sha: sha("a"),
@@ -380,6 +390,7 @@ defmodule SymphonyElixir.MergeReadyEvidenceTest do
         aro_167: receipt(:aro_167),
         aro_135: receipt(:aro_135)
       },
+      canonical_finding_digests: [digest("finding-1")],
       settled_findings: [
         %{finding_key_digest: digest("finding-1"), status: :settled}
       ],

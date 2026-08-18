@@ -122,6 +122,11 @@ defmodule SymphonyElixir.ReviewConvergenceTest do
     def matches_live_snapshot?(candidate, snapshot), do: candidate.head == snapshot.head
   end
 
+  defmodule StaleLandingEvidence do
+    def completed_landing_evidence(%{landing_evidence: evidence}), do: {:ok, evidence}
+    def read(_issue, _evidence, _settings, _deps), do: {:error, :landing_evidence_identity_stale}
+  end
+
   defmodule AutonomousClaimService do
     @spec claim(Issue.t(), pid()) :: {:ok, map()}
     def claim(issue, owner) do
@@ -364,6 +369,23 @@ defmodule SymphonyElixir.ReviewConvergenceTest do
     assert result["issue-160"].retained_claim == retained
     assert_receive {:autonomous_call, :release_if_owned}
     refute_received {:autonomous_call, :claim}
+  end
+
+  test "stale completed handoff is discarded before resuming claimed convergence" do
+    state = %{"issue-160" => %{landing_evidence: %{proof: :stale}}}
+
+    result =
+      ReviewMonitor.run_with(state, settings(), ReviewClient, Tracker, %{
+        profile: :aroak_autonomous_v1,
+        claim_service: FailingClaimService,
+        merge_ready_evidence: StaleLandingEvidence,
+        merge_ready_candidate: CompletedLandingCandidate,
+        landing_mode: :human
+      })
+
+    assert result["issue-160"].global_blocker == :claim_service_unavailable
+    refute Map.has_key?(result["issue-160"], :landing_evidence)
+    assert result["issue-160"].terminal_result == nil
   end
 
   test "review convergence config is disabled by default and fail-closed when enabled without a repository" do

@@ -2450,6 +2450,11 @@ The production owner publishes that per-issue handoff through
 `Orchestrator.finding_complete/3`; the orchestrator stores it under the matching issue id before the
 next review-convergence poll. The handoff receipt, acceptance evidence, and compatibility receipts must each repeat and
 match the repository, PR, Linear issue id and identifier, base SHA, and exact evaluated head SHA.
+The handoff MUST also bind the Linear revision and carry the complete, unique canonical finding
+digest inventory. An empty settlement set is complete only when that inventory is explicitly empty;
+otherwise its digest set MUST equal the settled finding digest set. Repository, PR, Linear revision,
+base, or head drift invalidates the stored handoff, which MUST be discarded before claimed
+convergence resumes for the new identity.
 An already completed handoff is revalidated before claim acquisition, so the terminal human proof
 does not reacquire a claim or repeat finding classification. The candidate records every verified
 receipt contract version, and its digest length-prefixes every list element to preserve canonical

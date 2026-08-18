@@ -1,17 +1,23 @@
 defmodule SymphonyElixir.MergeReadyEvidence do
   @moduledoc "Collects fresh GitHub and Linear truth for merge-ready derivation."
 
+  @sha_pattern ~r/^[0-9a-f]{40}$/
+
   alias SymphonyElixir.Linear.Issue
   alias SymphonyElixir.MergeReadyCandidate
 
   @landing_keys [
     :repository,
     :pull_request_number,
+    :linear_issue_id,
+    :linear_issue_identifier,
+    :linear_revision,
     :base_sha,
     :evaluated_head_sha,
     :tested_head_sha,
     :handoff_receipt,
     :compatibility_receipts,
+    :canonical_finding_digests,
     :settled_findings,
     :pending_effects,
     :unknown_effects,
@@ -32,6 +38,7 @@ defmodule SymphonyElixir.MergeReadyEvidence do
          :ok <- validate_landing_evidence(landing_evidence, deps),
          {:ok, github} <- read_github(issue, settings, deps),
          {:ok, current_issue} <- read_linear(issue, settings, deps),
+         :ok <- validate_linear_identity(landing_evidence, current_issue),
          :ok <- validate_native_identity(landing_evidence, github),
          {:ok, snapshot} <- normalize_snapshot(current_issue, github),
          {:ok, evidence} <- normalize_evidence(current_issue, landing_evidence, snapshot, deps) do
@@ -114,13 +121,40 @@ defmodule SymphonyElixir.MergeReadyEvidence do
   defp match_issue?(_current, _expected), do: false
 
   defp validate_native_identity(evidence, github) do
-    valid? =
-      evidence[:repository] == github[:repository] and
-        evidence[:pull_request_number] == github[:pull_request_number] and
-        evidence[:base_sha] == github[:base_ref_oid] and
-        evidence[:evaluated_head_sha] == github[:current_head_sha]
+    if valid_native_identity_types?(evidence, github) do
+      if evidence[:repository] == github[:repository] and
+           evidence[:pull_request_number] == github[:pull_request_number] and
+           evidence[:base_sha] == github[:base_ref_oid] and
+           evidence[:evaluated_head_sha] == github[:current_head_sha],
+        do: :ok,
+        else: {:error, :landing_evidence_identity_stale}
+    else
+      {:error, :landing_evidence_incompatible}
+    end
+  end
 
-    if valid?, do: :ok, else: {:error, :landing_evidence_incompatible}
+  defp validate_linear_identity(evidence, issue) do
+    revision = DateTime.to_iso8601(issue.updated_at)
+
+    if non_empty_binary?(evidence[:linear_issue_id]) and
+         non_empty_binary?(evidence[:linear_issue_identifier]) and
+         non_empty_binary?(evidence[:linear_revision]) do
+      if evidence[:linear_issue_id] == issue.id and
+           evidence[:linear_issue_identifier] == issue.identifier and
+           evidence[:linear_revision] == revision,
+        do: :ok,
+        else: {:error, :landing_evidence_identity_stale}
+    else
+      {:error, :landing_evidence_incompatible}
+    end
+  end
+
+  defp valid_native_identity_types?(evidence, github) do
+    non_empty_binary?(evidence[:repository]) and
+      is_integer(evidence[:pull_request_number]) and evidence[:pull_request_number] > 0 and
+      valid_sha?(evidence[:base_sha]) and valid_sha?(evidence[:evaluated_head_sha]) and
+      non_empty_binary?(github[:repository]) and is_integer(github[:pull_request_number]) and
+      valid_sha?(github[:base_ref_oid]) and valid_sha?(github[:current_head_sha])
   end
 
   defp normalize_snapshot(issue, github) do
@@ -228,4 +262,5 @@ defmodule SymphonyElixir.MergeReadyEvidence do
   end
 
   defp non_empty_binary?(value), do: is_binary(value) and String.trim(value) != ""
+  defp valid_sha?(value), do: is_binary(value) and Regex.match?(@sha_pattern, value)
 end

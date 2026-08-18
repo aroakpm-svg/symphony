@@ -52,6 +52,9 @@ bound to the repository, PR, Linear issue, base SHA, and exact latest head. Requ
 exact-head Codex result, actionable review threads, settlements, effects, acceptance evidence, and
 compatibility receipts must all be explicit and consistent. Missing, stale, pending, unknown, or
 conflicting evidence blocks.
+The handoff also carries the complete canonical finding inventory; an empty settlement set is valid
+only when that inventory is explicitly empty. If repository, PR, Linear revision, base, or head
+changes, Symphony discards the stale handoff and resumes convergence for the new identity.
 
 The only supported landing configuration is `landing.mode: human`. A successful candidate means a
 maintainer may recheck GitHub and press Merge. Symphony does not merge, enqueue a merge, mark Linear

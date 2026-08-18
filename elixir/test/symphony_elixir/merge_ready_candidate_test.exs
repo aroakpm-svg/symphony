@@ -210,10 +210,29 @@ defmodule SymphonyElixir.MergeReadyCandidateTest do
 
     assert {:ok, candidate} =
              valid_evidence()
+             |> Map.put(:canonical_finding_digests, [])
              |> Map.put(:settled_findings, [])
              |> MergeReadyCandidate.derive(valid_snapshot(), landing_mode: :human)
 
     assert candidate.settled_finding_digests == []
+
+    assert_blocked(
+      Map.put(valid_evidence(), :settled_findings, []),
+      valid_snapshot(),
+      :finding_unsettled
+    )
+
+    assert_blocked(
+      Map.put(valid_evidence(), :canonical_finding_digests, []),
+      valid_snapshot(),
+      :finding_unsettled
+    )
+
+    assert_blocked(
+      Map.put(valid_evidence(), :canonical_finding_digests, [digest("finding-1"), digest("finding-1")]),
+      valid_snapshot(),
+      :finding_unsettled
+    )
 
     assert_blocked(
       Map.put(valid_evidence(), :settled_findings, nil),
@@ -352,6 +371,7 @@ defmodule SymphonyElixir.MergeReadyCandidateTest do
         aro_167: receipt(:aro_167),
         aro_135: receipt(:aro_135)
       },
+      canonical_finding_digests: [digest("finding-1")],
       settled_findings: [%{finding_key_digest: digest("finding-1"), status: :settled}],
       pending_effects: [],
       unknown_effects: [],

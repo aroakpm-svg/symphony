@@ -76,6 +76,7 @@ defmodule SymphonyElixir.MergeReadyCandidate do
       :tested_head_sha,
       :handoff_receipt,
       :compatibility_receipts,
+      :canonical_finding_digests,
       :settled_findings,
       :pending_effects,
       :unknown_effects,
@@ -163,9 +164,10 @@ defmodule SymphonyElixir.MergeReadyCandidate do
 
   defp settlement_blockers(evidence) do
     settled = evidence[:settled_findings]
+    inventory = evidence[:canonical_finding_digests]
 
     []
-    |> maybe_add(not valid_settlements?(settled), :finding_unsettled)
+    |> maybe_add(not complete_settlements?(inventory, settled), :finding_unsettled)
     |> maybe_add(non_empty?(evidence[:pending_effects]), :effect_pending)
     |> maybe_add(non_empty?(evidence[:unknown_effects]), :effect_unknown)
     |> maybe_add(non_empty?(evidence[:blocked_findings]), :finding_blocked)
@@ -352,8 +354,6 @@ defmodule SymphonyElixir.MergeReadyCandidate do
 
   defp valid_checks?(_checks), do: false
 
-  defp valid_settlements?([]), do: true
-
   defp valid_settlements?(settlements) when is_list(settlements) do
     digests = Enum.map(settlements, &map_value(&1, :finding_key_digest))
 
@@ -364,6 +364,18 @@ defmodule SymphonyElixir.MergeReadyCandidate do
   end
 
   defp valid_settlements?(_settlements), do: false
+
+  defp complete_settlements?(inventory, settlements) do
+    valid_finding_inventory?(inventory) and valid_settlements?(settlements) and
+      Enum.sort(inventory) ==
+        (settlements |> Enum.map(& &1.finding_key_digest) |> Enum.sort())
+  end
+
+  defp valid_finding_inventory?(inventory) when is_list(inventory) do
+    Enum.all?(inventory, &valid_digest?/1) and Enum.uniq(inventory) == inventory
+  end
+
+  defp valid_finding_inventory?(_inventory), do: false
 
   defp valid_acceptance?(acceptance, evidence) do
     is_map(acceptance) and acceptance[:status] == :complete and
