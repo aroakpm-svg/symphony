@@ -309,6 +309,63 @@ defmodule SymphonyElixir.ReviewConvergenceTest do
     assert result["issue-160"].retained_claim == nil
   end
 
+  test "completed landing handoff clears an obsolete global blocker" do
+    state = %{
+      "issue-160" => %{
+        landing_evidence: %{proof: :complete},
+        global_blocker: :claim_service_unavailable
+      }
+    }
+
+    result =
+      ReviewMonitor.run_with(state, settings(), ReviewClient, Tracker, %{
+        profile: :aroak_autonomous_v1,
+        claim_service: FailingClaimService,
+        merge_ready_evidence: CompletedLandingEvidence,
+        merge_ready_candidate: CompletedLandingCandidate,
+        landing_mode: :human
+      })
+
+    assert {:merge_ready_candidate, %{candidate_digest: "candidate-head-1"}} =
+             result["issue-160"].terminal_result
+
+    assert result["issue-160"].global_blocker == nil
+    refute_received {:autonomous_call, :claim}
+  end
+
+  test "completed landing handoff with uncertain retained release withholds terminal proof" do
+    retained = %{claim_id: "11111111-1111-4111-8111-111111111111", generation: 1}
+
+    Application.put_env(
+      :symphony_elixir,
+      :conditional_release_result,
+      {:error, :database_unavailable}
+    )
+
+    state = %{
+      "issue-160" => %{
+        landing_evidence: %{proof: :complete},
+        retained_claim: retained,
+        terminal_result: {:grant, %{"finding" => retained}}
+      }
+    }
+
+    result =
+      ReviewMonitor.run_with(state, settings(), ReviewClient, Tracker, %{
+        profile: :aroak_autonomous_v1,
+        claim_service: AutonomousClaimService,
+        merge_ready_evidence: CompletedLandingEvidence,
+        merge_ready_candidate: CompletedLandingCandidate,
+        landing_mode: :human
+      })
+
+    assert result["issue-160"].terminal_result == nil
+    assert result["issue-160"].global_blocker == :claim_release_unverified
+    assert result["issue-160"].retained_claim == retained
+    assert_receive {:autonomous_call, :release_if_owned}
+    refute_received {:autonomous_call, :claim}
+  end
+
   test "review convergence config is disabled by default and fail-closed when enabled without a repository" do
     assert {:ok, config} = Schema.parse(%{})
     refute config.review_convergence.enabled

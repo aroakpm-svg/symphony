@@ -448,6 +448,9 @@ receipt contract versions and uses collision-safe, length-prefixed list encoding
 Any retained claim is conditionally released before claim-free terminal derivation. Maintainers can
 observe the resulting candidate or blockers in `Orchestrator.snapshot/2` under
 `review_convergence`; this surface still performs no merge or other landing mutation.
+An uncertain conditional release keeps the per-issue handoff and retained identity for retry but
+withholds the terminal result. Publishing a verified terminal result clears older transient
+blockers so the owner surface cannot expose contradictory current and stale states.
 
 Configure the boundary explicitly:
 

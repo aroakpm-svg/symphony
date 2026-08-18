@@ -2457,6 +2457,9 @@ boundaries even when names or references contain punctuation.
 If the issue still owns a retained claim, the terminal handoff conditionally releases that exact
 claim before exposing the claim-free result. Candidate and blocker terminal results are published
 through `Orchestrator.snapshot/2` under the per-issue `review_convergence` owner surface.
+An uncertain release MUST retain the handoff and claim identity for retry while withholding the
+terminal result. A verified terminal publication MUST clear older transient blockers so the owner
+surface never exposes a current terminal proof together with stale blocking state.
 
 After Design 4 terminal settlement, `MergeReadyCandidate.derive/3` may produce an immutable V1
 candidate only when complete internal evidence agrees with a fresh native GitHub and Linear

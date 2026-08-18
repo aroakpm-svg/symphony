@@ -132,6 +132,8 @@ defmodule SymphonyElixir.ReviewMonitor do
         do: release_reconciled_claim(options, issue.id, acquisition, entry),
         else: :not_released
 
+    result = withhold_unreleased_handoff(result, acquisition, release_result)
+
     result =
       if grant_invalid?,
         do: invalidate_stale_grant(result, entry, release_retention(acquisition, release_result)),
@@ -391,6 +393,25 @@ defmodule SymphonyElixir.ReviewMonitor do
   defp release_outcome({:error, :claim_ownership_changed}), do: :ownership_changed
   defp release_outcome({:error, :claim_not_owned}), do: :ownership_changed
   defp release_outcome(_result), do: :uncertain
+
+  defp withhold_unreleased_handoff(result, :retained_handoff, release_result) do
+    if release_outcome(release_result) == :uncertain do
+      case result do
+        {:ok, updated} ->
+          {:blocked, :claim_release_unverified, %{updated | terminal_result: nil}}
+
+        {:blocked, _reason, updated} ->
+          {:blocked, :claim_release_unverified, %{updated | terminal_result: nil}}
+
+        {:blocked, _reason} ->
+          {:blocked, :claim_release_unverified}
+      end
+    else
+      result
+    end
+  end
+
+  defp withhold_unreleased_handoff(result, _acquisition, _release_result), do: result
 
   defp release_claim_if_owned(options, issue_id, identity) do
     claim_service = Map.get(options, :claim_service, ClaimService)
@@ -674,21 +695,29 @@ defmodule SymphonyElixir.ReviewMonitor do
          {:ok, fresh_candidate} <- candidate_module.derive(fresh_evidence, fresh_snapshot, landing_mode: mode),
          true <- candidate[:candidate_digest] == fresh_candidate[:candidate_digest],
          true <- candidate_module.matches_live_snapshot?(candidate, fresh_snapshot) do
-      {:ok, %{entry | terminal_result: {:merge_ready_candidate, candidate}}}
+      {:ok, publish_terminal_result(entry, {:merge_ready_candidate, candidate})}
     else
       {:blocked, blockers} ->
-        {:ok, %{entry | terminal_result: {:merge_ready_blocked, blockers}}}
+        {:ok, publish_terminal_result(entry, {:merge_ready_blocked, blockers})}
 
       {:error, reason} ->
-        {:ok, %{entry | terminal_result: {:merge_ready_blocked, [%{code: reason, identity: %{}}]}}}
+        {:ok,
+         publish_terminal_result(
+           entry,
+           {:merge_ready_blocked, [%{code: reason, identity: %{}}]}
+         )}
 
       false ->
         {:ok,
-         %{
-           entry
-           | terminal_result: {:merge_ready_blocked, [%{code: :live_snapshot_changed, identity: %{}}]}
-         }}
+         publish_terminal_result(
+           entry,
+           {:merge_ready_blocked, [%{code: :live_snapshot_changed, identity: %{}}]}
+         )}
     end
+  end
+
+  defp publish_terminal_result(entry, terminal_result) do
+    %{entry | terminal_result: terminal_result, global_blocker: nil}
   end
 
   defp merge_ready_dependencies(options) do
