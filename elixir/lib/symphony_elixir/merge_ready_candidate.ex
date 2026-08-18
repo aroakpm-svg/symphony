@@ -299,7 +299,7 @@ defmodule SymphonyElixir.MergeReadyCandidate do
 
   defp valid_evidence_metadata_types?(evidence) do
     match?(%DateTime{}, evidence[:derived_at]) and
-      is_list(evidence[:evidence_refs]) and Enum.all?(evidence[:evidence_refs], &non_empty_binary?/1)
+      canonical_reference_set?(evidence[:evidence_refs])
   end
 
   defp identity_changed?(evidence, snapshot) do
@@ -379,10 +379,15 @@ defmodule SymphonyElixir.MergeReadyCandidate do
 
   defp valid_acceptance?(acceptance, evidence) do
     is_map(acceptance) and acceptance[:status] == :complete and
-      is_list(acceptance[:evidence_refs]) and acceptance[:evidence_refs] != [] and
-      Enum.all?(acceptance[:evidence_refs], &non_empty_binary?/1) and
+      canonical_reference_set?(acceptance[:evidence_refs]) and acceptance[:evidence_refs] != [] and
       receipt_identity_matches?(acceptance, evidence)
   end
+
+  defp canonical_reference_set?(references) when is_list(references) do
+    Enum.all?(references, &non_empty_binary?/1) and Enum.uniq(references) == references
+  end
+
+  defp canonical_reference_set?(_references), do: false
 
   defp non_empty?(value), do: not is_list(value) or value != []
   defp valid_sha?(value), do: is_binary(value) and Regex.match?(@sha_pattern, value)
