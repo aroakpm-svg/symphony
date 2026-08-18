@@ -1,8 +1,9 @@
 defmodule SymphonyElixir.MergeReadyEvidenceTest do
   use ExUnit.Case, async: true
 
-  alias SymphonyElixir.{MergeReadyEvidence, MergeReadyCandidate}
   alias SymphonyElixir.Linear.Issue
+  alias SymphonyElixir.MergeReadyCandidate
+  alias SymphonyElixir.MergeReadyEvidence
 
   defmodule ReviewClient do
     def snapshot(repository, branch) do

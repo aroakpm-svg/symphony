@@ -41,14 +41,7 @@ defmodule SymphonyElixir.MergeReadyCandidate do
 
   @spec matches_live_snapshot?(candidate(), native_snapshot()) :: boolean()
   def matches_live_snapshot?(candidate, snapshot) when is_map(candidate) and is_map(snapshot) do
-    candidate.candidate_schema_version == @schema_version and
-      candidate.repository == snapshot[:repository] and
-      candidate.pull_request_number == snapshot[:pull_request_number] and
-      candidate.linear_issue_id == snapshot[:linear_issue_id] and
-      candidate.linear_issue_identifier == snapshot[:linear_issue_identifier] and
-      candidate.linear_revision == snapshot[:linear_revision] and
-      candidate.base_sha == snapshot[:base_sha] and
-      candidate.head_sha == snapshot[:current_head_sha] and
+    candidate_identity_matches?(candidate, snapshot) and
       live_snapshot_ready?(candidate, snapshot)
   end
 
@@ -226,27 +219,63 @@ defmodule SymphonyElixir.MergeReadyCandidate do
   defp encode_component(value), do: "#{byte_size(value)}:#{value}"
 
   defp live_snapshot_ready?(candidate, snapshot) do
+    live_pull_request_ready?(snapshot) and
+      live_checks_match?(candidate, snapshot) and
+      live_review_matches?(candidate, snapshot)
+  end
+
+  defp candidate_identity_matches?(candidate, snapshot) do
+    candidate.candidate_schema_version == @schema_version and
+      candidate.repository == snapshot[:repository] and
+      candidate.pull_request_number == snapshot[:pull_request_number] and
+      candidate.linear_issue_id == snapshot[:linear_issue_id] and
+      candidate.linear_issue_identifier == snapshot[:linear_issue_identifier] and
+      candidate.linear_revision == snapshot[:linear_revision] and
+      candidate.base_sha == snapshot[:base_sha] and
+      candidate.head_sha == snapshot[:current_head_sha]
+  end
+
+  defp live_pull_request_ready?(snapshot) do
     snapshot[:state] == :open and snapshot[:draft?] == false and
-      snapshot[:mergeable?] == true and snapshot[:conflict?] == false and
-      valid_checks?(snapshot[:required_checks]) and
-      Enum.sort(Enum.map(snapshot[:required_checks], & &1.name)) == candidate.required_checks and
-      is_map(snapshot[:exact_head_review]) and
-      snapshot[:exact_head_review][:status] == :accepted and
-      snapshot[:exact_head_review][:head_sha] == candidate.head_sha and
-      snapshot[:trusted_actionable_threads] == []
+      snapshot[:mergeable?] == true and snapshot[:conflict?] == false
+  end
+
+  defp live_checks_match?(candidate, snapshot) do
+    valid_checks?(snapshot[:required_checks]) and
+      Enum.sort(Enum.map(snapshot[:required_checks], & &1.name)) == candidate.required_checks
+  end
+
+  defp live_review_matches?(candidate, snapshot) do
+    review = snapshot[:exact_head_review]
+
+    is_map(review) and review[:status] == :accepted and
+      review[:head_sha] == candidate.head_sha and snapshot[:trusted_actionable_threads] == []
   end
 
   defp required_keys?(map, keys), do: Enum.all?(keys, &Map.has_key?(map, &1))
 
   defp valid_core_types?(evidence, snapshot) do
+    valid_evidence_identity_types?(evidence) and
+      valid_evidence_sha_types?(evidence, snapshot) and
+      valid_evidence_metadata_types?(evidence)
+  end
+
+  defp valid_evidence_identity_types?(evidence) do
     non_empty_binary?(evidence[:repository]) and
       non_empty_binary?(evidence[:linear_issue_id]) and
       non_empty_binary?(evidence[:linear_issue_identifier]) and
       non_empty_binary?(evidence[:linear_revision]) and
-      is_integer(evidence[:pull_request_number]) and evidence[:pull_request_number] > 0 and
-      valid_sha?(evidence[:base_sha]) and valid_sha?(evidence[:evaluated_head_sha]) and
+      is_integer(evidence[:pull_request_number]) and evidence[:pull_request_number] > 0
+  end
+
+  defp valid_evidence_sha_types?(evidence, snapshot) do
+    valid_sha?(evidence[:base_sha]) and valid_sha?(evidence[:evaluated_head_sha]) and
       valid_sha?(evidence[:tested_head_sha]) and valid_sha?(snapshot[:base_sha]) and
-      valid_sha?(snapshot[:current_head_sha]) and match?(%DateTime{}, evidence[:derived_at]) and
+      valid_sha?(snapshot[:current_head_sha])
+  end
+
+  defp valid_evidence_metadata_types?(evidence) do
+    match?(%DateTime{}, evidence[:derived_at]) and
       is_list(evidence[:evidence_refs]) and Enum.all?(evidence[:evidence_refs], &non_empty_binary?/1)
   end
 

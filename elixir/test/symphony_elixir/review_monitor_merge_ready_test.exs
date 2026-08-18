@@ -1,8 +1,8 @@
 defmodule SymphonyElixir.ReviewMonitorMergeReadyTest do
   use ExUnit.Case, async: true
 
-  alias SymphonyElixir.ReviewMonitor
   alias SymphonyElixir.Linear.Issue
+  alias SymphonyElixir.ReviewMonitor
 
   defmodule EvidenceProvider do
     def read(_issue, _landing, _settings, _deps) do
@@ -23,14 +23,11 @@ defmodule SymphonyElixir.ReviewMonitorMergeReadyTest do
   end
 
   defmodule DriftingProvider do
+    alias SymphonyElixir.ReviewMonitorMergeReadyTest.EvidenceProvider
+
     def read(issue, landing, settings, deps) do
       result =
-        SymphonyElixir.ReviewMonitorMergeReadyTest.EvidenceProvider.read(
-          issue,
-          landing,
-          settings,
-          deps
-        )
+        EvidenceProvider.read(issue, landing, settings, deps)
 
       case Process.get(:merge_ready_reads) do
         1 -> result
