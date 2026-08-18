@@ -52,17 +52,13 @@ defmodule SymphonyElixir.Orchestrator do
 
   @doc "Records the owning issue's completed Design 4 landing evidence for the next production poll."
   @spec finding_complete(String.t(), map(), GenServer.server()) :: :ok | {:error, :invalid_finding_complete}
-  def finding_complete(issue_id, evidence, server \\ __MODULE__)
-
-  def finding_complete(issue_id, evidence, server) when is_binary(issue_id) and is_map(evidence) do
-    if String.trim(issue_id) == "" do
-      {:error, :invalid_finding_complete}
-    else
+  def finding_complete(issue_id, evidence, server \\ __MODULE__) do
+    if is_binary(issue_id) and String.trim(issue_id) != "" and is_map(evidence) do
       GenServer.call(server, {:finding_complete, issue_id, evidence})
+    else
+      {:error, :invalid_finding_complete}
     end
   end
-
-  def finding_complete(_issue_id, _evidence, _server), do: {:error, :invalid_finding_complete}
 
   @impl true
   def init(_opts) do
