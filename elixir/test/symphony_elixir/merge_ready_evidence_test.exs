@@ -19,6 +19,14 @@ defmodule SymphonyElixir.MergeReadyEvidenceTest do
     end
   end
 
+  defmodule RaisingReviewClient do
+    def snapshot(_repository, _branch), do: raise("unavailable")
+  end
+
+  defmodule RaisingTracker do
+    def fetch_routed_issues_by_states(_states), do: raise("unavailable")
+  end
+
   setup do
     Process.put(:merge_ready_test_pid, self())
     Process.put(:merge_ready_snapshot, {:ok, github_snapshot()})
@@ -60,6 +68,109 @@ defmodule SymphonyElixir.MergeReadyEvidenceTest do
   test "rejects malformed landing evidence instead of manufacturing defaults" do
     assert {:error, :landing_evidence_incompatible} =
              MergeReadyEvidence.read(issue(), %{}, settings(), dependencies())
+  end
+
+  test "fails closed for invalid calls, issue identity, and dependency contracts" do
+    assert {:error, :landing_evidence_incompatible} =
+             MergeReadyEvidence.read(nil, landing_evidence(), settings(), dependencies())
+
+    assert {:error, :linear_mapping_unverified} =
+             MergeReadyEvidence.read(%{issue() | branch_name: ""}, landing_evidence(), settings(), dependencies())
+
+    assert {:error, :landing_evidence_incompatible} =
+             MergeReadyEvidence.read(
+               issue(),
+               landing_evidence(),
+               settings(),
+               Keyword.put(dependencies(), :required_compatibility_receipts, [])
+             )
+  end
+
+  test "fails closed when authoritative clients raise or return malformed data" do
+    assert {:error, :github_readback_unavailable} =
+             MergeReadyEvidence.read(
+               issue(),
+               landing_evidence(),
+               settings(),
+               Keyword.put(dependencies(), :review_client, RaisingReviewClient)
+             )
+
+    assert {:error, :linear_readback_unavailable} =
+             MergeReadyEvidence.read(
+               issue(),
+               landing_evidence(),
+               settings(),
+               Keyword.put(dependencies(), :tracker, RaisingTracker)
+             )
+
+    Process.put(:merge_ready_issues, {:error, :timeout})
+
+    assert {:error, :linear_readback_unavailable} =
+             MergeReadyEvidence.read(issue(), landing_evidence(), settings(), dependencies())
+  end
+
+  test "rejects ambiguous Linear mappings and changed native GitHub identity" do
+    Process.put(:merge_ready_issues, {:ok, [issue(), issue()]})
+
+    assert {:error, :linear_mapping_unverified} =
+             MergeReadyEvidence.read(issue(), landing_evidence(), settings(), dependencies())
+
+    Process.put(:merge_ready_issues, {:ok, [issue()]})
+    changed = Map.put(github_snapshot(), :pull_request_number, 99)
+    Process.put(:merge_ready_snapshot, {:ok, changed})
+
+    assert {:error, :landing_evidence_incompatible} =
+             MergeReadyEvidence.read(issue(), landing_evidence(), settings(), dependencies())
+  end
+
+  test "rejects malformed GitHub checks, threads, state, and clock" do
+    invalid_snapshots = [
+      Map.put(github_snapshot(), :required_checks, []),
+      Map.put(github_snapshot(), :required_checks, [true]),
+      Map.put(github_snapshot(), :threads, nil),
+      Map.put(github_snapshot(), :threads, [true]),
+      Map.put(github_snapshot(), :pull_request_state, :unknown)
+    ]
+
+    for snapshot <- invalid_snapshots do
+      Process.put(:merge_ready_snapshot, {:ok, snapshot})
+
+      assert {:error, :github_readback_incompatible} =
+               MergeReadyEvidence.read(issue(), landing_evidence(), settings(), dependencies())
+    end
+
+    Process.put(:merge_ready_snapshot, {:ok, github_snapshot()})
+    deps = Keyword.put(dependencies(), :now, fn -> :invalid end)
+
+    assert {:error, :landing_evidence_incompatible} =
+             MergeReadyEvidence.read(issue(), landing_evidence(), settings(), deps)
+  end
+
+  test "normalizes pending checks, missing review, and actionable thread identities" do
+    snapshot =
+      github_snapshot()
+      |> Map.put(:review_result, :unknown)
+      |> Map.put(:reviewed_head_sha, nil)
+      |> Map.put(:required_checks, [%{name: "make-all", state: :pending}])
+      |> Map.put(:threads, [
+        %{resolved: true, url: "resolved"},
+        %{resolved: false, url: "thread-url"},
+        %{resolved: false, body: "thread-body"},
+        %{resolved: false}
+      ])
+
+    Process.put(:merge_ready_snapshot, {:ok, snapshot})
+
+    assert {:ok, evidence, native} =
+             MergeReadyEvidence.read(issue(), landing_evidence(), settings(), dependencies())
+
+    assert native.required_checks == [
+             %{name: "make-all", status: :pending, conclusion: :pending}
+           ]
+
+    assert native.exact_head_review.status == :missing
+    assert native.trusted_actionable_threads == ["thread-url", "thread-body", "unidentified-actionable-thread"]
+    assert evidence.review_policy.status == :unsatisfied
   end
 
   defp dependencies do

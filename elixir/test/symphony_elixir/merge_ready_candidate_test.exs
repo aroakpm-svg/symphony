@@ -45,6 +45,7 @@ defmodule SymphonyElixir.MergeReadyCandidateTest do
     assert Enum.map(blockers, & &1.code) == [
              :head_changed,
              :pull_request_draft,
+             :review_stale,
              :actionable_review_remaining,
              :effect_unknown,
              :safety_stop_present
@@ -109,6 +110,104 @@ defmodule SymphonyElixir.MergeReadyCandidateTest do
              candidate,
              put_in(valid_snapshot(), [:required_checks, Access.at(0), :conclusion], :failure)
            )
+  end
+
+  test "rejects every unsafe terminal collection and PR state" do
+    for {field, value, reason} <- [
+          {:pending_effects, [:pending], :effect_pending},
+          {:blocked_findings, [:blocked], :finding_blocked},
+          {:stale_evidence, [:stale], :evidence_stale},
+          {:conflicts, [:conflict], :evidence_conflict}
+        ] do
+      assert_blocked(Map.put(valid_evidence(), field, value), valid_snapshot(), reason)
+    end
+
+    for {field, value, reason} <- [
+          {:state, :closed, :pull_request_not_open},
+          {:mergeable?, false, :merge_conflict},
+          {:conflict?, true, :merge_conflict}
+        ] do
+      assert_blocked(valid_evidence(), Map.put(valid_snapshot(), field, value), reason)
+    end
+  end
+
+  test "rejects malformed identities, receipts, checks, settlements, and acceptance" do
+    assert {:blocked, [%{code: :evidence_incompatible}]} =
+             MergeReadyCandidate.derive(nil, valid_snapshot(), [])
+
+    assert_blocked(Map.delete(valid_evidence(), :repository), valid_snapshot(), :evidence_incompatible)
+    assert_blocked(valid_evidence(), Map.delete(valid_snapshot(), :state), :evidence_incompatible)
+    assert_blocked(Map.put(valid_evidence(), :repository, " "), valid_snapshot(), :evidence_incompatible)
+
+    assert_blocked(
+      put_in(valid_evidence(), [:handoff_receipt, :head_sha], sha("c")),
+      valid_snapshot(),
+      :handoff_receipt_unverified
+    )
+
+    assert_blocked(
+      put_in(valid_evidence(), [:compatibility_receipts, :aro_143, :owner], :other),
+      valid_snapshot(),
+      :compatibility_receipt_unverified
+    )
+
+    duplicate_checks = [hd(valid_snapshot().required_checks), hd(valid_snapshot().required_checks)]
+    assert_blocked(
+      valid_evidence(),
+      Map.put(valid_snapshot(), :required_checks, duplicate_checks),
+      :required_check_unsettled
+    )
+
+    duplicate_settlements = List.duplicate(hd(valid_evidence().settled_findings), 2)
+    assert_blocked(
+      Map.put(valid_evidence(), :settled_findings, duplicate_settlements),
+      valid_snapshot(),
+      :finding_unsettled
+    )
+
+    assert_blocked(
+      put_in(valid_evidence(), [:acceptance, :evidence_refs], []),
+      valid_snapshot(),
+      :acceptance_incomplete
+    )
+  end
+
+  test "live revalidation rejects all identity, PR, check, and review drift" do
+    {:ok, candidate} = MergeReadyCandidate.derive(valid_evidence(), valid_snapshot(), landing_mode: :human)
+
+    drifts = [
+      {:repository, "other/repo"},
+      {:pull_request_number, 99},
+      {:linear_issue_id, "other"},
+      {:linear_issue_identifier, "ARO-999"},
+      {:linear_revision, "later"},
+      {:base_sha, sha("c")},
+      {:state, :closed},
+      {:draft?, true},
+      {:mergeable?, false},
+      {:conflict?, true}
+    ]
+
+    for {field, value} <- drifts do
+      refute MergeReadyCandidate.matches_live_snapshot?(candidate, Map.put(valid_snapshot(), field, value))
+    end
+
+    refute MergeReadyCandidate.matches_live_snapshot?(candidate, Map.put(valid_snapshot(), :required_checks, []))
+    refute MergeReadyCandidate.matches_live_snapshot?(candidate, Map.put(valid_snapshot(), :exact_head_review, nil))
+
+    refute MergeReadyCandidate.matches_live_snapshot?(
+             candidate,
+             put_in(valid_snapshot(), [:exact_head_review, :status], :missing)
+           )
+
+    refute MergeReadyCandidate.matches_live_snapshot?(nil, valid_snapshot())
+  end
+
+  defp assert_blocked(evidence, snapshot, reason) do
+    assert {:blocked, blockers} =
+             MergeReadyCandidate.derive(evidence, snapshot, landing_mode: :human)
+
+    assert reason in Enum.map(blockers, & &1.code)
   end
 
   defp valid_evidence do
