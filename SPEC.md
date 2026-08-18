@@ -2448,7 +2448,9 @@ synthetic receipt.
 
 The production owner publishes that per-issue handoff through
 `Orchestrator.finding_complete/3`; the orchestrator stores it under the matching issue id before the
-next review-convergence poll. The handoff receipt, acceptance evidence, and compatibility receipts must each repeat and
+next review-convergence poll. Recording replacement evidence atomically invalidates any earlier
+merge-ready candidate or blocker while preserving grant or retained-claim identity needed for
+conditional release. The handoff receipt, acceptance evidence, and compatibility receipts must each repeat and
 match the repository, PR, Linear issue id and identifier, base SHA, and exact evaluated head SHA.
 The handoff MUST also bind the Linear revision and carry the complete, unique canonical finding
 digest inventory. An empty settlement set is complete only when that inventory is explicitly empty;

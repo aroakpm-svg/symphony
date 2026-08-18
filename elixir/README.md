@@ -445,7 +445,8 @@ the stored handoff before the monitor resumes the claimed convergence flow.
 
 The Design 4 owner submits the completed per-issue contract with
 `SymphonyElixir.Orchestrator.finding_complete/3`. The handoff is stored on that issue's runtime
-entry for the next poll; missing handoff data fails closed. Handoff, acceptance, and compatibility proof are
+entry for the next poll; replacement evidence clears any older merge-ready result immediately but
+preserves claim identity needed for conditional release. Missing handoff data fails closed. Handoff, acceptance, and compatibility proof are
 accepted only when their repository, PR, Linear, base, and exact-head identity matches the candidate.
 Completed handoffs are revalidated before claim acquisition. Candidate output retains the verified
 receipt contract versions and uses collision-safe, length-prefixed list encoding in its digest.

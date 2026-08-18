@@ -1521,11 +1521,20 @@ defmodule SymphonyElixir.Orchestrator do
     entry =
       state.review_convergence
       |> Map.get(issue_id, %{})
+      |> invalidate_merge_ready_result()
       |> Map.put(:landing_evidence, evidence)
 
     review_convergence = Map.put(state.review_convergence, issue_id, entry)
     {:reply, :ok, %{state | review_convergence: review_convergence}}
   end
+
+  defp invalidate_merge_ready_result(%{terminal_result: {:merge_ready_candidate, _candidate}} = entry),
+    do: %{entry | terminal_result: nil}
+
+  defp invalidate_merge_ready_result(%{terminal_result: {:merge_ready_blocked, _blockers}} = entry),
+    do: %{entry | terminal_result: nil}
+
+  defp invalidate_merge_ready_result(entry), do: entry
 
   def handle_call(:snapshot, _from, state) do
     state = refresh_runtime_config(state)
