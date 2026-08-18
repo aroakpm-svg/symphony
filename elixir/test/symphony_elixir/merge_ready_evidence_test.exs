@@ -280,14 +280,21 @@ defmodule SymphonyElixir.MergeReadyEvidenceTest do
     for {field, value} <- [
           {:draft?, nil},
           {:mergeable?, nil},
-          {:conflict?, nil},
-          {:current_head_sha, nil}
+          {:conflict?, nil}
         ] do
       Process.put(:merge_ready_snapshot, {:ok, Map.put(github_snapshot(), field, value)})
 
       assert {:error, :github_readback_incompatible} =
                MergeReadyEvidence.read(issue(), landing_evidence(), settings(), dependencies())
     end
+
+    Process.put(
+      :merge_ready_snapshot,
+      {:ok, Map.put(github_snapshot(), :current_head_sha, nil)}
+    )
+
+    assert {:error, :landing_evidence_incompatible} =
+             MergeReadyEvidence.read(issue(), landing_evidence(), settings(), dependencies())
   end
 
   defp dependencies do
