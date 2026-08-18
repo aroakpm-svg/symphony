@@ -256,6 +256,24 @@ defmodule SymphonyElixir.Config.Schema do
     end
   end
 
+  defmodule Landing do
+    @moduledoc false
+    use Ecto.Schema
+    import Ecto.Changeset
+
+    @primary_key false
+    embedded_schema do
+      field(:mode, Ecto.Enum, values: [human: "human"], default: :human)
+    end
+
+    @spec changeset(%__MODULE__{}, map()) :: Ecto.Changeset.t()
+    def changeset(schema, attrs) do
+      schema
+      |> cast(attrs, [:mode], empty_values: [])
+      |> validate_required([:mode])
+    end
+  end
+
   defmodule Codex do
     @moduledoc false
     use Ecto.Schema
@@ -375,6 +393,7 @@ defmodule SymphonyElixir.Config.Schema do
     embeds_one(:agent, Agent, on_replace: :update, defaults_to_struct: true)
     embeds_one(:claim, Claim, on_replace: :update, defaults_to_struct: true)
     embeds_one(:review_convergence, ReviewConvergence, on_replace: :update, defaults_to_struct: true)
+    embeds_one(:landing, Landing, on_replace: :update, defaults_to_struct: true)
     embeds_one(:codex, Codex, on_replace: :update, defaults_to_struct: true)
     embeds_one(:hooks, Hooks, on_replace: :update, defaults_to_struct: true)
     embeds_one(:observability, Observability, on_replace: :update, defaults_to_struct: true)
@@ -471,6 +490,7 @@ defmodule SymphonyElixir.Config.Schema do
     |> cast_embed(:agent, with: &Agent.changeset/2)
     |> cast_embed(:claim, with: &Claim.changeset/2)
     |> cast_embed(:review_convergence, with: &ReviewConvergence.changeset/2)
+    |> cast_embed(:landing, with: &Landing.changeset/2)
     |> cast_embed(:codex, with: &Codex.changeset/2)
     |> cast_embed(:hooks, with: &Hooks.changeset/2)
     |> cast_embed(:observability, with: &Observability.changeset/2)

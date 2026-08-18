@@ -5,6 +5,19 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
   alias SymphonyElixir.Config.Schema.{Codex, StringOrMap}
   alias SymphonyElixir.Linear.Client
 
+  test "landing mode defaults to human and rejects automatic mode" do
+    assert {:ok, defaults} = Schema.parse(%{})
+    assert defaults.landing.mode == :human
+
+    assert {:ok, explicit} = Schema.parse(%{"landing" => %{"mode" => "human"}})
+    assert explicit.landing.mode == :human
+
+    assert {:error, {:invalid_workflow_config, message}} =
+             Schema.parse(%{"landing" => %{"mode" => "automatic"}})
+
+    assert message =~ "landing.mode"
+  end
+
   test "workspace bootstrap can be implemented in after_create hook" do
     test_root =
       Path.join(
