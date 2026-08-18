@@ -2436,3 +2436,26 @@ Extension config:
 - Cleanup and observability:
   - Operators need to know which host owns a run, where its workspace lives, and whether cleanup
     happened on the right machine.
+
+## Appendix B: Human Merge-Ready Candidate
+
+`landing.mode` defaults to and only accepts `human`. No value enables automatic landing.
+
+After Design 4 terminal settlement, `MergeReadyCandidate.derive/3` may produce an immutable V1
+candidate only when complete internal evidence agrees with a fresh native GitHub and Linear
+snapshot. Identity includes repository, PR number, Linear issue and revision, base SHA, and exact
+head SHA. Required checks must be terminal successes, the trusted review must accept the exact
+head, actionable threads must be empty, all findings must be settled, and pending, unknown,
+blocked, stale, conflict, and safety-stop collections must be explicitly empty. Acceptance and the
+required ARO-143, ARO-170, ARO-171, ARO-167, and ARO-135 compatibility receipts must be verified.
+
+The caller must perform a second native read before exposing the candidate and apply
+`matches_live_snapshot?/2`. Head/base movement, check or review change, a new or reopened
+actionable thread, PR state change, or Linear mapping change invalidates the candidate. Missing,
+malformed, contradictory, unavailable, or unknown evidence returns canonically ordered blocker
+receipts and must not be coerced to success.
+
+The runtime result is either `{:merge_ready_candidate, candidate}` or
+`{:merge_ready_blocked, blockers}`. Neither result authorizes or performs a GitHub merge, merge
+queue action, Linear `Done`, deployment, Production access, permission change, or worker
+activation. Candidates are not persisted as a parallel source of truth.

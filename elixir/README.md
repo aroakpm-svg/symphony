@@ -426,6 +426,25 @@ actively running subagents, which is very useful during development.
 Launch `codex` in your repo, give it the URL to the Symphony repo, and ask it to set things up for
 you.
 
+## Human merge-ready boundary
+
+After the autonomous Design 4 flow has no remaining finding, an owner may supply the complete
+landing evidence contract. Symphony reads GitHub and Linear twice around pure
+`MergeReadyCandidate.derive/3` evaluation. Matching exact-head evidence becomes
+`{:merge_ready_candidate, candidate}`; incomplete or changing evidence becomes
+`{:merge_ready_blocked, blockers}`. Candidates are process state only and are never persisted as a
+new authority.
+
+Configure the boundary explicitly:
+
+```yaml
+landing:
+  mode: human
+```
+
+`human` is the default and only accepted value. It performs no merge, Linear transition,
+deployment, permission change, or worker activation. There is no automatic fallback.
+
 ## License
 
 This project is licensed under the [Apache License 2.0](../LICENSE).
