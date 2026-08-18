@@ -201,6 +201,20 @@ defmodule SymphonyElixir.MergeReadyCandidateTest do
     end
   end
 
+  test "handoff receipt is bound to the exact candidate identity" do
+    for {field, value} <- [
+          {:repository, "other/repo"},
+          {:pull_request_number, 99},
+          {:linear_issue_id, "other-issue"},
+          {:linear_issue_identifier, "ARO-999"},
+          {:base_sha, sha("c")},
+          {:head_sha, sha("c")}
+        ] do
+      evidence = put_in(valid_evidence(), [:handoff_receipt, field], value)
+      assert_blocked(evidence, valid_snapshot(), :handoff_receipt_unverified)
+    end
+  end
+
   test "acceptance evidence is bound to the exact candidate identity" do
     for {field, value} <- [
           {:repository, "other/repo"},
@@ -280,7 +294,16 @@ defmodule SymphonyElixir.MergeReadyCandidateTest do
       base_sha: sha("b"),
       evaluated_head_sha: sha("a"),
       tested_head_sha: sha("a"),
-      handoff_receipt: %{status: :verified, head_sha: sha("a"), contract_version: 2},
+      handoff_receipt: %{
+        status: :verified,
+        contract_version: 2,
+        repository: "aroakpm-svg/symphony",
+        pull_request_number: 42,
+        linear_issue_id: "issue-246",
+        linear_issue_identifier: "ARO-246",
+        base_sha: sha("b"),
+        head_sha: sha("a")
+      },
       compatibility_receipts: %{
         aro_143: receipt(:aro_143),
         aro_170: receipt(:aro_170),

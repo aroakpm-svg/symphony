@@ -363,7 +363,16 @@ defmodule SymphonyElixir.MergeReadyEvidenceTest do
       base_sha: sha("b"),
       evaluated_head_sha: sha("a"),
       tested_head_sha: sha("a"),
-      handoff_receipt: %{status: :verified, head_sha: sha("a"), contract_version: 2},
+      handoff_receipt: %{
+        status: :verified,
+        contract_version: 2,
+        repository: "aroakpm-svg/symphony",
+        pull_request_number: 42,
+        linear_issue_id: "issue-246",
+        linear_issue_identifier: "ARO-246",
+        base_sha: sha("b"),
+        head_sha: sha("a")
+      },
       compatibility_receipts: %{
         aro_143: receipt(:aro_143),
         aro_170: receipt(:aro_170),

@@ -129,8 +129,10 @@ defmodule SymphonyElixir.MergeReadyCandidate do
     handoff = evidence[:handoff_receipt]
 
     []
-    |> maybe_add(not verified_receipt?(handoff), :handoff_receipt_unverified)
-    |> maybe_add(map_value(handoff, :head_sha) != evidence[:evaluated_head_sha], :handoff_receipt_unverified)
+    |> maybe_add(
+      not (verified_receipt?(handoff) and receipt_identity_matches?(handoff, evidence)),
+      :handoff_receipt_unverified
+    )
     |> maybe_add(not compatibility_receipts_verified?(receipts, evidence), :compatibility_receipt_unverified)
   end
 

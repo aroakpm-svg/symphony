@@ -2448,7 +2448,7 @@ synthetic receipt.
 
 The production owner publishes that per-issue handoff through
 `Orchestrator.finding_complete/3`; the orchestrator stores it under the matching issue id before the
-next review-convergence poll. Acceptance evidence and compatibility receipts must each repeat and
+next review-convergence poll. The handoff receipt, acceptance evidence, and compatibility receipts must each repeat and
 match the repository, PR, Linear issue id and identifier, base SHA, and exact evaluated head SHA.
 
 After Design 4 terminal settlement, `MergeReadyCandidate.derive/3` may produce an immutable V1
