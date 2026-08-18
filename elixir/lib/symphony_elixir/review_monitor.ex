@@ -624,8 +624,7 @@ defmodule SymphonyElixir.ReviewMonitor do
         {:ok,
          %{
            entry
-           | terminal_result:
-               {:merge_ready_blocked, [%{code: :live_snapshot_changed, identity: %{}}]}
+          | terminal_result: {:merge_ready_blocked, [%{code: :live_snapshot_changed, identity: %{}}]}
          }}
     end
   end

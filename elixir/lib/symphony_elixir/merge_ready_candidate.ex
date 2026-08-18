@@ -197,8 +197,7 @@ defmodule SymphonyElixir.MergeReadyCandidate do
       head_sha: evidence.evaluated_head_sha,
       derived_at: evidence.derived_at,
       required_checks: snapshot.required_checks |> Enum.map(& &1.name) |> Enum.sort(),
-      settled_finding_digests:
-        evidence.settled_findings |> Enum.map(& &1.finding_key_digest) |> Enum.sort(),
+      settled_finding_digests: evidence.settled_findings |> Enum.map(& &1.finding_key_digest) |> Enum.sort(),
       evidence_refs: Enum.sort(evidence.evidence_refs)
     }
 

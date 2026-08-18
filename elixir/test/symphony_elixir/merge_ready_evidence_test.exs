@@ -34,6 +34,7 @@ defmodule SymphonyElixir.MergeReadyEvidenceTest do
     assert evidence.evaluated_head_sha == sha("a")
     assert evidence.linear_revision == "2026-08-18T00:00:00Z"
     assert snapshot.current_head_sha == sha("a")
+
     assert snapshot.required_checks == [
              %{name: "make-all", status: :completed, conclusion: :success}
            ]

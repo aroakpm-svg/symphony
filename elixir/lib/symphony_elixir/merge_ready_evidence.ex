@@ -213,8 +213,8 @@ defmodule SymphonyElixir.MergeReadyEvidence do
   defp review_status(github) do
     if github[:review_result] == :no_major_issues and
          github[:reviewed_head_sha] == github[:current_head_sha],
-      do: :accepted,
-      else: :missing
+       do: :accepted,
+       else: :missing
   end
 
   defp non_empty_binary?(value), do: is_binary(value) and String.trim(value) != ""
