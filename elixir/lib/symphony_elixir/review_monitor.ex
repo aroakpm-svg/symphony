@@ -126,6 +126,7 @@ defmodule SymphonyElixir.ReviewMonitor do
 
     grant_invalid? = releasable_result?(result)
     release? = acquisition in [:new, :retained] and grant_invalid?
+
     release_result =
       if release?,
         do: release_reconciled_claim(options, issue.id, acquisition, entry),

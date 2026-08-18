@@ -15,6 +15,7 @@ defmodule SymphonyElixir.MergeReadyCandidateTest do
     assert candidate.required_checks == ["make-all", "validate-pr-description"]
     assert candidate.settled_finding_digests == [digest("finding-1")]
     assert candidate.handoff_contract_version == 2
+
     assert candidate.compatibility_contract_versions == %{
              aro_135: 1,
              aro_143: 1,
