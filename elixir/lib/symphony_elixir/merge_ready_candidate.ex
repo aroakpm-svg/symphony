@@ -131,7 +131,7 @@ defmodule SymphonyElixir.MergeReadyCandidate do
     []
     |> maybe_add(not verified_receipt?(handoff), :handoff_receipt_unverified)
     |> maybe_add(map_value(handoff, :head_sha) != evidence[:evaluated_head_sha], :handoff_receipt_unverified)
-    |> maybe_add(not compatibility_receipts_verified?(receipts), :compatibility_receipt_unverified)
+    |> maybe_add(not compatibility_receipts_verified?(receipts, evidence), :compatibility_receipt_unverified)
   end
 
   defp check_blockers(snapshot) do
@@ -297,16 +297,27 @@ defmodule SymphonyElixir.MergeReadyCandidate do
       is_integer(receipt[:contract_version]) and receipt[:contract_version] > 0
   end
 
-  defp compatibility_receipts_verified?(receipts) when is_map(receipts) do
+  defp compatibility_receipts_verified?(receipts, evidence) when is_map(receipts) do
     Enum.all?(@compatibility_receipts, fn owner ->
       case receipts[owner] do
-        %{owner: ^owner} = receipt -> verified_receipt?(receipt)
+        %{owner: ^owner} = receipt ->
+          verified_receipt?(receipt) and receipt_identity_matches?(receipt, evidence)
+
         _other -> false
       end
     end)
   end
 
-  defp compatibility_receipts_verified?(_receipts), do: false
+  defp compatibility_receipts_verified?(_receipts, _evidence), do: false
+
+  defp receipt_identity_matches?(receipt, evidence) do
+    receipt[:repository] == evidence[:repository] and
+      receipt[:pull_request_number] == evidence[:pull_request_number] and
+      receipt[:linear_issue_id] == evidence[:linear_issue_id] and
+      receipt[:linear_issue_identifier] == evidence[:linear_issue_identifier] and
+      receipt[:base_sha] == evidence[:base_sha] and
+      receipt[:head_sha] == evidence[:evaluated_head_sha]
+  end
 
   defp valid_checks?(checks) when is_list(checks) and checks != [] do
     names = Enum.map(checks, &map_value(&1, :name))
@@ -319,7 +330,9 @@ defmodule SymphonyElixir.MergeReadyCandidate do
 
   defp valid_checks?(_checks), do: false
 
-  defp valid_settlements?(settlements) when is_list(settlements) and settlements != [] do
+  defp valid_settlements?([]), do: true
+
+  defp valid_settlements?(settlements) when is_list(settlements) do
     digests = Enum.map(settlements, &map_value(&1, :finding_key_digest))
 
     Enum.all?(settlements, fn settlement ->

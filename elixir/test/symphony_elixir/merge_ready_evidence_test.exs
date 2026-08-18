@@ -52,6 +52,20 @@ defmodule SymphonyElixir.MergeReadyEvidenceTest do
              MergeReadyCandidate.derive(evidence, snapshot, landing_mode: :human)
   end
 
+  test "reads completed evidence from the per-issue production handoff" do
+    evidence = landing_evidence()
+
+    assert {:ok, ^evidence} = MergeReadyEvidence.completed_landing_evidence(%{landing_evidence: evidence})
+
+    assert {:ok, ^evidence} =
+             MergeReadyEvidence.completed_landing_evidence(%{
+               terminal_result: {:finding_complete, evidence}
+             })
+
+    assert {:error, :landing_evidence_unavailable} =
+             MergeReadyEvidence.completed_landing_evidence(%{})
+  end
+
   test "fails closed when either authority is unavailable or identity changes" do
     Process.put(:merge_ready_snapshot, {:error, :timeout})
 
@@ -371,7 +385,19 @@ defmodule SymphonyElixir.MergeReadyEvidenceTest do
     }
   end
 
-  defp receipt(owner), do: %{owner: owner, status: :verified, contract_version: 1}
+  defp receipt(owner) do
+    %{
+      owner: owner,
+      status: :verified,
+      contract_version: 1,
+      repository: "aroakpm-svg/symphony",
+      pull_request_number: 42,
+      linear_issue_id: "issue-246",
+      linear_issue_identifier: "ARO-246",
+      base_sha: sha("b"),
+      head_sha: sha("a")
+    }
+  end
   defp sha(character), do: String.duplicate(character, 40)
   defp digest(value), do: :crypto.hash(:sha256, value) |> Base.encode16(case: :lower)
 end

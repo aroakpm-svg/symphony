@@ -167,8 +167,15 @@ defmodule SymphonyElixir.MergeReadyCandidateTest do
       :finding_unsettled
     )
 
+    assert {:ok, candidate} =
+             valid_evidence()
+             |> Map.put(:settled_findings, [])
+             |> MergeReadyCandidate.derive(valid_snapshot(), landing_mode: :human)
+
+    assert candidate.settled_finding_digests == []
+
     assert_blocked(
-      Map.put(valid_evidence(), :settled_findings, []),
+      Map.put(valid_evidence(), :settled_findings, nil),
       valid_snapshot(),
       :finding_unsettled
     )
@@ -178,6 +185,20 @@ defmodule SymphonyElixir.MergeReadyCandidateTest do
       valid_snapshot(),
       :acceptance_incomplete
     )
+  end
+
+  test "compatibility receipts are bound to the exact candidate identity" do
+    for {field, value} <- [
+          {:repository, "other/repo"},
+          {:pull_request_number, 99},
+          {:linear_issue_id, "other-issue"},
+          {:linear_issue_identifier, "ARO-999"},
+          {:base_sha, sha("c")},
+          {:head_sha, sha("c")}
+        ] do
+      evidence = put_in(valid_evidence(), [:compatibility_receipts, :aro_143, field], value)
+      assert_blocked(evidence, valid_snapshot(), :compatibility_receipt_unverified)
+    end
   end
 
   test "live revalidation rejects all identity, PR, check, and review drift" do
@@ -289,7 +310,19 @@ defmodule SymphonyElixir.MergeReadyCandidateTest do
     }
   end
 
-  defp receipt(owner), do: %{owner: owner, status: :verified, contract_version: 1}
+  defp receipt(owner) do
+    %{
+      owner: owner,
+      status: :verified,
+      contract_version: 1,
+      repository: "aroakpm-svg/symphony",
+      pull_request_number: 42,
+      linear_issue_id: "issue-246",
+      linear_issue_identifier: "ARO-246",
+      base_sha: sha("b"),
+      head_sha: sha("a")
+    }
+  end
   defp sha(character), do: String.duplicate(character, 40)
   defp digest(value), do: :crypto.hash(:sha256, value) |> Base.encode16(case: :lower)
 end

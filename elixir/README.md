@@ -435,6 +435,10 @@ landing evidence contract. Symphony reads GitHub and Linear twice around pure
 `{:merge_ready_blocked, blockers}`. Candidates are process state only and are never persisted as a
 new authority.
 
+The production poll consumes this contract from the owning issue's runtime entry or its explicit
+`finding_complete` handoff. It does not accept one process-global evidence map or manufacture
+missing compatibility receipts.
+
 Configure the boundary explicitly:
 
 ```yaml

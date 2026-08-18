@@ -42,6 +42,16 @@ defmodule SymphonyElixir.MergeReadyEvidence do
   def read(_issue, _landing_evidence, _settings, _deps),
     do: {:error, :landing_evidence_incompatible}
 
+  @spec completed_landing_evidence(map()) :: {:ok, map()} | {:error, :landing_evidence_unavailable}
+  def completed_landing_evidence(%{landing_evidence: evidence}) when is_map(evidence),
+    do: {:ok, evidence}
+
+  def completed_landing_evidence(%{terminal_result: {:finding_complete, evidence}})
+      when is_map(evidence),
+      do: {:ok, evidence}
+
+  def completed_landing_evidence(_entry), do: {:error, :landing_evidence_unavailable}
+
   defp validate_issue(issue) do
     if non_empty_binary?(issue.id) and non_empty_binary?(issue.identifier) and
          non_empty_binary?(issue.branch_name) and match?(%DateTime{}, issue.updated_at) do

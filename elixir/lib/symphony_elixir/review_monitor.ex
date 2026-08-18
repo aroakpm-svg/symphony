@@ -25,13 +25,21 @@ defmodule SymphonyElixir.ReviewMonitor do
 
   @spec run(state()) :: state()
   def run(state) when is_map(state) do
-    settings = Config.settings!().review_convergence
+    config = Config.settings!()
+    settings = config.review_convergence
 
     if settings.enabled do
-      run_with(state, settings, GitHubReviewClient, Tracker)
+      run_with(state, settings, GitHubReviewClient, Tracker, production_options(config))
     else
       state
     end
+  end
+
+  defp production_options(config) do
+    %{
+      profile: if(config.claim.enabled, do: :aroak_autonomous_v1, else: :legacy),
+      landing_mode: config.landing.mode
+    }
   end
 
   @doc false
@@ -586,12 +594,32 @@ defmodule SymphonyElixir.ReviewMonitor do
   end
 
   defp maybe_derive_merge_ready(entry, issue, settings, options) do
-    case Map.get(options, :landing_evidence) do
-      landing_evidence when is_map(landing_evidence) ->
+    provider = Map.get(options, :merge_ready_evidence, MergeReadyEvidence)
+
+    case completed_landing_evidence(provider, entry, options) do
+      {:ok, landing_evidence} ->
         derive_merge_ready(entry, issue, landing_evidence, settings, options)
 
-      _not_activated ->
-        {:ok, entry}
+      {:error, :landing_evidence_unavailable} ->
+        {:ok,
+         %{
+           entry
+           | terminal_result:
+               {:merge_ready_blocked, [%{code: :landing_evidence_unavailable, identity: %{}}]}
+         }}
+    end
+  end
+
+  defp completed_landing_evidence(provider, entry, options) do
+    cond do
+      loaded_function_exported?(provider, :completed_landing_evidence, 1) ->
+        provider.completed_landing_evidence(entry)
+
+      is_map(Map.get(options, :landing_evidence)) ->
+        {:ok, Map.fetch!(options, :landing_evidence)}
+
+      true ->
+        {:error, :landing_evidence_unavailable}
     end
   end
 

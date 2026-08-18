@@ -2441,6 +2441,11 @@ Extension config:
 
 `landing.mode` defaults to and only accepts `human`. No value enables automatic landing.
 
+The production poll passes that mode into `ReviewMonitor`; when the claim-backed autonomous profile is
+enabled, completed Design 4 evidence is consumed from the owning issue's runtime entry (or its explicit
+`finding_complete` handoff). Missing handoff evidence produces a blocker and is never replaced with a
+synthetic receipt.
+
 After Design 4 terminal settlement, `MergeReadyCandidate.derive/3` may produce an immutable V1
 candidate only when complete internal evidence agrees with a fresh native GitHub and Linear
 snapshot. Identity includes repository, PR number, Linear issue and revision, base SHA, and exact
