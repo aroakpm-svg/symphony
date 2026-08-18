@@ -374,6 +374,8 @@ defmodule SymphonyElixir.ReviewConvergenceTest do
   test "stale completed handoff is discarded before resuming claimed convergence" do
     state = %{"issue-160" => %{landing_evidence: %{proof: :stale}}}
 
+    Application.put_env(:symphony_elixir, :review_snapshot, {:ok, snapshot()})
+
     result =
       ReviewMonitor.run_with(state, settings(), ReviewClient, Tracker, %{
         profile: :aroak_autonomous_v1,

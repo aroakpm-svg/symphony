@@ -144,6 +144,38 @@ defmodule SymphonyElixir.MergeReadyEvidenceTest do
              MergeReadyEvidence.read(issue(), stale_linear, settings(), dependencies())
   end
 
+  test "rejects malformed canonical landing and native identity fields" do
+    for {field, value} <- [
+          {:linear_issue_id, nil},
+          {:linear_issue_identifier, " "},
+          {:linear_revision, 42},
+          {:repository, ""},
+          {:pull_request_number, 0},
+          {:base_sha, "invalid"},
+          {:evaluated_head_sha, nil}
+        ] do
+      assert {:error, :landing_evidence_incompatible} =
+               MergeReadyEvidence.read(
+                 issue(),
+                 Map.put(landing_evidence(), field, value),
+                 settings(),
+                 dependencies()
+               )
+    end
+
+    for {field, value} <- [
+          {:repository, ""},
+          {:pull_request_number, nil},
+          {:base_ref_oid, "invalid"},
+          {:current_head_sha, nil}
+        ] do
+      Process.put(:merge_ready_snapshot, {:ok, Map.put(github_snapshot(), field, value)})
+
+      assert {:error, :landing_evidence_incompatible} =
+               MergeReadyEvidence.read(issue(), landing_evidence(), settings(), dependencies())
+    end
+  end
+
   test "rejects malformed GitHub checks, threads, state, and clock" do
     invalid_snapshots = [
       Map.put(github_snapshot(), :required_checks, []),
