@@ -126,7 +126,6 @@ defmodule SymphonyElixir.PatchAuthorization do
 
   defp validate_claim(claim, runtime) do
     cond do
-      claim[:active?] != true -> {:error, :stale_claim}
       not non_empty_string?(claim[:claim_id]) -> {:error, :invalid_claim}
       not positive_integer?(claim[:generation]) -> {:error, :invalid_generation}
       claim[:claim_id] != runtime[:active_claim_id] -> {:error, :stale_claim}

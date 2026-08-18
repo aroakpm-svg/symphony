@@ -19,6 +19,30 @@ defmodule SymphonyElixir.EffectLedgerMigrationTest do
                                "../../priv/symphony_migrations/20260809000000_finding_effect_readback.down.sql",
                                __DIR__
                              )
+  @settlement_effects_migration Path.expand(
+                                  "../../priv/symphony_migrations/20260817000000_aro_245_review_settlement_effects.sql",
+                                  __DIR__
+                                )
+  @settlement_effects_rollback Path.expand(
+                                 "../../priv/symphony_migrations/20260817000000_aro_245_review_settlement_effects.down.sql",
+                                 __DIR__
+                               )
+  @durable_settlement_readback Path.expand(
+                                 "../../priv/symphony_migrations/20260817000001_aro_245_durable_settlement_readback.sql",
+                                 __DIR__
+                               )
+  @durable_settlement_readback_rollback Path.expand(
+                                          "../../priv/symphony_migrations/20260817000001_aro_245_durable_settlement_readback.down.sql",
+                                          __DIR__
+                                        )
+  @settlement_receipt_migration Path.expand(
+                                  "../../priv/symphony_migrations/20260817000002_aro_245_settlement_receipt.sql",
+                                  __DIR__
+                                )
+  @settlement_receipt_rollback Path.expand(
+                                 "../../priv/symphony_migrations/20260817000002_aro_245_settlement_receipt.down.sql",
+                                 __DIR__
+                               )
   @effect_ledger Path.expand("../../lib/symphony_elixir/effect_ledger.ex", __DIR__)
   @dynamic_tool Path.expand("../../lib/symphony_elixir/codex/dynamic_tool.ex", __DIR__)
   @agent_runner Path.expand("../../lib/symphony_elixir/agent_runner.ex", __DIR__)
@@ -255,6 +279,71 @@ defmodule SymphonyElixir.EffectLedgerMigrationTest do
       assert {:error, :effect_operation_context_mismatch} =
                EffectLedger.list_operations(connection, claim)
     end
+  end
+
+  test "ARO-245 appends only the settlement effect types and updates begin_effect" do
+    sql = File.read!(@settlement_effects_migration)
+
+    assert sql =~ "'linear_issue_create'"
+    assert sql =~ "'github_review_thread_resolve'"
+    assert sql =~ "pg_get_functiondef"
+    assert sql =~ "begin_effect allowlist shape is incompatible"
+    assert sql =~ "'effect-ledger', 2"
+    refute sql =~ "drop table"
+    refute sql =~ "drop function"
+    refute sql =~ "symphony_production"
+  end
+
+  test "ARO-245 rollback refuses to discard settlement operations" do
+    rollback = File.read!(@settlement_effects_rollback)
+
+    assert rollback =~ "where effect_type in ('linear_issue_create', 'github_review_thread_resolve')"
+    assert rollback =~ "cannot remove ARO-245 effect types while settlement operations exist"
+    assert rollback =~ "set contract_version = 1"
+    refute rollback =~ "drop table"
+    refute rollback =~ "drop function"
+    refute rollback =~ "symphony_production"
+  end
+
+  test "ARO-245 durable readback includes only succeeded settlement effects" do
+    sql = File.read!(@durable_settlement_readback)
+
+    assert sql =~ "operations.status in ('pending', 'unknown')"
+    assert sql =~ "operations.status = 'succeeded'"
+    assert sql =~ "'github_comment', 'linear_issue_create', 'github_review_thread_resolve'"
+    assert sql =~ "'finding-effect-readback', 2"
+    assert sql =~ "operations.generation <= requested_generation"
+    assert sql =~ "claims.claim_id = requested_claim_id"
+    refute sql =~ "grant select on table symphony_staging.effect_operations"
+  end
+
+  test "ARO-245 durable readback rollback restores reconciliation-only visibility" do
+    rollback = File.read!(@durable_settlement_readback_rollback)
+
+    assert rollback =~ "operations.status in ('pending', 'unknown')"
+    refute rollback =~ "operations.status = 'succeeded'"
+    assert rollback =~ "set contract_version = 1"
+    refute rollback =~ "drop table"
+  end
+
+  test "ARO-245 settlement receipt migration and rollback restore the preceding contracts" do
+    sql = File.read!(@settlement_receipt_migration)
+    rollback = File.read!(@settlement_receipt_rollback)
+
+    assert sql =~ "'review_settlement_receipt'"
+    assert sql =~ "'github_pr_update', 'review_settlement_receipt'"
+    assert sql =~ "'effect-ledger', 3"
+    assert sql =~ "'finding-effect-readback', 3"
+
+    assert rollback =~ "delete from symphony_staging.effect_operations"
+    assert rollback =~ "drop constraint"
+    assert rollback =~ "begin_effect allowlist shape is incompatible with settlement receipt rollback"
+    assert rollback =~ "create or replace function symphony_staging.list_effect_operations"
+    assert rollback =~ "'effect-ledger'"
+    assert rollback =~ "'20260817000000_aro_245_review_settlement_effects'"
+    assert rollback =~ "'finding-effect-readback'"
+    assert rollback =~ "'20260817000001_aro_245_durable_settlement_readback'"
+    refute rollback =~ "symphony_production"
   end
 
   defp claim_context do

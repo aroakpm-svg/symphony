@@ -364,13 +364,15 @@ Technical convergence MUST NOT authorize merge, deployment, or terminal tracker 
 #### 5.3.8 Finding disposition and effect-readback (Design 2 implementation extension)
 
 An implementation that enables the Design 2 finding-disposition extension MUST use one canonical
-identity contract for each review finding. `FindingKey` identifies the finding in the current
-pull-request context; `FindingLineageKey` identifies the same finding across head changes and
-reconciliation. The identity MUST include the verified repository and pull-request scope and MUST
+identity contract for each review finding. `FindingKey` identifies the finding by repository,
+pull-request, thread, selected comment, and body; it MUST NOT include head, claim, generation, or
+resolve-attempt fields. `FindingLineageKey` identifies the same finding across head changes by
+repository, pull-request, and thread only. Heads live on `EvaluationKey`. A resolve cycle lives on
+`ResolveAttemptKey`. The identity MUST include the verified repository and pull-request scope and MUST
 not be derived from severity alone or from mutable display text.
 
 Every evaluation MUST record the verified `source_head_sha`, the `evaluated_head_sha`, and the
-observed current head. A head mismatch, missing head evidence, unverified base evidence, or an
+observed current head on `EvaluationKey`, not on `FindingKey`. A head mismatch, missing head evidence, unverified base evidence, or an
 invalid scope contract MUST fail closed. The only dispositions are `fix_in_current_pr`,
 `follow_up_required`, `blocked_unverified`, and `rejected`. A classifier MAY select one of these
 dispositions only from verified evidence; severity alone MUST NOT create a rework decision. Responsibility
@@ -382,9 +384,9 @@ malformed, or conflicting responsibility evidence MUST remain `blocked_unverifie
 MUST NOT erase either positive responsibility proof.
 
 Before selecting any actionable disposition, the classifier MUST rebuild a canonical `FindingKey`
-and `FindingLineageKey` from the finding's verified repository, pull-request, head, thread,
-comment, and body identity. Missing, partial, malformed, or conflicting supplied identity MUST
-produce `blocked_unverified`; a caller-provided digest alone is not a canonical identity. The
+and `FindingLineageKey` from the finding's verified repository, pull-request, thread, comment, and
+body identity. Head belongs on `EvaluationKey`. Missing, partial, malformed, or conflicting supplied
+identity MUST produce `blocked_unverified`; a caller-provided digest alone is not a canonical identity. The
 `follow_up_required` route MUST use the same explicit boolean ownership-evidence gate as the fix
 route, including rejection of missing, unknown, malformed, or conflicting ownership facts.
 
@@ -442,6 +444,37 @@ An uncertain conditional-release error MUST preserve both ClaimService ownership
 monitor retention identity for retry; only confirmed release or definitive ownership change may clear them.
 This rule applies equally when an issue leaves the routed set: inactive monitor state MUST remain
 until release succeeds or ownership is definitively known to have changed.
+The canonical FindingKey MUST NOT be rebound when the PR head changes. After owner revalidation on a
+newer head the runtime MUST build a new `EvaluationKey`; the original review-comment commit remains
+`source_head_sha` provenance on that evaluation.
+
+##### Identity algebra and settlement receipt (ARO-245 contract)
+
+The implementation MUST expose five explicit types. Each digest MUST be computed from a tagged
+canonical tuple of that type's own fields. Arbitrary-map `term_to_binary` payloads MUST NOT be
+used as a long-term identity contract.
+
+* `FindingKey`: repository, pull-request number, thread, selected comment, body digest. No head.
+* `FindingLineageKey`: repository, pull-request number, thread.
+* `EvaluationKey`: FindingKey plus `source_head_sha`, `evaluated_head_sha`, `current_head_sha`,
+  claim id, and claim generation.
+* `ResolveAttemptKey`: EvaluationKey plus `reopen_epoch`.
+* `SettlementReceipt`: the four keys above, terminal disposition, the five named heads when
+  applicable (`source`, `evaluated`, `current`, `published`, `settled`), component operation IDs,
+  native resource identities, native readbacks, and an `evidence_sha256` recomputed from the
+  persisted terminal evidence payload.
+
+`reopen_epoch` MUST be derived from durable prior successful resolve proof plus native thread
+readback. It MUST NOT be a process-local counter. `resolved` without a prior succeeded resolve MUST
+fail closed. Missing native thread state MUST fail closed and MUST NOT fall back to an initial epoch.
+
+`native_resources` are EffectLedger mutation identities. `native_readbacks` are authoritative
+GitHub/Linear observations at settlement time. Evidence MUST include both and require matching
+identity. `evidence_sha256` hashes the terminal evidence payload only and MUST NOT include itself.
+The receipt digest then includes `evidence_sha256`.
+
+Monitor routing MUST NOT add path-specific `if` branches to paper over missing identity fields.
+
 Design 3 authorization
 (`authorize/5`) and Design 4 settlement (`settle/2`) are owner contracts; when they are absent,
 the runtime MUST fail closed and MUST NOT add local stubs. `aroak_autonomous_v1` remains disabled
