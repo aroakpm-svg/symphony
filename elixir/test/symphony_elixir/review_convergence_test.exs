@@ -735,8 +735,8 @@ defmodule SymphonyElixir.ReviewConvergenceTest do
       )
 
     assert result["issue-160"].terminal_result ==
-             {:merge_ready_blocked,
-              [%{code: :landing_evidence_unavailable, identity: %{}}]}
+             {:merge_ready_blocked, [%{code: :landing_evidence_unavailable, identity: %{}}]}
+
     assert result["issue-160"].retained_claim == grant
     refute result["issue-160"].authorization_required
     assert_receive {:autonomous_call, :release_if_owned}
