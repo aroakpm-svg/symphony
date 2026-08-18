@@ -7,6 +7,9 @@ defmodule SymphonyElixir.GitHubReviewClient do
       pullRequest(number: $number) {
         number
         body
+        state
+        isDraft
+        mergeable
         headRefOid
         baseRefName
         baseRefOid
@@ -939,6 +942,10 @@ defmodule SymphonyElixir.GitHubReviewClient do
       reviewed_head_sha: reviewed_head_sha,
       review_result: if(reviewed_head_sha, do: :no_major_issues, else: :missing),
       base_ref_oid: pull_request["baseRefOid"],
+      pull_request_state: normalize_pull_request_state(pull_request["state"]),
+      draft?: pull_request["isDraft"],
+      mergeable?: pull_request["mergeable"] == "MERGEABLE",
+      conflict?: pull_request["mergeable"] == "CONFLICTING",
       base_verification_required: base_verification.required,
       base_verification: base_verification.result,
       required_checks: checks,
@@ -948,6 +955,11 @@ defmodule SymphonyElixir.GitHubReviewClient do
       structural_risk: structural_risk?(current_threads, head_sha)
     }
   end
+
+  defp normalize_pull_request_state("OPEN"), do: :open
+  defp normalize_pull_request_state("CLOSED"), do: :closed
+  defp normalize_pull_request_state("MERGED"), do: :merged
+  defp normalize_pull_request_state(_state), do: :unknown
 
   defp normalize_review_events(threads) when is_list(threads) do
     Enum.map(threads, fn thread ->

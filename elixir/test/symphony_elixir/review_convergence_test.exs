@@ -1914,6 +1914,9 @@ defmodule SymphonyElixir.ReviewConvergenceTest do
       "body" => "## Scope Contract\n",
       "headRefOid" => head,
       "baseRefOid" => String.duplicate("b", 40),
+      "state" => "OPEN",
+      "isDraft" => false,
+      "mergeable" => "MERGEABLE",
       "reviews" => %{"nodes" => []},
       "reviewThreads" => %{
         "nodes" => [
@@ -1942,6 +1945,10 @@ defmodule SymphonyElixir.ReviewConvergenceTest do
 
     [event] = snapshot.review_events
     assert snapshot.pull_request_body == "## Scope Contract\n"
+    assert snapshot.pull_request_state == :open
+    assert snapshot.draft? == false
+    assert snapshot.mergeable? == true
+    assert snapshot.conflict? == false
     assert event.review_thread_id == "thread-1"
     assert event.resolved? == false
     assert event.complete_pagination? == true
