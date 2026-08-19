@@ -199,6 +199,7 @@ defmodule SymphonyElixir.MergeReadyCandidate do
       settled_finding_digests: evidence.settled_findings |> Enum.map(& &1.finding_key_digest) |> Enum.sort(),
       handoff_contract_version: evidence.handoff_receipt.contract_version,
       compatibility_contract_versions: compatibility_contract_versions(evidence.compatibility_receipts),
+      acceptance_evidence_refs: Enum.sort(evidence.acceptance.evidence_refs),
       evidence_refs: Enum.sort(evidence.evidence_refs)
     }
 
@@ -219,6 +220,7 @@ defmodule SymphonyElixir.MergeReadyCandidate do
       encode_sequence(candidate.settled_finding_digests),
       Integer.to_string(candidate.handoff_contract_version),
       encode_contract_versions(candidate.compatibility_contract_versions),
+      encode_sequence(candidate.acceptance_evidence_refs),
       encode_sequence(candidate.evidence_refs)
     ]
     |> Enum.map_join(&encode_component/1)

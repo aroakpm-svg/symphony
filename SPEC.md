@@ -2463,7 +2463,8 @@ canonical settled-finding projection, so neither the inventory nor its claimed t
 can be replaced independently of durable proof. Every
 nested handoff, acceptance, and compatibility receipt MUST repeat the exact Linear revision. The
 candidate rejects a self-consistent inventory that is not bound to this verified durable proof.
-Evidence reference collections are non-empty canonical sets: every reference is non-empty and unique, so
+Top-level and acceptance evidence reference collections are both published and hashed as non-empty
+canonical sets: every reference is non-empty and unique, so
 retries cannot change candidate identity merely by repeating an existing proof reference.
 An already completed handoff is revalidated before claim acquisition, so the terminal human proof
 does not reacquire a claim or repeat finding classification. The candidate records every verified

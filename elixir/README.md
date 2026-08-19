@@ -452,7 +452,8 @@ accepted only when their repository, PR, Linear, base, and exact-head identity m
 Every nested receipt also matches the current Linear revision, and the verified handoff receipt binds
 a canonical digest of the complete finding inventory and a separate canonical digest of the settled
 finding projection rather than trusting handoff-controlled collections or statuses.
-Evidence reference lists must be non-empty and contain unique non-empty values, preserving canonical identity across retries.
+Top-level and acceptance evidence reference lists must be non-empty, contain unique non-empty values,
+and both appear in candidate identity, preserving canonical proof identity across retries and replacements.
 Completed handoffs are revalidated before claim acquisition. Candidate output retains the verified
 receipt contract versions and uses collision-safe, length-prefixed list encoding in its digest.
 Any retained claim is conditionally released before claim-free terminal derivation. Maintainers can

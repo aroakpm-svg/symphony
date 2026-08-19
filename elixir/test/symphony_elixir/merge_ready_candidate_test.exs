@@ -23,6 +23,7 @@ defmodule SymphonyElixir.MergeReadyCandidateTest do
              aro_170: 1,
              aro_171: 1
            }
+    assert candidate.acceptance_evidence_refs == ["test:merge-ready"]
 
     assert candidate.candidate_digest =~ ~r/^[0-9a-f]{64}$/
 
@@ -35,6 +36,16 @@ defmodule SymphonyElixir.MergeReadyCandidateTest do
 
     assert {:ok, retried} = MergeReadyCandidate.derive(reordered, snapshot, landing_mode: :human)
     assert retried.candidate_digest == candidate.candidate_digest
+  end
+
+  test "candidate identity includes canonical acceptance evidence references" do
+    {:ok, original} = MergeReadyCandidate.derive(valid_evidence(), valid_snapshot(), landing_mode: :human)
+
+    changed = put_in(valid_evidence(), [:acceptance, :evidence_refs], ["receipt:new-acceptance"])
+    {:ok, replacement} = MergeReadyCandidate.derive(changed, valid_snapshot(), landing_mode: :human)
+
+    assert replacement.acceptance_evidence_refs == ["receipt:new-acceptance"]
+    refute replacement.candidate_digest == original.candidate_digest
   end
 
   test "candidate digest includes receipt versions and collision-safe list boundaries" do
