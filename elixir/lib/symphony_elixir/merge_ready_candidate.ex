@@ -133,7 +133,7 @@ defmodule SymphonyElixir.MergeReadyCandidate do
 
     []
     |> maybe_add(
-      not (verified_receipt?(handoff) and receipt_identity_matches?(handoff, evidence)),
+      not handoff_receipt_verified?(handoff, evidence),
       :handoff_receipt_unverified
     )
     |> maybe_add(not compatibility_receipts_verified?(receipts, evidence), :compatibility_receipt_unverified)
@@ -320,6 +320,12 @@ defmodule SymphonyElixir.MergeReadyCandidate do
       is_integer(receipt[:contract_version]) and receipt[:contract_version] > 0
   end
 
+  defp handoff_receipt_verified?(receipt, evidence) do
+    verified_receipt?(receipt) and receipt_identity_matches?(receipt, evidence) and
+      receipt[:canonical_finding_inventory_digest] ==
+        canonical_finding_inventory_digest(evidence[:canonical_finding_digests])
+  end
+
   defp compatibility_receipts_verified?(receipts, evidence) when is_map(receipts) do
     Enum.all?(@compatibility_receipts, fn owner ->
       case receipts[owner] do
@@ -339,9 +345,17 @@ defmodule SymphonyElixir.MergeReadyCandidate do
       receipt[:pull_request_number] == evidence[:pull_request_number] and
       receipt[:linear_issue_id] == evidence[:linear_issue_id] and
       receipt[:linear_issue_identifier] == evidence[:linear_issue_identifier] and
+      receipt[:linear_revision] == evidence[:linear_revision] and
       receipt[:base_sha] == evidence[:base_sha] and
       receipt[:head_sha] == evidence[:evaluated_head_sha]
   end
+
+  defp canonical_finding_inventory_digest(inventory) when is_list(inventory) do
+    payload = "finding-inventory-v1" <> encode_sequence(Enum.sort(inventory))
+    :crypto.hash(:sha256, payload) |> Base.encode16(case: :lower)
+  end
+
+  defp canonical_finding_inventory_digest(_inventory), do: nil
 
   defp valid_checks?(checks) when is_list(checks) and checks != [] do
     names = Enum.map(checks, &map_value(&1, :name))

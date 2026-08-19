@@ -2457,6 +2457,9 @@ digest inventory. An empty settlement set is complete only when that inventory i
 otherwise its digest set MUST equal the settled finding digest set. Repository, PR, Linear revision,
 base, or head drift invalidates the stored handoff, which MUST be discarded before claimed
 convergence resumes for the new identity.
+The verified handoff receipt MUST repeat a collision-safe digest of that sorted inventory, and every
+nested handoff, acceptance, and compatibility receipt MUST repeat the exact Linear revision. The
+candidate rejects a self-consistent inventory that is not bound to this verified durable proof.
 Evidence reference collections are non-empty canonical sets: every reference is non-empty and unique, so
 retries cannot change candidate identity merely by repeating an existing proof reference.
 An already completed handoff is revalidated before claim acquisition, so the terminal human proof
