@@ -441,6 +441,8 @@ exists yet. Tracker-enumeration failure MUST apply the same rule to every retain
 state and MUST clear cached merge-ready candidates and blockers because their Linear/GitHub identity
 cannot be revalidated during the outage. Releasing a retained claim MUST atomically verify the retained
 claim identity and monitor ownership, so a concurrent transfer to a worker cannot be revoked.
+Disabling review convergence MUST apply the same suppression to cached merge-ready terminal results;
+disabled monitoring cannot continue publishing proof it no longer revalidates.
 An uncertain conditional-release error MUST preserve both ClaimService ownership state and the
 monitor retention identity for retry; only confirmed release or definitive ownership change may clear them.
 This rule applies equally when an issue leaves the routed set: inactive monitor state MUST remain

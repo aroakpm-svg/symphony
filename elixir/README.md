@@ -94,7 +94,8 @@ and ownership mismatches also invalidate the grant without releasing a claim the
 they own, while preserving the retained claim identity for later revalidation or conditional
 release. If the identity exists only inside the grant, invalidation extracts it before clearing the
 grant. A tracker-enumeration outage invalidates every cached grant under the same rule and clears
-cached merge-ready candidates/blockers that cannot be revalidated. An unconsumed grant may retain the
+cached merge-ready candidates/blockers that cannot be revalidated. Disabling review convergence
+suppresses the same terminal results instead of continuing to publish unmonitored proof. An unconsumed grant may retain the
 same monitor-owned claim across invocations. When that entry becomes inactive, cleanup releases it
 only if the live claim still has the retained identity and remains owned by the monitor with no
 different worker; normal retained-claim reconciliation uses the same atomic conditional release, so

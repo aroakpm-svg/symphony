@@ -31,7 +31,7 @@ defmodule SymphonyElixir.ReviewMonitor do
     if settings.enabled do
       run_with(state, settings, GitHubReviewClient, Tracker, production_options(config))
     else
-      state
+      invalidate_state_grants(state)
     end
   end
 

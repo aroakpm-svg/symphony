@@ -284,6 +284,18 @@ defmodule SymphonyElixir.ReviewConvergenceTest do
     end)
   end
 
+  test "disabled convergence suppresses cached merge-ready terminal results" do
+    state = %{
+      "candidate" => %{terminal_result: {:merge_ready_candidate, %{candidate_digest: "digest"}}},
+      "blocked" => %{terminal_result: {:merge_ready_blocked, [%{code: :review_stale}]}}
+    }
+
+    disabled = ReviewMonitor.run(state)
+
+    assert disabled["candidate"].terminal_result == nil
+    assert disabled["blocked"].terminal_result == nil
+  end
+
   test "completed landing handoff is derived before claim acquisition" do
     retained = %{claim_id: "11111111-1111-4111-8111-111111111111", generation: 1}
 
