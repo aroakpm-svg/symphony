@@ -351,8 +351,10 @@ defmodule SymphonyElixir.MergeReadyCandidate do
   end
 
   defp canonical_finding_inventory_digest(inventory) when is_list(inventory) do
-    payload = "finding-inventory-v1" <> encode_sequence(Enum.sort(inventory))
-    :crypto.hash(:sha256, payload) |> Base.encode16(case: :lower)
+    if valid_finding_inventory?(inventory) do
+      payload = "finding-inventory-v1" <> encode_sequence(Enum.sort(inventory))
+      :crypto.hash(:sha256, payload) |> Base.encode16(case: :lower)
+    end
   end
 
   defp canonical_finding_inventory_digest(_inventory), do: nil

@@ -338,6 +338,14 @@ defmodule SymphonyElixir.MergeReadyCandidateTest do
              |> MergeReadyCandidate.derive(valid_snapshot(), landing_mode: :human)
   end
 
+  test "malformed canonical finding inventory fails closed before durable proof hashing" do
+    for inventory <- [[nil], [42], [%{}], [""], ["not-a-digest"]] do
+      evidence = Map.put(valid_evidence(), :canonical_finding_digests, inventory)
+
+      assert_blocked(evidence, valid_snapshot(), :handoff_receipt_unverified)
+    end
+  end
+
   test "all nested proof receipts are bound to the current Linear revision" do
     stale_revision = "2026-08-17T00:00:00Z"
 
