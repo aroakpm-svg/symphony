@@ -23,6 +23,7 @@ defmodule SymphonyElixir.MergeReadyCandidateTest do
              aro_170: 1,
              aro_171: 1
            }
+
     assert candidate.acceptance_evidence_refs == ["test:merge-ready"]
 
     assert candidate.candidate_digest =~ ~r/^[0-9a-f]{64}$/
