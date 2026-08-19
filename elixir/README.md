@@ -93,7 +93,8 @@ effects, unavailable owner APIs, or a readback error. Fail-closed exits before c
 and ownership mismatches also invalidate the grant without releasing a claim they cannot prove
 they own, while preserving the retained claim identity for later revalidation or conditional
 release. If the identity exists only inside the grant, invalidation extracts it before clearing the
-grant. A tracker-enumeration outage invalidates every cached grant under the same rule. An unconsumed grant may retain the
+grant. A tracker-enumeration outage invalidates every cached grant under the same rule and clears
+cached merge-ready candidates/blockers that cannot be revalidated. An unconsumed grant may retain the
 same monitor-owned claim across invocations. When that entry becomes inactive, cleanup releases it
 only if the live claim still has the retained identity and remains owned by the monitor with no
 different worker; normal retained-claim reconciliation uses the same atomic conditional release, so
@@ -449,7 +450,8 @@ entry for the next poll; replacement evidence clears any older merge-ready resul
 preserves claim identity needed for conditional release. Missing handoff data fails closed. Handoff, acceptance, and compatibility proof are
 accepted only when their repository, PR, Linear, base, and exact-head identity matches the candidate.
 Every nested receipt also matches the current Linear revision, and the verified handoff receipt binds
-a canonical digest of the complete finding inventory rather than trusting a handoff's self-comparison.
+a canonical digest of the complete finding inventory and a separate canonical digest of the settled
+finding projection rather than trusting handoff-controlled collections or statuses.
 Evidence reference lists must be non-empty and contain unique non-empty values, preserving canonical identity across retries.
 Completed handoffs are revalidated before claim acquisition. Candidate output retains the verified
 receipt contract versions and uses collision-safe, length-prefixed list encoding in its digest.

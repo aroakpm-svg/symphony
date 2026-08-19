@@ -231,6 +231,7 @@ defmodule SymphonyElixir.MergeReadyCandidateTest do
              |> Map.put(:canonical_finding_digests, [])
              |> Map.put(:settled_findings, [])
              |> put_in([:handoff_receipt, :canonical_finding_inventory_digest], empty_inventory_digest())
+             |> put_in([:handoff_receipt, :canonical_settlement_digest], empty_settlement_digest())
              |> MergeReadyCandidate.derive(valid_snapshot(), landing_mode: :human)
 
     assert candidate.settled_finding_digests == []
@@ -335,7 +336,16 @@ defmodule SymphonyElixir.MergeReadyCandidateTest do
     assert {:ok, _candidate} =
              omitted
              |> put_in([:handoff_receipt, :canonical_finding_inventory_digest], empty_inventory_digest())
+             |> put_in([:handoff_receipt, :canonical_settlement_digest], empty_settlement_digest())
              |> MergeReadyCandidate.derive(valid_snapshot(), landing_mode: :human)
+  end
+
+  test "verified handoff receipt binds the canonical settlement projection" do
+    assert_blocked(
+      put_in(valid_evidence(), [:handoff_receipt, :canonical_settlement_digest], digest("other-settlements")),
+      valid_snapshot(),
+      :handoff_receipt_unverified
+    )
   end
 
   test "malformed canonical finding inventory fails closed before durable proof hashing" do
@@ -459,7 +469,8 @@ defmodule SymphonyElixir.MergeReadyCandidateTest do
         linear_revision: "2026-08-18T00:00:00Z",
         base_sha: sha("b"),
         head_sha: sha("a"),
-        canonical_finding_inventory_digest: inventory_digest()
+        canonical_finding_inventory_digest: inventory_digest(),
+        canonical_settlement_digest: settlement_digest()
       },
       compatibility_receipts: %{
         aro_143: receipt(:aro_143),
@@ -534,4 +545,6 @@ defmodule SymphonyElixir.MergeReadyCandidateTest do
   defp digest(value), do: :crypto.hash(:sha256, value) |> Base.encode16(case: :lower)
   defp inventory_digest, do: "076140d9f460db81519f311e346867e0d2fa4b1a1bf2eb0de09be0dc971abe42"
   defp empty_inventory_digest, do: "bbb3655266c2f8db15adc9b208e7ca20206987c0e512ce83ce24c93b1760e4ef"
+  defp settlement_digest, do: "7d2d29ce284ad21fa5d43c2e5e95885113384971bb7fbe71719873b2a7e02494"
+  defp empty_settlement_digest, do: "b11ff06f0538a51960c6ae9f2f87d81a91da43fc12183ae52eaa4b3eebe7365c"
 end

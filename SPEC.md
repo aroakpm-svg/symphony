@@ -437,8 +437,9 @@ Every claim release MUST invalidate the grant in the same state transition; an u
 released claim MUST NOT leave an old grant visible to a worker or a later monitor pass. Grant
 invalidation without a proven release MUST preserve the claim identity needed for later ownership
 revalidation or conditional release, deriving it from a valid grant when no explicit retention record
-exists yet. Tracker-enumeration failure MUST apply the same rule to every
-retained grant in monitor state. Releasing a retained claim MUST atomically verify the retained
+exists yet. Tracker-enumeration failure MUST apply the same rule to every retained grant in monitor
+state and MUST clear cached merge-ready candidates and blockers because their Linear/GitHub identity
+cannot be revalidated during the outage. Releasing a retained claim MUST atomically verify the retained
 claim identity and monitor ownership, so a concurrent transfer to a worker cannot be revoked.
 An uncertain conditional-release error MUST preserve both ClaimService ownership state and the
 monitor retention identity for retry; only confirmed release or definitive ownership change may clear them.
@@ -2457,7 +2458,9 @@ digest inventory. An empty settlement set is complete only when that inventory i
 otherwise its digest set MUST equal the settled finding digest set. Repository, PR, Linear revision,
 base, or head drift invalidates the stored handoff, which MUST be discarded before claimed
 convergence resumes for the new identity.
-The verified handoff receipt MUST repeat a collision-safe digest of that sorted inventory, and every
+The verified handoff receipt MUST repeat collision-safe digests of both the sorted inventory and the
+canonical settled-finding projection, so neither the inventory nor its claimed terminal settlements
+can be replaced independently of durable proof. Every
 nested handoff, acceptance, and compatibility receipt MUST repeat the exact Linear revision. The
 candidate rejects a self-consistent inventory that is not bound to this verified durable proof.
 Evidence reference collections are non-empty canonical sets: every reference is non-empty and unique, so

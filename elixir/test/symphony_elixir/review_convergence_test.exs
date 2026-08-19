@@ -1279,7 +1279,9 @@ defmodule SymphonyElixir.ReviewConvergenceTest do
         authorization_required: true,
         retained_claim: nil,
         terminal_result: {:grant, %{"finding-1" => retained}}
-      }
+      },
+      "candidate" => %{terminal_result: {:merge_ready_candidate, %{candidate_digest: "digest"}}},
+      "blocked" => %{terminal_result: {:merge_ready_blocked, [%{code: :review_stale}]}}
     }
 
     failed =
@@ -1294,6 +1296,8 @@ defmodule SymphonyElixir.ReviewConvergenceTest do
     assert failed["issue-160"].terminal_result == nil
     assert failed["issue-160"].retained_claim == retained
     refute failed["issue-160"].authorization_required
+    assert failed["candidate"].terminal_result == nil
+    assert failed["blocked"].terminal_result == nil
     refute_received {:autonomous_call, :release}
   end
 

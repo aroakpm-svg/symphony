@@ -323,7 +323,8 @@ defmodule SymphonyElixir.MergeReadyCandidate do
   defp handoff_receipt_verified?(receipt, evidence) do
     verified_receipt?(receipt) and receipt_identity_matches?(receipt, evidence) and
       receipt[:canonical_finding_inventory_digest] ==
-        canonical_finding_inventory_digest(evidence[:canonical_finding_digests])
+        canonical_finding_inventory_digest(evidence[:canonical_finding_digests]) and
+      receipt[:canonical_settlement_digest] == canonical_settlement_digest(evidence[:settled_findings])
   end
 
   defp compatibility_receipts_verified?(receipts, evidence) when is_map(receipts) do
@@ -358,6 +359,14 @@ defmodule SymphonyElixir.MergeReadyCandidate do
   end
 
   defp canonical_finding_inventory_digest(_inventory), do: nil
+
+  defp canonical_settlement_digest(settlements) do
+    if valid_settlements?(settlements) do
+      digests = settlements |> Enum.map(& &1.finding_key_digest) |> Enum.sort()
+      payload = "finding-settlements-v1" <> encode_sequence(digests)
+      :crypto.hash(:sha256, payload) |> Base.encode16(case: :lower)
+    end
+  end
 
   defp valid_checks?(checks) when is_list(checks) and checks != [] do
     names = Enum.map(checks, &map_value(&1, :name))

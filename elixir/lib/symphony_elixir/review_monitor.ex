@@ -201,9 +201,16 @@ defmodule SymphonyElixir.ReviewMonitor do
 
   defp invalidate_state_grants(state) do
     Map.new(state, fn {issue_id, entry} ->
-      {issue_id, clear_grant_if_present(entry, :preserve_claim)}
+      updated = clear_grant_if_present(entry, :preserve_claim)
+      {issue_id, clear_merge_ready_terminal(updated)}
     end)
   end
+
+  defp clear_merge_ready_terminal(%{terminal_result: {kind, _proof}} = entry)
+       when kind in [:merge_ready_candidate, :merge_ready_blocked],
+       do: %{entry | terminal_result: nil}
+
+  defp clear_merge_ready_terminal(entry), do: entry
 
   defp recoverable_grant_claim_identity(entry) do
     case retained_claim_identity(entry) do
