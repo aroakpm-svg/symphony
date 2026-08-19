@@ -412,8 +412,11 @@ defmodule SymphonyElixir.MergeReadyEvidenceTest do
         pull_request_number: 42,
         linear_issue_id: "issue-246",
         linear_issue_identifier: "ARO-246",
+        linear_revision: "2026-08-18T00:00:00Z",
         base_sha: sha("b"),
-        head_sha: sha("a")
+        head_sha: sha("a"),
+        canonical_finding_inventory_digest:
+          "076140d9f460db81519f311e346867e0d2fa4b1a1bf2eb0de09be0dc971abe42"
       },
       compatibility_receipts: %{
         aro_143: receipt(:aro_143),
@@ -439,6 +442,7 @@ defmodule SymphonyElixir.MergeReadyEvidenceTest do
         pull_request_number: 42,
         linear_issue_id: "issue-246",
         linear_issue_identifier: "ARO-246",
+        linear_revision: "2026-08-18T00:00:00Z",
         base_sha: sha("b"),
         head_sha: sha("a")
       },
@@ -455,6 +459,7 @@ defmodule SymphonyElixir.MergeReadyEvidenceTest do
       pull_request_number: 42,
       linear_issue_id: "issue-246",
       linear_issue_identifier: "ARO-246",
+      linear_revision: "2026-08-18T00:00:00Z",
       base_sha: sha("b"),
       head_sha: sha("a")
     }
