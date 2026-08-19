@@ -230,6 +230,7 @@ defmodule SymphonyElixir.MergeReadyCandidateTest do
              valid_evidence()
              |> Map.put(:canonical_finding_digests, [])
              |> Map.put(:settled_findings, [])
+             |> put_in([:handoff_receipt, :canonical_finding_inventory_digest], empty_inventory_digest())
              |> MergeReadyCandidate.derive(valid_snapshot(), landing_mode: :human)
 
     assert candidate.settled_finding_digests == []
@@ -314,6 +315,50 @@ defmodule SymphonyElixir.MergeReadyCandidateTest do
         ] do
       evidence = put_in(valid_evidence(), [:handoff_receipt, field], value)
       assert_blocked(evidence, valid_snapshot(), :handoff_receipt_unverified)
+    end
+  end
+
+  test "verified handoff receipt binds the authoritative canonical finding inventory" do
+    assert_blocked(
+      put_in(valid_evidence(), [:handoff_receipt, :canonical_finding_inventory_digest], digest("other-inventory")),
+      valid_snapshot(),
+      :handoff_receipt_unverified
+    )
+
+    omitted =
+      valid_evidence()
+      |> Map.put(:canonical_finding_digests, [])
+      |> Map.put(:settled_findings, [])
+
+    assert_blocked(omitted, valid_snapshot(), :handoff_receipt_unverified)
+
+    assert {:ok, _candidate} =
+             omitted
+             |> put_in([:handoff_receipt, :canonical_finding_inventory_digest], empty_inventory_digest())
+             |> MergeReadyCandidate.derive(valid_snapshot(), landing_mode: :human)
+  end
+
+  test "all nested proof receipts are bound to the current Linear revision" do
+    stale_revision = "2026-08-17T00:00:00Z"
+
+    assert_blocked(
+      put_in(valid_evidence(), [:handoff_receipt, :linear_revision], stale_revision),
+      valid_snapshot(),
+      :handoff_receipt_unverified
+    )
+
+    assert_blocked(
+      put_in(valid_evidence(), [:acceptance, :linear_revision], stale_revision),
+      valid_snapshot(),
+      :acceptance_incomplete
+    )
+
+    for owner <- [:aro_143, :aro_170, :aro_171, :aro_167, :aro_135] do
+      assert_blocked(
+        put_in(valid_evidence(), [:compatibility_receipts, owner, :linear_revision], stale_revision),
+        valid_snapshot(),
+        :compatibility_receipt_unverified
+      )
     end
   end
 
@@ -403,8 +448,10 @@ defmodule SymphonyElixir.MergeReadyCandidateTest do
         pull_request_number: 42,
         linear_issue_id: "issue-246",
         linear_issue_identifier: "ARO-246",
+        linear_revision: "2026-08-18T00:00:00Z",
         base_sha: sha("b"),
-        head_sha: sha("a")
+        head_sha: sha("a"),
+        canonical_finding_inventory_digest: inventory_digest()
       },
       compatibility_receipts: %{
         aro_143: receipt(:aro_143),
@@ -428,6 +475,7 @@ defmodule SymphonyElixir.MergeReadyCandidateTest do
         pull_request_number: 42,
         linear_issue_id: "issue-246",
         linear_issue_identifier: "ARO-246",
+        linear_revision: "2026-08-18T00:00:00Z",
         base_sha: sha("b"),
         head_sha: sha("a")
       },
@@ -468,6 +516,7 @@ defmodule SymphonyElixir.MergeReadyCandidateTest do
       pull_request_number: 42,
       linear_issue_id: "issue-246",
       linear_issue_identifier: "ARO-246",
+      linear_revision: "2026-08-18T00:00:00Z",
       base_sha: sha("b"),
       head_sha: sha("a")
     }
@@ -475,4 +524,6 @@ defmodule SymphonyElixir.MergeReadyCandidateTest do
 
   defp sha(character), do: String.duplicate(character, 40)
   defp digest(value), do: :crypto.hash(:sha256, value) |> Base.encode16(case: :lower)
+  defp inventory_digest, do: "076140d9f460db81519f311e346867e0d2fa4b1a1bf2eb0de09be0dc971abe42"
+  defp empty_inventory_digest, do: "bbb3655266c2f8db15adc9b208e7ca20206987c0e512ce83ce24c93b1760e4ef"
 end
