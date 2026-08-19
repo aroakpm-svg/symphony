@@ -437,9 +437,12 @@ Every claim release MUST invalidate the grant in the same state transition; an u
 released claim MUST NOT leave an old grant visible to a worker or a later monitor pass. Grant
 invalidation without a proven release MUST preserve the claim identity needed for later ownership
 revalidation or conditional release, deriving it from a valid grant when no explicit retention record
-exists yet. Tracker-enumeration failure MUST apply the same rule to every
-retained grant in monitor state. Releasing a retained claim MUST atomically verify the retained
+exists yet. Tracker-enumeration failure MUST apply the same rule to every retained grant in monitor
+state and MUST clear cached merge-ready candidates and blockers because their Linear/GitHub identity
+cannot be revalidated during the outage. Releasing a retained claim MUST atomically verify the retained
 claim identity and monitor ownership, so a concurrent transfer to a worker cannot be revoked.
+Disabling review convergence MUST apply the same suppression to cached merge-ready terminal results;
+disabled monitoring cannot continue publishing proof it no longer revalidates.
 An uncertain conditional-release error MUST preserve both ClaimService ownership state and the
 monitor retention identity for retry; only confirmed release or definitive ownership change may clear them.
 This rule applies equally when an issue leaves the routed set: inactive monitor state MUST remain
@@ -2436,3 +2439,61 @@ Extension config:
 - Cleanup and observability:
   - Operators need to know which host owns a run, where its workspace lives, and whether cleanup
     happened on the right machine.
+
+## Appendix B: Human Merge-Ready Candidate
+
+`landing.mode` defaults to and only accepts `human`. No value enables automatic landing.
+
+The production poll passes that mode into `ReviewMonitor`; when the claim-backed autonomous profile is
+enabled, completed Design 4 evidence is consumed from the owning issue's runtime entry (or its explicit
+`finding_complete` handoff). Missing handoff evidence produces a blocker and is never replaced with a
+synthetic receipt.
+
+The production owner publishes that per-issue handoff through
+`Orchestrator.finding_complete/3`; the orchestrator stores it under the matching issue id before the
+next review-convergence poll. Recording replacement evidence atomically invalidates any earlier
+merge-ready candidate or blocker while preserving grant or retained-claim identity needed for
+conditional release. The handoff receipt, acceptance evidence, and compatibility receipts must each repeat and
+match the repository, PR, Linear issue id and identifier, base SHA, and exact evaluated head SHA.
+The handoff MUST also bind the Linear revision and carry the complete, unique canonical finding
+digest inventory. An empty settlement set is complete only when that inventory is explicitly empty;
+otherwise its digest set MUST equal the settled finding digest set. Repository, PR, Linear revision,
+base, or head drift invalidates the stored handoff, which MUST be discarded before claimed
+convergence resumes for the new identity.
+The verified handoff receipt MUST repeat collision-safe digests of both the sorted inventory and the
+canonical settled-finding projection, so neither the inventory nor its claimed terminal settlements
+can be replaced independently of durable proof. Every
+nested handoff, acceptance, and compatibility receipt MUST repeat the exact Linear revision. The
+candidate rejects a self-consistent inventory that is not bound to this verified durable proof.
+Top-level and acceptance evidence reference collections are both published and hashed as non-empty
+canonical sets: every reference is non-empty and unique, so
+retries cannot change candidate identity merely by repeating an existing proof reference.
+An already completed handoff is revalidated before claim acquisition, so the terminal human proof
+does not reacquire a claim or repeat finding classification. The candidate records every verified
+receipt contract version, and its digest length-prefixes every list element to preserve canonical
+boundaries even when names or references contain punctuation.
+If the issue still owns a retained claim, the terminal handoff conditionally releases that exact
+claim before exposing the claim-free result. Candidate and blocker terminal results are published
+through `Orchestrator.snapshot/2` under the per-issue `review_convergence` owner surface.
+An uncertain release MUST retain the handoff and claim identity for retry while withholding the
+terminal result. A verified terminal publication MUST clear older transient blockers so the owner
+surface never exposes a current terminal proof together with stale blocking state.
+
+After Design 4 terminal settlement, `MergeReadyCandidate.derive/3` may produce an immutable V1
+candidate only when complete internal evidence agrees with a fresh native GitHub and Linear
+snapshot. Identity includes repository, PR number, Linear issue and revision, base SHA, and exact
+head SHA. Required checks must be terminal successes, the trusted review must accept the exact
+head, actionable threads must be empty, all findings must be settled, and pending, unknown,
+blocked, stale, conflict, and safety-stop collections must be explicitly empty. Acceptance and the
+required ARO-143, ARO-170, ARO-171, ARO-167, and ARO-135 compatibility receipts must be verified.
+
+The caller must perform a second native read before exposing the candidate and apply
+`matches_live_snapshot?/2`. Head/base movement, check or review change, a new or reopened
+actionable thread, PR state change, or Linear mapping change invalidates the candidate. Missing,
+malformed, contradictory, unavailable, or unknown evidence returns canonically ordered blocker
+receipts and must not be coerced to success.
+
+The runtime result is either `{:merge_ready_candidate, candidate}` or
+`{:merge_ready_blocked, blockers}`. Neither result authorizes or performs a GitHub merge, merge
+queue action, Linear `Done`, deployment, Production access, permission change, or worker
+activation. Candidates are not persisted as a parallel source of truth.

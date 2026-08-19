@@ -45,6 +45,22 @@ connection or identity input is missing or invalid. See the
 [Elixir claim configuration](elixir/README.md#configuration) for the complete
 runtime contract and environment variables.
 
+## Human merge-ready boundary
+
+ARO-246 adds a final, read-only `MergeReadyCandidate` proof after Design 4 settlement. The proof is
+bound to the repository, PR, Linear issue, base SHA, and exact latest head. Required checks, the
+exact-head Codex result, actionable review threads, settlements, effects, acceptance evidence, and
+compatibility receipts must all be explicit and consistent. Missing, stale, pending, unknown, or
+conflicting evidence blocks.
+The handoff also carries the complete canonical finding inventory; an empty settlement set is valid
+only when that inventory is explicitly empty. If repository, PR, Linear revision, base, or head
+changes, Symphony discards the stale handoff and resumes convergence for the new identity.
+
+The only supported landing configuration is `landing.mode: human`. A successful candidate means a
+maintainer may recheck GitHub and press Merge. Symphony does not merge, enqueue a merge, mark Linear
+Done, deploy, or activate a landing worker. Any later head, review, check, thread, PR, or Linear drift
+invalidates the candidate and requires complete fresh derivation.
+
 ---
 
 ## License

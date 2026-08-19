@@ -684,6 +684,77 @@ defmodule SymphonyElixir.CoreTest do
     assert_due_after(due_at_ms, scheduled_from_ms, 900, 1_100)
   end
 
+  test "production finding-complete handoff is stored on the owning issue runtime entry" do
+    orchestrator_name = Module.concat(__MODULE__, :FindingCompleteOrchestrator)
+    {:ok, pid} = Orchestrator.start_link(name: orchestrator_name)
+
+    on_exit(fn ->
+      if Process.alive?(pid), do: Process.exit(pid, :normal)
+    end)
+
+    evidence = %{repository: "aroakpm-svg/symphony", evaluated_head_sha: String.duplicate("a", 40)}
+
+    assert :ok = Orchestrator.finding_complete("issue-246", evidence, orchestrator_name)
+
+    assert %{
+             landing_evidence: ^evidence
+           } = :sys.get_state(pid).review_convergence["issue-246"]
+
+    assert [
+             %{
+               issue_id: "issue-246",
+               handoff_recorded?: true,
+               terminal_result: nil,
+               blocker: nil
+             }
+           ] = GenServer.call(pid, :snapshot).review_convergence
+
+    assert {:error, :invalid_finding_complete} =
+             Orchestrator.finding_complete(nil, evidence, orchestrator_name)
+
+    assert {:error, :invalid_finding_complete} =
+             Orchestrator.finding_complete(" ", evidence, orchestrator_name)
+  end
+
+  test "replacement finding-complete handoff invalidates only stale merge-ready output" do
+    orchestrator_name = Module.concat(__MODULE__, :ReplacementFindingCompleteOrchestrator)
+    {:ok, pid} = Orchestrator.start_link(name: orchestrator_name)
+
+    on_exit(fn ->
+      if Process.alive?(pid), do: Process.exit(pid, :normal)
+    end)
+
+    evidence = %{repository: "aroakpm-svg/symphony", evaluated_head_sha: String.duplicate("b", 40)}
+    initial_state = :sys.get_state(pid)
+
+    for terminal_result <- [
+          {:merge_ready_candidate, %{head_sha: String.duplicate("a", 40)}},
+          {:merge_ready_blocked, [%{code: :review_stale}]}
+        ] do
+      :sys.replace_state(pid, fn _state ->
+        Map.put(initial_state, :review_convergence, %{
+          "issue-246" => %{terminal_result: terminal_result, retained_claim: %{claim_id: "claim-1"}}
+        })
+      end)
+
+      assert :ok = Orchestrator.finding_complete("issue-246", evidence, orchestrator_name)
+
+      entry = :sys.get_state(pid).review_convergence["issue-246"]
+      assert entry.landing_evidence == evidence
+      assert entry.terminal_result == nil
+      assert entry.retained_claim == %{claim_id: "claim-1"}
+    end
+
+    grant = {:grant, %{"finding" => %{claim_id: "claim-2", generation: 3}}}
+
+    :sys.replace_state(pid, fn _state ->
+      Map.put(initial_state, :review_convergence, %{"issue-246" => %{terminal_result: grant}})
+    end)
+
+    assert :ok = Orchestrator.finding_complete("issue-246", evidence, orchestrator_name)
+    assert :sys.get_state(pid).review_convergence["issue-246"].terminal_result == grant
+  end
+
   test "abnormal worker exit increments retry attempt progressively" do
     issue_id = "issue-crash"
     ref = make_ref()

@@ -47,6 +47,8 @@ review_convergence:
   in_progress_state: "In Progress"
   max_fix_rounds: 3
   human_owner: "PM AROAK"
+landing:
+  mode: human
 codex:
   command: |
     ENV_FILE="C:/Users/aroak/Desktop/codex/symphony/elixir/.env.local"

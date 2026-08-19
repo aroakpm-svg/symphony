@@ -9,6 +9,8 @@ defmodule SymphonyElixir.ReviewMonitor do
     EffectLedger,
     FindingDisposition,
     GitHubReviewClient,
+    MergeReadyCandidate,
+    MergeReadyEvidence,
     PatchAuthorization,
     ReviewConvergence,
     ReviewIdentity,
@@ -23,13 +25,21 @@ defmodule SymphonyElixir.ReviewMonitor do
 
   @spec run(state()) :: state()
   def run(state) when is_map(state) do
-    settings = Config.settings!().review_convergence
+    config = Config.settings!()
+    settings = config.review_convergence
 
     if settings.enabled do
-      run_with(state, settings, GitHubReviewClient, Tracker)
+      run_with(state, settings, GitHubReviewClient, Tracker, production_options(config))
     else
-      state
+      invalidate_state_grants(state)
     end
+  end
+
+  defp production_options(config) do
+    %{
+      profile: if(config.claim.enabled, do: :aroak_autonomous_v1, else: :legacy),
+      landing_mode: config.landing.mode
+    }
   end
 
   @doc false
@@ -112,29 +122,17 @@ defmodule SymphonyElixir.ReviewMonitor do
   defp reconcile_autonomous_issue(%Issue{} = issue, state, settings, review_client, options) do
     entry = autonomous_entry(Map.get(state, issue.id, %{}))
 
-    {result, acquisition} =
-      with branch when is_binary(branch) and branch != "" <- issue.branch_name,
-           {:ok, snapshot} <- review_client.snapshot(settings.repository, branch),
-           {:ok, claim, claim_acquisition} <- claim_for(options, issue) do
-        reconcile_acquired_claim(
-          claim_acquisition,
-          entry,
-          issue,
-          snapshot,
-          claim,
-          settings,
-          review_client,
-          options
-        )
-      else
-        nil -> {{:blocked, :missing_branch_name}, :none}
-        "" -> {{:blocked, :missing_branch_name}, :none}
-        {:error, reason} -> {{:blocked, reason}, :none}
-      end
+    {result, acquisition} = reconcile_autonomous_entry(entry, issue, settings, review_client, options)
 
     grant_invalid? = releasable_result?(result)
-    release? = acquisition in [:new, :retained] and grant_invalid?
-    release_result = if release?, do: release_reconciled_claim(options, issue.id, acquisition, entry), else: :not_released
+    release? = acquisition in [:new, :retained, :retained_handoff] and grant_invalid?
+
+    release_result =
+      if release?,
+        do: release_reconciled_claim(options, issue.id, acquisition, entry),
+        else: :not_released
+
+    result = withhold_unreleased_handoff(result, acquisition, release_result)
 
     result =
       if grant_invalid?,
@@ -182,8 +180,11 @@ defmodule SymphonyElixir.ReviewMonitor do
     |> Map.put(:retained_claim, retained_claim)
   end
 
-  defp invalidate_entry_grant(updated, _original, :drop_claim),
-    do: clear_grant_if_present(updated, :drop_claim)
+  defp invalidate_entry_grant(updated, _original, :drop_claim) do
+    updated
+    |> clear_grant_if_present(:drop_claim)
+    |> Map.put(:retained_claim, nil)
+  end
 
   defp clear_grant_if_present(%{terminal_result: {:grant, _grants}} = entry, :drop_claim),
     do: %{entry | terminal_result: nil, retained_claim: nil, authorization_required: false}
@@ -200,9 +201,16 @@ defmodule SymphonyElixir.ReviewMonitor do
 
   defp invalidate_state_grants(state) do
     Map.new(state, fn {issue_id, entry} ->
-      {issue_id, clear_grant_if_present(entry, :preserve_claim)}
+      updated = clear_grant_if_present(entry, :preserve_claim)
+      {issue_id, clear_merge_ready_terminal(updated)}
     end)
   end
+
+  defp clear_merge_ready_terminal(%{terminal_result: {kind, _proof}} = entry)
+       when kind in [:merge_ready_candidate, :merge_ready_blocked],
+       do: %{entry | terminal_result: nil}
+
+  defp clear_merge_ready_terminal(entry), do: entry
 
   defp recoverable_grant_claim_identity(entry) do
     case retained_claim_identity(entry) do
@@ -372,12 +380,18 @@ defmodule SymphonyElixir.ReviewMonitor do
     end
   end
 
+  defp release_reconciled_claim(options, issue_id, :retained_handoff, entry) do
+    release_reconciled_claim(options, issue_id, :retained, entry)
+  end
+
   defp release_reconciled_claim(options, issue_id, :new, _entry),
     do: release_claim(options, issue_id)
 
   defp release_retention(:retained, result) do
     if release_outcome(result) == :uncertain, do: :preserve_claim, else: :drop_claim
   end
+
+  defp release_retention(:retained_handoff, result), do: release_retention(:retained, result)
 
   defp release_retention(_acquisition, :not_released), do: :preserve_claim
   defp release_retention(_acquisition, _result), do: :drop_claim
@@ -386,6 +400,25 @@ defmodule SymphonyElixir.ReviewMonitor do
   defp release_outcome({:error, :claim_ownership_changed}), do: :ownership_changed
   defp release_outcome({:error, :claim_not_owned}), do: :ownership_changed
   defp release_outcome(_result), do: :uncertain
+
+  defp withhold_unreleased_handoff(result, :retained_handoff, release_result) do
+    if release_outcome(release_result) == :uncertain do
+      case result do
+        {:ok, updated} ->
+          {:blocked, :claim_release_unverified, %{updated | terminal_result: nil}}
+
+        {:blocked, _reason, updated} ->
+          {:blocked, :claim_release_unverified, %{updated | terminal_result: nil}}
+
+        {:blocked, _reason} ->
+          {:blocked, :claim_release_unverified}
+      end
+    else
+      result
+    end
+  end
+
+  defp withhold_unreleased_handoff(result, _acquisition, _release_result), do: result
 
   defp release_claim_if_owned(options, issue_id, identity) do
     claim_service = Map.get(options, :claim_service, ClaimService)
@@ -530,12 +563,12 @@ defmodule SymphonyElixir.ReviewMonitor do
 
   defp autonomous_claimed_result(
          entry,
-         _issue,
+         issue,
          snapshot,
          summary,
          operations,
          claim_context,
-         _settings,
+         settings,
          options
        ) do
     pending_effect_ids =
@@ -556,13 +589,14 @@ defmodule SymphonyElixir.ReviewMonitor do
         {:blocked, :pending_effects, Map.put(updated, :retained_claim, claim_identity(claim_context))}
 
       summary[:decisions] == [] ->
-        {:ok,
-         %{
-           updated
-           | authorization_required: false,
-             authorization_results: %{},
-             terminal_result: nil
-         }}
+        updated = %{
+          updated
+          | authorization_required: false,
+            authorization_results: %{},
+            terminal_result: nil
+        }
+
+        maybe_derive_merge_ready(updated, issue, settings, options)
 
       not owner_apis_available?(options) ->
         {:blocked, :owner_api_unavailable, updated}
@@ -580,6 +614,160 @@ defmodule SymphonyElixir.ReviewMonitor do
           }
         )
     end
+  end
+
+  defp reconcile_autonomous_entry(entry, issue, settings, review_client, options) do
+    provider = Map.get(options, :merge_ready_evidence, MergeReadyEvidence)
+
+    case completed_landing_evidence(provider, entry, options) do
+      {:ok, landing_evidence} ->
+        acquisition =
+          if match?({:ok, _identity}, retained_claim_identity(entry)),
+            do: :retained_handoff,
+            else: :none
+
+        case derive_merge_ready(entry, issue, landing_evidence, settings, options) do
+          {:stale_landing_evidence, resumed_entry} ->
+            {claimed_result, claimed_acquisition} =
+              reconcile_claimed_entry(resumed_entry, issue, settings, review_client, options)
+
+            {retain_resumed_entry(claimed_result, resumed_entry), claimed_acquisition}
+
+          result ->
+            {result, acquisition}
+        end
+
+      {:error, :landing_evidence_unavailable} ->
+        reconcile_claimed_entry(entry, issue, settings, review_client, options)
+    end
+  end
+
+  defp reconcile_claimed_entry(entry, issue, settings, review_client, options) do
+    with branch when is_binary(branch) and branch != "" <- issue.branch_name,
+         {:ok, snapshot} <- review_client.snapshot(settings.repository, branch),
+         {:ok, claim, claim_acquisition} <- claim_for(options, issue) do
+      reconcile_acquired_claim(
+        claim_acquisition,
+        entry,
+        issue,
+        snapshot,
+        claim,
+        settings,
+        review_client,
+        options
+      )
+    else
+      nil -> {{:blocked, :missing_branch_name}, :none}
+      "" -> {{:blocked, :missing_branch_name}, :none}
+      {:error, reason} -> {{:blocked, reason}, :none}
+    end
+  end
+
+  defp maybe_derive_merge_ready(entry, issue, settings, options) do
+    provider = Map.get(options, :merge_ready_evidence, MergeReadyEvidence)
+
+    case completed_landing_evidence(provider, entry, options) do
+      {:ok, landing_evidence} ->
+        derive_merge_ready(entry, issue, landing_evidence, settings, options)
+
+      {:error, :landing_evidence_unavailable} ->
+        {:ok,
+         %{
+           entry
+           | terminal_result: {:merge_ready_blocked, [%{code: :landing_evidence_unavailable, identity: %{}}]}
+         }}
+    end
+  end
+
+  defp completed_landing_evidence(provider, entry, options) do
+    cond do
+      loaded_function_exported?(provider, :completed_landing_evidence, 1) ->
+        provider.completed_landing_evidence(entry)
+
+      is_map(Map.get(options, :landing_evidence)) ->
+        {:ok, Map.fetch!(options, :landing_evidence)}
+
+      true ->
+        {:error, :landing_evidence_unavailable}
+    end
+  end
+
+  @doc false
+  @spec derive_merge_ready_for_test(map(), Issue.t(), map(), map(), map()) :: {:ok, map()}
+  def derive_merge_ready_for_test(entry, issue, landing_evidence, settings, options) do
+    derive_merge_ready(entry, issue, landing_evidence, settings, options)
+  end
+
+  defp derive_merge_ready(entry, issue, landing_evidence, settings, options) do
+    provider = Map.get(options, :merge_ready_evidence, MergeReadyEvidence)
+    candidate_module = Map.get(options, :merge_ready_candidate, MergeReadyCandidate)
+    mode = Map.get(options, :landing_mode, :human)
+    deps = merge_ready_dependencies(options)
+
+    with {:ok, evidence, snapshot} <- provider.read(issue, landing_evidence, settings, deps),
+         {:ok, candidate} <- candidate_module.derive(evidence, snapshot, landing_mode: mode),
+         {:ok, fresh_evidence, fresh_snapshot} <-
+           provider.read(issue, landing_evidence, settings, deps),
+         {:ok, fresh_candidate} <- candidate_module.derive(fresh_evidence, fresh_snapshot, landing_mode: mode),
+         true <- candidate[:candidate_digest] == fresh_candidate[:candidate_digest],
+         true <- candidate_module.matches_live_snapshot?(candidate, fresh_snapshot) do
+      {:ok, publish_terminal_result(entry, {:merge_ready_candidate, candidate})}
+    else
+      {:error, :landing_evidence_identity_stale} ->
+        {:stale_landing_evidence, discard_stale_landing_evidence(entry)}
+
+      {:blocked, blockers} ->
+        {:ok, publish_terminal_result(entry, {:merge_ready_blocked, blockers})}
+
+      {:error, reason} ->
+        {:ok,
+         publish_terminal_result(
+           entry,
+           {:merge_ready_blocked, [%{code: reason, identity: %{}}]}
+         )}
+
+      false ->
+        {:ok,
+         publish_terminal_result(
+           entry,
+           {:merge_ready_blocked, [%{code: :live_snapshot_changed, identity: %{}}]}
+         )}
+    end
+  end
+
+  defp discard_stale_landing_evidence(entry) do
+    entry
+    |> Map.delete(:landing_evidence)
+    |> clear_stale_merge_ready_result()
+  end
+
+  defp clear_stale_merge_ready_result(%{terminal_result: {:finding_complete, _evidence}} = entry),
+    do: %{entry | terminal_result: nil}
+
+  defp clear_stale_merge_ready_result(%{terminal_result: {:merge_ready_candidate, _candidate}} = entry),
+    do: %{entry | terminal_result: nil}
+
+  defp clear_stale_merge_ready_result(%{terminal_result: {:merge_ready_blocked, _blockers}} = entry),
+    do: %{entry | terminal_result: nil}
+
+  defp clear_stale_merge_ready_result(entry), do: entry
+
+  defp retain_resumed_entry({:blocked, reason}, resumed_entry),
+    do: {:blocked, reason, resumed_entry}
+
+  defp retain_resumed_entry(result, _resumed_entry), do: result
+
+  defp publish_terminal_result(entry, terminal_result) do
+    Map.merge(entry, %{terminal_result: terminal_result, global_blocker: nil})
+  end
+
+  defp merge_ready_dependencies(options) do
+    [
+      review_client: Map.get(options, :review_client, GitHubReviewClient),
+      tracker: Map.get(options, :tracker, Tracker),
+      required_compatibility_receipts: [:aro_143, :aro_170, :aro_171, :aro_167, :aro_135],
+      now: Map.get(options, :now, &DateTime.utc_now/0)
+    ]
   end
 
   defp decisions_by_digest(decisions),

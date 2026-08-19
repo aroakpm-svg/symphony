@@ -105,6 +105,28 @@ defmodule SymphonyElixir.ReviewConvergenceTest do
     def claim(_issue, _owner), do: {:error, :claim_service_unavailable}
   end
 
+  defmodule CompletedLandingEvidence do
+    def completed_landing_evidence(%{landing_evidence: evidence}), do: {:ok, evidence}
+
+    def read(_issue, %{proof: :complete}, _settings, _deps) do
+      send(Application.fetch_env!(:symphony_elixir, :review_recipient), :terminal_evidence_read)
+      {:ok, %{proof: :complete}, %{head: "head-1"}}
+    end
+  end
+
+  defmodule CompletedLandingCandidate do
+    def derive(%{proof: :complete}, %{head: head}, landing_mode: :human) do
+      {:ok, %{candidate_digest: "candidate-#{head}", head: head}}
+    end
+
+    def matches_live_snapshot?(candidate, snapshot), do: candidate.head == snapshot.head
+  end
+
+  defmodule StaleLandingEvidence do
+    def completed_landing_evidence(%{landing_evidence: evidence}), do: {:ok, evidence}
+    def read(_issue, _evidence, _settings, _deps), do: {:error, :landing_evidence_identity_stale}
+  end
+
   defmodule AutonomousClaimService do
     @spec claim(Issue.t(), pid()) :: {:ok, map()}
     def claim(issue, owner) do
@@ -260,6 +282,112 @@ defmodule SymphonyElixir.ReviewConvergenceTest do
       Application.delete_env(:symphony_elixir, :claim_worker)
       Application.delete_env(:symphony_elixir, :conditional_release_result)
     end)
+  end
+
+  test "completed landing handoff is derived before claim acquisition" do
+    retained = %{claim_id: "11111111-1111-4111-8111-111111111111", generation: 1}
+
+    state = %{
+      "issue-160" => %{
+        landing_evidence: %{proof: :complete},
+        retained_claim: retained,
+        terminal_result: {:grant, %{"finding" => retained}}
+      }
+    }
+
+    result =
+      ReviewMonitor.run_with(state, settings(), ReviewClient, Tracker, %{
+        profile: :aroak_autonomous_v1,
+        claim_service: AutonomousClaimService,
+        merge_ready_evidence: CompletedLandingEvidence,
+        merge_ready_candidate: CompletedLandingCandidate,
+        landing_mode: :human
+      })
+
+    assert {:merge_ready_candidate, %{candidate_digest: "candidate-head-1"}} =
+             result["issue-160"].terminal_result
+
+    assert_receive :terminal_evidence_read
+    assert_receive :terminal_evidence_read
+    assert_receive {:autonomous_call, :release_if_owned}
+    refute_received {:autonomous_call, :claim}
+    assert result["issue-160"].retained_claim == nil
+  end
+
+  test "completed landing handoff clears an obsolete global blocker" do
+    state = %{
+      "issue-160" => %{
+        landing_evidence: %{proof: :complete},
+        global_blocker: :claim_service_unavailable
+      }
+    }
+
+    result =
+      ReviewMonitor.run_with(state, settings(), ReviewClient, Tracker, %{
+        profile: :aroak_autonomous_v1,
+        claim_service: FailingClaimService,
+        merge_ready_evidence: CompletedLandingEvidence,
+        merge_ready_candidate: CompletedLandingCandidate,
+        landing_mode: :human
+      })
+
+    assert {:merge_ready_candidate, %{candidate_digest: "candidate-head-1"}} =
+             result["issue-160"].terminal_result
+
+    assert result["issue-160"].global_blocker == nil
+    refute_received {:autonomous_call, :claim}
+  end
+
+  test "completed landing handoff with uncertain retained release withholds terminal proof" do
+    retained = %{claim_id: "11111111-1111-4111-8111-111111111111", generation: 1}
+
+    Application.put_env(
+      :symphony_elixir,
+      :conditional_release_result,
+      {:error, :database_unavailable}
+    )
+
+    state = %{
+      "issue-160" => %{
+        landing_evidence: %{proof: :complete},
+        retained_claim: retained,
+        terminal_result: {:grant, %{"finding" => retained}}
+      }
+    }
+
+    result =
+      ReviewMonitor.run_with(state, settings(), ReviewClient, Tracker, %{
+        profile: :aroak_autonomous_v1,
+        claim_service: AutonomousClaimService,
+        merge_ready_evidence: CompletedLandingEvidence,
+        merge_ready_candidate: CompletedLandingCandidate,
+        landing_mode: :human
+      })
+
+    assert result["issue-160"].terminal_result == nil
+    assert result["issue-160"].global_blocker == :claim_release_unverified
+    assert result["issue-160"].retained_claim == retained
+    assert_receive {:autonomous_call, :release_if_owned}
+    refute_received {:autonomous_call, :claim}
+  end
+
+  test "stale completed handoff is discarded before resuming claimed convergence" do
+    state = %{"issue-160" => %{landing_evidence: %{proof: :stale}}}
+
+    Application.put_env(:symphony_elixir, :review_snapshot, {:ok, snapshot()})
+
+    result =
+      ReviewMonitor.run_with(state, settings(), ReviewClient, Tracker, %{
+        profile: :aroak_autonomous_v1,
+        claim_service: FailingClaimService,
+        merge_ready_evidence: StaleLandingEvidence,
+        merge_ready_candidate: CompletedLandingCandidate,
+        landing_mode: :human
+      })
+
+    assert result["issue-160"].global_blocker == :claim_service_unavailable
+    refute Map.has_key?(result["issue-160"], :landing_evidence)
+    assert result["issue-160"].terminal_result == nil
   end
 
   test "review convergence config is disabled by default and fail-closed when enabled without a repository" do
@@ -734,7 +862,9 @@ defmodule SymphonyElixir.ReviewConvergenceTest do
         }
       )
 
-    assert result["issue-160"].terminal_result == nil
+    assert result["issue-160"].terminal_result ==
+             {:merge_ready_blocked, [%{code: :landing_evidence_unavailable, identity: %{}}]}
+
     assert result["issue-160"].retained_claim == grant
     refute result["issue-160"].authorization_required
     assert_receive {:autonomous_call, :release_if_owned}
@@ -1149,7 +1279,9 @@ defmodule SymphonyElixir.ReviewConvergenceTest do
         authorization_required: true,
         retained_claim: nil,
         terminal_result: {:grant, %{"finding-1" => retained}}
-      }
+      },
+      "candidate" => %{terminal_result: {:merge_ready_candidate, %{candidate_digest: "digest"}}},
+      "blocked" => %{terminal_result: {:merge_ready_blocked, [%{code: :review_stale}]}}
     }
 
     failed =
@@ -1164,6 +1296,8 @@ defmodule SymphonyElixir.ReviewConvergenceTest do
     assert failed["issue-160"].terminal_result == nil
     assert failed["issue-160"].retained_claim == retained
     refute failed["issue-160"].authorization_required
+    assert failed["candidate"].terminal_result == nil
+    assert failed["blocked"].terminal_result == nil
     refute_received {:autonomous_call, :release}
   end
 
@@ -1914,6 +2048,9 @@ defmodule SymphonyElixir.ReviewConvergenceTest do
       "body" => "## Scope Contract\n",
       "headRefOid" => head,
       "baseRefOid" => String.duplicate("b", 40),
+      "state" => "OPEN",
+      "isDraft" => false,
+      "mergeable" => "MERGEABLE",
       "reviews" => %{"nodes" => []},
       "reviewThreads" => %{
         "nodes" => [
@@ -1942,6 +2079,10 @@ defmodule SymphonyElixir.ReviewConvergenceTest do
 
     [event] = snapshot.review_events
     assert snapshot.pull_request_body == "## Scope Contract\n"
+    assert snapshot.pull_request_state == :open
+    assert snapshot.draft? == false
+    assert snapshot.mergeable? == true
+    assert snapshot.conflict? == false
     assert event.review_thread_id == "thread-1"
     assert event.resolved? == false
     assert event.complete_pagination? == true

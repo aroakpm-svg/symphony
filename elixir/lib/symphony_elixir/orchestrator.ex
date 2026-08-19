@@ -50,6 +50,16 @@ defmodule SymphonyElixir.Orchestrator do
     GenServer.start_link(__MODULE__, opts, name: name)
   end
 
+  @doc "Records the owning issue's completed Design 4 landing evidence for the next production poll."
+  @spec finding_complete(String.t(), map(), GenServer.server()) :: :ok | {:error, :invalid_finding_complete}
+  def finding_complete(issue_id, evidence, server \\ __MODULE__) do
+    if is_binary(issue_id) and String.trim(issue_id) != "" and is_map(evidence) do
+      GenServer.call(server, {:finding_complete, issue_id, evidence})
+    else
+      {:error, :invalid_finding_complete}
+    end
+  end
+
   @impl true
   def init(_opts) do
     now_ms = System.monotonic_time(:millisecond)
@@ -1507,6 +1517,17 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   @impl true
+  def handle_call({:finding_complete, issue_id, evidence}, _from, state) do
+    entry =
+      state.review_convergence
+      |> Map.get(issue_id, %{})
+      |> invalidate_merge_ready_result()
+      |> Map.put(:landing_evidence, evidence)
+
+    review_convergence = Map.put(state.review_convergence, issue_id, entry)
+    {:reply, :ok, %{state | review_convergence: review_convergence}}
+  end
+
   def handle_call(:snapshot, _from, state) do
     state = refresh_runtime_config(state)
     now = DateTime.utc_now()
@@ -1575,6 +1596,7 @@ defmodule SymphonyElixir.Orchestrator do
        running: running,
        retrying: retrying,
        blocked: blocked,
+       review_convergence: observable_review_convergence(state.review_convergence),
        codex_totals: state.codex_totals,
        rate_limits: Map.get(state, :codex_rate_limits),
        polling: %{
@@ -1598,6 +1620,27 @@ defmodule SymphonyElixir.Orchestrator do
        requested_at: DateTime.utc_now(),
        operations: ["poll", "reconcile"]
      }, state}
+  end
+
+  defp invalidate_merge_ready_result(%{terminal_result: {:merge_ready_candidate, _candidate}} = entry),
+    do: %{entry | terminal_result: nil}
+
+  defp invalidate_merge_ready_result(%{terminal_result: {:merge_ready_blocked, _blockers}} = entry),
+    do: %{entry | terminal_result: nil}
+
+  defp invalidate_merge_ready_result(entry), do: entry
+
+  defp observable_review_convergence(review_convergence) do
+    review_convergence
+    |> Enum.map(fn {issue_id, entry} ->
+      %{
+        issue_id: issue_id,
+        handoff_recorded?: is_map(entry[:landing_evidence]),
+        terminal_result: entry[:terminal_result],
+        blocker: entry[:global_blocker]
+      }
+    end)
+    |> Enum.sort_by(& &1.issue_id)
   end
 
   defp blocked_issue_state(%{issue: %Issue{state: state}}), do: state

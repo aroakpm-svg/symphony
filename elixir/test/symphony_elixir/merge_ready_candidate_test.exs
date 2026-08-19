@@ -1,0 +1,562 @@
+defmodule SymphonyElixir.MergeReadyCandidateTest do
+  use ExUnit.Case, async: true
+
+  alias SymphonyElixir.MergeReadyCandidate
+
+  test "derives one deterministic human merge-ready candidate" do
+    assert {:ok, candidate} =
+             MergeReadyCandidate.derive(valid_evidence(), valid_snapshot(), landing_mode: :human)
+
+    assert candidate.candidate_schema_version == 1
+    assert candidate.repository == "aroakpm-svg/symphony"
+    assert candidate.pull_request_number == 42
+    assert candidate.linear_issue_id == "issue-246"
+    assert candidate.head_sha == sha("a")
+    assert candidate.required_checks == ["make-all", "validate-pr-description"]
+    assert candidate.settled_finding_digests == [digest("finding-1")]
+    assert candidate.handoff_contract_version == 2
+
+    assert candidate.compatibility_contract_versions == %{
+             aro_135: 1,
+             aro_143: 1,
+             aro_167: 1,
+             aro_170: 1,
+             aro_171: 1
+           }
+
+    assert candidate.acceptance_evidence_refs == ["test:merge-ready"]
+
+    assert candidate.candidate_digest =~ ~r/^[0-9a-f]{64}$/
+
+    reordered =
+      valid_evidence()
+      |> Map.put(:evidence_refs, ["receipt:design4"] |> Enum.reverse())
+      |> Map.put(:settled_findings, Enum.reverse(valid_evidence().settled_findings))
+
+    snapshot = Map.put(valid_snapshot(), :required_checks, Enum.reverse(valid_snapshot().required_checks))
+
+    assert {:ok, retried} = MergeReadyCandidate.derive(reordered, snapshot, landing_mode: :human)
+    assert retried.candidate_digest == candidate.candidate_digest
+  end
+
+  test "candidate identity includes canonical acceptance evidence references" do
+    {:ok, original} = MergeReadyCandidate.derive(valid_evidence(), valid_snapshot(), landing_mode: :human)
+
+    changed = put_in(valid_evidence(), [:acceptance, :evidence_refs], ["receipt:new-acceptance"])
+    {:ok, replacement} = MergeReadyCandidate.derive(changed, valid_snapshot(), landing_mode: :human)
+
+    assert replacement.acceptance_evidence_refs == ["receipt:new-acceptance"]
+    refute replacement.candidate_digest == original.candidate_digest
+  end
+
+  test "candidate digest includes receipt versions and collision-safe list boundaries" do
+    {:ok, original} =
+      MergeReadyCandidate.derive(valid_evidence(), valid_snapshot(), landing_mode: :human)
+
+    versioned = put_in(valid_evidence(), [:handoff_receipt, :contract_version], 3)
+    {:ok, changed_version} = MergeReadyCandidate.derive(versioned, valid_snapshot(), landing_mode: :human)
+    refute original.candidate_digest == changed_version.candidate_digest
+
+    left_snapshot =
+      Map.put(valid_snapshot(), :required_checks, [
+        %{name: "a,b", status: :completed, conclusion: :success},
+        %{name: "c", status: :completed, conclusion: :success}
+      ])
+
+    right_snapshot =
+      Map.put(valid_snapshot(), :required_checks, [
+        %{name: "a", status: :completed, conclusion: :success},
+        %{name: "b,c", status: :completed, conclusion: :success}
+      ])
+
+    {:ok, left} = MergeReadyCandidate.derive(valid_evidence(), left_snapshot, landing_mode: :human)
+    {:ok, right} = MergeReadyCandidate.derive(valid_evidence(), right_snapshot, landing_mode: :human)
+    refute left.candidate_digest == right.candidate_digest
+
+    left_evidence = Map.put(valid_evidence(), :evidence_refs, ["a,b", "c"])
+    right_evidence = Map.put(valid_evidence(), :evidence_refs, ["a", "b,c"])
+    {:ok, left_refs} = MergeReadyCandidate.derive(left_evidence, valid_snapshot(), landing_mode: :human)
+    {:ok, right_refs} = MergeReadyCandidate.derive(right_evidence, valid_snapshot(), landing_mode: :human)
+    refute left_refs.candidate_digest == right_refs.candidate_digest
+  end
+
+  test "fails closed with canonically ordered blockers" do
+    evidence =
+      valid_evidence()
+      |> Map.put(:unknown_effects, ["operation-1"])
+      |> Map.put(:safety_stops, [:operator_stop])
+
+    snapshot =
+      valid_snapshot()
+      |> Map.put(:current_head_sha, sha("c"))
+      |> Map.put(:draft?, true)
+      |> Map.put(:trusted_actionable_threads, ["thread-1"])
+
+    assert {:blocked, blockers} =
+             MergeReadyCandidate.derive(evidence, snapshot, landing_mode: :human)
+
+    assert Enum.map(blockers, & &1.code) == [
+             :head_changed,
+             :pull_request_draft,
+             :review_stale,
+             :actionable_review_remaining,
+             :effect_unknown,
+             :safety_stop_present
+           ]
+  end
+
+  test "rejects unsupported modes and incomplete evidence" do
+    assert {:blocked, [%{code: :unsupported_landing_mode} | _]} =
+             MergeReadyCandidate.derive(valid_evidence(), valid_snapshot(), landing_mode: :automatic)
+
+    for {path, value, reason} <- [
+          {[:handoff_receipt, :status], :unknown, :handoff_receipt_unverified},
+          {[:acceptance, :status], :incomplete, :acceptance_incomplete},
+          {[:review_policy, :status], :unknown, :review_stale}
+        ] do
+      evidence = put_in(valid_evidence(), path, value)
+
+      assert {:blocked, blockers} =
+               MergeReadyCandidate.derive(evidence, valid_snapshot(), landing_mode: :human)
+
+      assert reason in Enum.map(blockers, & &1.code)
+    end
+  end
+
+  test "malformed nested collections block instead of raising" do
+    for evidence <- [
+          Map.put(valid_evidence(), :settled_findings, [true]),
+          Map.put(valid_evidence(), :compatibility_receipts, []),
+          Map.put(valid_evidence(), :pending_effects, nil)
+        ] do
+      assert {:blocked, _blockers} =
+               MergeReadyCandidate.derive(evidence, valid_snapshot(), landing_mode: :human)
+    end
+
+    assert {:blocked, blockers} =
+             MergeReadyCandidate.derive(
+               valid_evidence(),
+               Map.put(valid_snapshot(), :required_checks, [true]),
+               landing_mode: :human
+             )
+
+    assert :required_check_unsettled in Enum.map(blockers, & &1.code)
+  end
+
+  test "invalidates a candidate after any live identity or policy drift" do
+    assert {:ok, candidate} =
+             MergeReadyCandidate.derive(valid_evidence(), valid_snapshot(), landing_mode: :human)
+
+    assert MergeReadyCandidate.matches_live_snapshot?(candidate, valid_snapshot())
+
+    refute MergeReadyCandidate.matches_live_snapshot?(
+             candidate,
+             Map.put(valid_snapshot(), :current_head_sha, sha("c"))
+           )
+
+    refute MergeReadyCandidate.matches_live_snapshot?(
+             candidate,
+             put_in(valid_snapshot(), [:trusted_actionable_threads], ["thread-2"])
+           )
+
+    refute MergeReadyCandidate.matches_live_snapshot?(
+             candidate,
+             put_in(valid_snapshot(), [:required_checks, Access.at(0), :conclusion], :failure)
+           )
+  end
+
+  test "rejects every unsafe terminal collection and PR state" do
+    for {field, value, reason} <- [
+          {:pending_effects, [:pending], :effect_pending},
+          {:blocked_findings, [:blocked], :finding_blocked},
+          {:stale_evidence, [:stale], :evidence_stale},
+          {:conflicts, [:conflict], :evidence_conflict}
+        ] do
+      assert_blocked(Map.put(valid_evidence(), field, value), valid_snapshot(), reason)
+    end
+
+    for {field, value, reason} <- [
+          {:state, :closed, :pull_request_not_open},
+          {:mergeable?, false, :merge_conflict},
+          {:conflict?, true, :merge_conflict}
+        ] do
+      assert_blocked(valid_evidence(), Map.put(valid_snapshot(), field, value), reason)
+    end
+  end
+
+  test "rejects malformed identities, receipts, checks, settlements, and acceptance" do
+    assert {:blocked, [%{code: :evidence_incompatible}]} =
+             MergeReadyCandidate.derive(nil, valid_snapshot(), [])
+
+    assert_blocked(Map.delete(valid_evidence(), :repository), valid_snapshot(), :evidence_incompatible)
+    assert_blocked(valid_evidence(), Map.delete(valid_snapshot(), :state), :evidence_incompatible)
+    assert_blocked(Map.put(valid_evidence(), :repository, " "), valid_snapshot(), :evidence_incompatible)
+
+    assert_blocked(
+      Map.put(valid_evidence(), :evidence_refs, ["receipt:design4", "receipt:design4"]),
+      valid_snapshot(),
+      :evidence_incompatible
+    )
+
+    assert_blocked(
+      Map.put(valid_evidence(), :evidence_refs, nil),
+      valid_snapshot(),
+      :evidence_incompatible
+    )
+
+    assert_blocked(
+      Map.put(valid_evidence(), :evidence_refs, []),
+      valid_snapshot(),
+      :evidence_incompatible
+    )
+
+    assert_blocked(
+      put_in(valid_evidence(), [:handoff_receipt, :head_sha], sha("c")),
+      valid_snapshot(),
+      :handoff_receipt_unverified
+    )
+
+    assert_blocked(
+      put_in(valid_evidence(), [:compatibility_receipts, :aro_143, :owner], :other),
+      valid_snapshot(),
+      :compatibility_receipt_unverified
+    )
+
+    duplicate_checks = [hd(valid_snapshot().required_checks), hd(valid_snapshot().required_checks)]
+
+    assert_blocked(
+      valid_evidence(),
+      Map.put(valid_snapshot(), :required_checks, duplicate_checks),
+      :required_check_unsettled
+    )
+
+    duplicate_settlements = List.duplicate(hd(valid_evidence().settled_findings), 2)
+
+    assert_blocked(
+      Map.put(valid_evidence(), :settled_findings, duplicate_settlements),
+      valid_snapshot(),
+      :finding_unsettled
+    )
+
+    assert {:ok, candidate} =
+             valid_evidence()
+             |> Map.put(:canonical_finding_digests, [])
+             |> Map.put(:settled_findings, [])
+             |> put_in([:handoff_receipt, :canonical_finding_inventory_digest], empty_inventory_digest())
+             |> put_in([:handoff_receipt, :canonical_settlement_digest], empty_settlement_digest())
+             |> MergeReadyCandidate.derive(valid_snapshot(), landing_mode: :human)
+
+    assert candidate.settled_finding_digests == []
+
+    assert_blocked(
+      Map.put(valid_evidence(), :settled_findings, []),
+      valid_snapshot(),
+      :finding_unsettled
+    )
+
+    assert_blocked(
+      Map.put(valid_evidence(), :canonical_finding_digests, []),
+      valid_snapshot(),
+      :finding_unsettled
+    )
+
+    assert_blocked(
+      Map.put(valid_evidence(), :canonical_finding_digests, [digest("finding-1"), digest("finding-1")]),
+      valid_snapshot(),
+      :finding_unsettled
+    )
+
+    assert_blocked(
+      Map.put(valid_evidence(), :canonical_finding_digests, nil),
+      valid_snapshot(),
+      :finding_unsettled
+    )
+
+    assert_blocked(
+      Map.put(valid_evidence(), :canonical_finding_digests, ["invalid-digest"]),
+      valid_snapshot(),
+      :finding_unsettled
+    )
+
+    assert_blocked(
+      Map.put(valid_evidence(), :settled_findings, nil),
+      valid_snapshot(),
+      :finding_unsettled
+    )
+
+    assert_blocked(
+      put_in(valid_evidence(), [:acceptance, :evidence_refs], []),
+      valid_snapshot(),
+      :acceptance_incomplete
+    )
+
+    assert_blocked(
+      put_in(valid_evidence(), [:acceptance, :evidence_refs], ["test:merge-ready", "test:merge-ready"]),
+      valid_snapshot(),
+      :acceptance_incomplete
+    )
+
+    assert_blocked(
+      put_in(valid_evidence(), [:acceptance, :evidence_refs], nil),
+      valid_snapshot(),
+      :acceptance_incomplete
+    )
+  end
+
+  test "compatibility receipts are bound to the exact candidate identity" do
+    for {field, value} <- [
+          {:repository, "other/repo"},
+          {:pull_request_number, 99},
+          {:linear_issue_id, "other-issue"},
+          {:linear_issue_identifier, "ARO-999"},
+          {:base_sha, sha("c")},
+          {:head_sha, sha("c")}
+        ] do
+      evidence = put_in(valid_evidence(), [:compatibility_receipts, :aro_143, field], value)
+      assert_blocked(evidence, valid_snapshot(), :compatibility_receipt_unverified)
+    end
+  end
+
+  test "handoff receipt is bound to the exact candidate identity" do
+    for {field, value} <- [
+          {:repository, "other/repo"},
+          {:pull_request_number, 99},
+          {:linear_issue_id, "other-issue"},
+          {:linear_issue_identifier, "ARO-999"},
+          {:base_sha, sha("c")},
+          {:head_sha, sha("c")}
+        ] do
+      evidence = put_in(valid_evidence(), [:handoff_receipt, field], value)
+      assert_blocked(evidence, valid_snapshot(), :handoff_receipt_unverified)
+    end
+  end
+
+  test "verified handoff receipt binds the authoritative canonical finding inventory" do
+    assert_blocked(
+      put_in(valid_evidence(), [:handoff_receipt, :canonical_finding_inventory_digest], digest("other-inventory")),
+      valid_snapshot(),
+      :handoff_receipt_unverified
+    )
+
+    omitted =
+      valid_evidence()
+      |> Map.put(:canonical_finding_digests, [])
+      |> Map.put(:settled_findings, [])
+
+    assert_blocked(omitted, valid_snapshot(), :handoff_receipt_unverified)
+
+    assert {:ok, _candidate} =
+             omitted
+             |> put_in([:handoff_receipt, :canonical_finding_inventory_digest], empty_inventory_digest())
+             |> put_in([:handoff_receipt, :canonical_settlement_digest], empty_settlement_digest())
+             |> MergeReadyCandidate.derive(valid_snapshot(), landing_mode: :human)
+  end
+
+  test "verified handoff receipt binds the canonical settlement projection" do
+    assert_blocked(
+      put_in(valid_evidence(), [:handoff_receipt, :canonical_settlement_digest], digest("other-settlements")),
+      valid_snapshot(),
+      :handoff_receipt_unverified
+    )
+  end
+
+  test "malformed canonical finding inventory fails closed before durable proof hashing" do
+    for inventory <- [[nil], [42], [%{}], [""], ["not-a-digest"]] do
+      evidence = Map.put(valid_evidence(), :canonical_finding_digests, inventory)
+
+      assert_blocked(evidence, valid_snapshot(), :handoff_receipt_unverified)
+    end
+  end
+
+  test "all nested proof receipts are bound to the current Linear revision" do
+    stale_revision = "2026-08-17T00:00:00Z"
+
+    assert_blocked(
+      put_in(valid_evidence(), [:handoff_receipt, :linear_revision], stale_revision),
+      valid_snapshot(),
+      :handoff_receipt_unverified
+    )
+
+    assert_blocked(
+      put_in(valid_evidence(), [:acceptance, :linear_revision], stale_revision),
+      valid_snapshot(),
+      :acceptance_incomplete
+    )
+
+    for owner <- [:aro_143, :aro_170, :aro_171, :aro_167, :aro_135] do
+      assert_blocked(
+        put_in(valid_evidence(), [:compatibility_receipts, owner, :linear_revision], stale_revision),
+        valid_snapshot(),
+        :compatibility_receipt_unverified
+      )
+    end
+  end
+
+  test "acceptance evidence is bound to the exact candidate identity" do
+    for {field, value} <- [
+          {:repository, "other/repo"},
+          {:pull_request_number, 99},
+          {:linear_issue_id, "other-issue"},
+          {:linear_issue_identifier, "ARO-999"},
+          {:base_sha, sha("c")},
+          {:head_sha, sha("c")}
+        ] do
+      evidence = put_in(valid_evidence(), [:acceptance, field], value)
+      assert_blocked(evidence, valid_snapshot(), :acceptance_incomplete)
+    end
+  end
+
+  test "live revalidation rejects all identity, PR, check, and review drift" do
+    {:ok, candidate} = MergeReadyCandidate.derive(valid_evidence(), valid_snapshot(), landing_mode: :human)
+
+    drifts = [
+      {:repository, "other/repo"},
+      {:pull_request_number, 99},
+      {:linear_issue_id, "other"},
+      {:linear_issue_identifier, "ARO-999"},
+      {:linear_revision, "later"},
+      {:base_sha, sha("c")},
+      {:state, :closed},
+      {:draft?, true},
+      {:mergeable?, false},
+      {:conflict?, true}
+    ]
+
+    for {field, value} <- drifts do
+      refute MergeReadyCandidate.matches_live_snapshot?(candidate, Map.put(valid_snapshot(), field, value))
+    end
+
+    refute MergeReadyCandidate.matches_live_snapshot?(candidate, Map.put(valid_snapshot(), :required_checks, []))
+    refute MergeReadyCandidate.matches_live_snapshot?(candidate, Map.put(valid_snapshot(), :exact_head_review, nil))
+
+    refute MergeReadyCandidate.matches_live_snapshot?(
+             candidate,
+             put_in(valid_snapshot(), [:exact_head_review, :status], :missing)
+           )
+
+    refute MergeReadyCandidate.matches_live_snapshot?(nil, valid_snapshot())
+  end
+
+  test "live revalidation rejects tampered candidate and exact-head review fields" do
+    {:ok, candidate} = MergeReadyCandidate.derive(valid_evidence(), valid_snapshot(), landing_mode: :human)
+
+    for {field, value} <- [
+          {:candidate_schema_version, 2},
+          {:repository, "other/repo"},
+          {:required_checks, ["other-check"]}
+        ] do
+      refute MergeReadyCandidate.matches_live_snapshot?(Map.put(candidate, field, value), valid_snapshot())
+    end
+
+    refute MergeReadyCandidate.matches_live_snapshot?(
+             candidate,
+             put_in(valid_snapshot(), [:exact_head_review, :head_sha], sha("c"))
+           )
+  end
+
+  defp assert_blocked(evidence, snapshot, reason) do
+    assert {:blocked, blockers} =
+             MergeReadyCandidate.derive(evidence, snapshot, landing_mode: :human)
+
+    assert reason in Enum.map(blockers, & &1.code)
+  end
+
+  defp valid_evidence do
+    %{
+      repository: "aroakpm-svg/symphony",
+      pull_request_number: 42,
+      linear_issue_id: "issue-246",
+      linear_issue_identifier: "ARO-246",
+      linear_revision: "2026-08-18T00:00:00Z",
+      base_sha: sha("b"),
+      evaluated_head_sha: sha("a"),
+      tested_head_sha: sha("a"),
+      handoff_receipt: %{
+        status: :verified,
+        contract_version: 2,
+        repository: "aroakpm-svg/symphony",
+        pull_request_number: 42,
+        linear_issue_id: "issue-246",
+        linear_issue_identifier: "ARO-246",
+        linear_revision: "2026-08-18T00:00:00Z",
+        base_sha: sha("b"),
+        head_sha: sha("a"),
+        canonical_finding_inventory_digest: inventory_digest(),
+        canonical_settlement_digest: settlement_digest()
+      },
+      compatibility_receipts: %{
+        aro_143: receipt(:aro_143),
+        aro_170: receipt(:aro_170),
+        aro_171: receipt(:aro_171),
+        aro_167: receipt(:aro_167),
+        aro_135: receipt(:aro_135)
+      },
+      canonical_finding_digests: [digest("finding-1")],
+      settled_findings: [%{finding_key_digest: digest("finding-1"), status: :settled}],
+      pending_effects: [],
+      unknown_effects: [],
+      blocked_findings: [],
+      stale_evidence: [],
+      conflicts: [],
+      safety_stops: [],
+      acceptance: %{
+        status: :complete,
+        evidence_refs: ["test:merge-ready"],
+        repository: "aroakpm-svg/symphony",
+        pull_request_number: 42,
+        linear_issue_id: "issue-246",
+        linear_issue_identifier: "ARO-246",
+        linear_revision: "2026-08-18T00:00:00Z",
+        base_sha: sha("b"),
+        head_sha: sha("a")
+      },
+      review_policy: %{status: :satisfied, reviewed_head_sha: sha("a")},
+      evidence_refs: ["receipt:design4"],
+      derived_at: ~U[2026-08-18 00:00:00Z]
+    }
+  end
+
+  defp valid_snapshot do
+    %{
+      repository: "aroakpm-svg/symphony",
+      pull_request_number: 42,
+      linear_issue_id: "issue-246",
+      linear_issue_identifier: "ARO-246",
+      linear_revision: "2026-08-18T00:00:00Z",
+      state: :open,
+      draft?: false,
+      mergeable?: true,
+      conflict?: false,
+      base_sha: sha("b"),
+      current_head_sha: sha("a"),
+      required_checks: [
+        %{name: "validate-pr-description", status: :completed, conclusion: :success},
+        %{name: "make-all", status: :completed, conclusion: :success}
+      ],
+      exact_head_review: %{status: :accepted, head_sha: sha("a")},
+      trusted_actionable_threads: []
+    }
+  end
+
+  defp receipt(owner) do
+    %{
+      owner: owner,
+      status: :verified,
+      contract_version: 1,
+      repository: "aroakpm-svg/symphony",
+      pull_request_number: 42,
+      linear_issue_id: "issue-246",
+      linear_issue_identifier: "ARO-246",
+      linear_revision: "2026-08-18T00:00:00Z",
+      base_sha: sha("b"),
+      head_sha: sha("a")
+    }
+  end
+
+  defp sha(character), do: String.duplicate(character, 40)
+  defp digest(value), do: :crypto.hash(:sha256, value) |> Base.encode16(case: :lower)
+  defp inventory_digest, do: "076140d9f460db81519f311e346867e0d2fa4b1a1bf2eb0de09be0dc971abe42"
+  defp empty_inventory_digest, do: "bbb3655266c2f8db15adc9b208e7ca20206987c0e512ce83ce24c93b1760e4ef"
+  defp settlement_digest, do: "7d2d29ce284ad21fa5d43c2e5e95885113384971bb7fbe71719873b2a7e02494"
+  defp empty_settlement_digest, do: "b11ff06f0538a51960c6ae9f2f87d81a91da43fc12183ae52eaa4b3eebe7365c"
+end

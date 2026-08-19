@@ -93,7 +93,9 @@ effects, unavailable owner APIs, or a readback error. Fail-closed exits before c
 and ownership mismatches also invalidate the grant without releasing a claim they cannot prove
 they own, while preserving the retained claim identity for later revalidation or conditional
 release. If the identity exists only inside the grant, invalidation extracts it before clearing the
-grant. A tracker-enumeration outage invalidates every cached grant under the same rule. An unconsumed grant may retain the
+grant. A tracker-enumeration outage invalidates every cached grant under the same rule and clears
+cached merge-ready candidates/blockers that cannot be revalidated. Disabling review convergence
+suppresses the same terminal results instead of continuing to publish unmonitored proof. An unconsumed grant may retain the
 same monitor-owned claim across invocations. When that entry becomes inactive, cleanup releases it
 only if the live claim still has the retained identity and remains owned by the monitor with no
 different worker; normal retained-claim reconciliation uses the same atomic conditional release, so
@@ -425,6 +427,52 @@ actively running subagents, which is very useful during development.
 
 Launch `codex` in your repo, give it the URL to the Symphony repo, and ask it to set things up for
 you.
+
+## Human merge-ready boundary
+
+After the autonomous Design 4 flow has no remaining finding, an owner may supply the complete
+landing evidence contract. Symphony reads GitHub and Linear twice around pure
+`MergeReadyCandidate.derive/3` evaluation. Matching exact-head evidence becomes
+`{:merge_ready_candidate, candidate}`; incomplete or changing evidence becomes
+`{:merge_ready_blocked, blockers}`. Candidates are process state only and are never persisted as a
+new authority.
+
+The production poll consumes this contract from the owning issue's runtime entry or its explicit
+`finding_complete` handoff. It does not accept one process-global evidence map or manufacture
+missing compatibility receipts.
+The contract includes the complete canonical finding digest inventory. `settled_findings: []` is
+accepted only with an explicitly empty inventory; otherwise every inventory digest must have one
+matching settlement. A repository, PR, Linear revision, base, or head change invalidates and clears
+the stored handoff before the monitor resumes the claimed convergence flow.
+
+The Design 4 owner submits the completed per-issue contract with
+`SymphonyElixir.Orchestrator.finding_complete/3`. The handoff is stored on that issue's runtime
+entry for the next poll; replacement evidence clears any older merge-ready result immediately but
+preserves claim identity needed for conditional release. Missing handoff data fails closed. Handoff, acceptance, and compatibility proof are
+accepted only when their repository, PR, Linear, base, and exact-head identity matches the candidate.
+Every nested receipt also matches the current Linear revision, and the verified handoff receipt binds
+a canonical digest of the complete finding inventory and a separate canonical digest of the settled
+finding projection rather than trusting handoff-controlled collections or statuses.
+Top-level and acceptance evidence reference lists must be non-empty, contain unique non-empty values,
+and both appear in candidate identity, preserving canonical proof identity across retries and replacements.
+Completed handoffs are revalidated before claim acquisition. Candidate output retains the verified
+receipt contract versions and uses collision-safe, length-prefixed list encoding in its digest.
+Any retained claim is conditionally released before claim-free terminal derivation. Maintainers can
+observe the resulting candidate or blockers in `Orchestrator.snapshot/2` under
+`review_convergence`; this surface still performs no merge or other landing mutation.
+An uncertain conditional release keeps the per-issue handoff and retained identity for retry but
+withholds the terminal result. Publishing a verified terminal result clears older transient
+blockers so the owner surface cannot expose contradictory current and stale states.
+
+Configure the boundary explicitly:
+
+```yaml
+landing:
+  mode: human
+```
+
+`human` is the default and only accepted value. It performs no merge, Linear transition,
+deployment, permission change, or worker activation. There is no automatic fallback.
 
 ## License
 
