@@ -6,7 +6,6 @@ defmodule SymphonyElixir.WorkflowStore do
   use GenServer
   require Logger
 
-  alias SymphonyElixir.ProjectProfiles
   alias SymphonyElixir.Workflow
 
   @poll_interval_ms 1_000
@@ -131,7 +130,6 @@ defmodule SymphonyElixir.WorkflowStore do
 
   defp load_state(path) do
     with {:ok, workflow} <- Workflow.load(path),
-         :ok <- validate_project_profiles(workflow.config),
          {:ok, stamp} <- current_stamp(path) do
       {:ok, %State{path: path, stamp: stamp, workflow: workflow}}
     else
@@ -139,15 +137,6 @@ defmodule SymphonyElixir.WorkflowStore do
         {:error, reason}
     end
   end
-
-  defp validate_project_profiles(%{"project_profiles" => candidate}) do
-    case ProjectProfiles.parse(candidate) do
-      {:ok, _profiles} -> :ok
-      {:error, reason} -> {:error, {:invalid_project_profiles, reason}}
-    end
-  end
-
-  defp validate_project_profiles(_config), do: :ok
 
   defp current_stamp(path) when is_binary(path) do
     with {:ok, stat} <- File.stat(path, time: :posix),

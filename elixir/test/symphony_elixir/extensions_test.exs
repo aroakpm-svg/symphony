@@ -141,6 +141,15 @@ defmodule SymphonyElixir.ExtensionsTest do
     assert :ok = Supervisor.terminate_child(SymphonyElixir.Supervisor, WorkflowStore)
     assert {:ok, %{prompt: "Third prompt"}} = WorkflowStore.current()
     assert :ok = WorkflowStore.force_reload()
+
+    File.write!(third_workflow, workflow_with_project_profiles("token=must-not-load-without-store"))
+
+    for result <- [Workflow.current(), WorkflowStore.current(), WorkflowStore.force_reload()] do
+      assert {:error, {:invalid_project_profiles, reason}} = result
+      refute inspect(reason) =~ "token=must-not-load-without-store"
+    end
+
+    write_workflow_file!(third_workflow, prompt: "Third prompt")
     assert {:ok, _pid} = Supervisor.restart_child(SymphonyElixir.Supervisor, WorkflowStore)
   end
 

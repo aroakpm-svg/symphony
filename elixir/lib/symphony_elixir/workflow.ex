@@ -3,7 +3,7 @@ defmodule SymphonyElixir.Workflow do
   Loads workflow configuration and prompt from WORKFLOW.md.
   """
 
-  alias SymphonyElixir.WorkflowStore
+  alias SymphonyElixir.{ProjectProfiles, WorkflowStore}
 
   @workflow_file_name "WORKFLOW.md"
 
@@ -65,14 +65,16 @@ defmodule SymphonyElixir.Workflow do
 
     case front_matter_yaml_to_map(front_matter_lines) do
       {:ok, front_matter} ->
-        prompt = Enum.join(prompt_lines, "\n") |> String.trim()
+        with :ok <- validate_project_profiles(front_matter) do
+          prompt = Enum.join(prompt_lines, "\n") |> String.trim()
 
-        {:ok,
-         %{
-           config: front_matter,
-           prompt: prompt,
-           prompt_template: prompt
-         }}
+          {:ok,
+           %{
+             config: front_matter,
+             prompt: prompt,
+             prompt_template: prompt
+           }}
+        end
 
       {:error, :workflow_front_matter_not_a_map} ->
         {:error, :workflow_front_matter_not_a_map}
@@ -112,6 +114,15 @@ defmodule SymphonyElixir.Workflow do
       end
     end
   end
+
+  defp validate_project_profiles(%{"project_profiles" => candidate}) do
+    case ProjectProfiles.parse(candidate) do
+      {:ok, _profiles} -> :ok
+      {:error, reason} -> {:error, {:invalid_project_profiles, reason}}
+    end
+  end
+
+  defp validate_project_profiles(_config), do: :ok
 
   defp maybe_reload_store do
     if Process.whereis(WorkflowStore) do
