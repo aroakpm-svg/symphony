@@ -24,7 +24,6 @@ declare
   matching_nodes integer;
   capacity integer;
 begin
-  -- select nodes.claim_capacity through min while enforcing one identity.
   select count(*), min(nodes.claim_capacity)
     into matching_nodes, capacity
   from symphony_staging.node_login_principals principals
