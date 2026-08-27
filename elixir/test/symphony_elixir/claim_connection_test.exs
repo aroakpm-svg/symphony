@@ -36,6 +36,7 @@ defmodule SymphonyElixir.ClaimConnectionTest do
                "capacity-error",
                "capacity-outer-malformed"
              ] do
+      send(self(), {:claim_connection_query, :authenticate})
       {:ok, %Postgrex.Result{rows: [[<<0::128>>, <<1::128>>, 3]], num_rows: 1}}
     end
 
@@ -45,6 +46,7 @@ defmodule SymphonyElixir.ClaimConnectionTest do
           ["rejected", _instance_id],
           timeout: 12_000
         ) do
+      send(self(), {:claim_connection_query, :authenticate})
       {:ok, %Postgrex.Result{rows: [], num_rows: 0}}
     end
 
@@ -54,12 +56,21 @@ defmodule SymphonyElixir.ClaimConnectionTest do
           ["error", _instance_id],
           timeout: 12_000
         ) do
+      send(self(), {:claim_connection_query, :authenticate})
       {:error, :authentication_failed}
     end
 
     def query(connection, "select symphony_staging.current_node_claim_capacity()", [], timeout: 12_000) do
+      send(self(), {:claim_connection_query, :capacity})
+
       case Agent.get(connection, & &1[:hostname]) do
-        host when host in ["accepted.example", "accepted-capacity-3.example"] ->
+        host
+        when host in [
+               "accepted.example",
+               "accepted-capacity-3.example",
+               "rejected.example",
+               "error.example"
+             ] ->
           {:ok, %Postgrex.Result{rows: [[3]], num_rows: 1}}
 
         "capacity-2.example" ->
@@ -195,11 +206,19 @@ defmodule SymphonyElixir.ClaimConnectionTest do
     GenServer.stop(connection)
   end
 
-  test "connect validates exact node capacity after authentication", %{ca_path: ca_path} do
+  test "connect validates exact node capacity before stateful authentication", %{ca_path: ca_path} do
     settings = connection_settings(ca_path, "accepted-capacity-3")
     assert {:ok, connection} = ClaimConnection.connect(settings, Adapter)
+    assert_receive {:claim_connection_query, :capacity}
+    assert_receive {:claim_connection_query, :authenticate}
     assert Process.alive?(connection)
     GenServer.stop(connection)
+  end
+
+  test "capacity rejection never invokes stateful authentication", %{ca_path: ca_path} do
+    assert_connect_stops(ca_path, "capacity-2", {:error, :node_capacity_mismatch})
+    assert_receive {:claim_connection_query, :capacity}
+    refute_receive {:claim_connection_query, :authenticate}
   end
 
   test "connect stops the connection for a capacity mismatch", %{ca_path: ca_path} do

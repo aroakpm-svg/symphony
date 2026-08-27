@@ -60,8 +60,8 @@ defmodule SymphonyElixir.ClaimConnection do
   end
 
   defp authenticated_connection(adapter, connection, settings) do
-    with :ok <- authenticate(adapter, connection, settings),
-         :ok <- validate_capacity(adapter, connection) do
+    with :ok <- validate_capacity(adapter, connection),
+         :ok <- authenticate(adapter, connection, settings) do
       {:ok, connection}
     else
       {:error, reason} ->

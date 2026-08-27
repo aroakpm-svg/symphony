@@ -50,17 +50,20 @@ the prior claim-API grant helper without changing node rows, claims, or Producti
 `SymphonyElixir.ClaimConnection.connect/2` keeps its current order:
 
 1. establish verified TLS;
-2. authenticate the configured node and instance;
-3. read `current_node_claim_capacity()` on the authenticated connection;
+2. read `current_node_claim_capacity()` through the session-bound node login before any instance
+   registration;
+3. authenticate and register the configured node and instance only after capacity passes;
 4. return the connection only when the value is exactly integer `3`.
 
 Any other value, empty or multi-row result, database error, or malformed response stops the
 connection and returns a bounded error. Errors never contain connection strings, credentials, raw
 rows, or attacker-controlled database values.
 
-This read is a startup assertion, not a local capacity cache. Every claim continues to use the
-current database value inside the ARO-164 atomic transaction. A capacity change therefore takes
-effect on the next claim without restarting `ClaimService`.
+This ordering is intentional because `authenticate_node` records the one-time instance identity.
+A capacity failure must happen before that stateful call so it cannot strand a phantom active or
+historical instance. The read is a startup assertion, not a local capacity cache. Every claim
+continues to use the current database value inside the ARO-164 atomic transaction. A capacity
+change therefore takes effect on the next claim without restarting `ClaimService`.
 
 ## Capacity changes
 

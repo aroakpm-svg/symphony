@@ -959,6 +959,8 @@ node-wide capacity authority and MUST equal `3` at runtime startup. Central-Brai
 Project-Management share that three-claim pool on the node; project profiles MUST NOT define or
 override capacity. The global and per-state calculations above are local scheduling filters, not
 slot authorization: only the atomic database claim transaction authorizes a new claim.
+Startup MUST validate capacity before invoking stateful node-instance authentication, so capacity
+rejection cannot persist a historical or active phantom instance.
 
 Reducing `claim_capacity` MUST preserve existing active claims and the existing
 lease/generation/renew/release lifecycle. It blocks only new claims until active usage is below the

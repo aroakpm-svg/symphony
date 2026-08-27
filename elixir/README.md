@@ -258,8 +258,9 @@ staging has been migrated; opening or merging this PR does not apply the migrati
 
 ### Node-wide claim capacity contract
 
-When `claim.enabled` is true, `claim_capacity` belongs to the enrolled node and must equal `3`;
-startup fails closed for any other value. Central-Brain and Project-Management workers on that node
+When `claim.enabled` is true, `claim_capacity` belongs to the enrolled node and must equal `3`.
+Startup validates capacity before registering the one-time node instance, so a rejected capacity
+cannot strand a phantom session. Central-Brain and Project-Management workers on that node
 share those three claims, and project profiles cannot define or override capacity. Local Elixir slot
 checks may avoid unnecessary work, but only the atomic database claim transaction authorizes a
 slot.

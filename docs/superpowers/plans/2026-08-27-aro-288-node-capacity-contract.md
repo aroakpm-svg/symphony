@@ -159,14 +159,14 @@ git commit -m "Add node-wide capacity contract"
 
 **Interfaces:**
 - Consumes: `symphony_staging.authenticate_node(uuid, uuid)` and `current_node_claim_capacity()` from Task 1.
-- Produces: `ClaimConnection.capacity_result/1 :: :ok | {:error, atom()}` for bounded exact-three validation; `connect/2` returns a connection only after both checks pass.
+- Produces: `ClaimConnection.capacity_result/1 :: :ok | {:error, atom()}` for bounded exact-three validation; `connect/2` checks capacity before the stateful authentication call and returns a connection only after both pass.
 
 - [ ] **Step 1: Extend the adapter fixture and write failing tests**
 
 Keep authentication behavior real within the fake adapter and distinguish SQL by matching the query text. Add adapter capacity responses for hosts or node IDs representing `3`, `2`, empty, malformed, duplicate, and database-error results. Add these tests:
 
 ```elixir
-test "connect validates exact node capacity after authentication", %{ca_path: ca_path} do
+test "connect validates exact node capacity before stateful authentication", %{ca_path: ca_path} do
   settings = connection_settings(ca_path, "accepted-capacity-3")
   assert {:ok, connection} = ClaimConnection.connect(settings, Adapter)
   assert Process.alive?(connection)
@@ -223,15 +223,16 @@ def capacity_result({:error, _reason}), do: {:error, :node_capacity_unavailable}
 
 - [ ] **Step 4: Gate connection return after capacity validation**
 
-After successful authentication, issue exactly:
+Before stateful authentication and instance registration, issue exactly:
 
 ```elixir
 select symphony_staging.current_node_claim_capacity()
 ```
 
-with the existing 12-second boundary. Return the connection only after `capacity_result/1 == :ok`.
-On either authentication or capacity failure, stop the live connection before returning the bounded
-error. Do not inspect or interpolate the adapter response.
+with the existing 12-second boundary. Invoke `authenticate_node` only after
+`capacity_result/1 == :ok`, so a capacity failure cannot commit a phantom instance. Return the
+connection only after both checks pass. On either authentication or capacity failure, stop the live
+connection before returning the bounded error. Do not inspect or interpolate the adapter response.
 
 - [ ] **Step 5: Run focused tests and quality checks**
 
