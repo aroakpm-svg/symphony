@@ -40,6 +40,12 @@ defmodule SymphonyElixir.ClaimConnection do
   def authentication_result({:ok, %Postgrex.Result{}}), do: {:error, :node_authentication_rejected}
   def authentication_result({:error, reason}), do: {:error, reason}
 
+  @doc false
+  @spec capacity_result(term()) :: :ok | {:error, :node_capacity_mismatch | :node_capacity_unavailable}
+  def capacity_result({:ok, %Postgrex.Result{rows: [[3]], num_rows: 1}}), do: :ok
+  def capacity_result({:ok, %Postgrex.Result{}}), do: {:error, :node_capacity_mismatch}
+  def capacity_result({:error, _reason}), do: {:error, :node_capacity_unavailable}
+
   defp authenticate(adapter, connection, settings) do
     sql = "select * from symphony_staging.authenticate_node($1::text::uuid, $2::text::uuid)"
 
@@ -47,11 +53,16 @@ defmodule SymphonyElixir.ClaimConnection do
     |> authentication_result()
   end
 
-  defp authenticated_connection(adapter, connection, settings) do
-    case authenticate(adapter, connection, settings) do
-      :ok ->
-        {:ok, connection}
+  defp validate_capacity(adapter, connection) do
+    adapter.query(connection, "select symphony_staging.current_node_claim_capacity()", [], timeout: 12_000)
+    |> capacity_result()
+  end
 
+  defp authenticated_connection(adapter, connection, settings) do
+    with :ok <- authenticate(adapter, connection, settings),
+         :ok <- validate_capacity(adapter, connection) do
+      {:ok, connection}
+    else
       {:error, reason} ->
         if Process.alive?(connection), do: GenServer.stop(connection)
         {:error, reason}
