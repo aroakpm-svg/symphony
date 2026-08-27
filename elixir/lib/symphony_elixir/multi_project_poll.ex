@@ -28,7 +28,7 @@ defmodule SymphonyElixir.MultiProjectPoll do
     timeout = per_profile_timeout(opts)
 
     profiles
-    |> Task.async_stream(fetcher,
+    |> Task.async_stream(&safe_fetch(fetcher, &1),
       timeout: timeout,
       on_timeout: :kill_task,
       ordered: true,
@@ -36,6 +36,17 @@ defmodule SymphonyElixir.MultiProjectPoll do
     )
     |> Enum.zip(profiles)
     |> Enum.map(fn {result, profile} -> {profile, result} end)
+  end
+
+  defp safe_fetch(fetcher, profile) do
+    try do
+      fetcher.(profile)
+    rescue
+      _exception -> {:error, :profile_fetch_exception}
+    catch
+      :exit, _reason -> {:error, :profile_fetch_exit}
+      :throw, _value -> {:error, :profile_fetch_throw}
+    end
   end
 
   defp aggregate(profile_results) do

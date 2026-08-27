@@ -36,6 +36,36 @@ defmodule SymphonyElixir.MultiProjectPollTest do
     assert outcomes["project-management"] == %{status: :ok}
   end
 
+  test "retains a successful profile when another profile fetcher raises" do
+    profiles = [profile("central-brain"), profile("project-management")]
+
+    fetcher = fn
+      %{key: "central-brain"} -> raise "unexpected profile fetch failure"
+      %{key: "project-management"} -> {:ok, [issue("two", "pm-id")]}
+    end
+
+    assert %{candidates: candidates, outcomes: outcomes} = MultiProjectPoll.fetch(profiles, fetcher)
+
+    assert Enum.map(candidates, & &1.id) == ["two"]
+    assert outcomes["central-brain"] == %{status: :error, retry: :transient}
+    assert outcomes["project-management"] == %{status: :ok}
+  end
+
+  test "retains a successful profile when another profile fetcher exits" do
+    profiles = [profile("central-brain"), profile("project-management")]
+
+    fetcher = fn
+      %{key: "central-brain"} -> exit(:unexpected_profile_fetch_exit)
+      %{key: "project-management"} -> {:ok, [issue("two", "pm-id")]}
+    end
+
+    assert %{candidates: candidates, outcomes: outcomes} = MultiProjectPoll.fetch(profiles, fetcher)
+
+    assert Enum.map(candidates, & &1.id) == ["two"]
+    assert outcomes["central-brain"] == %{status: :error, retry: :transient}
+    assert outcomes["project-management"] == %{status: :ok}
+  end
+
   test "excludes candidates with a UUID returned by multiple profiles" do
     profiles = [profile("central-brain"), profile("project-management")]
 
