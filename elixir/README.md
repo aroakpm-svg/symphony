@@ -230,8 +230,9 @@ The `WORKFLOW.md` file uses YAML front matter for configuration, plus a Markdown
 Codex session prompt.
 
 For multiple Symphony machines polling the same Linear project, enable the staging-backed claim
-coordinator only after the ARO-164 claim migration, ARO-165 effect-ledger migration, and ARO-169
-node enrollment are complete:
+coordinator only after the ARO-164 claim migration, ARO-165 effect-ledger migration, ARO-169 node
+enrollment, and ARO-288 node-capacity schema migration are complete, and ARO-287's separate rollout
+has set and verified each node's `claim_capacity` row:
 
 ```yaml
 claim:
