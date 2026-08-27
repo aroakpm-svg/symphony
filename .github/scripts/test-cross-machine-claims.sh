@@ -208,21 +208,26 @@ test "$(psql_admin -A -t -c "select count(*) = 3
 test "$(renew claim_node_a "${fleet_01%:*}" "${fleet_01#*:}" "$node_a" "$instance_a")" = "t"
 test "$(renew claim_node_a "${fleet_02%:*}" "${fleet_02#*:}" "$node_a" "$instance_a")" = "t"
 test "$(renew claim_node_a "${fleet_03%:*}" "${fleet_03#*:}" "$node_a" "$instance_a")" = "t"
-lower_failure="$tmp_dir/aro288-capacity-lower"
-if claim claim_node_a ARO288-CAPACITY-LOWER "$node_a" "$instance_a" >"$lower_failure" 2>&1; then
-  echo "lowered capacity unexpectedly evicted or admitted beyond active claims" >&2
-  exit 1
-fi
-grep -q "node claim capacity exhausted" "$lower_failure"
 test "$(release claim_node_a "${fleet_01%:*}" "${fleet_01#*:}" "$node_a" "$instance_a")" = "t"
-test "$(release claim_node_a "${fleet_02%:*}" "${fleet_02#*:}" "$node_a" "$instance_a")" = "t"
-test "$(psql_admin -A -t -c "select count(*) = 1
+test "$(psql_admin -A -t -c "select count(*) = 2
   from symphony_staging.issue_claims
   where issue_id in ('ARO288-FLEET-01','ARO288-FLEET-02','ARO288-FLEET-03')
     and completed_at is null and released_at is null;")" = "t"
+lower_failure="$tmp_dir/aro288-capacity-lower"
+if claim claim_node_a ARO288-CAPACITY-RAISE "$node_a" "$instance_a" >"$lower_failure" 2>&1; then
+  echo "lowered capacity unexpectedly admitted a third live claim" >&2
+  exit 1
+fi
+grep -q "node claim capacity exhausted" "$lower_failure"
+test "$(psql_admin -A -t -c "select not exists (
+    select 1 from symphony_staging.issue_claims where issue_id = 'ARO288-CAPACITY-RAISE'
+  ) and not exists (
+    select 1 from symphony_staging.issue_claim_generations where issue_id = 'ARO288-CAPACITY-RAISE'
+  );")" = "t"
 psql_admin -c "update symphony_staging.nodes set claim_capacity = 3 where node_id = '$node_a';"
 capacity_raise="$(claim claim_node_a ARO288-CAPACITY-RAISE "$node_a" "$instance_a")"
 test "${capacity_raise#*:}" = "1"
+test "$(release claim_node_a "${fleet_02%:*}" "${fleet_02#*:}" "$node_a" "$instance_a")" = "t"
 test "$(release claim_node_a "${fleet_03%:*}" "${fleet_03#*:}" "$node_a" "$instance_a")" = "t"
 test "$(release claim_node_a "${capacity_raise%:*}" "${capacity_raise#*:}" "$node_a" "$instance_a")" = "t"
 psql_admin -c "update symphony_staging.issue_claims set released_at = clock_timestamp()

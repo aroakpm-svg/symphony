@@ -93,6 +93,26 @@ defmodule SymphonyElixir.CrossMachineClaimsMigrationTest do
 
     assert script =~ "20260827000000_aro_288_node_capacity_contract.sql"
     assert script =~ "current_node_claim_capacity()"
+
+    transition_markers = [
+      "update symphony_staging.nodes set claim_capacity = 2 where node_id = '$node_a'",
+      "select count(*) = 2",
+      "if claim claim_node_a ARO288-CAPACITY-RAISE",
+      "select 1 from symphony_staging.issue_claims where issue_id = 'ARO288-CAPACITY-RAISE'",
+      "select 1 from symphony_staging.issue_claim_generations where issue_id = 'ARO288-CAPACITY-RAISE'",
+      "update symphony_staging.nodes set claim_capacity = 3 where node_id = '$node_a'",
+      "capacity_raise=\"$(claim claim_node_a ARO288-CAPACITY-RAISE"
+    ]
+
+    positions =
+      Enum.map(transition_markers, fn marker ->
+        case :binary.match(script, marker) do
+          {position, _length} -> position
+          :nomatch -> flunk("missing ordered capacity transition marker: #{marker}")
+        end
+      end)
+
+    assert positions == Enum.sort(positions)
   end
 
   test "rollback removes only ARO-164 objects" do
