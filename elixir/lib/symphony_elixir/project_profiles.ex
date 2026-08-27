@@ -77,12 +77,14 @@ defmodule SymphonyElixir.ProjectProfiles do
   defp parse_profiles(profiles) do
     with :ok <- validate_profile_shapes(profiles),
          :ok <- validate_unique_identities(profiles) do
-      Enum.reduce_while(profiles, {:ok, %{}}, fn raw_profile, {:ok, parsed} ->
-        case parse_profile(raw_profile) do
-          {:ok, %{key: key} = profile} -> {:cont, {:ok, Map.put(parsed, key, profile)}}
-          {:error, reason} -> {:halt, {:error, reason}}
-        end
-      end)
+      Enum.reduce_while(profiles, {:ok, %{}}, &put_profile/2)
+    end
+  end
+
+  defp put_profile(raw_profile, {:ok, parsed}) do
+    case parse_profile(raw_profile) do
+      {:ok, %{key: key} = profile} -> {:cont, {:ok, Map.put(parsed, key, profile)}}
+      {:error, reason} -> {:halt, {:error, reason}}
     end
   end
 

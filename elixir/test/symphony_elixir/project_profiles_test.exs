@@ -1,8 +1,8 @@
 defmodule SymphonyElixir.ProjectProfilesTest do
   use ExUnit.Case, async: true
 
-  alias SymphonyElixir.ProjectProfiles
   alias SymphonyElixir.Config.Schema.ProjectProfilesType
+  alias SymphonyElixir.ProjectProfiles
 
   test "parses the complete approved v1 profile set and supports exact lookup" do
     assert {:ok, profiles} = ProjectProfiles.parse(valid_config())
