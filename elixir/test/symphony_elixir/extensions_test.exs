@@ -121,8 +121,8 @@ defmodule SymphonyElixir.ExtensionsTest do
              "github-central-brain"
 
     File.write!(Workflow.workflow_file_path(), workflow_with_project_profiles("token=must-not-replace"))
-    assert {:error, {:invalid_workflow_config, message}} = WorkflowStore.force_reload()
-    refute message =~ "token=must-not-replace"
+    assert {:error, {:invalid_project_profiles, reason}} = WorkflowStore.force_reload()
+    refute inspect(reason) =~ "token=must-not-replace"
 
     assert {:ok, %{config: %{"project_profiles" => retained_profiles}}} = Workflow.current()
 
