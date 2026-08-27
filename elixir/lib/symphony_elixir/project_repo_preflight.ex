@@ -7,12 +7,12 @@ defmodule SymphonyElixir.ProjectRepoPreflight do
   worker permission to pick up issues from that project.
   """
 
-  @mapping %{
-    "project-management" => %{
-      repository: "aroakpm-svg/aroak-project-management",
-      default_branch: "main",
-      required_scripts: ["typecheck", "build", "db:test"]
-    }
+  alias SymphonyElixir.ProjectProfiles
+
+  @profile_fields MapSet.new(~w(key linear_project_id repository canonical_branch workspace_namespace credential_ref environment)a)
+  @required_scripts_by_profile %{
+    "central-brain" => ["typecheck", "build", "test"],
+    "project-management" => ["typecheck", "build", "db:test"]
   }
   @command_timeout_ms 10_000
   @github_hostname "github.com"
@@ -28,13 +28,37 @@ defmodule SymphonyElixir.ProjectRepoPreflight do
         }
   @type blocker :: %{code: atom(), detail: term(), next_step: String.t()}
 
-  @spec check(String.t(), command_runner()) :: {:ok, receipt()} | {:blocked, blocker()}
-  def check(project, runner \\ &run_command/2) when is_binary(project) and is_function(runner, 2) do
-    case Map.fetch(@mapping, project) do
-      {:ok, mapping} -> check_mapping(project, mapping, runner)
-      :error -> blocked(:project_mapping_missing, project, "Add an explicitly approved project-to-repository mapping.")
+  @spec check(ProjectProfiles.profile(), command_runner()) :: {:ok, receipt()} | {:blocked, blocker()}
+  def check(profile, runner \\ &run_command/2) when is_function(runner, 2) do
+    case mapping_from_profile(profile) do
+      {:ok, project, mapping} ->
+        check_mapping(project, mapping, runner)
+
+      :error ->
+        blocked(:project_mapping_missing, profile_key(profile), "Pass a complete approved project profile.")
     end
   end
+
+  defp mapping_from_profile(%{} = profile) do
+    with true <- MapSet.new(Map.keys(profile)) == @profile_fields,
+         %{key: key, repository: repository, canonical_branch: canonical_branch} <- profile,
+         true <- Enum.all?([key, repository, canonical_branch], &is_binary/1),
+         {:ok, required_scripts} <- Map.fetch(@required_scripts_by_profile, key) do
+      {:ok, key,
+       %{
+         repository: repository,
+         default_branch: canonical_branch,
+         required_scripts: required_scripts
+       }}
+    else
+      _invalid -> :error
+    end
+  end
+
+  defp mapping_from_profile(_profile), do: :error
+
+  defp profile_key(%{key: key}) when is_binary(key), do: key
+  defp profile_key(_profile), do: nil
 
   defp check_mapping(project, mapping, runner) do
     with {:ok, repo} <- repository_metadata(mapping, runner),
