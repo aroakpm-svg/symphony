@@ -37,6 +37,7 @@ defmodule SymphonyElixir.ProjectProfiles do
   @type t :: %{version: 1, profiles: %{required(String.t()) => profile()}}
   @type reason ::
           :invalid_project_profiles
+          | :key_collision
           | :unsupported_version
           | :unknown_fields
           | {:missing_profiles, [String.t()]}
@@ -46,7 +47,7 @@ defmodule SymphonyElixir.ProjectProfiles do
 
   @spec parse(term()) :: {:ok, t()} | {:error, reason()}
   def parse(raw) do
-    with %{"version" => version, "profiles" => profiles} = config <- normalize_keys(raw),
+    with {:ok, %{"version" => version, "profiles" => profiles} = config} <- normalize_keys(raw),
          :ok <- exact_fields(config, ~w(version profiles)),
          :ok <- supported_version(version),
          true <- is_list(profiles),
@@ -171,11 +172,37 @@ defmodule SymphonyElixir.ProjectProfiles do
   defp supported_version(_version), do: {:error, :unsupported_version}
 
   defp normalize_keys(value) when is_map(value) do
-    Map.new(value, fn {key, nested} -> {normalize_key(key), normalize_keys(nested)} end)
+    Enum.reduce_while(value, {:ok, %{}}, fn {key, nested}, {:ok, normalized} ->
+      normalized_key = normalize_key(key)
+
+      if Map.has_key?(normalized, normalized_key) do
+        {:halt, {:error, :key_collision}}
+      else
+        case normalize_keys(nested) do
+          {:ok, normalized_nested} ->
+            {:cont, {:ok, Map.put(normalized, normalized_key, normalized_nested)}}
+
+          {:error, reason} ->
+            {:halt, {:error, reason}}
+        end
+      end
+    end)
   end
 
-  defp normalize_keys(value) when is_list(value), do: Enum.map(value, &normalize_keys/1)
-  defp normalize_keys(value), do: value
+  defp normalize_keys(value) when is_list(value) do
+    Enum.reduce_while(value, {:ok, []}, fn nested, {:ok, normalized} ->
+      case normalize_keys(nested) do
+        {:ok, normalized_nested} -> {:cont, {:ok, [normalized_nested | normalized]}}
+        {:error, reason} -> {:halt, {:error, reason}}
+      end
+    end)
+    |> case do
+      {:ok, normalized} -> {:ok, Enum.reverse(normalized)}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp normalize_keys(value), do: {:ok, value}
 
   defp normalize_key(key) when is_atom(key), do: Atom.to_string(key)
   defp normalize_key(key), do: key

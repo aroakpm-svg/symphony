@@ -5,7 +5,7 @@ defmodule SymphonyElixir.Config.Schema do
 
   import Ecto.Changeset
 
-  alias SymphonyElixir.PathSafety
+  alias SymphonyElixir.{PathSafety, ProjectProfiles}
 
   @primary_key false
 
@@ -69,6 +69,7 @@ defmodule SymphonyElixir.Config.Schema do
     def dump(_value), do: :error
 
     defp safe_error(:invalid_project_profiles), do: "must match the approved project-profile contract"
+    defp safe_error(:key_collision), do: "contains conflicting keys"
     defp safe_error(:unsupported_version), do: "uses an unsupported version"
     defp safe_error(:unknown_fields), do: "contains unknown fields"
     defp safe_error({:missing_profiles, _profiles}), do: "must contain the complete approved profile set"
@@ -445,10 +446,9 @@ defmodule SymphonyElixir.Config.Schema do
 
   @spec parse(map()) :: {:ok, %__MODULE__{}} | {:error, {:invalid_workflow_config, String.t()}}
   def parse(config) when is_map(config) do
-    normalized = normalize_keys(config)
-
-    with :ok <- validate_project_profiles_presence(normalized) do
-      normalized
+    with :ok <- validate_raw_project_profiles(config) do
+      config
+      |> normalize_keys()
       |> drop_nil_values()
       |> changeset()
       |> apply_action(:validate)
@@ -603,10 +603,32 @@ defmodule SymphonyElixir.Config.Schema do
   defp normalize_optional_map(nil), do: nil
   defp normalize_optional_map(value) when is_map(value), do: normalize_keys(value)
 
-  defp validate_project_profiles_presence(%{"project_profiles" => nil}),
-    do: {:error, {:invalid_workflow_config, "project_profiles must match the approved project-profile contract"}}
+  defp validate_raw_project_profiles(config) do
+    candidates =
+      for {key, value} <- config,
+          normalize_key(key) == "project_profiles",
+          do: value
 
-  defp validate_project_profiles_presence(_config), do: :ok
+    case candidates do
+      [] ->
+        :ok
+
+      [nil] ->
+        invalid_project_profiles()
+
+      [candidate] ->
+        case ProjectProfiles.parse(candidate) do
+          {:ok, _profiles} -> :ok
+          {:error, _reason} -> invalid_project_profiles()
+        end
+
+      _colliding_keys ->
+        invalid_project_profiles()
+    end
+  end
+
+  defp invalid_project_profiles,
+    do: {:error, {:invalid_workflow_config, "project_profiles must match the approved project-profile contract"}}
 
   defp normalize_key(value) when is_atom(value), do: Atom.to_string(value)
   defp normalize_key(value), do: to_string(value)

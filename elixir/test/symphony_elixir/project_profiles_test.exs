@@ -128,6 +128,20 @@ defmodule SymphonyElixir.ProjectProfilesTest do
     assert {:ok, _profiles} = ProjectProfiles.parse(atom_config)
   end
 
+  test "rejects atom and string keys that collide after normalization" do
+    root_collision = Map.put(valid_config(), :version, 2)
+
+    profile_collision =
+      update_in(
+        valid_config(),
+        ["profiles", Access.at(0)],
+        &Map.put(&1, :repository, "aroakpm-svg/attacker-controlled")
+      )
+
+    assert {:error, :key_collision} = ProjectProfiles.parse(root_collision)
+    assert {:error, :key_collision} = ProjectProfiles.parse(profile_collision)
+  end
+
   test "Ecto type callbacks cover every safe rejection without echoing submitted values" do
     assert ProjectProfilesType.type() == :map
     assert ProjectProfilesType.embed_as(:json) == :self
@@ -145,6 +159,7 @@ defmodule SymphonyElixir.ProjectProfilesTest do
       Map.put(valid_config(), "profiles", [central_profile()]),
       Map.put(valid_config(), "profiles", [Map.put(central_profile(), "key", "secret-profile")]),
       Map.put(valid_config(), "profiles", [central_profile(), central_profile()]),
+      Map.put(valid_config(), :version, 2),
       update_in(valid_config(), ["profiles", Access.at(0)], &Map.put(&1, "credential_ref", "secret-token"))
     ]
 

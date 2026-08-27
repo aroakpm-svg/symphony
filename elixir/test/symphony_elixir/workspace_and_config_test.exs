@@ -41,6 +41,29 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
     refute message =~ "token=must-not-escape"
   end
 
+  test "project profile key collisions are rejected before workflow normalization" do
+    nested_collision =
+      update_in(
+        valid_project_profiles_config(),
+        ["profiles", Access.at(0)],
+        &Map.put(&1, :repository, "aroakpm-svg/attacker-controlled")
+      )
+
+    top_level_collision = %{
+      "project_profiles" => valid_project_profiles_config(),
+      project_profiles: valid_project_profiles_config()
+    }
+
+    for config <- [
+          %{"project_profiles" => nested_collision},
+          top_level_collision
+        ] do
+      assert {:error, {:invalid_workflow_config, message}} = Schema.parse(config)
+      assert message =~ "project_profiles"
+      refute message =~ "attacker-controlled"
+    end
+  end
+
   test "landing mode defaults to human and rejects automatic mode" do
     assert {:ok, defaults} = Schema.parse(%{})
     assert defaults.landing.mode == :human
