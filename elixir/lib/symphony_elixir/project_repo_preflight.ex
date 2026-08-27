@@ -94,21 +94,27 @@ defmodule SymphonyElixir.ProjectRepoPreflight do
 
     case safe_run(runner, "git", args) do
       {:ok, output} ->
-        case String.split(String.trim(output), ~r/\s+/, parts: 2) do
-          [sha, "refs/heads/" <> branch] when branch == mapping.default_branch ->
-            if Regex.match?(@sha_pattern, sha) do
-              {:ok, String.downcase(sha)}
-            else
-              branch_unresolvable(mapping)
-            end
-
-          _other ->
-            branch_unresolvable(mapping)
-        end
+        parse_default_branch_head(output, mapping)
 
       {:error, _reason} ->
         branch_unresolvable(mapping)
     end
+  end
+
+  defp parse_default_branch_head(output, mapping) do
+    case String.split(String.trim(output), ~r/\s+/, parts: 2) do
+      [sha, "refs/heads/" <> branch] when branch == mapping.default_branch ->
+        validate_head_sha(sha, mapping)
+
+      _other ->
+        branch_unresolvable(mapping)
+    end
+  end
+
+  defp validate_head_sha(sha, mapping) do
+    if Regex.match?(@sha_pattern, sha),
+      do: {:ok, String.downcase(sha)},
+      else: branch_unresolvable(mapping)
   end
 
   defp package_scripts(mapping, head_sha, runner) do
