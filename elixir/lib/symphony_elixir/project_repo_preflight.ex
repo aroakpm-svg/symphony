@@ -15,6 +15,7 @@ defmodule SymphonyElixir.ProjectRepoPreflight do
     }
   }
   @command_timeout_ms 10_000
+  @github_hostname "github.com"
   @sha_pattern ~r/\A(?:[0-9a-fA-F]{40}|[0-9a-fA-F]{64})\z/
 
   @type command_runner :: (String.t(), [String.t()] -> {String.t(), non_neg_integer()})
@@ -53,12 +54,12 @@ defmodule SymphonyElixir.ProjectRepoPreflight do
   end
 
   defp repository_metadata(mapping, runner) do
-    args = ["repo", "view", mapping.repository, "--json", "nameWithOwner,defaultBranchRef"]
+    args = ["api", "repos/#{mapping.repository}", "--hostname", @github_hostname]
 
     case safe_run(runner, "gh", args) do
       {:ok, output} ->
         case Jason.decode(output) do
-          {:ok, %{"nameWithOwner" => repository, "defaultBranchRef" => %{"name" => branch}} = metadata}
+          {:ok, %{"full_name" => repository, "default_branch" => branch} = metadata}
           when is_binary(repository) and is_binary(branch) ->
             {:ok, metadata}
 
@@ -72,8 +73,8 @@ defmodule SymphonyElixir.ProjectRepoPreflight do
   end
 
   defp verify_repository(mapping, metadata) do
-    actual_repository = metadata["nameWithOwner"]
-    actual_branch = get_in(metadata, ["defaultBranchRef", "name"])
+    actual_repository = metadata["full_name"]
+    actual_branch = metadata["default_branch"]
 
     cond do
       actual_repository != mapping.repository ->
@@ -88,7 +89,7 @@ defmodule SymphonyElixir.ProjectRepoPreflight do
   end
 
   defp default_branch_head(mapping, runner) do
-    args = ["api", "repos/#{mapping.repository}/git/ref/heads/#{mapping.default_branch}"]
+    args = ["api", "repos/#{mapping.repository}/git/ref/heads/#{mapping.default_branch}", "--hostname", @github_hostname]
 
     case safe_run(runner, "gh", args) do
       {:ok, output} ->
@@ -117,7 +118,14 @@ defmodule SymphonyElixir.ProjectRepoPreflight do
   end
 
   defp package_scripts(mapping, head_sha, runner) do
-    args = ["api", "repos/#{mapping.repository}/contents/package.json?ref=#{head_sha}", "-H", "Accept: application/vnd.github.raw+json"]
+    args = [
+      "api",
+      "repos/#{mapping.repository}/contents/package.json?ref=#{head_sha}",
+      "--hostname",
+      @github_hostname,
+      "-H",
+      "Accept: application/vnd.github.raw+json"
+    ]
 
     case safe_run(runner, "gh", args) do
       {:ok, output} ->

@@ -7,13 +7,21 @@ defmodule SymphonyElixir.ProjectRepoPreflightTest do
 
   test "project-management mapping passes read-only repository and quality-contract checks" do
     runner = fn
-      "gh", ["repo", "view", "aroakpm-svg/aroak-project-management", "--json", "nameWithOwner,defaultBranchRef"] ->
-        {~s({"nameWithOwner":"aroakpm-svg/aroak-project-management","defaultBranchRef":{"name":"main"}}), 0}
+      "gh", ["api", "repos/aroakpm-svg/aroak-project-management", "--hostname", "github.com"] ->
+        {~s({"full_name":"aroakpm-svg/aroak-project-management","default_branch":"main"}), 0}
 
-      "gh", ["api", "repos/aroakpm-svg/aroak-project-management/git/ref/heads/main"] ->
+      "gh", ["api", "repos/aroakpm-svg/aroak-project-management/git/ref/heads/main", "--hostname", "github.com"] ->
         {~s({"ref":"refs/heads/main","object":{"sha":"0123456789abcdef0123456789abcdef01234567"}}), 0}
 
-      "gh", ["api", "repos/aroakpm-svg/aroak-project-management/contents/package.json?ref=0123456789abcdef0123456789abcdef01234567", "-H", "Accept: application/vnd.github.raw+json"] ->
+      "gh",
+      [
+        "api",
+        "repos/aroakpm-svg/aroak-project-management/contents/package.json?ref=0123456789abcdef0123456789abcdef01234567",
+        "--hostname",
+        "github.com",
+        "-H",
+        "Accept: application/vnd.github.raw+json"
+      ] ->
         {~s({"scripts":{"typecheck":"tsc --noEmit","build":"next build","db:test":"bash scripts/db-test.sh"}}), 0}
     end
 
@@ -33,8 +41,8 @@ defmodule SymphonyElixir.ProjectRepoPreflightTest do
 
   test "a repository whose default branch drifts from the mapping fails closed" do
     runner = fn
-      "gh", ["repo", "view", "aroakpm-svg/aroak-project-management", "--json", "nameWithOwner,defaultBranchRef"] ->
-        {~s({"nameWithOwner":"aroakpm-svg/aroak-project-management","defaultBranchRef":{"name":"develop"}}), 0}
+      "gh", ["api", "repos/aroakpm-svg/aroak-project-management", "--hostname", "github.com"] ->
+        {~s({"full_name":"aroakpm-svg/aroak-project-management","default_branch":"develop"}), 0}
     end
 
     assert {:blocked, %{code: :default_branch_mismatch, next_step: next_step}} =
@@ -45,13 +53,21 @@ defmodule SymphonyElixir.ProjectRepoPreflightTest do
 
   test "missing required quality scripts fails closed with the exact missing scripts" do
     runner = fn
-      "gh", ["repo", "view", "aroakpm-svg/aroak-project-management", "--json", "nameWithOwner,defaultBranchRef"] ->
-        {~s({"nameWithOwner":"aroakpm-svg/aroak-project-management","defaultBranchRef":{"name":"main"}}), 0}
+      "gh", ["api", "repos/aroakpm-svg/aroak-project-management", "--hostname", "github.com"] ->
+        {~s({"full_name":"aroakpm-svg/aroak-project-management","default_branch":"main"}), 0}
 
-      "gh", ["api", "repos/aroakpm-svg/aroak-project-management/git/ref/heads/main"] ->
+      "gh", ["api", "repos/aroakpm-svg/aroak-project-management/git/ref/heads/main", "--hostname", "github.com"] ->
         {~s({"ref":"refs/heads/main","object":{"sha":"0123456789abcdef0123456789abcdef01234567"}}), 0}
 
-      "gh", ["api", "repos/aroakpm-svg/aroak-project-management/contents/package.json?ref=0123456789abcdef0123456789abcdef01234567", "-H", "Accept: application/vnd.github.raw+json"] ->
+      "gh",
+      [
+        "api",
+        "repos/aroakpm-svg/aroak-project-management/contents/package.json?ref=0123456789abcdef0123456789abcdef01234567",
+        "--hostname",
+        "github.com",
+        "-H",
+        "Accept: application/vnd.github.raw+json"
+      ] ->
         {~s({"scripts":{"typecheck":"tsc --noEmit"}}), 0}
     end
 
@@ -66,7 +82,7 @@ defmodule SymphonyElixir.ProjectRepoPreflightTest do
                sequence_runner([{~s({"nameWithOwner":true}), 0}])
              )
 
-    valid_metadata = ~s({"nameWithOwner":"aroakpm-svg/aroak-project-management","defaultBranchRef":{"name":"main"}})
+    valid_metadata = ~s({"full_name":"aroakpm-svg/aroak-project-management","default_branch":"main"})
 
     assert {:blocked, %{code: :default_branch_unresolvable}} =
              ProjectRepoPreflight.check(
