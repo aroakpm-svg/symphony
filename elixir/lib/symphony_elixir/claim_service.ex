@@ -299,7 +299,7 @@ defmodule SymphonyElixir.ClaimService do
     sql = """
     select routing_policy, target_node_id::text, routing_revision
     from symphony_staging.routing_assignments
-    where issue_id = $1
+    where issue_id = $1::text::uuid
     """
 
     state.connection

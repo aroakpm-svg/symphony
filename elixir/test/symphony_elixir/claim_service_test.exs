@@ -28,7 +28,7 @@ defmodule SymphonyElixir.ClaimServiceTest do
     assert {:error, :routing_lookup_failed} = route_with_query(query)
     assert_receive {:routing_query, sql, ["issue-1"]}
     assert sql =~ "from symphony_staging.routing_assignments"
-    assert sql =~ "where issue_id = $1"
+    assert sql =~ "where issue_id = $1::text::uuid"
     assert String.trim_leading(sql) =~ ~r/^select\b/i
     refute sql =~ ~r/\b(insert|update|delete|call)\b/i
 
@@ -41,7 +41,7 @@ defmodule SymphonyElixir.ClaimServiceTest do
   test "database calls bind textual UUIDs through text before UUID casts" do
     source = File.read!(Path.expand("../../lib/symphony_elixir/claim_service.ex", __DIR__))
 
-    assert length(Regex.scan(~r/::text::uuid/, source)) == 11
+    assert length(Regex.scan(~r/::text::uuid/, source)) == 12
     refute source =~ "DateTime.to_iso8601(updated_at)"
   end
 
