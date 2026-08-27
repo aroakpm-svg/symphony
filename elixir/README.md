@@ -394,17 +394,34 @@ dispatch, credentials, deployment authority, or automatic pickup permission.
 
 ## Approved multi-project profile contract
 
-The optional `project_profiles` WORKFLOW setting defines the complete approved
-Central-Brain and Project-Management mapping. Version `1` must exactly match the
-profile identities compiled into this Symphony release. The parser rejects the
-whole candidate when a profile is missing or extra, an identity is duplicated,
-or any approved field differs. Failed reloads preserve the previous valid value.
+The optional `project_profiles` WORKFLOW setting enables the existing orchestrator's
+approved multi-project path and defines the complete Central-Brain and Project-Management
+mapping. Version `1` must exactly match the profile identities compiled into this Symphony
+release. The parser rejects the whole candidate when a profile is missing or extra, an
+identity is duplicated, or any approved field differs. Failed reloads preserve the previous
+valid value.
 
 Profiles contain a credential reference name, not credential material. Validation
-errors identify the profile or field without echoing submitted values. The setting
-is disabled when absent, and loading it does not enable polling, dispatch, cloning,
-deployment, or issue pickup; those capabilities remain the responsibility of later
-policy-controlled work.
+errors identify the profile or field without echoing submitted values. With the setting
+present, every poll cycle uses this order:
+
+1. Aggregate every enabled approved profile independently.
+2. Filter candidates and re-fetch each issue by UUID.
+3. Resolve the refreshed project UUID to the same unique approved profile.
+4. Require shared routing to be `exclusive` for the authenticated current node.
+5. Run the approved profile's read-only repository preflight.
+6. Check the existing node-wide capacity.
+7. Acquire the existing ARO-164 claim.
+8. Continue through the existing worker dispatch path.
+
+A profile timeout or error is retried independently: it cannot contribute substitute identity
+evidence and does not stop another profile's candidates. Unknown, duplicated, changed, stale,
+wrong-node, non-exclusive, or repository-mismatched candidates fail closed and iteration continues.
+When `project_profiles` is absent, Symphony retains the legacy single-project tracker path.
+
+This contract selects an approved repository but does not resolve or install credentials, create
+per-project workspace namespaces, clone repositories, grant deployment authority, or operate in
+Production. Credential and workspace isolation remain ARO-286 scope.
 
 See the commented example in [`WORKFLOW.md`](WORKFLOW.md). Remove the comment
 markers only when intentionally configuring the exact approved set.

@@ -912,10 +912,19 @@ Tick sequence:
 
 1. Reconcile running issues.
 2. Run dispatch preflight validation.
-3. Fetch candidate issues from tracker using active states.
-4. Sort issues by dispatch priority.
-5. Dispatch eligible issues while slots remain.
-6. Notify observability/status consumers of state changes.
+3. When `project_profiles` is absent, fetch candidate issues from the configured single-project
+   tracker using active states and continue through the legacy selection path.
+4. When `project_profiles` is present, aggregate enabled approved profiles independently. A failed
+   profile is retried with bounded backoff; its failure MUST NOT supply substitute identity evidence
+   or stop another profile's successful candidates.
+5. Filter candidates, re-fetch each issue by UUID, and require its refreshed project UUID to resolve
+   to the same unique approved profile that produced it. Ambiguous, missing, unknown, changed, or
+   stale evidence fails closed.
+6. Require shared routing to be `exclusive` for the authenticated current node.
+7. Run the selected approved repository's read-only preflight.
+8. Check the existing node-wide capacity, acquire the existing ARO-164 claim, and launch through the
+   existing worker dispatch path. These steps do not add a scheduler, queue, or claim path.
+9. Notify observability/status consumers of state changes.
 
 If per-tick validation fails, dispatch is skipped for that tick, but reconciliation still happens
 first.
@@ -934,6 +943,12 @@ An issue is dispatch-eligible only if all are true:
 - Per-state concurrency slots are available.
 - Blocker rule for `Todo` state passes:
   - If the issue state is `Todo`, do not dispatch when any blocker is non-terminal.
+
+In multi-project mode, eligibility additionally requires the post-refresh project to resolve to one
+approved profile, an exclusive route to the current node, and a successful profile-selected
+repository preflight. Repository identity MUST come from the approved profile, not Linear text or
+labels. Credential resolution, credential isolation, and per-project workspace namespaces are
+outside this contract and remain owned by ARO-286.
 
 Sorting order (stable intent):
 

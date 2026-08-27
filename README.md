@@ -50,8 +50,12 @@ implementation and dry-check command.
 Symphony also accepts an optional, versioned `project_profiles` contract for the complete approved
 Central-Brain and Project-Management mapping. The contract is validated as one unit against the
 mapping compiled into this release; missing, extra, duplicated, or changed identities fail closed.
-It stores credential references only, never credentials. Loading the contract makes the approved
-mapping available to later work, but does not itself turn on polling or dispatch.
+It stores credential references only, never credentials. When the contract is present, the existing
+orchestrator polls every enabled approved profile independently and dispatches only refreshed issues
+whose unique approved profile, exclusive current-node route, and repository preflight all pass.
+One project's polling failure neither substitutes another project's identity nor stops healthy
+projects from progressing. Without `project_profiles`, the existing single-project tracker path is
+preserved. Credential resolution and per-project workspace isolation remain ARO-286 work.
 
 #### Distributed claim safety
 
