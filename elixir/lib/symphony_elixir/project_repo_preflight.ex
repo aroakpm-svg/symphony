@@ -149,7 +149,7 @@ defmodule SymphonyElixir.ProjectRepoPreflight do
 
   defp safe_run(runner, command, args) do
     parent = self()
-    {pid, monitor} = spawn_monitor(fn -> send(parent, {self(), runner.(command, args)}) end)
+    {pid, monitor} = spawn_monitor(fn -> send(parent, {self(), execute_runner(runner, command, args)}) end)
 
     receive do
       {^pid, {output, 0}} when is_binary(output) ->
@@ -159,6 +159,10 @@ defmodule SymphonyElixir.ProjectRepoPreflight do
       {^pid, {_output, status}} when is_integer(status) ->
         Process.demonitor(monitor, [:flush])
         {:error, :command_failed}
+
+      {^pid, :command_exception} ->
+        Process.demonitor(monitor, [:flush])
+        {:error, :command_exception}
 
       {^pid, _unexpected} ->
         Process.demonitor(monitor, [:flush])
@@ -175,6 +179,16 @@ defmodule SymphonyElixir.ProjectRepoPreflight do
         end
 
         {:error, :command_timeout}
+    end
+  end
+
+  defp execute_runner(runner, command, args) do
+    try do
+      runner.(command, args)
+    rescue
+      _error -> :command_exception
+    catch
+      _kind, _reason -> :command_exception
     end
   end
 

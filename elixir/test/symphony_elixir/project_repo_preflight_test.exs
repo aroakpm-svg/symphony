@@ -1,6 +1,8 @@
 defmodule SymphonyElixir.ProjectRepoPreflightTest do
   use ExUnit.Case, async: true
 
+  import ExUnit.CaptureLog
+
   alias SymphonyElixir.ProjectRepoPreflight
 
   test "project-management mapping passes read-only repository and quality-contract checks" do
@@ -86,8 +88,13 @@ defmodule SymphonyElixir.ProjectRepoPreflightTest do
   test "runner exceptions become a secret-safe blocker" do
     runner = fn _, _ -> raise "token=must-not-escape" end
 
-    assert {:blocked, %{code: :repository_unavailable, detail: "aroakpm-svg/aroak-project-management"}} =
-             ProjectRepoPreflight.check("project-management", runner)
+    log =
+      capture_log(fn ->
+        assert {:blocked, %{code: :repository_unavailable, detail: "aroakpm-svg/aroak-project-management"}} =
+                 ProjectRepoPreflight.check("project-management", runner)
+      end)
+
+    refute log =~ "token=must-not-escape"
   end
 
   defp sequence_runner(results) do
