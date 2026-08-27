@@ -37,6 +37,48 @@ defmodule SymphonyElixir.Config.Schema do
     def dump(_value), do: :error
   end
 
+  defmodule ProjectProfilesType do
+    @moduledoc false
+    @behaviour Ecto.Type
+
+    alias SymphonyElixir.ProjectProfiles
+
+    @spec type() :: :map
+    def type, do: :map
+
+    @spec embed_as(term()) :: :self
+    def embed_as(_format), do: :self
+
+    @spec equal?(term(), term()) :: boolean()
+    def equal?(left, right), do: left == right
+
+    @spec cast(term()) :: {:ok, ProjectProfiles.t()} | {:error, keyword()}
+    def cast(value) do
+      case ProjectProfiles.parse(value) do
+        {:ok, profiles} -> {:ok, profiles}
+        {:error, reason} -> {:error, message: safe_error(reason)}
+      end
+    end
+
+    @spec load(term()) :: {:ok, map()} | :error
+    def load(value) when is_map(value), do: {:ok, value}
+    def load(_value), do: :error
+
+    @spec dump(term()) :: {:ok, map()} | :error
+    def dump(value) when is_map(value), do: {:ok, value}
+    def dump(_value), do: :error
+
+    defp safe_error(:invalid_project_profiles), do: "must match the approved project-profile contract"
+    defp safe_error({:unsupported_version, _value}), do: "uses an unsupported version"
+    defp safe_error({:unknown_fields, _fields}), do: "contains unknown fields"
+    defp safe_error({:missing_profiles, _profiles}), do: "must contain the complete approved profile set"
+    defp safe_error({:unknown_profile, _key}), do: "contains an unapproved profile"
+    defp safe_error({:duplicate_identity, field}), do: "contains duplicate #{field} values"
+
+    defp safe_error({:profile_mismatch, key, field}),
+      do: "profile #{key} does not match approved field #{field}"
+  end
+
   defmodule Tracker do
     @moduledoc false
     use Ecto.Schema
@@ -386,6 +428,7 @@ defmodule SymphonyElixir.Config.Schema do
   end
 
   embedded_schema do
+    field(:project_profiles, ProjectProfilesType)
     embeds_one(:tracker, Tracker, on_replace: :update, defaults_to_struct: true)
     embeds_one(:polling, Polling, on_replace: :update, defaults_to_struct: true)
     embeds_one(:workspace, Workspace, on_replace: :update, defaults_to_struct: true)
@@ -482,7 +525,7 @@ defmodule SymphonyElixir.Config.Schema do
 
   defp changeset(attrs) do
     %__MODULE__{}
-    |> cast(attrs, [])
+    |> cast(attrs, [:project_profiles], empty_values: [])
     |> cast_embed(:tracker, with: &Tracker.changeset/2)
     |> cast_embed(:polling, with: &Polling.changeset/2)
     |> cast_embed(:workspace, with: &Workspace.changeset/2)

@@ -4,6 +4,35 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
   alias SymphonyElixir.Config.Schema
   alias SymphonyElixir.Config.Schema.{Codex, StringOrMap}
   alias SymphonyElixir.Linear.Client
+  alias SymphonyElixir.ProjectProfiles
+
+  test "project profiles are disabled when absent and available only as a complete valid set" do
+    assert {:ok, defaults} = Schema.parse(%{})
+    assert defaults.project_profiles == nil
+
+    assert {:ok, settings} =
+             Schema.parse(%{"project_profiles" => valid_project_profiles_config()})
+
+    assert {:ok, central} =
+             ProjectProfiles.fetch(settings.project_profiles, "central-brain")
+
+    assert central.repository == "aroakpm-svg/aroak-central-brain"
+  end
+
+  test "invalid project profiles reject the whole workflow without exposing credential values" do
+    invalid =
+      update_in(
+        valid_project_profiles_config(),
+        ["profiles", Access.at(0)],
+        &Map.put(&1, "credential_ref", "token=must-not-escape")
+      )
+
+    assert {:error, {:invalid_workflow_config, message}} =
+             Schema.parse(%{"project_profiles" => invalid})
+
+    assert message =~ "project_profiles"
+    refute message =~ "token=must-not-escape"
+  end
 
   test "landing mode defaults to human and rejects automatic mode" do
     assert {:ok, defaults} = Schema.parse(%{})
@@ -1443,5 +1472,31 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
     after
       File.rm_rf(test_root)
     end
+  end
+
+  defp valid_project_profiles_config do
+    %{
+      "version" => 1,
+      "profiles" => [
+        %{
+          "key" => "central-brain",
+          "linear_project_id" => "d0acfb71-f68c-4a9f-8a1a-477265d3c3ec",
+          "repository" => "aroakpm-svg/aroak-central-brain",
+          "canonical_branch" => "main",
+          "workspace_namespace" => "central-brain",
+          "credential_ref" => "github-central-brain",
+          "environment" => "local_non_production"
+        },
+        %{
+          "key" => "project-management",
+          "linear_project_id" => "708053e0-f42c-4e93-bec4-7abbb37e74af",
+          "repository" => "aroakpm-svg/aroak-project-management",
+          "canonical_branch" => "main",
+          "workspace_namespace" => "project-management",
+          "credential_ref" => "github-project-management",
+          "environment" => "local_non_production"
+        }
+      ]
+    }
   end
 end
