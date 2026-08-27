@@ -19,6 +19,13 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
     assert central.repository == "aroakpm-svg/aroak-central-brain"
   end
 
+  test "explicit null project profiles are malformed rather than treated as absent" do
+    for config <- [%{"project_profiles" => nil}, %{project_profiles: nil}] do
+      assert {:error, {:invalid_workflow_config, message}} = Schema.parse(config)
+      assert message =~ "project_profiles"
+    end
+  end
+
   test "invalid project profiles reject the whole workflow without exposing credential values" do
     invalid =
       update_in(

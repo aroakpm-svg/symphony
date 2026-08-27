@@ -445,19 +445,22 @@ defmodule SymphonyElixir.Config.Schema do
 
   @spec parse(map()) :: {:ok, %__MODULE__{}} | {:error, {:invalid_workflow_config, String.t()}}
   def parse(config) when is_map(config) do
-    config
-    |> normalize_keys()
-    |> drop_nil_values()
-    |> changeset()
-    |> apply_action(:validate)
-    |> case do
-      {:ok, settings} ->
-        settings
-        |> finalize_settings()
-        |> validate_resolved_claim_settings()
+    normalized = normalize_keys(config)
 
-      {:error, changeset} ->
-        {:error, {:invalid_workflow_config, format_errors(changeset)}}
+    with :ok <- validate_project_profiles_presence(normalized) do
+      normalized
+      |> drop_nil_values()
+      |> changeset()
+      |> apply_action(:validate)
+      |> case do
+        {:ok, settings} ->
+          settings
+          |> finalize_settings()
+          |> validate_resolved_claim_settings()
+
+        {:error, changeset} ->
+          {:error, {:invalid_workflow_config, format_errors(changeset)}}
+      end
     end
   end
 
@@ -599,6 +602,11 @@ defmodule SymphonyElixir.Config.Schema do
 
   defp normalize_optional_map(nil), do: nil
   defp normalize_optional_map(value) when is_map(value), do: normalize_keys(value)
+
+  defp validate_project_profiles_presence(%{"project_profiles" => nil}),
+    do: {:error, {:invalid_workflow_config, "project_profiles must match the approved project-profile contract"}}
+
+  defp validate_project_profiles_presence(_config), do: :ok
 
   defp normalize_key(value) when is_atom(value), do: Atom.to_string(value)
   defp normalize_key(value), do: to_string(value)
