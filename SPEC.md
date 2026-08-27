@@ -954,6 +954,20 @@ Per-state limit:
 
 The runtime counts issues by their current tracked state in the `running` map.
 
+When database-backed claims are enabled, the enrolled node's `claim_capacity` is the sole
+node-wide capacity authority and MUST equal `3` at runtime startup. Central-Brain and
+Project-Management share that three-claim pool on the node; project profiles MUST NOT define or
+override capacity. The global and per-state calculations above are local scheduling filters, not
+slot authorization: only the atomic database claim transaction authorizes a new claim.
+Startup MUST validate capacity before invoking stateful node-instance authentication, so capacity
+rejection cannot persist a historical or active phantom instance.
+
+Reducing `claim_capacity` MUST preserve existing active claims and the existing
+lease/generation/renew/release lifecycle. It blocks only new claims until active usage is below the
+new limit. Three nodes at capacity three provide nine active claims in total, so a tenth claim MUST
+wait. Installing the code or schema contract MUST NOT update the Amy, Matt, or Han node rows;
+ARO-287 owns that separate operator rollout before claim-enabled runtimes start.
+
 ### 8.4 Retry and Backoff
 
 Retry entry creation:

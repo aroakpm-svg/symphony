@@ -4,6 +4,8 @@ set -euo pipefail
 root_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 database_url="${TEST_DATABASE_URL:?TEST_DATABASE_URL is required}"
 migration="$root_dir/elixir/priv/symphony_migrations/20260804000000_aro_164_cross_machine_claims.sql"
+capacity_migration="$root_dir/elixir/priv/symphony_migrations/20260827000000_aro_288_node_capacity_contract.sql"
+capacity_rollback="$root_dir/elixir/priv/symphony_migrations/20260827000000_aro_288_node_capacity_contract.down.sql"
 effect_migration="$root_dir/elixir/priv/symphony_migrations/20260805000000_aro_165_effect_ledger.sql"
 effect_rollback="$root_dir/elixir/priv/symphony_migrations/20260805000000_aro_165_effect_ledger.down.sql"
 handoff_migration="$root_dir/elixir/priv/symphony_migrations/20260806000000_aro_166_handoff_receipts.sql"
@@ -31,6 +33,16 @@ claim() {
   local role="$1" issue="$2" node="$3" instance="$4" state="${5:-todo}" lease="${6:-60000}" grace="${7:-0}"
   PGPASSWORD=disposable psql -X -q -A -t -v ON_ERROR_STOP=1 -d "$(node_url "$role")" \
     -c "select claim_id || ':' || generation from symphony_staging.claim_issue('$issue','$node','$instance',clock_timestamp(),'$state',array['todo','in progress','in review'],$lease,$grace);"
+}
+renew() {
+  local role="$1" claim_id="$2" generation="$3" node="$4" instance="$5"
+  PGPASSWORD=disposable psql -X -q -A -t -v ON_ERROR_STOP=1 -d "$(node_url "$role")" \
+    -c "select symphony_staging.renew_claim('$claim_id',$generation,'$node','$instance',60000);"
+}
+release() {
+  local role="$1" claim_id="$2" generation="$3" node="$4" instance="$5"
+  PGPASSWORD=disposable psql -X -q -A -t -v ON_ERROR_STOP=1 -d "$(node_url "$role")" \
+    -c "select symphony_staging.release_claim('$claim_id',$generation,'$node','$instance');"
 }
 
 psql_admin <<'SQL'
@@ -82,7 +94,7 @@ create role claim_node_b login password 'disposable';
 create role claim_node_c login password 'disposable';
 grant usage on schema symphony_staging to claim_node_a, claim_node_b, claim_node_c;
 insert into symphony_staging.nodes(node_id, display_alias, status, claim_capacity) values
-  ('$node_a','a','active',2), ('$node_b','b','active',1), ('$node_c','c','active',1);
+  ('$node_a','a','active',3), ('$node_b','b','active',3), ('$node_c','c','active',3);
 insert into symphony_staging.node_login_principals(node_id, login_role) values
   ('$node_a','claim_node_a'), ('$node_b','claim_node_b'), ('$node_c','claim_node_c');
 insert into symphony_staging.active_node_instances(node_id, node_instance_id) values
@@ -93,11 +105,137 @@ insert into symphony_staging.routing_assignments(issue_id,routing_policy,target_
   ('PREFERRED','preferred-with-fallback','$node_a',1,1), ('TAKEOVER','unassigned',null,1,1),
   ('ROUTE-CHANGE','unassigned',null,1,1), ('CUSTOM-STATE','unassigned',null,1,1),
   ('EFFECTS','unassigned',null,1,1), ('HANDOFF','unassigned',null,1,1),
-  ('HANDOFF-WHITESPACE','unassigned',null,1,1);
+  ('HANDOFF-WHITESPACE','unassigned',null,1,1),
+  ('ARO288-MIXED-CB-1','exclusive','$node_a',1,1),
+  ('ARO288-MIXED-PM-1','exclusive','$node_a',1,1),
+  ('ARO288-MIXED-CB-2','exclusive','$node_a',1,1),
+  ('ARO288-MIXED-PM-2','exclusive','$node_a',1,1),
+  ('ARO288-FLEET-01','exclusive','$node_a',1,1),
+  ('ARO288-FLEET-02','exclusive','$node_a',1,1),
+  ('ARO288-FLEET-03','exclusive','$node_a',1,1),
+  ('ARO288-FLEET-04','exclusive','$node_b',1,1),
+  ('ARO288-FLEET-05','exclusive','$node_b',1,1),
+  ('ARO288-FLEET-06','exclusive','$node_b',1,1),
+  ('ARO288-FLEET-07','exclusive','$node_c',1,1),
+  ('ARO288-FLEET-08','exclusive','$node_c',1,1),
+  ('ARO288-FLEET-09','exclusive','$node_c',1,1),
+  ('ARO288-FLEET-10','exclusive','$node_c',1,1),
+  ('ARO288-CAPACITY-LOWER','exclusive','$node_a',1,1),
+  ('ARO288-CAPACITY-RAISE','exclusive','$node_a',1,1);
 SQL
+
+psql_admin -f "$capacity_migration"
+test "$(PGPASSWORD=disposable psql -X -q -A -t -v ON_ERROR_STOP=1 -d "$(node_url claim_node_a)" -c \
+  "select symphony_staging.current_node_claim_capacity();")" = "3"
+test "$(PGPASSWORD=disposable psql -X -q -A -t -v ON_ERROR_STOP=1 -d "$(node_url claim_node_b)" -c \
+  "select symphony_staging.current_node_claim_capacity();")" = "3"
+test "$(PGPASSWORD=disposable psql -X -q -A -t -v ON_ERROR_STOP=1 -d "$(node_url claim_node_c)" -c \
+  "select symphony_staging.current_node_claim_capacity();")" = "3"
+for role in claim_node_a claim_node_b claim_node_c; do
+  if PGPASSWORD=disposable psql -X -q -A -t -v ON_ERROR_STOP=1 -d "$(node_url "$role")" -c \
+    "select claim_capacity from symphony_staging.nodes;" >/dev/null 2>&1; then
+    echo "$role unexpectedly read nodes.claim_capacity directly" >&2
+    exit 1
+  fi
+done
 
 tmp_dir="$(mktemp -d)"
 trap 'rm -rf "$tmp_dir"' EXIT
+
+mixed_cb_1="$(claim claim_node_a ARO288-MIXED-CB-1 "$node_a" "$instance_a")"
+mixed_pm_1="$(claim claim_node_a ARO288-MIXED-PM-1 "$node_a" "$instance_a")"
+mixed_cb_2="$(claim claim_node_a ARO288-MIXED-CB-2 "$node_a" "$instance_a")"
+mixed_failure="$tmp_dir/aro288-mixed-capacity"
+if claim claim_node_a ARO288-MIXED-PM-2 "$node_a" "$instance_a" >"$mixed_failure" 2>&1; then
+  echo "mixed-project contention unexpectedly exceeded node capacity" >&2
+  exit 1
+fi
+grep -q "node claim capacity exhausted" "$mixed_failure"
+test "$(psql_admin -A -t -c "
+  select count(*) = 3
+  from symphony_staging.issue_claims
+  where issue_id like 'ARO288-MIXED-%'
+    and completed_at is null
+    and released_at is null;")" = "t"
+test "$(psql_admin -A -t -c "select not exists (
+  select 1 from symphony_staging.issue_claims
+  where issue_id = 'ARO288-MIXED-PM-2');")" = "t"
+test "$(psql_admin -A -t -c "select not exists (
+  select 1 from symphony_staging.issue_claim_generations
+  where issue_id = 'ARO288-MIXED-PM-2');")" = "t"
+test "$(release claim_node_a "${mixed_cb_1%:*}" "${mixed_cb_1#*:}" "$node_a" "$instance_a")" = "t"
+test "$(release claim_node_a "${mixed_pm_1%:*}" "${mixed_pm_1#*:}" "$node_a" "$instance_a")" = "t"
+test "$(release claim_node_a "${mixed_cb_2%:*}" "${mixed_cb_2#*:}" "$node_a" "$instance_a")" = "t"
+
+fleet_01="$(claim claim_node_a ARO288-FLEET-01 "$node_a" "$instance_a")"
+fleet_02="$(claim claim_node_a ARO288-FLEET-02 "$node_a" "$instance_a")"
+fleet_03="$(claim claim_node_a ARO288-FLEET-03 "$node_a" "$instance_a")"
+claim claim_node_b ARO288-FLEET-04 "$node_b" "$instance_b" >/dev/null
+claim claim_node_b ARO288-FLEET-05 "$node_b" "$instance_b" >/dev/null
+claim claim_node_b ARO288-FLEET-06 "$node_b" "$instance_b" >/dev/null
+claim claim_node_c ARO288-FLEET-07 "$node_c" "$instance_c" >/dev/null
+claim claim_node_c ARO288-FLEET-08 "$node_c" "$instance_c" >/dev/null
+claim claim_node_c ARO288-FLEET-09 "$node_c" "$instance_c" >/dev/null
+for node in "$node_a" "$node_b" "$node_c"; do
+  test "$(psql_admin -A -t -c "select count(*) = 3
+    from symphony_staging.issue_claims
+    where issue_id like 'ARO288-FLEET-%'
+      and node_id = '$node'
+      and completed_at is null
+      and released_at is null
+      and lease_expires_at > clock_timestamp();")" = "t"
+done
+test "$(psql_admin -A -t -c "select count(*) = 9
+  from symphony_staging.issue_claims
+  where issue_id like 'ARO288-FLEET-%'
+    and completed_at is null
+    and released_at is null
+    and lease_expires_at > clock_timestamp();")" = "t"
+fleet_failure="$tmp_dir/aro288-fleet-capacity"
+if claim claim_node_c ARO288-FLEET-10 "$node_c" "$instance_c" >"$fleet_failure" 2>&1; then
+  echo "three-node fleet unexpectedly accepted a tenth claim" >&2
+  exit 1
+fi
+grep -q "node claim capacity exhausted" "$fleet_failure"
+test "$(psql_admin -A -t -c "select not exists (
+    select 1 from symphony_staging.issue_claims where issue_id = 'ARO288-FLEET-10'
+  ) and not exists (
+    select 1 from symphony_staging.issue_claim_generations where issue_id = 'ARO288-FLEET-10'
+  );")" = "t"
+
+psql_admin -c "update symphony_staging.nodes set claim_capacity = 2 where node_id = '$node_a';"
+test "$(psql_admin -A -t -c "select count(*) = 3
+  from symphony_staging.issue_claims
+  where issue_id in ('ARO288-FLEET-01','ARO288-FLEET-02','ARO288-FLEET-03')
+    and completed_at is null and released_at is null;")" = "t"
+test "$(renew claim_node_a "${fleet_01%:*}" "${fleet_01#*:}" "$node_a" "$instance_a")" = "t"
+test "$(renew claim_node_a "${fleet_02%:*}" "${fleet_02#*:}" "$node_a" "$instance_a")" = "t"
+test "$(renew claim_node_a "${fleet_03%:*}" "${fleet_03#*:}" "$node_a" "$instance_a")" = "t"
+test "$(release claim_node_a "${fleet_01%:*}" "${fleet_01#*:}" "$node_a" "$instance_a")" = "t"
+test "$(psql_admin -A -t -c "select count(*) = 2
+  from symphony_staging.issue_claims
+  where issue_id in ('ARO288-FLEET-01','ARO288-FLEET-02','ARO288-FLEET-03')
+    and completed_at is null and released_at is null;")" = "t"
+lower_failure="$tmp_dir/aro288-capacity-lower"
+if claim claim_node_a ARO288-CAPACITY-RAISE "$node_a" "$instance_a" >"$lower_failure" 2>&1; then
+  echo "lowered capacity unexpectedly admitted a third live claim" >&2
+  exit 1
+fi
+grep -q "node claim capacity exhausted" "$lower_failure"
+test "$(psql_admin -A -t -c "select not exists (
+    select 1 from symphony_staging.issue_claims where issue_id = 'ARO288-CAPACITY-RAISE'
+  ) and not exists (
+    select 1 from symphony_staging.issue_claim_generations where issue_id = 'ARO288-CAPACITY-RAISE'
+  );")" = "t"
+psql_admin -c "update symphony_staging.nodes set claim_capacity = 3 where node_id = '$node_a';"
+capacity_raise="$(claim claim_node_a ARO288-CAPACITY-RAISE "$node_a" "$instance_a")"
+test "${capacity_raise#*:}" = "1"
+test "$(release claim_node_a "${fleet_02%:*}" "${fleet_02#*:}" "$node_a" "$instance_a")" = "t"
+test "$(release claim_node_a "${fleet_03%:*}" "${fleet_03#*:}" "$node_a" "$instance_a")" = "t"
+test "$(release claim_node_a "${capacity_raise%:*}" "${capacity_raise#*:}" "$node_a" "$instance_a")" = "t"
+psql_admin -c "update symphony_staging.issue_claims set released_at = clock_timestamp()
+  where issue_id between 'ARO288-FLEET-04' and 'ARO288-FLEET-09';"
+
 claim claim_node_a RACE "$node_a" "$instance_a" >"$tmp_dir/a" & pid_a=$!
 claim claim_node_b RACE "$node_b" "$instance_b" >"$tmp_dir/b" & pid_b=$!
 claim claim_node_c RACE "$node_c" "$instance_c" >"$tmp_dir/c" & pid_c=$!
@@ -107,12 +245,14 @@ echo "race successful contenders: $successes"
 test "$successes" = 1
 psql_admin -c "update symphony_staging.issue_claims set released_at = clock_timestamp() where issue_id = 'RACE';"
 
+psql_admin -c "update symphony_staging.nodes set claim_capacity = 2 where node_id = '$node_a';"
 claim claim_node_a CAP-A "$node_a" "$instance_a" >/dev/null
 claim claim_node_a CAP-B "$node_a" "$instance_a" >/dev/null
 if claim claim_node_a CAP-C "$node_a" "$instance_a" >/dev/null 2>&1; then
   echo "capacity unexpectedly allowed a final-slot overflow" >&2; exit 1
 fi
 psql_admin -c "update symphony_staging.issue_claims set released_at = clock_timestamp() where issue_id in ('CAP-A','CAP-B');"
+psql_admin -c "update symphony_staging.nodes set claim_capacity = 3 where node_id = '$node_a';"
 if claim claim_node_b EXCLUSIVE "$node_b" "$instance_b" >/dev/null 2>&1; then
   echo "exclusive routing unexpectedly allowed the wrong node" >&2; exit 1
 fi
@@ -547,6 +687,10 @@ test "$(psql_admin -A -t -c "select to_regclass('symphony_staging.issue_claims')
 psql_admin -f "$effect_rollback"
 test "$(psql_admin -A -t -c "select to_regclass('symphony_staging.effect_operations') is null;")" = "t"
 test "$(psql_admin -A -t -c "select to_regclass('symphony_staging.issue_claims') is not null;")" = "t"
+psql_admin -f "$capacity_rollback"
+test "$(psql_admin -A -t -c "select to_regprocedure('symphony_staging.current_node_claim_capacity()') is null;")" = "t"
+test "$(psql_admin -A -t -c "select not exists (
+  select 1 from symphony_staging.contract_versions where contract_name = 'node-capacity-contract');")" = "t"
 psql_admin -c "delete from symphony_staging.active_node_instances where node_id = '$node_a';"
 
-echo "ARO-164/165/166 disposable PostgreSQL claim, effect, and handoff lifecycle passed without printing credentials"
+echo "ARO-164/165/166/288 disposable PostgreSQL claim, effect, handoff, and capacity lifecycle passed without printing credentials"

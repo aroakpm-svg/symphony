@@ -77,6 +77,44 @@ defmodule SymphonyElixir.CrossMachineClaimsMigrationTest do
     refute sql =~ "In Progress requires an expired claim takeover"
   end
 
+  test "disposable proof covers mixed-project node and three-node fleet capacity" do
+    script = File.read!(Path.expand("../../../.github/scripts/test-cross-machine-claims.sh", __DIR__))
+
+    for marker <- [
+          "ARO288-MIXED-CB-1",
+          "ARO288-MIXED-PM-1",
+          "ARO288-FLEET-09",
+          "ARO288-FLEET-10",
+          "ARO288-CAPACITY-LOWER",
+          "ARO288-CAPACITY-RAISE"
+        ] do
+      assert script =~ marker
+    end
+
+    assert script =~ "20260827000000_aro_288_node_capacity_contract.sql"
+    assert script =~ "current_node_claim_capacity()"
+
+    transition_markers = [
+      "update symphony_staging.nodes set claim_capacity = 2 where node_id = '$node_a'",
+      "select count(*) = 2",
+      "if claim claim_node_a ARO288-CAPACITY-RAISE",
+      "select 1 from symphony_staging.issue_claims where issue_id = 'ARO288-CAPACITY-RAISE'",
+      "select 1 from symphony_staging.issue_claim_generations where issue_id = 'ARO288-CAPACITY-RAISE'",
+      "update symphony_staging.nodes set claim_capacity = 3 where node_id = '$node_a'",
+      "capacity_raise=\"$(claim claim_node_a ARO288-CAPACITY-RAISE"
+    ]
+
+    positions =
+      Enum.map(transition_markers, fn marker ->
+        case :binary.match(script, marker) do
+          {position, _length} -> position
+          :nomatch -> flunk("missing ordered capacity transition marker: #{marker}")
+        end
+      end)
+
+    assert positions == Enum.sort(positions)
+  end
+
   test "rollback removes only ARO-164 objects" do
     rollback = File.read!(@rollback)
 

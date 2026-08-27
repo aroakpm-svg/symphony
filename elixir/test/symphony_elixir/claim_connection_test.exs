@@ -9,19 +9,88 @@ defmodule SymphonyElixir.ClaimConnectionTest do
         {:error, :connection_refused}
       else
         Agent.start_link(fn -> options end)
+        |> notify_started_connection()
       end
     end
 
-    def query(_connection, _sql, ["accepted", _instance_id], timeout: 12_000) do
+    defp notify_started_connection({:ok, connection} = result) do
+      send(self(), {:claim_connection_started, connection})
+      result
+    end
+
+    defp notify_started_connection(error), do: error
+
+    def query(
+          _connection,
+          "select * from symphony_staging.authenticate_node($1::text::uuid, $2::text::uuid)",
+          [node_id, _instance_id],
+          timeout: 12_000
+        )
+        when node_id in [
+               "accepted",
+               "accepted-capacity-3",
+               "capacity-2",
+               "capacity-empty",
+               "capacity-malformed",
+               "capacity-duplicate",
+               "capacity-error",
+               "capacity-outer-malformed"
+             ] do
+      send(self(), {:claim_connection_query, :authenticate})
       {:ok, %Postgrex.Result{rows: [[<<0::128>>, <<1::128>>, 3]], num_rows: 1}}
     end
 
-    def query(_connection, _sql, ["rejected", _instance_id], timeout: 12_000) do
+    def query(
+          _connection,
+          "select * from symphony_staging.authenticate_node($1::text::uuid, $2::text::uuid)",
+          ["rejected", _instance_id],
+          timeout: 12_000
+        ) do
+      send(self(), {:claim_connection_query, :authenticate})
       {:ok, %Postgrex.Result{rows: [], num_rows: 0}}
     end
 
-    def query(_connection, _sql, ["error", _instance_id], timeout: 12_000) do
+    def query(
+          _connection,
+          "select * from symphony_staging.authenticate_node($1::text::uuid, $2::text::uuid)",
+          ["error", _instance_id],
+          timeout: 12_000
+        ) do
+      send(self(), {:claim_connection_query, :authenticate})
       {:error, :authentication_failed}
+    end
+
+    def query(connection, "select symphony_staging.current_node_claim_capacity()", [], timeout: 12_000) do
+      send(self(), {:claim_connection_query, :capacity})
+
+      case Agent.get(connection, & &1[:hostname]) do
+        host
+        when host in [
+               "accepted.example",
+               "accepted-capacity-3.example",
+               "rejected.example",
+               "error.example"
+             ] ->
+          {:ok, %Postgrex.Result{rows: [[3]], num_rows: 1}}
+
+        "capacity-2.example" ->
+          {:ok, %Postgrex.Result{rows: [[2]], num_rows: 1}}
+
+        "capacity-empty.example" ->
+          {:ok, %Postgrex.Result{rows: [], num_rows: 0}}
+
+        "capacity-malformed.example" ->
+          {:ok, %Postgrex.Result{rows: [["3"]], num_rows: 1}}
+
+        "capacity-duplicate.example" ->
+          {:ok, %Postgrex.Result{rows: [[3], [3]], num_rows: 2}}
+
+        "capacity-error.example" ->
+          {:error, :capacity_unavailable}
+
+        "capacity-outer-malformed.example" ->
+          :unexpected
+      end
     end
   end
 
@@ -137,16 +206,48 @@ defmodule SymphonyElixir.ClaimConnectionTest do
     GenServer.stop(connection)
   end
 
-  test "connect stops the connection when authentication is rejected", %{ca_path: ca_path} do
-    settings = connection_settings(ca_path, "rejected")
+  test "connect validates exact node capacity before stateful authentication", %{ca_path: ca_path} do
+    settings = connection_settings(ca_path, "accepted-capacity-3")
+    assert {:ok, connection} = ClaimConnection.connect(settings, Adapter)
+    assert_receive {:claim_connection_query, :capacity}
+    assert_receive {:claim_connection_query, :authenticate}
+    assert Process.alive?(connection)
+    GenServer.stop(connection)
+  end
 
-    assert {:error, :node_authentication_rejected} = ClaimConnection.connect(settings, Adapter)
+  test "capacity rejection never invokes stateful authentication", %{ca_path: ca_path} do
+    assert_connect_stops(ca_path, "capacity-2", {:error, :node_capacity_mismatch})
+    assert_receive {:claim_connection_query, :capacity}
+    refute_receive {:claim_connection_query, :authenticate}
+  end
+
+  test "connect stops the connection for a capacity mismatch", %{ca_path: ca_path} do
+    for node_id <- [
+          "capacity-2",
+          "capacity-empty",
+          "capacity-malformed",
+          "capacity-duplicate"
+        ] do
+      assert_connect_stops(ca_path, node_id, {:error, :node_capacity_mismatch})
+    end
+  end
+
+  test "connect stops the connection for a capacity database error", %{ca_path: ca_path} do
+    assert_connect_stops(ca_path, "capacity-error", {:error, :node_capacity_unavailable})
+  end
+
+  test "connect stops the connection for an outer malformed capacity response", %{ca_path: ca_path} do
+    assert_connect_stops(ca_path, "capacity-outer-malformed", {:error, :node_capacity_unavailable})
+  end
+
+  test "connect stops the connection when authentication is rejected", %{ca_path: ca_path} do
+    assert_connect_stops(ca_path, "rejected", {:error, :node_authentication_rejected})
   end
 
   test "connect propagates authentication and connection errors", %{ca_path: ca_path} do
-    settings = connection_settings(ca_path, "error")
-    assert {:error, :authentication_failed} = ClaimConnection.connect(settings, Adapter)
+    assert_connect_stops(ca_path, "error", {:error, :authentication_failed})
 
+    settings = connection_settings(ca_path, "error")
     start_error = %{settings | database_url: "postgresql://node:secret@start-error.example/postgres"}
     assert {:error, :connection_refused} = ClaimConnection.connect(start_error, Adapter)
   end
@@ -174,9 +275,38 @@ defmodule SymphonyElixir.ClaimConnectionTest do
              ClaimConnection.authentication_result({:error, :invalid_password})
   end
 
+  test "accepts only the exact node capacity contract" do
+    assert :ok = ClaimConnection.capacity_result({:ok, %Postgrex.Result{rows: [[3]], num_rows: 1}})
+
+    for result <- [
+          {:ok, %Postgrex.Result{rows: [[2]], num_rows: 1}},
+          {:ok, %Postgrex.Result{rows: [], num_rows: 0}},
+          {:ok, %Postgrex.Result{rows: [["3"]], num_rows: 1}},
+          {:ok, %Postgrex.Result{rows: [[3], [3]], num_rows: 2}}
+        ] do
+      assert {:error, :node_capacity_mismatch} = ClaimConnection.capacity_result(result)
+    end
+
+    assert {:error, :node_capacity_unavailable} =
+             ClaimConnection.capacity_result({:error, {:unsafe_database_text, "secret"}})
+
+    for result <- [:unexpected, {:ok, %{}}] do
+      assert {:error, :node_capacity_unavailable} = ClaimConnection.capacity_result(result)
+    end
+  end
+
+  defp assert_connect_stops(ca_path, node_id, expected_result) do
+    assert expected_result ==
+             ClaimConnection.connect(connection_settings(ca_path, node_id), Adapter)
+
+    assert_receive {:claim_connection_started, connection}
+    monitor_ref = Process.monitor(connection)
+    assert_receive {:DOWN, ^monitor_ref, :process, ^connection, _reason}
+  end
+
   defp connection_settings(ca_path, node_id) do
     %{
-      database_url: "postgresql://node:secret@pooler.example/postgres",
+      database_url: "postgresql://node:secret@#{node_id}.example/postgres",
       ca_cert_file: ca_path,
       node_id: node_id,
       node_instance_id: "instance"

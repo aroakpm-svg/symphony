@@ -230,8 +230,9 @@ The `WORKFLOW.md` file uses YAML front matter for configuration, plus a Markdown
 Codex session prompt.
 
 For multiple Symphony machines polling the same Linear project, enable the staging-backed claim
-coordinator only after the ARO-164 claim migration, ARO-165 effect-ledger migration, and ARO-169
-node enrollment are complete:
+coordinator only after the ARO-164 claim migration, ARO-165 effect-ledger migration, ARO-169 node
+enrollment, and ARO-288 node-capacity schema migration are complete, and ARO-287's separate rollout
+has set and verified each node's `claim_capacity` row:
 
 ```yaml
 claim:
@@ -254,6 +255,23 @@ call the claim functions but cannot directly read or mutate claim tables. Sympho
 before starting a worker, renews it using the database clock, and stops the worker if renewal can no
 longer prove ownership. Leave `claim.enabled: false` for single-machine operation or until shared
 staging has been migrated; opening or merging this PR does not apply the migration to staging.
+
+### Node-wide claim capacity contract
+
+When `claim.enabled` is true, `claim_capacity` belongs to the enrolled node and must equal `3`.
+Startup validates capacity before registering the one-time node instance, so a rejected capacity
+cannot strand a phantom session. Central-Brain and Project-Management workers on that node
+share those three claims, and project profiles cannot define or override capacity. Local Elixir slot
+checks may avoid unnecessary work, but only the atomic database claim transaction authorizes a
+slot.
+
+Lowering a node's capacity preserves its existing active claims and their lease/generation
+lifecycle; it blocks only new claims until usage falls below the new limit. With Amy, Matt, and Han
+each configured for three claims, the fleet can hold nine active claims and a tenth must wait.
+Installing this code or its migration does not update those node rows. ARO-287 remains the separate
+operator rollout that sets and verifies each node's value before its claim-enabled runtime starts.
+
+### Workflow format and options
 
 Minimal example:
 
