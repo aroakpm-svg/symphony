@@ -2,6 +2,7 @@ defmodule SymphonyElixir.ProjectProfilesTest do
   use ExUnit.Case, async: true
 
   alias SymphonyElixir.ProjectProfiles
+  alias SymphonyElixir.Config.Schema.ProjectProfilesType
 
   test "parses the complete approved v1 profile set and supports exact lookup" do
     assert {:ok, profiles} = ProjectProfiles.parse(valid_config())
@@ -100,6 +101,57 @@ defmodule SymphonyElixir.ProjectProfilesTest do
 
     assert {:error, {:unsupported_version, 2}, nil} =
              ProjectProfiles.reload(nil, invalid)
+  end
+
+  test "rejects malformed shapes and supports atom-keyed workflow input" do
+    assert {:error, :invalid_project_profiles} = ProjectProfiles.parse(nil)
+    assert {:error, :invalid_project_profiles} = ProjectProfiles.parse(%{"version" => 1, "profiles" => "nope"})
+
+    assert {:error, :invalid_project_profiles} =
+             ProjectProfiles.parse(%{"version" => 1, "profiles" => [nil]})
+
+    non_binary_key = Map.put(central_profile(), "key", 42)
+
+    assert {:error, :invalid_project_profiles} =
+             ProjectProfiles.parse(%{"version" => 1, "profiles" => [non_binary_key]})
+
+    assert :error = ProjectProfiles.fetch(nil, "central-brain")
+
+    atom_config = %{
+      version: 1,
+      profiles: [
+        Map.new(central_profile(), fn {key, value} -> {String.to_existing_atom(key), value} end),
+        Map.new(project_management_profile(), fn {key, value} -> {String.to_existing_atom(key), value} end)
+      ]
+    }
+
+    assert {:ok, _profiles} = ProjectProfiles.parse(atom_config)
+  end
+
+  test "Ecto type callbacks cover every safe rejection without echoing submitted values" do
+    assert ProjectProfilesType.type() == :map
+    assert ProjectProfilesType.embed_as(:json) == :self
+    assert ProjectProfilesType.equal?(%{a: 1}, %{a: 1})
+    refute ProjectProfilesType.equal?(%{a: 1}, %{a: 2})
+    assert {:ok, %{a: 1}} = ProjectProfilesType.load(%{a: 1})
+    assert :error = ProjectProfilesType.load("invalid")
+    assert {:ok, %{a: 1}} = ProjectProfilesType.dump(%{a: 1})
+    assert :error = ProjectProfilesType.dump("invalid")
+
+    invalid_candidates = [
+      nil,
+      Map.put(valid_config(), "version", "secret-version"),
+      Map.put(valid_config(), "secret-field", "secret-value"),
+      Map.put(valid_config(), "profiles", [central_profile()]),
+      Map.put(valid_config(), "profiles", [Map.put(central_profile(), "key", "secret-profile")]),
+      Map.put(valid_config(), "profiles", [central_profile(), central_profile()]),
+      update_in(valid_config(), ["profiles", Access.at(0)], &Map.put(&1, "credential_ref", "secret-token"))
+    ]
+
+    for candidate <- invalid_candidates do
+      assert {:error, message: message} = ProjectProfilesType.cast(candidate)
+      refute message =~ "secret"
+    end
   end
 
   defp valid_config do

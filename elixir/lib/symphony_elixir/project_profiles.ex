@@ -128,8 +128,6 @@ defmodule SymphonyElixir.ProjectProfiles do
     end
   end
 
-  defp parse_profile(_profile), do: {:error, :invalid_project_profiles}
-
   defp approved_profile(key) do
     case Map.fetch(@manifest, key) do
       {:ok, profile} -> {:ok, profile}
