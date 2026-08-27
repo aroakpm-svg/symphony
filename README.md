@@ -34,6 +34,19 @@ help with the setup:
 > Set up Symphony for my repository based on
 > https://github.com/openai/symphony/blob/main/elixir/README.md
 
+#### Project repository readiness boundary
+
+Before a project repository can be considered for worker pickup, Symphony may run an explicitly
+approved, read-only repository preflight. The current Project-Management mapping is bound to
+`aroakpm-svg/aroak-project-management` on `github.com`; the preflight verifies the repository
+identity, `main` default branch and exact head, and required quality-script contract. Missing,
+unreadable, mismatched, or malformed evidence fails closed with a human next step.
+
+Passing this check proves repository readiness only. It does not enable project polling, dispatch,
+credentials, deployment authority, or automatic issue pickup. See the
+[Elixir preflight documentation](elixir/README.md#project-management-repository-preflight) for the
+implementation and dry-check command.
+
 #### Distributed claim safety
 
 Multi-worker deployments use the database-backed claim service to ensure that only one enrolled

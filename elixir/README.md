@@ -357,6 +357,23 @@ The observability UI now runs on a minimal Phoenix stack:
 - Phoenix dependency static assets for the LiveView client bootstrap
 - Tracker issue identifiers link to the tracker-provided URL when it uses `http` or `https`
 
+## Project-Management repository preflight
+
+`SymphonyElixir.ProjectRepoPreflight` contains the approved, read-only
+`project-management` mapping. It verifies GitHub CLI read authentication, the
+repository identity, the `main` default branch and head, and the repository's
+`typecheck`, `build`, and `db:test` quality-script contract.
+
+Run the dry check without starting a worker:
+
+```elixir
+SymphonyElixir.ProjectRepoPreflight.check("project-management")
+```
+
+The result is either `{:ok, receipt}` or `{:blocked, reason}` with one minimal
+human next step. This readiness check does not add Project-Management polling,
+dispatch, credentials, deployment authority, or automatic pickup permission.
+
 ## Project Layout
 
 - `lib/`: application code and Mix tasks

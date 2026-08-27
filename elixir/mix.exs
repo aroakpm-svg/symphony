@@ -21,6 +21,7 @@ defmodule SymphonyElixir.MixProject do
           SymphonyElixir.SpecsCheck,
           SymphonyElixir.Orchestrator,
           SymphonyElixir.Orchestrator.State,
+          SymphonyElixir.ProjectRepoPreflight,
           SymphonyElixir.ClaimService,
           SymphonyElixir.EffectLedger,
           SymphonyElixir.ReviewMonitor,
