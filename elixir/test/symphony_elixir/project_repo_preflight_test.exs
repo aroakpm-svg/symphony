@@ -12,16 +12,16 @@ defmodule SymphonyElixir.ProjectRepoPreflightTest do
         {~s({"nameWithOwner":"aroakpm-svg/aroak-project-management","defaultBranchRef":{"name":"main"}}), 0}
 
       "git", ["ls-remote", "--exit-code", "https://github.com/aroakpm-svg/aroak-project-management.git", "refs/heads/main"] ->
-        {"0123456789abcdef\trefs/heads/main\n", 0}
+        {"0123456789abcdef0123456789abcdef01234567\trefs/heads/main\n", 0}
 
-      "gh", ["api", "repos/aroakpm-svg/aroak-project-management/contents/package.json", "-H", "Accept: application/vnd.github.raw+json"] ->
+      "gh", ["api", "repos/aroakpm-svg/aroak-project-management/contents/package.json?ref=0123456789abcdef0123456789abcdef01234567", "-H", "Accept: application/vnd.github.raw+json"] ->
         {~s({"scripts":{"typecheck":"tsc --noEmit","build":"next build","db:test":"bash scripts/db-test.sh"}}), 0}
     end
 
     assert {:ok, receipt} = ProjectRepoPreflight.check("project-management", runner)
     assert receipt.repository == "aroakpm-svg/aroak-project-management"
     assert receipt.default_branch == "main"
-    assert receipt.head_sha == "0123456789abcdef"
+    assert receipt.head_sha == "0123456789abcdef0123456789abcdef01234567"
     assert receipt.required_scripts == ["typecheck", "build", "db:test"]
   end
 
@@ -56,13 +56,52 @@ defmodule SymphonyElixir.ProjectRepoPreflightTest do
         {~s({"nameWithOwner":"aroakpm-svg/aroak-project-management","defaultBranchRef":{"name":"main"}}), 0}
 
       "git", ["ls-remote", "--exit-code", "https://github.com/aroakpm-svg/aroak-project-management.git", "refs/heads/main"] ->
-        {"0123456789abcdef\trefs/heads/main\n", 0}
+        {"0123456789abcdef0123456789abcdef01234567\trefs/heads/main\n", 0}
 
-      "gh", ["api", "repos/aroakpm-svg/aroak-project-management/contents/package.json", "-H", "Accept: application/vnd.github.raw+json"] ->
+      "gh", ["api", "repos/aroakpm-svg/aroak-project-management/contents/package.json?ref=0123456789abcdef0123456789abcdef01234567", "-H", "Accept: application/vnd.github.raw+json"] ->
         {~s({"scripts":{"typecheck":"tsc --noEmit"}}), 0}
     end
 
     assert {:blocked, %{code: :required_check_contract_missing, detail: ["build", "db:test"]}} =
              ProjectRepoPreflight.check("project-management", runner)
+  end
+
+  test "malformed metadata, heads, and script values fail closed" do
+    assert {:blocked, %{code: :repository_metadata_invalid}} =
+             ProjectRepoPreflight.check(
+               "project-management",
+               sequence_runner([{"authenticated", 0}, {~s({"nameWithOwner":true}), 0}])
+             )
+
+    valid_metadata = ~s({"nameWithOwner":"aroakpm-svg/aroak-project-management","defaultBranchRef":{"name":"main"}})
+
+    assert {:blocked, %{code: :default_branch_unresolvable}} =
+             ProjectRepoPreflight.check(
+               "project-management",
+               sequence_runner([{"authenticated", 0}, {valid_metadata, 0}, {"short refs/heads/main", 0}])
+             )
+
+    assert {:blocked, %{code: :required_check_contract_missing, detail: ["typecheck"]}} =
+             ProjectRepoPreflight.check(
+               "project-management",
+               sequence_runner([
+                 {"authenticated", 0},
+                 {valid_metadata, 0},
+                 {"0123456789abcdef0123456789abcdef01234567\trefs/heads/main\n", 0},
+                 {~s({"scripts":{"typecheck":" ","build":"next build","db:test":"bash scripts/db-test.sh"}}), 0}
+               ])
+             )
+  end
+
+  test "runner exceptions become a secret-safe blocker" do
+    runner = fn _, _ -> raise "token=must-not-escape" end
+
+    assert {:blocked, %{code: :github_auth_unavailable, detail: nil}} =
+             ProjectRepoPreflight.check("project-management", runner)
+  end
+
+  defp sequence_runner(results) do
+    {:ok, agent} = Agent.start_link(fn -> results end)
+    fn _, _ -> Agent.get_and_update(agent, fn [result | rest] -> {result, rest} end) end
   end
 end

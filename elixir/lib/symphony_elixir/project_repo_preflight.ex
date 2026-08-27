@@ -15,6 +15,8 @@ defmodule SymphonyElixir.ProjectRepoPreflight do
       required_scripts: ["typecheck", "build", "db:test"]
     }
   }
+  @command_timeout_ms 10_000
+  @sha_pattern ~r/\A(?:[0-9a-fA-F]{40}|[0-9a-fA-F]{64})\z/
 
   @type command_runner :: (String.t(), [String.t()] -> {String.t(), non_neg_integer()})
   @type receipt :: %{
@@ -39,7 +41,7 @@ defmodule SymphonyElixir.ProjectRepoPreflight do
          {:ok, repo} <- repository_metadata(mapping, runner),
          :ok <- verify_repository(mapping, repo),
          {:ok, head_sha} <- default_branch_head(mapping, runner),
-         {:ok, scripts} <- package_scripts(mapping, runner),
+         {:ok, scripts} <- package_scripts(mapping, head_sha, runner),
          :ok <- verify_required_scripts(mapping, scripts) do
       {:ok,
        %{
@@ -55,14 +57,18 @@ defmodule SymphonyElixir.ProjectRepoPreflight do
   defp repository_metadata(mapping, runner) do
     args = ["repo", "view", mapping.repository, "--json", "nameWithOwner,defaultBranchRef"]
 
-    case runner.("gh", args) do
-      {output, 0} ->
+    case safe_run(runner, "gh", args) do
+      {:ok, output} ->
         case Jason.decode(output) do
-          {:ok, metadata} -> {:ok, metadata}
-          {:error, _reason} -> blocked(:repository_metadata_invalid, nil, "Retry the read-only preflight; GitHub returned malformed repository metadata.")
+          {:ok, %{"nameWithOwner" => repository, "defaultBranchRef" => %{"name" => branch}} = metadata}
+          when is_binary(repository) and is_binary(branch) ->
+            {:ok, metadata}
+
+          _other ->
+            blocked(:repository_metadata_invalid, nil, "Retry the read-only preflight; GitHub returned malformed repository metadata.")
         end
 
-      {_output, _status} ->
+      {:error, _reason} ->
         blocked(:repository_unavailable, mapping.repository, "Grant GitHub CLI read access to the mapped repository.")
     end
   end
@@ -86,35 +92,48 @@ defmodule SymphonyElixir.ProjectRepoPreflight do
   defp default_branch_head(mapping, runner) do
     args = ["ls-remote", "--exit-code", mapping.clone_url, "refs/heads/#{mapping.default_branch}"]
 
-    case runner.("git", args) do
-      {output, 0} ->
-        case output |> String.split() |> List.first() do
-          nil -> blocked(:default_branch_unresolvable, mapping.default_branch, "Ensure the mapped default branch exists and is readable.")
-          sha -> {:ok, String.downcase(sha)}
+    case safe_run(runner, "git", args) do
+      {:ok, output} ->
+        case String.split(String.trim(output), ~r/\s+/, parts: 2) do
+          [sha, "refs/heads/" <> branch] when branch == mapping.default_branch ->
+            if Regex.match?(@sha_pattern, sha) do
+              {:ok, String.downcase(sha)}
+            else
+              branch_unresolvable(mapping)
+            end
+
+          _other ->
+            branch_unresolvable(mapping)
         end
 
-      {_output, _status} ->
-        blocked(:default_branch_unresolvable, mapping.default_branch, "Ensure the mapped default branch exists and is readable.")
+      {:error, _reason} ->
+        branch_unresolvable(mapping)
     end
   end
 
-  defp package_scripts(mapping, runner) do
-    args = ["api", "repos/#{mapping.repository}/contents/package.json", "-H", "Accept: application/vnd.github.raw+json"]
+  defp package_scripts(mapping, head_sha, runner) do
+    args = ["api", "repos/#{mapping.repository}/contents/package.json?ref=#{head_sha}", "-H", "Accept: application/vnd.github.raw+json"]
 
-    case runner.("gh", args) do
-      {output, 0} ->
+    case safe_run(runner, "gh", args) do
+      {:ok, output} ->
         case Jason.decode(output) do
           {:ok, %{"scripts" => scripts}} when is_map(scripts) -> {:ok, scripts}
           _other -> blocked(:required_check_contract_invalid, nil, "Restore a valid package.json scripts contract on main.")
         end
 
-      {_output, _status} ->
-        blocked(:required_check_contract_unreadable, nil, "Grant read access to package.json on the mapped repository.")
+      {:error, _reason} ->
+        blocked(:required_check_contract_unreadable, nil, "Ensure package.json exists and is readable at the verified head.")
     end
   end
 
   defp verify_required_scripts(mapping, scripts) do
-    missing = Enum.reject(mapping.required_scripts, &Map.has_key?(scripts, &1))
+    missing =
+      Enum.reject(mapping.required_scripts, fn name ->
+        case Map.get(scripts, name) do
+          command when is_binary(command) -> String.trim(command) != ""
+          _other -> false
+        end
+      end)
 
     if missing == [] do
       :ok
@@ -124,15 +143,53 @@ defmodule SymphonyElixir.ProjectRepoPreflight do
   end
 
   defp command_ok(runner, command, args, code, next_step) do
-    case runner.(command, args) do
-      {_output, 0} -> :ok
-      {_output, _status} -> blocked(code, nil, next_step)
+    case safe_run(runner, command, args) do
+      {:ok, _output} -> :ok
+      {:error, _reason} -> blocked(code, nil, next_step)
     end
+  end
+
+  defp safe_run(runner, command, args) do
+    parent = self()
+    {pid, monitor} = spawn_monitor(fn -> send(parent, {self(), runner.(command, args)}) end)
+
+    receive do
+      {^pid, {output, 0}} when is_binary(output) ->
+        Process.demonitor(monitor, [:flush])
+        {:ok, output}
+
+      {^pid, {_output, status}} when is_integer(status) ->
+        Process.demonitor(monitor, [:flush])
+        {:error, :command_failed}
+
+      {^pid, _unexpected} ->
+        Process.demonitor(monitor, [:flush])
+        {:error, :invalid_command_result}
+
+      {:DOWN, ^monitor, :process, ^pid, _reason} ->
+        {:error, :command_exception}
+    after
+      @command_timeout_ms ->
+        Process.exit(pid, :kill)
+
+        receive do
+          {:DOWN, ^monitor, :process, ^pid, _reason} -> :ok
+        end
+
+        {:error, :command_timeout}
+    end
+  end
+
+  defp branch_unresolvable(mapping) do
+    blocked(:default_branch_unresolvable, mapping.default_branch, "Ensure the mapped default branch exists and is readable.")
   end
 
   defp blocked(code, detail, next_step), do: {:blocked, %{code: code, detail: detail, next_step: next_step}}
 
   defp run_command(command, args) do
-    System.cmd(command, args, stderr_to_stdout: true)
+    System.cmd(command, args,
+      stderr_to_stdout: true,
+      env: [{"GIT_TERMINAL_PROMPT", "0"}, {"GCM_INTERACTIVE", "Never"}]
+    )
   end
 end
