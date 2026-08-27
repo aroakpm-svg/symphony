@@ -224,6 +224,52 @@ defmodule SymphonyElixir.MultiProjectDispatchTest do
            ]
   end
 
+  test "production multi-project entry performs authorization gates at full capacity before skipping claim" do
+    configure_multi_project_memory_tracker!()
+    {:ok, events} = Agent.start_link(fn -> [] end)
+    running_issue = issue("already-running-production", @central_profile, 1)
+    candidate = issue("capacity-waits-production", @project_management_profile, 2)
+    Application.put_env(:symphony_elixir, :memory_tracker_issues, [running_issue])
+
+    full_state = %{
+      base_state()
+      | max_concurrent_agents: 1,
+        running: %{
+          running_issue.id => %{
+            issue: running_issue,
+            identifier: running_issue.identifier,
+            pid: self(),
+            ref: make_ref(),
+            started_at: DateTime.utc_now()
+          }
+        }
+    }
+
+    fetcher = fn profile ->
+      record(events, {:fetch, profile.key})
+      {:ok, if(profile.key == "project-management", do: [candidate], else: [])}
+    end
+
+    state =
+      Orchestrator.maybe_dispatch_for_test(
+        full_state,
+        dispatch_opts(fetcher, %{candidate.id => candidate}, events, [])
+      )
+
+    assert Map.keys(state.running) == [running_issue.id]
+
+    assert for({:fetch, profile} <- Agent.get(events, & &1), do: profile) |> Enum.sort() == [
+             "central-brain",
+             "project-management"
+           ]
+
+    assert Enum.reject(Agent.get(events, & &1), &match?({:fetch, _profile}, &1)) == [
+             {:refresh, [candidate.id]},
+             {:route, candidate.id},
+             {:preflight, "project-management"}
+           ]
+  end
+
   test "transient Linear and routing failures recover on profile timers without process exit" do
     for failure <- [:linear, :routing] do
       {:ok, events} = Agent.start_link(fn -> [] end)
@@ -366,6 +412,34 @@ defmodule SymphonyElixir.MultiProjectDispatchTest do
       max_concurrent_agents: 10,
       codex_totals: %{input_tokens: 0, output_tokens: 0, total_tokens: 0, seconds_running: 0}
     }
+  end
+
+  defp configure_multi_project_memory_tracker! do
+    write_workflow_file!(Workflow.workflow_file_path(), tracker_kind: "memory")
+
+    project_profiles = """
+    project_profiles:
+      version: 1
+      profiles:
+        - key: central-brain
+          linear_project_id: d0acfb71-f68c-4a9f-8a1a-477265d3c3ec
+          repository: aroakpm-svg/aroak-central-brain
+          canonical_branch: main
+          workspace_namespace: central-brain
+          credential_ref: github-central-brain
+          environment: local_non_production
+        - key: project-management
+          linear_project_id: 708053e0-f42c-4e93-bec4-7abbb37e74af
+          repository: aroakpm-svg/aroak-project-management
+          canonical_branch: main
+          workspace_namespace: project-management
+          credential_ref: github-project-management
+          environment: local_non_production
+    """
+
+    workflow = File.read!(Workflow.workflow_file_path())
+    File.write!(Workflow.workflow_file_path(), String.replace(workflow, "---\n", "---\n#{project_profiles}", global: false))
+    assert :ok = WorkflowStore.force_reload()
   end
 
   defp issue(id, profile, priority) do

@@ -326,7 +326,7 @@ defmodule SymphonyElixir.Orchestrator do
     })
   end
 
-  defp maybe_dispatch(%State{} = state) do
+  defp maybe_dispatch(%State{} = state, opts \\ []) do
     state =
       state
       |> reconcile_running_issues()
@@ -334,9 +334,8 @@ defmodule SymphonyElixir.Orchestrator do
 
     with {:ok, settings} <- Config.settings(),
          state <- reconcile_review_convergence(state),
-         :ok <- Config.validate!(),
-         true <- available_slots(state) > 0 do
-      fetch_and_dispatch_candidates(state, settings.project_profiles)
+         :ok <- Config.validate!() do
+      fetch_and_dispatch_candidates(state, settings.project_profiles, opts)
     else
       {:error, :missing_linear_api_token} ->
         Logger.error("Linear API token missing in WORKFLOW.md")
@@ -386,6 +385,10 @@ defmodule SymphonyElixir.Orchestrator do
   def maybe_dispatch_for_test(%State{} = state), do: maybe_dispatch(state)
 
   @doc false
+  @spec maybe_dispatch_for_test(term(), keyword()) :: term()
+  def maybe_dispatch_for_test(%State{} = state, opts) when is_list(opts), do: maybe_dispatch(state, opts)
+
+  @doc false
   @spec multi_project_dispatch_for_test(term(), ProjectProfiles.t(), keyword()) :: term()
   def multi_project_dispatch_for_test(%State{} = state, profiles, opts)
       when is_list(opts) do
@@ -406,23 +409,27 @@ defmodule SymphonyElixir.Orchestrator do
     profile_retry_delay(attempt)
   end
 
-  defp fetch_and_dispatch_candidates(state, nil) do
-    case Tracker.fetch_candidate_issues() do
-      {:ok, issues} ->
-        choose_issues(issues, state)
+  defp fetch_and_dispatch_candidates(state, nil, _opts) do
+    if available_slots(state) > 0 do
+      case Tracker.fetch_candidate_issues() do
+        {:ok, issues} ->
+          choose_issues(issues, state)
 
-      {:error, reason} ->
-        Logger.error("Failed to fetch from Linear: #{inspect(reason)}")
-        state
+        {:error, reason} ->
+          Logger.error("Failed to fetch from Linear: #{inspect(reason)}")
+          state
+      end
+    else
+      state
     end
   end
 
-  defp fetch_and_dispatch_candidates(state, profiles) do
+  defp fetch_and_dispatch_candidates(state, profiles, opts) do
     run_multi_project_poll(
       state,
       profiles,
       available_project_profiles(profiles, state),
-      []
+      opts
     )
   end
 
