@@ -2,6 +2,41 @@ defmodule SymphonyElixir.ClaimServiceTest do
   use ExUnit.Case, async: false
 
   alias SymphonyElixir.ClaimService
+  alias SymphonyElixir.Linear.Issue
+
+  @current_node_id "00000000-0000-4000-8000-000000000001"
+  @other_node_id "00000000-0000-4000-8000-000000000002"
+
+  test "exclusive routing accepts only the current node and returns its revision" do
+    assert {:ok, %{routing_revision: 7}} = exclusive_route("exclusive", @current_node_id, 7)
+    assert {:ineligible, :wrong_node} = exclusive_route("exclusive", @other_node_id, 7)
+    assert {:ineligible, :missing_routing} = exclusive_route(nil, nil, nil)
+    assert {:ineligible, :non_exclusive_routing} = exclusive_route("unassigned", nil, 3)
+
+    assert {:ineligible, :non_exclusive_routing} =
+             exclusive_route("preferred-with-fallback", @current_node_id, 4)
+  end
+
+  test "exclusive routing reads the assignment by issue id without exposing query errors" do
+    parent = self()
+
+    query = fn sql, params ->
+      send(parent, {:routing_query, sql, params})
+      {:error, RuntimeError.exception("postgresql://secret@database.internal/symphony")}
+    end
+
+    assert {:error, :routing_lookup_failed} = route_with_query(query)
+    assert_receive {:routing_query, sql, ["issue-1"]}
+    assert sql =~ "from symphony_staging.routing_assignments"
+    assert sql =~ "where issue_id = $1"
+    assert String.trim_leading(sql) =~ ~r/^select\b/i
+    refute sql =~ ~r/\b(insert|update|delete|call)\b/i
+
+    result = ClaimService.exclusive_route(%Issue{id: "issue-1"})
+
+    assert result == {:error, :claim_service_unavailable}
+    refute inspect(result) =~ "database.internal"
+  end
 
   test "database calls bind textual UUIDs through text before UUID casts" do
     source = File.read!(Path.expand("../../lib/symphony_elixir/claim_service.ex", __DIR__))
@@ -158,5 +193,31 @@ defmodule SymphonyElixir.ClaimServiceTest do
 
     assert elem(application_supervisor_state, 2) == :one_for_one
     assert elem(supervisor_state, 2) == :one_for_all
+  end
+
+  defp exclusive_route(nil, nil, nil) do
+    route_with_query(fn _sql, _params ->
+      {:ok, %Postgrex.Result{rows: [], num_rows: 0}}
+    end)
+  end
+
+  defp exclusive_route(policy, target_node_id, routing_revision) do
+    route_with_query(fn _sql, _params ->
+      {:ok,
+       %Postgrex.Result{
+         rows: [[policy, target_node_id, routing_revision]],
+         num_rows: 1
+       }}
+    end)
+  end
+
+  defp route_with_query(query) do
+    issue = %Issue{id: "issue-1"}
+    state = %ClaimService{connection: query, settings: %{node_id: @current_node_id}}
+
+    assert {:reply, result, ^state} =
+             ClaimService.handle_call({:exclusive_route, issue}, self(), state)
+
+    result
   end
 end

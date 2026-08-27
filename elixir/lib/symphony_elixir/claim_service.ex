@@ -40,6 +40,19 @@ defmodule SymphonyElixir.ClaimService do
   @spec enabled?() :: boolean()
   def enabled?, do: Config.settings!().claim.enabled
 
+  @spec exclusive_route(Issue.t()) ::
+          {:ok, %{routing_revision: pos_integer()}} | {:ineligible, atom()} | {:error, atom()}
+  def exclusive_route(%Issue{} = issue) do
+    if enabled?() do
+      case safe_call({:exclusive_route, issue}) do
+        {:error, {:claim_service_unavailable, _reason}} -> {:error, :claim_service_unavailable}
+        result -> result
+      end
+    else
+      {:error, :claim_service_unavailable}
+    end
+  end
+
   @spec claim(Issue.t(), pid()) :: {:ok, claim() | nil} | {:error, term()}
   def claim(%Issue{} = issue, owner \\ self()) when is_pid(owner) do
     cond do
@@ -116,6 +129,10 @@ defmodule SymphonyElixir.ClaimService do
   end
 
   @impl true
+  def handle_call({:exclusive_route, issue}, _from, state) do
+    {:reply, exclusive_route_query(state, issue), state}
+  end
+
   def handle_call({:claim, issue, owner}, _from, state) do
     grant_started_ms = System.monotonic_time(:millisecond)
     local_claim = Map.get(state.claims, issue.id)
@@ -277,6 +294,49 @@ defmodule SymphonyElixir.ClaimService do
 
     {:noreply, schedule_heartbeat(%{state | claims: claims})}
   end
+
+  defp exclusive_route_query(state, issue) do
+    sql = """
+    select routing_policy, target_node_id::text, routing_revision
+    from symphony_staging.routing_assignments
+    where issue_id = $1
+    """
+
+    state.connection
+    |> routing_query(sql, [issue.id])
+    |> exclusive_route_result(state.settings.node_id)
+  end
+
+  defp routing_query(connection, sql, params) when is_function(connection, 2),
+    do: connection.(sql, params)
+
+  defp routing_query(connection, sql, params), do: Postgrex.query(connection, sql, params)
+
+  defp exclusive_route_result(
+         {:ok, %Postgrex.Result{rows: [["exclusive", node_id, routing_revision]], num_rows: 1}},
+         node_id
+       )
+       when is_integer(routing_revision) and routing_revision > 0,
+       do: {:ok, %{routing_revision: routing_revision}}
+
+  defp exclusive_route_result(
+         {:ok, %Postgrex.Result{rows: [["exclusive", _node_id, routing_revision]], num_rows: 1}},
+         _current_node_id
+       )
+       when is_integer(routing_revision) and routing_revision > 0,
+       do: {:ineligible, :wrong_node}
+
+  defp exclusive_route_result(
+         {:ok, %Postgrex.Result{rows: [[policy, _node_id, _routing_revision]], num_rows: 1}},
+         _current_node_id
+       )
+       when policy in ["unassigned", "preferred-with-fallback"],
+       do: {:ineligible, :non_exclusive_routing}
+
+  defp exclusive_route_result({:ok, %Postgrex.Result{rows: [], num_rows: 0}}, _current_node_id),
+    do: {:ineligible, :missing_routing}
+
+  defp exclusive_route_result(_result, _current_node_id), do: {:error, :routing_lookup_failed}
 
   defp claim_query(state, issue) do
     params = [
