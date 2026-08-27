@@ -10,7 +10,6 @@ defmodule SymphonyElixir.ProjectRepoPreflight do
   @mapping %{
     "project-management" => %{
       repository: "aroakpm-svg/aroak-project-management",
-      clone_url: "https://github.com/aroakpm-svg/aroak-project-management.git",
       default_branch: "main",
       required_scripts: ["typecheck", "build", "db:test"]
     }
@@ -37,8 +36,7 @@ defmodule SymphonyElixir.ProjectRepoPreflight do
   end
 
   defp check_mapping(project, mapping, runner) do
-    with :ok <- command_ok(runner, "gh", ["auth", "status"], :github_auth_unavailable, "Authenticate GitHub CLI with read access to the repository."),
-         {:ok, repo} <- repository_metadata(mapping, runner),
+    with {:ok, repo} <- repository_metadata(mapping, runner),
          :ok <- verify_repository(mapping, repo),
          {:ok, head_sha} <- default_branch_head(mapping, runner),
          {:ok, scripts} <- package_scripts(mapping, head_sha, runner),
@@ -90,9 +88,9 @@ defmodule SymphonyElixir.ProjectRepoPreflight do
   end
 
   defp default_branch_head(mapping, runner) do
-    args = ["ls-remote", "--exit-code", mapping.clone_url, "refs/heads/#{mapping.default_branch}"]
+    args = ["api", "repos/#{mapping.repository}/git/ref/heads/#{mapping.default_branch}"]
 
-    case safe_run(runner, "git", args) do
+    case safe_run(runner, "gh", args) do
       {:ok, output} ->
         parse_default_branch_head(output, mapping)
 
@@ -102,8 +100,9 @@ defmodule SymphonyElixir.ProjectRepoPreflight do
   end
 
   defp parse_default_branch_head(output, mapping) do
-    case String.split(String.trim(output), ~r/\s+/, parts: 2) do
-      [sha, "refs/heads/" <> branch] when branch == mapping.default_branch ->
+    case Jason.decode(output) do
+      {:ok, %{"ref" => "refs/heads/" <> branch, "object" => %{"sha" => sha}}}
+      when branch == mapping.default_branch and is_binary(sha) ->
         validate_head_sha(sha, mapping)
 
       _other ->
@@ -145,13 +144,6 @@ defmodule SymphonyElixir.ProjectRepoPreflight do
       :ok
     else
       blocked(:required_check_contract_missing, missing, "Add the missing quality scripts to package.json before enabling runtime pickup.")
-    end
-  end
-
-  defp command_ok(runner, command, args, code, next_step) do
-    case safe_run(runner, command, args) do
-      {:ok, _output} -> :ok
-      {:error, _reason} -> blocked(code, nil, next_step)
     end
   end
 
