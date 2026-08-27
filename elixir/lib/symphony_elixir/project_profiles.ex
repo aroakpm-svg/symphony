@@ -172,21 +172,7 @@ defmodule SymphonyElixir.ProjectProfiles do
   defp supported_version(_version), do: {:error, :unsupported_version}
 
   defp normalize_keys(value) when is_map(value) do
-    Enum.reduce_while(value, {:ok, %{}}, fn {key, nested}, {:ok, normalized} ->
-      normalized_key = normalize_key(key)
-
-      if Map.has_key?(normalized, normalized_key) do
-        {:halt, {:error, :key_collision}}
-      else
-        case normalize_keys(nested) do
-          {:ok, normalized_nested} ->
-            {:cont, {:ok, Map.put(normalized, normalized_key, normalized_nested)}}
-
-          {:error, reason} ->
-            {:halt, {:error, reason}}
-        end
-      end
-    end)
+    Enum.reduce_while(value, {:ok, %{}}, &normalize_map_entry/2)
   end
 
   defp normalize_keys(value) when is_list(value) do
@@ -203,6 +189,18 @@ defmodule SymphonyElixir.ProjectProfiles do
   end
 
   defp normalize_keys(value), do: {:ok, value}
+
+  defp normalize_map_entry({key, nested}, {:ok, normalized}) do
+    normalized_key = normalize_key(key)
+
+    with false <- Map.has_key?(normalized, normalized_key),
+         {:ok, normalized_nested} <- normalize_keys(nested) do
+      {:cont, {:ok, Map.put(normalized, normalized_key, normalized_nested)}}
+    else
+      true -> {:halt, {:error, :key_collision}}
+      {:error, reason} -> {:halt, {:error, reason}}
+    end
+  end
 
   defp normalize_key(key) when is_atom(key), do: Atom.to_string(key)
   defp normalize_key(key), do: key
