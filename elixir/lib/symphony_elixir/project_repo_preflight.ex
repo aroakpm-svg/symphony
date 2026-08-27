@@ -183,13 +183,11 @@ defmodule SymphonyElixir.ProjectRepoPreflight do
   end
 
   defp execute_runner(runner, command, args) do
-    try do
-      runner.(command, args)
-    rescue
-      _error -> :command_exception
-    catch
-      _kind, _reason -> :command_exception
-    end
+    runner.(command, args)
+  rescue
+    _error -> :command_exception
+  catch
+    _kind, _reason -> :command_exception
   end
 
   defp branch_unresolvable(mapping) do
