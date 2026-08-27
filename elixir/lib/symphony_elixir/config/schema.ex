@@ -69,10 +69,10 @@ defmodule SymphonyElixir.Config.Schema do
     def dump(_value), do: :error
 
     defp safe_error(:invalid_project_profiles), do: "must match the approved project-profile contract"
-    defp safe_error({:unsupported_version, _value}), do: "uses an unsupported version"
-    defp safe_error({:unknown_fields, _fields}), do: "contains unknown fields"
+    defp safe_error(:unsupported_version), do: "uses an unsupported version"
+    defp safe_error(:unknown_fields), do: "contains unknown fields"
     defp safe_error({:missing_profiles, _profiles}), do: "must contain the complete approved profile set"
-    defp safe_error({:unknown_profile, _key}), do: "contains an unapproved profile"
+    defp safe_error(:unknown_profile), do: "contains an unapproved profile"
     defp safe_error({:duplicate_identity, field}), do: "contains duplicate #{field} values"
 
     defp safe_error({:profile_mismatch, key, field}),

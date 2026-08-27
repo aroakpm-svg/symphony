@@ -37,10 +37,10 @@ defmodule SymphonyElixir.ProjectProfiles do
   @type t :: %{version: 1, profiles: %{required(String.t()) => profile()}}
   @type reason ::
           :invalid_project_profiles
-          | {:unsupported_version, term()}
-          | {:unknown_fields, [String.t()]}
+          | :unsupported_version
+          | :unknown_fields
           | {:missing_profiles, [String.t()]}
-          | {:unknown_profile, term()}
+          | :unknown_profile
           | {:duplicate_identity, atom()}
           | {:profile_mismatch, String.t(), String.t()}
 
@@ -133,7 +133,7 @@ defmodule SymphonyElixir.ProjectProfiles do
   defp approved_profile(key) do
     case Map.fetch(@manifest, key) do
       {:ok, profile} -> {:ok, profile}
-      :error -> {:error, {:unknown_profile, key}}
+      :error -> {:error, :unknown_profile}
     end
   end
 
@@ -161,14 +161,14 @@ defmodule SymphonyElixir.ProjectProfiles do
     missing = expected -- actual
 
     cond do
-      unknown != [] -> {:error, {:unknown_fields, Enum.sort(unknown)}}
+      unknown != [] -> {:error, :unknown_fields}
       missing != [] -> {:error, :invalid_project_profiles}
       true -> :ok
     end
   end
 
   defp supported_version(1), do: :ok
-  defp supported_version(version), do: {:error, {:unsupported_version, version}}
+  defp supported_version(_version), do: {:error, :unsupported_version}
 
   defp normalize_keys(value) when is_map(value) do
     Map.new(value, fn {key, nested} -> {normalize_key(key), normalize_keys(nested)} end)

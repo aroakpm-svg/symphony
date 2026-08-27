@@ -20,7 +20,7 @@ defmodule SymphonyElixir.ProjectProfilesTest do
   end
 
   test "rejects unsupported versions, incomplete sets, and unknown fields" do
-    assert {:error, {:unsupported_version, 2}} =
+    assert {:error, :unsupported_version} =
              valid_config()
              |> Map.put("version", 2)
              |> ProjectProfiles.parse()
@@ -30,12 +30,12 @@ defmodule SymphonyElixir.ProjectProfilesTest do
              |> put_in(["profiles"], [central_profile()])
              |> ProjectProfiles.parse()
 
-    assert {:error, {:unknown_fields, ["slots"]}} =
+    assert {:error, :unknown_fields} =
              valid_config()
              |> Map.put("slots", 3)
              |> ProjectProfiles.parse()
 
-    assert {:error, {:unknown_fields, ["total_slots"]}} =
+    assert {:error, :unknown_fields} =
              valid_config()
              |> update_in(["profiles", Access.at(0)], &Map.put(&1, "total_slots", 3))
              |> ProjectProfiles.parse()
@@ -67,7 +67,7 @@ defmodule SymphonyElixir.ProjectProfilesTest do
   test "rejects unknown projects and authority-bearing manifest drift without echoing values" do
     unknown = Map.put(central_profile(), "key", "other")
 
-    assert {:error, {:unknown_profile, "other"}} =
+    assert {:error, :unknown_profile} =
              ProjectProfiles.parse(%{"version" => 1, "profiles" => [unknown, project_management_profile()]})
 
     for {field, unsafe_value} <- [
@@ -96,10 +96,10 @@ defmodule SymphonyElixir.ProjectProfilesTest do
 
     invalid = Map.put(valid_config(), "version", 2)
 
-    assert {:error, {:unsupported_version, 2}, ^first} =
+    assert {:error, :unsupported_version, ^first} =
              ProjectProfiles.reload(first, invalid)
 
-    assert {:error, {:unsupported_version, 2}, nil} =
+    assert {:error, :unsupported_version, nil} =
              ProjectProfiles.reload(nil, invalid)
   end
 
@@ -151,6 +151,27 @@ defmodule SymphonyElixir.ProjectProfilesTest do
     for candidate <- invalid_candidates do
       assert {:error, message: message} = ProjectProfilesType.cast(candidate)
       refute message =~ "secret"
+    end
+  end
+
+  test "parser rejection reasons never retain attacker-controlled values" do
+    secret = "token=must-never-reach-logs"
+
+    candidates = [
+      Map.put(valid_config(), "version", %{"credential" => secret}),
+      Map.put(valid_config(), secret, true),
+      %{
+        "version" => 1,
+        "profiles" => [
+          Map.put(central_profile(), "key", secret),
+          project_management_profile()
+        ]
+      }
+    ]
+
+    for candidate <- candidates do
+      assert {:error, reason} = ProjectProfiles.parse(candidate)
+      refute inspect(reason) =~ secret
     end
   end
 
