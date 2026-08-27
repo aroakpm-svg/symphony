@@ -112,9 +112,26 @@ defmodule SymphonyElixir.ExtensionsTest do
       match?({:ok, %{prompt: "Second prompt"}}, Workflow.current())
     end)
 
+    File.write!(Workflow.workflow_file_path(), workflow_with_project_profiles("github-central-brain"))
+    assert :ok = WorkflowStore.force_reload()
+
+    assert {:ok, %{config: %{"project_profiles" => valid_profiles}}} = Workflow.current()
+
+    assert get_in(valid_profiles, ["profiles", Access.at(0), "credential_ref"]) ==
+             "github-central-brain"
+
+    File.write!(Workflow.workflow_file_path(), workflow_with_project_profiles("token=must-not-replace"))
+    assert {:error, {:invalid_project_profiles, reason}} = WorkflowStore.force_reload()
+    refute inspect(reason) =~ "token=must-not-replace"
+
+    assert {:ok, %{config: %{"project_profiles" => retained_profiles}}} = Workflow.current()
+
+    assert get_in(retained_profiles, ["profiles", Access.at(0), "credential_ref"]) ==
+             "github-central-brain"
+
     File.write!(Workflow.workflow_file_path(), "---\ntracker: [\n---\nBroken prompt\n")
     assert {:error, _reason} = WorkflowStore.force_reload()
-    assert {:ok, %{prompt: "Second prompt"}} = Workflow.current()
+    assert {:ok, %{prompt: "Profile workflow"}} = Workflow.current()
 
     third_workflow = Path.join(Path.dirname(Workflow.workflow_file_path()), "THIRD_WORKFLOW.md")
     write_workflow_file!(third_workflow, prompt: "Third prompt")
@@ -124,7 +141,41 @@ defmodule SymphonyElixir.ExtensionsTest do
     assert :ok = Supervisor.terminate_child(SymphonyElixir.Supervisor, WorkflowStore)
     assert {:ok, %{prompt: "Third prompt"}} = WorkflowStore.current()
     assert :ok = WorkflowStore.force_reload()
+
+    File.write!(third_workflow, workflow_with_project_profiles("token=must-not-load-without-store"))
+
+    for result <- [Workflow.current(), WorkflowStore.current(), WorkflowStore.force_reload()] do
+      assert {:error, {:invalid_project_profiles, reason}} = result
+      refute inspect(reason) =~ "token=must-not-load-without-store"
+    end
+
+    write_workflow_file!(third_workflow, prompt: "Third prompt")
     assert {:ok, _pid} = Supervisor.restart_child(SymphonyElixir.Supervisor, WorkflowStore)
+  end
+
+  defp workflow_with_project_profiles(central_credential_ref) do
+    """
+    ---
+    project_profiles:
+      version: 1
+      profiles:
+        - key: central-brain
+          linear_project_id: d0acfb71-f68c-4a9f-8a1a-477265d3c3ec
+          repository: aroakpm-svg/aroak-central-brain
+          canonical_branch: main
+          workspace_namespace: central-brain
+          credential_ref: #{central_credential_ref}
+          environment: local_non_production
+        - key: project-management
+          linear_project_id: 708053e0-f42c-4e93-bec4-7abbb37e74af
+          repository: aroakpm-svg/aroak-project-management
+          canonical_branch: main
+          workspace_namespace: project-management
+          credential_ref: github-project-management
+          environment: local_non_production
+    ---
+    Profile workflow
+    """
   end
 
   test "workflow store init stops on missing workflow file" do

@@ -11,6 +11,25 @@ tracker:
     - "Canceled"
     - "Cancelled"
     - "Duplicate"
+# Optional versioned mapping only; keeping this example commented means disabled.
+# Loading it validates identities but does not enable multi-project polling or dispatch.
+# project_profiles:
+#   version: 1
+#   profiles:
+#     - key: "central-brain"
+#       linear_project_id: "d0acfb71-f68c-4a9f-8a1a-477265d3c3ec"
+#       repository: "aroakpm-svg/aroak-central-brain"
+#       canonical_branch: "main"
+#       workspace_namespace: "central-brain"
+#       credential_ref: "github-central-brain"
+#       environment: "local_non_production"
+#     - key: "project-management"
+#       linear_project_id: "708053e0-f42c-4e93-bec4-7abbb37e74af"
+#       repository: "aroakpm-svg/aroak-project-management"
+#       canonical_branch: "main"
+#       workspace_namespace: "project-management"
+#       credential_ref: "github-project-management"
+#       environment: "local_non_production"
 workspace:
   root: "C:/Users/aroak/Desktop/codex/symphony-workspaces"
 hooks:
