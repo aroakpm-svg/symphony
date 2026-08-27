@@ -47,6 +47,12 @@ credentials, deployment authority, or automatic issue pickup. See the
 [Elixir preflight documentation](elixir/README.md#project-management-repository-preflight) for the
 implementation and dry-check command.
 
+Symphony also accepts an optional, versioned `project_profiles` contract for the complete approved
+Central-Brain and Project-Management mapping. The contract is validated as one unit against the
+mapping compiled into this release; missing, extra, duplicated, or changed identities fail closed.
+It stores credential references only, never credentials. Loading the contract makes the approved
+mapping available to later work, but does not itself turn on polling or dispatch.
+
 #### Distributed claim safety
 
 Multi-worker deployments use the database-backed claim service to ensure that only one enrolled

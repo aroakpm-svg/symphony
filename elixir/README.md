@@ -374,6 +374,23 @@ The result is either `{:ok, receipt}` or `{:blocked, reason}` with one minimal
 human next step. This readiness check does not add Project-Management polling,
 dispatch, credentials, deployment authority, or automatic pickup permission.
 
+## Approved multi-project profile contract
+
+The optional `project_profiles` WORKFLOW setting defines the complete approved
+Central-Brain and Project-Management mapping. Version `1` must exactly match the
+profile identities compiled into this Symphony release. The parser rejects the
+whole candidate when a profile is missing or extra, an identity is duplicated,
+or any approved field differs. Failed reloads preserve the previous valid value.
+
+Profiles contain a credential reference name, not credential material. Validation
+errors identify the profile or field without echoing submitted values. The setting
+is disabled when absent, and loading it does not enable polling, dispatch, cloning,
+deployment, or issue pickup; those capabilities remain the responsibility of later
+policy-controlled work.
+
+See the commented example in [`WORKFLOW.md`](WORKFLOW.md). Remove the comment
+markers only when intentionally configuring the exact approved set.
+
 ## Project Layout
 
 - `lib/`: application code and Mix tasks
