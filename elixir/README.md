@@ -255,6 +255,20 @@ before starting a worker, renews it using the database clock, and stops the work
 longer prove ownership. Leave `claim.enabled: false` for single-machine operation or until shared
 staging has been migrated; opening or merging this PR does not apply the migration to staging.
 
+## Node-wide claim capacity contract
+
+When `claim.enabled` is true, `claim_capacity` belongs to the enrolled node and must equal `3`;
+startup fails closed for any other value. Central-Brain and Project-Management workers on that node
+share those three claims, and project profiles cannot define or override capacity. Local Elixir slot
+checks may avoid unnecessary work, but only the atomic database claim transaction authorizes a
+slot.
+
+Lowering a node's capacity preserves its existing active claims and their lease/generation
+lifecycle; it blocks only new claims until usage falls below the new limit. With Amy, Matt, and Han
+each configured for three claims, the fleet can hold nine active claims and a tenth must wait.
+Installing this code or its migration does not update those node rows. ARO-287 remains the separate
+operator rollout that sets and verifies each node's value before its claim-enabled runtime starts.
+
 Minimal example:
 
 ```md
