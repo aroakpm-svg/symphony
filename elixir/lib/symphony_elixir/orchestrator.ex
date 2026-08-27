@@ -7,11 +7,25 @@ defmodule SymphonyElixir.Orchestrator do
   require Logger
   import Bitwise, only: [<<<: 2]
 
-  alias SymphonyElixir.{AgentRunner, ClaimService, Config, ReviewMonitor, StatusDashboard, Tracker, Workspace}
+  alias SymphonyElixir.{
+    AgentRunner,
+    ClaimService,
+    Config,
+    DispatchCandidate,
+    MultiProjectPoll,
+    ProjectProfiles,
+    ProjectRepoPreflight,
+    ReviewMonitor,
+    StatusDashboard,
+    Tracker,
+    Workspace
+  }
+
   alias SymphonyElixir.Linear.Issue
 
   @continuation_retry_delay_ms 1_000
   @failure_retry_base_ms 10_000
+  @profile_retry_base_ms 1_000
   # Slightly above the dashboard render interval so "checking now…" can render.
   @poll_transition_render_delay_ms 20
   @empty_codex_totals %{
@@ -38,6 +52,7 @@ defmodule SymphonyElixir.Orchestrator do
       claimed: MapSet.new(),
       blocked: %{},
       retry_attempts: %{},
+      profile_retry_attempts: %{},
       review_convergence: %{},
       codex_totals: nil,
       codex_rate_limits: nil
@@ -242,6 +257,13 @@ defmodule SymphonyElixir.Orchestrator do
 
   def handle_info({:retry_issue, _issue_id}, state), do: {:noreply, state}
 
+  def handle_info({:retry_project_profile, profile_key, retry_token}, state)
+      when is_binary(profile_key) and is_reference(retry_token) do
+    state = retry_project_profile(state, current_project_profiles(), profile_key, retry_token, [])
+    notify_dashboard()
+    {:noreply, state}
+  end
+
   def handle_info(msg, state) do
     Logger.debug("Orchestrator ignored message: #{inspect(msg)}")
     {:noreply, state}
@@ -310,12 +332,11 @@ defmodule SymphonyElixir.Orchestrator do
       |> reconcile_running_issues()
       |> reconcile_blocked_issues()
 
-    with {:ok, _settings} <- Config.settings(),
+    with {:ok, settings} <- Config.settings(),
          state <- reconcile_review_convergence(state),
          :ok <- Config.validate!(),
-         {:ok, issues} <- Tracker.fetch_candidate_issues(),
          true <- available_slots(state) > 0 do
-      choose_issues(issues, state)
+      fetch_and_dispatch_candidates(state, settings.project_profiles)
     else
       {:error, :missing_linear_api_token} ->
         Logger.error("Linear API token missing in WORKFLOW.md")
@@ -363,6 +384,296 @@ defmodule SymphonyElixir.Orchestrator do
   @doc false
   @spec maybe_dispatch_for_test(term()) :: term()
   def maybe_dispatch_for_test(%State{} = state), do: maybe_dispatch(state)
+
+  @doc false
+  @spec multi_project_dispatch_for_test(term(), ProjectProfiles.t(), keyword()) :: term()
+  def multi_project_dispatch_for_test(%State{} = state, profiles, opts)
+      when is_list(opts) do
+    profiles_to_poll = available_project_profiles(profiles, state)
+    run_multi_project_poll(state, profiles, profiles_to_poll, opts)
+  end
+
+  @doc false
+  @spec retry_project_profile_for_test(term(), ProjectProfiles.t(), String.t(), reference(), keyword()) :: term()
+  def retry_project_profile_for_test(%State{} = state, profiles, profile_key, retry_token, opts)
+      when is_binary(profile_key) and is_reference(retry_token) and is_list(opts) do
+    retry_project_profile(state, profiles, profile_key, retry_token, opts)
+  end
+
+  @doc false
+  @spec profile_retry_delay_for_test(pos_integer()) :: pos_integer()
+  def profile_retry_delay_for_test(attempt) when is_integer(attempt) and attempt > 0 do
+    profile_retry_delay(attempt)
+  end
+
+  defp fetch_and_dispatch_candidates(state, nil) do
+    case Tracker.fetch_candidate_issues() do
+      {:ok, issues} ->
+        choose_issues(issues, state)
+
+      {:error, reason} ->
+        Logger.error("Failed to fetch from Linear: #{inspect(reason)}")
+        state
+    end
+  end
+
+  defp fetch_and_dispatch_candidates(state, profiles) do
+    run_multi_project_poll(
+      state,
+      profiles,
+      available_project_profiles(profiles, state),
+      []
+    )
+  end
+
+  defp available_project_profiles(profiles, state) do
+    retrying_profiles = Map.get(state, :profile_retry_attempts, %{})
+
+    profiles
+    |> ProjectProfiles.list()
+    |> Enum.reject(&Map.has_key?(retrying_profiles, &1.key))
+  end
+
+  defp run_multi_project_poll(state, _profiles, [], _opts), do: state
+
+  defp run_multi_project_poll(state, profiles, profiles_to_poll, opts) do
+    fetcher = Keyword.get(opts, :fetcher, &Tracker.fetch_candidate_issues/1)
+    poll_opts = multi_project_poll_opts(opts)
+    result = MultiProjectPoll.fetch(profiles_to_poll, fetcher, poll_opts)
+
+    state = update_profile_poll_outcomes(state, result.outcomes, opts)
+
+    result.candidates
+    |> sort_issues_for_dispatch()
+    |> Enum.reduce(state, fn candidate, state_acc ->
+      safely_dispatch_multi_project_candidate(state_acc, candidate, profiles, opts)
+    end)
+  end
+
+  defp multi_project_poll_opts(opts) do
+    case Keyword.get(opts, :poll_timeout) do
+      timeout when is_integer(timeout) and timeout > 0 -> [timeout: timeout]
+      _other -> []
+    end
+  end
+
+  defp update_profile_poll_outcomes(state, outcomes, opts) do
+    outcomes
+    |> Enum.sort_by(fn {profile_key, _outcome} -> profile_key end)
+    |> Enum.reduce(state, fn
+      {profile_key, %{status: :ok}}, state_acc ->
+        clear_profile_retry(state_acc, profile_key, opts)
+
+      {profile_key, %{status: :timeout}}, state_acc ->
+        schedule_profile_retry(state_acc, profile_key, :poll_timeout, opts)
+
+      {profile_key, _outcome}, state_acc ->
+        schedule_profile_retry(state_acc, profile_key, :poll_error, opts)
+    end)
+  end
+
+  defp safely_dispatch_multi_project_candidate(state, candidate, profiles, opts) do
+    dispatch_multi_project_candidate(state, candidate, profiles, opts)
+  rescue
+    _exception ->
+      Logger.warning("Skipping multi-project candidate after isolated failure: #{issue_context(candidate)}")
+      schedule_candidate_profile_retry(state, candidate, :candidate_failure, opts)
+  catch
+    _kind, _reason ->
+      Logger.warning("Skipping multi-project candidate after isolated failure: #{issue_context(candidate)}")
+      schedule_candidate_profile_retry(state, candidate, :candidate_failure, opts)
+  end
+
+  defp dispatch_multi_project_candidate(state, %Issue{} = candidate, profiles, opts) do
+    refresh_fun = Keyword.get(opts, :refresh_fun, &Tracker.fetch_issue_states_by_ids/1)
+
+    case revalidate_issue_for_dispatch(candidate, refresh_fun, terminal_state_set()) do
+      {:ok, %Issue{} = refreshed_issue} ->
+        refreshed_issue = %{
+          refreshed_issue
+          | project_profile: candidate.project_profile,
+            repository: nil
+        }
+
+        authorize_multi_project_candidate(state, refreshed_issue, profiles, opts)
+
+      {:skip, :missing} ->
+        Logger.info("Skipping dispatch; issue no longer active or visible: #{issue_context(candidate)}")
+        state
+
+      {:skip, %Issue{} = refreshed_issue} ->
+        Logger.info("Skipping stale multi-project dispatch after issue refresh: #{issue_context(refreshed_issue)}")
+
+        state
+
+      {:error, _reason} ->
+        Logger.warning("Retrying profile after issue refresh failed: #{issue_context(candidate)}")
+        schedule_candidate_profile_retry(state, candidate, :refresh_unavailable, opts)
+    end
+  end
+
+  defp dispatch_multi_project_candidate(state, _candidate, _profiles, _opts), do: state
+
+  defp authorize_multi_project_candidate(state, issue, profiles, opts) do
+    route_reader = Keyword.get(opts, :route_reader, &ClaimService.exclusive_route/1)
+
+    authorization_opts = [
+      active_states: Config.settings!().tracker.active_states,
+      route_reader: route_reader
+    ]
+
+    case DispatchCandidate.authorize(issue, profiles, authorization_opts) do
+      {:ok, authorized_issue} ->
+        preflight_multi_project_candidate(state, authorized_issue, opts)
+
+      {:skip, reason} ->
+        Logger.info("Skipping ineligible multi-project candidate: #{issue_context(issue)} reason=#{reason}")
+        state
+
+      {:retry, reason} ->
+        Logger.warning("Retrying profile after authorization uncertainty: #{issue_context(issue)} reason=#{reason}")
+        schedule_candidate_profile_retry(state, issue, reason, opts)
+    end
+  end
+
+  defp preflight_multi_project_candidate(state, issue, opts) do
+    preflight_fun = Keyword.get(opts, :preflight_fun, &ProjectRepoPreflight.check/1)
+
+    case preflight_fun.(issue.project_profile) do
+      {:ok, _receipt} ->
+        dispatch_authorized_multi_project_candidate(state, issue, opts)
+
+      {:blocked, %{code: code}} ->
+        Logger.warning("Skipping multi-project candidate after repository preflight: #{issue_context(issue)} profile=#{issue.project_profile.key} reason=#{code}")
+
+        state
+
+      _other ->
+        Logger.warning("Skipping multi-project candidate after repository preflight: #{issue_context(issue)} profile=#{issue.project_profile.key} reason=preflight_unavailable")
+
+        state
+    end
+  end
+
+  defp dispatch_authorized_multi_project_candidate(state, issue, opts) do
+    if should_dispatch_issue?(issue, state, active_state_set(), terminal_state_set()) do
+      do_dispatch_issue(state, issue, nil, nil, opts)
+    else
+      state
+    end
+  end
+
+  defp schedule_candidate_profile_retry(state, %Issue{project_profile: %{key: profile_key}}, reason, opts)
+       when is_binary(profile_key) do
+    schedule_profile_retry(state, profile_key, reason, opts)
+  end
+
+  defp schedule_candidate_profile_retry(state, _candidate, _reason, _opts), do: state
+
+  defp schedule_profile_retry(state, profile_key, reason, opts) do
+    retries = Map.get(state, :profile_retry_attempts, %{})
+
+    if Map.has_key?(retries, profile_key) do
+      state
+    else
+      attempt = Keyword.get(opts, :profile_retry_attempt, 0) + 1
+      put_profile_retry(state, retries, profile_key, attempt, reason, opts)
+    end
+  end
+
+  defp reschedule_profile_retry(state, profile_key, previous_retry, reason, opts) do
+    attempt = previous_retry.attempt + 1
+    put_profile_retry(state, state.profile_retry_attempts, profile_key, attempt, reason, opts)
+  end
+
+  defp put_profile_retry(state, retries, profile_key, attempt, reason, opts) do
+    delay_fun = Keyword.get(opts, :retry_delay_fun, &profile_retry_delay/1)
+    delay_ms = delay_fun.(attempt)
+    retry_token = make_ref()
+    message = {:retry_project_profile, profile_key, retry_token}
+    timer_fun = Keyword.get(opts, :timer_fun, &Process.send_after(self(), &1, &2))
+    timer_ref = timer_fun.(message, delay_ms)
+
+    retry = %{
+      attempt: attempt,
+      due_at_ms: System.monotonic_time(:millisecond) + delay_ms,
+      reason: reason,
+      retry_token: retry_token,
+      timer_ref: timer_ref
+    }
+
+    Logger.warning("Retrying project profile=#{profile_key} in #{delay_ms}ms attempt=#{attempt} reason=#{reason}")
+    %{state | profile_retry_attempts: Map.put(retries, profile_key, retry)}
+  end
+
+  defp clear_profile_retry(state, profile_key, opts) do
+    case Map.pop(Map.get(state, :profile_retry_attempts, %{}), profile_key) do
+      {nil, _retries} ->
+        state
+
+      {%{timer_ref: timer_ref}, retries} ->
+        cancel_timer_fun = Keyword.get(opts, :cancel_timer_fun, &Process.cancel_timer/1)
+        if is_reference(timer_ref), do: cancel_timer_fun.(timer_ref)
+        %{state | profile_retry_attempts: retries}
+    end
+  end
+
+  defp retry_project_profile(state, profiles, profile_key, retry_token, opts) do
+    case Map.get(Map.get(state, :profile_retry_attempts, %{}), profile_key) do
+      %{retry_token: ^retry_token} = previous_retry ->
+        state = %{
+          state
+          | profile_retry_attempts: Map.delete(state.profile_retry_attempts, profile_key)
+        }
+
+        case ProjectProfiles.fetch(profiles, profile_key) do
+          {:ok, profile} ->
+            retry_profile_poll(state, profiles, profile, previous_retry, opts)
+
+          :error ->
+            state
+        end
+
+      _stale_or_missing ->
+        state
+    end
+  end
+
+  defp retry_profile_poll(state, profiles, profile, previous_retry, opts) do
+    fetcher = Keyword.get(opts, :fetcher, &Tracker.fetch_candidate_issues/1)
+    result = MultiProjectPoll.fetch([profile], fetcher, multi_project_poll_opts(opts))
+
+    case result.outcomes[profile.key] do
+      %{status: :ok} ->
+        retry_opts = Keyword.put(opts, :profile_retry_attempt, previous_retry.attempt)
+
+        result.candidates
+        |> sort_issues_for_dispatch()
+        |> Enum.reduce(state, fn candidate, state_acc ->
+          safely_dispatch_multi_project_candidate(state_acc, candidate, profiles, retry_opts)
+        end)
+
+      %{status: :timeout} ->
+        reschedule_profile_retry(state, profile.key, previous_retry, :poll_timeout, opts)
+
+      _outcome ->
+        reschedule_profile_retry(state, profile.key, previous_retry, :poll_error, opts)
+    end
+  end
+
+  defp current_project_profiles do
+    case Config.settings() do
+      {:ok, settings} -> settings.project_profiles
+      {:error, _reason} -> nil
+    end
+  end
+
+  defp profile_retry_delay(attempt) do
+    max_delay_power = min(attempt - 1, 10)
+    upper_bound = min(@profile_retry_base_ms * (1 <<< max_delay_power), Config.settings!().agent.max_retry_backoff_ms)
+    lower_bound = max(1, div(upper_bound * 3, 4))
+    lower_bound + :rand.uniform(upper_bound - lower_bound + 1) - 1
+  end
 
   defp reconcile_review_convergence(%State{} = state) do
     %{state | review_convergence: ReviewMonitor.run(state.review_convergence)}
@@ -1007,8 +1318,10 @@ defmodule SymphonyElixir.Orchestrator do
     end
   end
 
-  defp do_dispatch_issue(%State{} = state, issue, attempt, preferred_worker_host) do
+  defp do_dispatch_issue(%State{} = state, issue, attempt, preferred_worker_host, opts \\ []) do
     recipient = self()
+    claim_fun = Keyword.get(opts, :claim_fun, &ClaimService.claim/2)
+    dispatch_fun = Keyword.get(opts, :dispatch_fun, &spawn_issue_on_worker_host/6)
 
     case select_worker_host(state, preferred_worker_host) do
       :no_worker_capacity ->
@@ -1016,9 +1329,9 @@ defmodule SymphonyElixir.Orchestrator do
         state
 
       worker_host ->
-        case ClaimService.claim(issue, recipient) do
+        case claim_fun.(issue, recipient) do
           {:ok, distributed_claim} ->
-            spawn_issue_on_worker_host(state, issue, attempt, recipient, worker_host, distributed_claim)
+            dispatch_fun.(state, issue, attempt, recipient, worker_host, distributed_claim)
 
           {:error, reason} ->
             Logger.warning("Skipping dispatch; database claim rejected for #{issue_context(issue)}: #{inspect(reason)}")
@@ -1572,6 +1885,18 @@ defmodule SymphonyElixir.Orchestrator do
         }
       end)
 
+    profile_retries =
+      state.profile_retry_attempts
+      |> Enum.map(fn {profile, %{attempt: attempt, due_at_ms: due_at_ms, reason: reason}} ->
+        %{
+          profile: profile,
+          attempt: attempt,
+          due_in_ms: max(0, due_at_ms - now_ms),
+          reason: reason
+        }
+      end)
+      |> Enum.sort_by(& &1.profile)
+
     blocked =
       state.blocked
       |> Enum.map(fn {issue_id, metadata} ->
@@ -1595,6 +1920,7 @@ defmodule SymphonyElixir.Orchestrator do
      %{
        running: running,
        retrying: retrying,
+       profile_retries: profile_retries,
        blocked: blocked,
        review_convergence: observable_review_convergence(state.review_convergence),
        codex_totals: state.codex_totals,
