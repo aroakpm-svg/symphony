@@ -51,6 +51,9 @@ defmodule SymphonyElixir.Linear.Adapter do
   @spec fetch_candidate_issues() :: {:ok, [term()]} | {:error, term()}
   def fetch_candidate_issues, do: client_module().fetch_candidate_issues()
 
+  @spec fetch_candidate_issues(map()) :: {:ok, [term()]} | {:error, term()}
+  def fetch_candidate_issues(profile) when is_map(profile), do: client_module().fetch_candidate_issues(profile)
+
   @spec fetch_issues_by_states([String.t()]) :: {:ok, [term()]} | {:error, term()}
   def fetch_issues_by_states(states), do: client_module().fetch_issues_by_states(states)
 

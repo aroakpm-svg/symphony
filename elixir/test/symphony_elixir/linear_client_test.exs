@@ -28,4 +28,24 @@ defmodule SymphonyElixir.Linear.ClientTest do
     assert_receive {:linear_query, query}
     assert query =~ ~r/project\s*\{\s*id\s*slugId\s*\}/
   end
+
+  test "uses an approved profile's Linear project UUID for candidate polling" do
+    profile = %{key: "central-brain", linear_project_id: "central-linear-id"}
+
+    graphql_fun = fn query, variables ->
+      send(self(), {:linear_query, query, variables})
+
+      {:ok,
+       %{
+         "data" => %{
+           "issues" => %{"nodes" => [], "pageInfo" => %{"hasNextPage" => false, "endCursor" => nil}}
+         }
+       }}
+    end
+
+    assert {:ok, []} = Client.fetch_candidate_issues_for_test(profile, ["Todo"], graphql_fun)
+
+    assert_receive {:linear_query, query, %{projectId: "central-linear-id", stateNames: ["Todo"]}}
+    assert query =~ "project: {id: {eq: $projectId}}"
+  end
 end

@@ -58,6 +58,55 @@ defmodule SymphonyElixir.Linear.Client do
   }
   """
 
+  @profile_query """
+  query SymphonyLinearProjectPoll($projectId: ID!, $stateNames: [String!]!, $first: Int!, $relationFirst: Int!, $after: String) {
+    issues(filter: {project: {id: {eq: $projectId}}, state: {name: {in: $stateNames}}}, first: $first, after: $after) {
+      nodes {
+        id
+        identifier
+        title
+        description
+        priority
+        state {
+          name
+        }
+        branchName
+        url
+        project {
+          id
+          slugId
+        }
+        assignee {
+          id
+        }
+        labels {
+          nodes {
+            name
+          }
+        }
+        inverseRelations(first: $relationFirst) {
+          nodes {
+            type
+            issue {
+              id
+              identifier
+              state {
+                name
+              }
+            }
+          }
+        }
+        createdAt
+        updatedAt
+      }
+      pageInfo {
+        hasNextPage
+        endCursor
+      }
+    }
+  }
+  """
+
   @query_by_ids """
   query SymphonyLinearIssuesById($ids: [ID!]!, $first: Int!, $relationFirst: Int!) {
     issues(filter: {id: {in: $ids}}, first: $first) {
@@ -129,6 +178,23 @@ defmodule SymphonyElixir.Linear.Client do
         end
     end
   end
+
+  @spec fetch_candidate_issues(map()) :: {:ok, [Issue.t()]} | {:error, term()}
+  def fetch_candidate_issues(%{linear_project_id: project_id}) when is_binary(project_id) do
+    tracker = Config.settings!().tracker
+
+    cond do
+      is_nil(tracker.api_key) ->
+        {:error, :missing_linear_api_token}
+
+      true ->
+        with {:ok, assignee_filter} <- routing_assignee_filter() do
+          do_fetch_by_project_id(project_id, tracker.active_states, assignee_filter)
+        end
+    end
+  end
+
+  def fetch_candidate_issues(_profile), do: {:error, :invalid_linear_project_profile}
 
   @spec fetch_issues_by_states([String.t()]) :: {:ok, [Issue.t()]} | {:error, term()}
   def fetch_issues_by_states(state_names) when is_list(state_names) do
@@ -255,8 +321,62 @@ defmodule SymphonyElixir.Linear.Client do
     end
   end
 
+  @doc false
+  @spec fetch_candidate_issues_for_test(
+          map(),
+          [String.t()],
+          (String.t(), map() -> {:ok, map()} | {:error, term()})
+        ) :: {:ok, [Issue.t()]} | {:error, term()}
+  def fetch_candidate_issues_for_test(%{linear_project_id: project_id}, state_names, graphql_fun)
+      when is_binary(project_id) and is_list(state_names) and is_function(graphql_fun, 2) do
+    do_fetch_by_project_id(project_id, state_names, nil, graphql_fun)
+  end
+
   defp do_fetch_by_states(project_slug, state_names, assignee_filter) do
     do_fetch_by_states_page(project_slug, state_names, assignee_filter, nil, [])
+  end
+
+  defp do_fetch_by_project_id(project_id, state_names, assignee_filter, graphql_fun \\ &graphql/2) do
+    do_fetch_by_project_id_page(project_id, state_names, assignee_filter, graphql_fun, nil, [])
+  end
+
+  defp do_fetch_by_project_id_page(
+         project_id,
+         state_names,
+         assignee_filter,
+         graphql_fun,
+         after_cursor,
+         acc_issues
+       ) do
+    with {:ok, body} <-
+           graphql_fun.(@profile_query, %{
+             projectId: project_id,
+             stateNames: state_names,
+             first: @issue_page_size,
+             relationFirst: @issue_page_size,
+             after: after_cursor
+           }),
+         {:ok, issues, page_info} <- decode_linear_page_response(body, assignee_filter) do
+      updated_acc = prepend_page_issues(issues, acc_issues)
+
+      case next_page_cursor(page_info) do
+        {:ok, next_cursor} ->
+          do_fetch_by_project_id_page(
+            project_id,
+            state_names,
+            assignee_filter,
+            graphql_fun,
+            next_cursor,
+            updated_acc
+          )
+
+        :done ->
+          {:ok, finalize_paginated_issues(updated_acc)}
+
+        {:error, reason} ->
+          {:error, reason}
+      end
+    end
   end
 
   defp do_fetch_by_states_page(project_slug, state_names, assignee_filter, after_cursor, acc_issues) do

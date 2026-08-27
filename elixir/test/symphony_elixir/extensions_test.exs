@@ -15,6 +15,11 @@ defmodule SymphonyElixir.ExtensionsTest do
       {:ok, [:candidate]}
     end
 
+    def fetch_candidate_issues(profile) do
+      send(self(), {:fetch_candidate_issues_called, profile})
+      {:ok, [profile]}
+    end
+
     def fetch_issues_by_states(states) do
       send(self(), {:fetch_issues_by_states_called, states})
       {:ok, states}
@@ -254,13 +259,24 @@ defmodule SymphonyElixir.ExtensionsTest do
 
     write_workflow_file!(Workflow.workflow_file_path(), tracker_kind: "linear")
     assert SymphonyElixir.Tracker.adapter() == Adapter
+
+    Application.put_env(:symphony_elixir, :linear_client_module, FakeLinearClient)
+    profile = %{key: "central-brain", linear_project_id: "central-linear-id"}
+
+    assert {:ok, [^profile]} = SymphonyElixir.Tracker.fetch_candidate_issues(profile)
+    assert_receive {:fetch_candidate_issues_called, ^profile}
   end
 
   test "linear adapter delegates reads and validates mutation responses" do
     Application.put_env(:symphony_elixir, :linear_client_module, FakeLinearClient)
 
+    profile = %{key: "central-brain", linear_project_id: "central-linear-id"}
+
     assert {:ok, [:candidate]} = Adapter.fetch_candidate_issues()
     assert_receive :fetch_candidate_issues_called
+
+    assert {:ok, [^profile]} = Adapter.fetch_candidate_issues(profile)
+    assert_receive {:fetch_candidate_issues_called, ^profile}
 
     assert {:ok, ["Todo"]} = Adapter.fetch_issues_by_states(["Todo"])
     assert_receive {:fetch_issues_by_states_called, ["Todo"]}
