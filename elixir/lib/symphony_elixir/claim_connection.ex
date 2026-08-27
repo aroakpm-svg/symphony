@@ -45,6 +45,7 @@ defmodule SymphonyElixir.ClaimConnection do
   def capacity_result({:ok, %Postgrex.Result{rows: [[3]], num_rows: 1}}), do: :ok
   def capacity_result({:ok, %Postgrex.Result{}}), do: {:error, :node_capacity_mismatch}
   def capacity_result({:error, _reason}), do: {:error, :node_capacity_unavailable}
+  def capacity_result(_result), do: {:error, :node_capacity_unavailable}
 
   defp authenticate(adapter, connection, settings) do
     sql = "select * from symphony_staging.authenticate_node($1::text::uuid, $2::text::uuid)"

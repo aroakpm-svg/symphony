@@ -9,8 +9,16 @@ defmodule SymphonyElixir.ClaimConnectionTest do
         {:error, :connection_refused}
       else
         Agent.start_link(fn -> options end)
+        |> notify_started_connection()
       end
     end
+
+    defp notify_started_connection({:ok, connection} = result) do
+      send(self(), {:claim_connection_started, connection})
+      result
+    end
+
+    defp notify_started_connection(error), do: error
 
     def query(
           _connection,
@@ -25,7 +33,8 @@ defmodule SymphonyElixir.ClaimConnectionTest do
                "capacity-empty",
                "capacity-malformed",
                "capacity-duplicate",
-               "capacity-error"
+               "capacity-error",
+               "capacity-outer-malformed"
              ] do
       {:ok, %Postgrex.Result{rows: [[<<0::128>>, <<1::128>>, 3]], num_rows: 1}}
     end
@@ -67,6 +76,9 @@ defmodule SymphonyElixir.ClaimConnectionTest do
 
         "capacity-error.example" ->
           {:error, :capacity_unavailable}
+
+        "capacity-outer-malformed.example" ->
+          :unexpected
       end
     end
   end
@@ -190,29 +202,33 @@ defmodule SymphonyElixir.ClaimConnectionTest do
     GenServer.stop(connection)
   end
 
-  test "connect stops the connection for non-three or unverifiable capacity", %{ca_path: ca_path} do
+  test "connect stops the connection for a capacity mismatch", %{ca_path: ca_path} do
     for node_id <- [
           "capacity-2",
           "capacity-empty",
           "capacity-malformed",
-          "capacity-duplicate",
-          "capacity-error"
+          "capacity-duplicate"
         ] do
-      assert {:error, reason} = ClaimConnection.connect(connection_settings(ca_path, node_id), Adapter)
-      assert reason in [:node_capacity_mismatch, :node_capacity_unavailable]
+      assert_connect_stops(ca_path, node_id, {:error, :node_capacity_mismatch})
     end
   end
 
-  test "connect stops the connection when authentication is rejected", %{ca_path: ca_path} do
-    settings = connection_settings(ca_path, "rejected")
+  test "connect stops the connection for a capacity database error", %{ca_path: ca_path} do
+    assert_connect_stops(ca_path, "capacity-error", {:error, :node_capacity_unavailable})
+  end
 
-    assert {:error, :node_authentication_rejected} = ClaimConnection.connect(settings, Adapter)
+  test "connect stops the connection for an outer malformed capacity response", %{ca_path: ca_path} do
+    assert_connect_stops(ca_path, "capacity-outer-malformed", {:error, :node_capacity_unavailable})
+  end
+
+  test "connect stops the connection when authentication is rejected", %{ca_path: ca_path} do
+    assert_connect_stops(ca_path, "rejected", {:error, :node_authentication_rejected})
   end
 
   test "connect propagates authentication and connection errors", %{ca_path: ca_path} do
-    settings = connection_settings(ca_path, "error")
-    assert {:error, :authentication_failed} = ClaimConnection.connect(settings, Adapter)
+    assert_connect_stops(ca_path, "error", {:error, :authentication_failed})
 
+    settings = connection_settings(ca_path, "error")
     start_error = %{settings | database_url: "postgresql://node:secret@start-error.example/postgres"}
     assert {:error, :connection_refused} = ClaimConnection.connect(start_error, Adapter)
   end
@@ -254,6 +270,19 @@ defmodule SymphonyElixir.ClaimConnectionTest do
 
     assert {:error, :node_capacity_unavailable} =
              ClaimConnection.capacity_result({:error, {:unsafe_database_text, "secret"}})
+
+    for result <- [:unexpected, {:ok, %{}}] do
+      assert {:error, :node_capacity_unavailable} = ClaimConnection.capacity_result(result)
+    end
+  end
+
+  defp assert_connect_stops(ca_path, node_id, expected_result) do
+    assert expected_result ==
+             ClaimConnection.connect(connection_settings(ca_path, node_id), Adapter)
+
+    assert_receive {:claim_connection_started, connection}
+    monitor_ref = Process.monitor(connection)
+    assert_receive {:DOWN, ^monitor_ref, :process, ^connection, _reason}
   end
 
   defp connection_settings(ca_path, node_id) do

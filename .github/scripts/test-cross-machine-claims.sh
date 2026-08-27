@@ -158,6 +158,9 @@ test "$(psql_admin -A -t -c "
     and completed_at is null
     and released_at is null;")" = "t"
 test "$(psql_admin -A -t -c "select not exists (
+  select 1 from symphony_staging.issue_claims
+  where issue_id = 'ARO288-MIXED-PM-2');")" = "t"
+test "$(psql_admin -A -t -c "select not exists (
   select 1 from symphony_staging.issue_claim_generations
   where issue_id = 'ARO288-MIXED-PM-2');")" = "t"
 test "$(release claim_node_a "${mixed_cb_1%:*}" "${mixed_cb_1#*:}" "$node_a" "$instance_a")" = "t"
