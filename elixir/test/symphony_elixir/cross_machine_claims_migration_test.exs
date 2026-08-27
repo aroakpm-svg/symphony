@@ -77,6 +77,24 @@ defmodule SymphonyElixir.CrossMachineClaimsMigrationTest do
     refute sql =~ "In Progress requires an expired claim takeover"
   end
 
+  test "disposable proof covers mixed-project node and three-node fleet capacity" do
+    script = File.read!(Path.expand("../../../.github/scripts/test-cross-machine-claims.sh", __DIR__))
+
+    for marker <- [
+          "ARO288-MIXED-CB-1",
+          "ARO288-MIXED-PM-1",
+          "ARO288-FLEET-09",
+          "ARO288-FLEET-10",
+          "ARO288-CAPACITY-LOWER",
+          "ARO288-CAPACITY-RAISE"
+        ] do
+      assert script =~ marker
+    end
+
+    assert script =~ "20260827000000_aro_288_node_capacity_contract.sql"
+    assert script =~ "current_node_claim_capacity()"
+  end
+
   test "rollback removes only ARO-164 objects" do
     rollback = File.read!(@rollback)
 
