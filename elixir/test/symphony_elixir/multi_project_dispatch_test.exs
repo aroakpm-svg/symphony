@@ -830,8 +830,12 @@ defmodule SymphonyElixir.MultiProjectDispatchTest do
 
       unscoped = %{
         candidate
-        | project_id: @project_management_profile.linear_project_id,
-          project_slug: "project-management",
+        | project_id:
+            if(reason == :normal,
+              do: String.upcase(@central_profile.linear_project_id),
+              else: @central_profile.linear_project_id
+            ),
+          project_slug: "central-display-refreshed",
           project_profile: nil,
           repository: nil,
           routing_revision: nil,
@@ -842,11 +846,43 @@ defmodule SymphonyElixir.MultiProjectDispatchTest do
       preserved = reconciled.running[candidate.id].issue
       assert preserved.project_profile == @central_profile
       assert preserved.project_id == @central_profile.linear_project_id
+      assert preserved.project_slug == "central-display-refreshed"
       assert preserved.repository == @central_profile.repository
       assert preserved.routing_revision == 7
 
       assert {:noreply, retried} = Orchestrator.handle_info({:DOWN, ref, :process, self(), reason}, reconciled)
       assert %{project_profile: %{key: "central-brain"}, ownership: :retained_owner} = retried.retry_attempts[candidate.id]
+    end
+  end
+
+  test "running reconciliation fails closed on mismatched or missing authoritative project identity" do
+    for refreshed_project_id <- [@project_management_profile.linear_project_id, nil] do
+      candidate = %{issue("identity-#{inspect(refreshed_project_id)}", @central_profile, 1) | project_profile: @central_profile}
+      worker = spawn(fn -> Process.sleep(:infinity) end)
+
+      state = %{
+        base_state()
+        | claimed: MapSet.new([candidate.id]),
+          retry_attempts: %{candidate.id => %{attempt: 1, retry_token: make_ref()}},
+          running: %{
+            candidate.id => %{
+              issue: candidate,
+              identifier: candidate.identifier,
+              pid: worker,
+              ref: Process.monitor(worker),
+              started_at: DateTime.utc_now(),
+              distributed_claim: %{claim_id: "claim", generation: 1}
+            }
+          }
+      }
+
+      refreshed = %{candidate | project_id: refreshed_project_id, project_profile: nil}
+      reconciled = Orchestrator.reconcile_issue_states_for_test([refreshed], state)
+
+      refute Map.has_key?(reconciled.running, candidate.id)
+      refute MapSet.member?(reconciled.claimed, candidate.id)
+      refute Map.has_key?(reconciled.retry_attempts, candidate.id)
+      refute Process.alive?(worker)
     end
   end
 

@@ -984,7 +984,7 @@ defmodule SymphonyElixir.Orchestrator do
         terminate_running_issue(state, issue.id, false)
 
       active_issue_state?(issue.state, active_states) ->
-        refresh_running_issue_state(state, issue)
+        reconcile_active_running_issue(state, issue)
 
       true ->
         Logger.info("Issue moved to non-active state: #{issue_context(issue)} state=#{issue.state}; stopping active agent")
@@ -994,6 +994,38 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   defp reconcile_issue_state(_issue, state, _active_states, _terminal_states), do: state
+
+  defp reconcile_active_running_issue(state, issue) do
+    case Map.get(state.running, issue.id) do
+      %{issue: existing_issue} ->
+        if running_project_identity_matches?(existing_issue, issue) do
+          refresh_running_issue_state(state, issue)
+        else
+          Logger.warning("Running issue project identity changed; releasing claim: #{issue_context(issue)} project_id=#{inspect(issue.project_id)}")
+          terminate_running_issue(state, issue.id, false)
+        end
+
+      _missing ->
+        state
+    end
+  end
+
+  defp running_project_identity_matches?(%Issue{project_profile: nil}, _refreshed_issue), do: true
+
+  defp running_project_identity_matches?(
+         %Issue{project_profile: %{linear_project_id: expected_project_id}},
+         %Issue{project_id: refreshed_project_id}
+       )
+       when is_binary(expected_project_id) and is_binary(refreshed_project_id) do
+    with {:ok, expected_uuid} <- Ecto.UUID.cast(expected_project_id),
+         {:ok, refreshed_uuid} <- Ecto.UUID.cast(refreshed_project_id) do
+      expected_uuid == refreshed_uuid
+    else
+      :error -> false
+    end
+  end
+
+  defp running_project_identity_matches?(_existing_issue, _refreshed_issue), do: false
 
   defp reconcile_blocked_issue_states([], state, _active_states, _terminal_states), do: state
 
@@ -1102,7 +1134,6 @@ defmodule SymphonyElixir.Orchestrator do
     %{
       refreshed_issue
       | project_id: existing_issue.project_id,
-        project_slug: existing_issue.project_slug,
         project_profile: existing_issue.project_profile,
         repository: existing_issue.repository,
         routing_revision: existing_issue.routing_revision
