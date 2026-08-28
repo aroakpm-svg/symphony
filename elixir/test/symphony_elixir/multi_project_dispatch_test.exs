@@ -459,6 +459,80 @@ defmodule SymphonyElixir.MultiProjectDispatchTest do
     refute Enum.any?(Agent.get(events, & &1), &match?({:claim, _id}, &1))
   end
 
+  test "unowned retry preserves its pending backoff across every capacity boundary" do
+    for capacity <- [:global, :state, :worker] do
+      workflow_overrides =
+        case capacity do
+          :global -> [max_concurrent_agents: 1]
+          :state -> [max_concurrent_agents: 2, max_concurrent_agents_by_state: %{"in progress" => 1}]
+          :worker -> [max_concurrent_agents: 2, worker_ssh_hosts: ["host-a"], worker_max_concurrent_agents_per_host: 1]
+        end
+
+      write_workflow_file!(Workflow.workflow_file_path(), workflow_overrides)
+      assert :ok = WorkflowStore.force_reload()
+
+      {:ok, events} = Agent.start_link(fn -> [] end)
+      candidate = %{issue("unowned-capacity-#{capacity}", @central_profile, 1) | project_profile: @central_profile}
+      blocker = issue("unowned-blocker-#{capacity}", @project_management_profile, 2)
+      {owned_state, token} = issue_retry_state(candidate, 1)
+
+      retry_entry =
+        owned_state.retry_attempts[candidate.id]
+        |> Map.put(:ownership, :unowned_backoff)
+        |> Map.put(:worker_host, if(capacity == :worker, do: "host-a"))
+
+      state = %{
+        owned_state
+        | claimed: MapSet.new(),
+          retry_attempts: %{candidate.id => retry_entry},
+          running: %{
+            blocker.id => %{
+              issue: blocker,
+              identifier: blocker.identifier,
+              pid: self(),
+              ref: make_ref(),
+              worker_host: if(capacity == :worker, do: "host-a"),
+              started_at: DateTime.utc_now()
+            }
+          }
+      }
+
+      opts =
+        dispatch_opts(fn _profile -> {:ok, []} end, %{candidate.id => candidate}, events,
+          project_profiles: @profiles,
+          retry_fetch_fun: fn _issue_id, _metadata -> {:ok, [candidate]} end,
+          profile_refresh_fun: fn _ids -> {:ok, [candidate]} end,
+          task_start_fun: fn _task_fun -> {:ok, self()} end,
+          bind_worker_fun: fn _issue_id, _pid -> :ok end,
+          claim_fun: fn _issue, _owner -> flunk("capacity-blocked unowned retry must not claim") end
+        )
+        |> Keyword.delete(:dispatch_fun)
+
+      backed_off = Orchestrator.fire_issue_retry_for_test(state, candidate.id, token, opts)
+
+      assert %{attempt: 2, ownership: :unowned_backoff, retry_token: next_token} =
+               backed_off.retry_attempts[candidate.id]
+
+      refute MapSet.member?(backed_off.claimed, candidate.id)
+      refute Orchestrator.should_dispatch_issue_for_test(candidate, backed_off)
+
+      recovered_opts =
+        Keyword.put(opts, :claim_fun, fn _issue, _owner ->
+          record(events, {:fresh_claim, capacity})
+          {:ok, %{claim_id: "fresh", generation: 2}}
+        end)
+
+      recovered =
+        backed_off
+        |> Map.put(:running, %{})
+        |> Orchestrator.fire_issue_retry_for_test(candidate.id, next_token, recovered_opts)
+
+      assert Map.has_key?(recovered.running, candidate.id), inspect({capacity, recovered, Agent.get(events, & &1)})
+      assert MapSet.member?(recovered.claimed, candidate.id), inspect({capacity, recovered, Agent.get(events, & &1)})
+      assert Agent.get(events, & &1) |> Enum.count(&match?({:fresh_claim, ^capacity}, &1)) == 1
+    end
+  end
+
   test "current profile drift on a fired retry fails closed before dispatch" do
     {:ok, events} = Agent.start_link(fn -> [] end)
 

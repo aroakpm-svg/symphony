@@ -657,13 +657,23 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   defp retry_capacity_blocked?(state, issue, metadata) do
-    MapSet.member?(state.claimed, issue.id) and
+    retry_ownership_allows_capacity_backoff?(state, issue.id, metadata[:ownership]) and
       !Map.has_key?(state.running, issue.id) and
       !Map.has_key?(state.blocked, issue.id) and
       (available_slots(state) <= 0 or
          !state_slots_available?(issue, state.running) or
          !worker_slots_available?(state, metadata[:worker_host]))
   end
+
+  defp retry_ownership_allows_capacity_backoff?(state, issue_id, :retained_owner) do
+    MapSet.member?(state.claimed, issue_id)
+  end
+
+  defp retry_ownership_allows_capacity_backoff?(state, issue_id, :unowned_backoff) do
+    !MapSet.member?(state.claimed, issue_id)
+  end
+
+  defp retry_ownership_allows_capacity_backoff?(_state, _issue_id, _ownership), do: false
 
   defp schedule_candidate_profile_retry(state, %Issue{project_profile: %{key: profile_key}}, reason, opts)
        when is_binary(profile_key) do
