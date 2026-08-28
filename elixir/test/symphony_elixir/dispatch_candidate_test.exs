@@ -38,6 +38,7 @@ defmodule SymphonyElixir.DispatchCandidateTest do
 
     assert authorized.project_profile.key == "central-brain"
     assert authorized.repository == "aroakpm-svg/aroak-central-brain"
+    assert authorized.routing_revision == 7
   end
 
   test "skips an issue whose refreshed state is inactive before reading routing" do

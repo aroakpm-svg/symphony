@@ -400,6 +400,7 @@ defmodule SymphonyElixir.MultiProjectDispatchTest do
       end,
       claim_fun: fn issue, owner ->
         assert owner == self()
+        assert is_integer(issue.routing_revision) and issue.routing_revision > 0
         record(events, {:claim, issue.id})
         {:ok, %{claim_id: "claim-#{issue.id}", generation: 1}}
       end,

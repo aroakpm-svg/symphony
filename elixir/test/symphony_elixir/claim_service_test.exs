@@ -38,10 +38,91 @@ defmodule SymphonyElixir.ClaimServiceTest do
     refute inspect(result) =~ "database.internal"
   end
 
+  test "multi-project claim locks and revalidates the exclusive routing receipt before acquisition" do
+    parent = self()
+
+    query = fn sql, params ->
+      send(parent, {:query, String.trim(sql), params})
+
+      cond do
+        String.starts_with?(String.trim(sql), "begin") ->
+          {:ok, %Postgrex.Result{rows: [], num_rows: 0}}
+
+        sql =~ "routing_assignments" ->
+          {:ok, %Postgrex.Result{rows: [["exclusive", @current_node_id, 7]], num_rows: 1}}
+
+        sql =~ "claim_issue" ->
+          {:ok, %Postgrex.Result{rows: [["claim-1", 1]], num_rows: 1}}
+
+        String.starts_with?(String.trim(sql), "commit") ->
+          {:ok, %Postgrex.Result{rows: [], num_rows: 0}}
+      end
+    end
+
+    assert {:ok, claim} = claim_with_query(query, 7)
+    assert claim.claim_id == "claim-1"
+    assert_receive {:query, "begin", []}
+    assert_receive {:query, route_sql, ["issue-1", @current_node_id, 7]}
+    assert route_sql =~ "for share"
+    assert_receive {:query, claim_sql, _params}
+    assert claim_sql =~ "claim_issue"
+    assert_receive {:query, "commit", []}
+  end
+
+  test "multi-project claim rejects a changed routing revision, policy, or node before acquisition" do
+    cases = [
+      {"exclusive", @current_node_id, 8},
+      {"unassigned", nil, 7},
+      {"preferred-with-fallback", @current_node_id, 7},
+      {"exclusive", @other_node_id, 7}
+    ]
+
+    for {policy, target_node_id, revision} <- cases do
+      parent = self()
+
+      query = fn sql, params ->
+        send(parent, {:query, String.trim(sql), params})
+
+        cond do
+          String.starts_with?(String.trim(sql), "begin") ->
+            {:ok, %Postgrex.Result{rows: [], num_rows: 0}}
+
+          sql =~ "routing_assignments" ->
+            {:ok, %Postgrex.Result{rows: [[policy, target_node_id, revision]], num_rows: 1}}
+
+          String.starts_with?(String.trim(sql), "rollback") ->
+            {:ok, %Postgrex.Result{rows: [], num_rows: 0}}
+
+          sql =~ "claim_issue" ->
+            flunk("stale routing must be rejected before claim acquisition")
+        end
+      end
+
+      assert {:error, :routing_changed} = claim_with_query(query, 7)
+      assert_receive {:query, "begin", []}
+      assert_receive {:query, _route_sql, ["issue-1", @current_node_id, 7]}
+      assert_receive {:query, "rollback", []}
+    end
+  end
+
+  test "legacy claim without a routing receipt retains the existing claim acquisition behavior" do
+    parent = self()
+
+    query = fn sql, params ->
+      send(parent, {:query, String.trim(sql), params})
+      {:ok, %Postgrex.Result{rows: [["legacy-claim", 2]], num_rows: 1}}
+    end
+
+    assert {:ok, %{claim_id: "legacy-claim"}} = claim_with_query(query, nil)
+    assert_receive {:query, claim_sql, _params}
+    assert claim_sql =~ "claim_issue"
+    refute_receive {:query, "begin", []}
+  end
+
   test "database calls bind textual UUIDs through text before UUID casts" do
     source = File.read!(Path.expand("../../lib/symphony_elixir/claim_service.ex", __DIR__))
 
-    assert length(Regex.scan(~r/::text::uuid/, source)) == 12
+    assert length(Regex.scan(~r/::text::uuid/, source)) == 14
     refute source =~ "DateTime.to_iso8601(updated_at)"
   end
 
@@ -217,6 +298,29 @@ defmodule SymphonyElixir.ClaimServiceTest do
 
     assert {:reply, result, ^state} =
              ClaimService.handle_call({:exclusive_route, issue}, self(), state)
+
+    result
+  end
+
+  defp claim_with_query(query, routing_revision) do
+    issue = %Issue{
+      id: "issue-1",
+      state: "In Progress",
+      updated_at: DateTime.utc_now(),
+      routing_revision: routing_revision
+    }
+
+    settings = %{
+      node_id: @current_node_id,
+      node_instance_id: "00000000-0000-4000-8000-000000000003",
+      lease_ms: 60_000,
+      fallback_grace_ms: 30_000
+    }
+
+    state = %ClaimService{connection: query, settings: settings}
+
+    assert {:reply, result, _state} =
+             ClaimService.handle_call({:claim, issue, self()}, self(), state)
 
     result
   end

@@ -21,8 +21,14 @@ defmodule SymphonyElixir.DispatchCandidate do
          :ok <- require_worker_label(issue),
          {:ok, profile} <- resolve_profile(profiles, issue.project_id),
          :ok <- require_same_profile(issue.project_profile, profile),
-         :ok <- require_exclusive_route(issue, route_reader) do
-      {:ok, %{issue | project_profile: profile, repository: profile.repository}}
+         {:ok, routing_revision} <- require_exclusive_route(issue, route_reader) do
+      {:ok,
+       %{
+         issue
+         | project_profile: profile,
+           repository: profile.repository,
+           routing_revision: routing_revision
+       }}
     end
   end
 
@@ -61,7 +67,7 @@ defmodule SymphonyElixir.DispatchCandidate do
   defp require_exclusive_route(issue, route_reader) when is_function(route_reader, 1) do
     case route_reader.(issue) do
       {:ok, %{routing_revision: revision}} when is_integer(revision) and revision > 0 ->
-        :ok
+        {:ok, revision}
 
       {:ineligible, reason} when is_atom(reason) ->
         {:skip, reason}
