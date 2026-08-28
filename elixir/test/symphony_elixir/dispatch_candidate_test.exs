@@ -109,6 +109,25 @@ defmodule SymphonyElixir.DispatchCandidateTest do
              DispatchCandidate.authorize(valid_issue(), @profiles, route_reader: route_reader)
   end
 
+  test "fails closed for malformed evidence and options" do
+    no_route_opts = [route_reader: unexpected_route_reader()]
+
+    assert {:skip, :inactive_state} =
+             DispatchCandidate.authorize(%{valid_issue() | state: nil}, @profiles)
+
+    assert {:skip, :missing_worker_label} =
+             DispatchCandidate.authorize(%{valid_issue() | labels: nil}, @profiles, no_route_opts)
+
+    assert {:skip, :missing_worker_label} =
+             DispatchCandidate.authorize(%{valid_issue() | labels: [nil]}, @profiles, no_route_opts)
+
+    assert {:skip, :unknown_project} =
+             DispatchCandidate.authorize(valid_issue(), nil, no_route_opts)
+
+    assert {:retry, :routing_unavailable} =
+             DispatchCandidate.authorize(valid_issue(), @profiles, route_reader: :not_a_function)
+  end
+
   defp valid_issue do
     %Issue{
       id: "issue-1",

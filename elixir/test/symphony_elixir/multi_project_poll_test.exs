@@ -121,6 +121,30 @@ defmodule SymphonyElixir.MultiProjectPollTest do
     refute inspect(outcomes) =~ "token=must-not-leak"
   end
 
+  test "returns an empty result without invoking the fetcher when no profiles are enabled" do
+    assert MultiProjectPoll.fetch([], fn _profile -> flunk("fetcher must not run") end) == %{
+             candidates: [],
+             outcomes: %{},
+             ambiguous_issue_ids: MapSet.new()
+           }
+  end
+
+  test "isolates thrown fetch failures and falls back from an invalid timeout" do
+    profiles = [profile("central-brain"), profile("project-management")]
+
+    fetcher = fn
+      %{key: "central-brain"} -> throw(:unexpected_profile_fetch_throw)
+      %{key: "project-management"} -> {:ok, [issue("two", "pm-id")]}
+    end
+
+    assert %{candidates: candidates, outcomes: outcomes} =
+             MultiProjectPoll.fetch(profiles, fetcher, timeout: :invalid)
+
+    assert Enum.map(candidates, & &1.id) == ["two"]
+    assert outcomes["central-brain"] == %{status: :error, retry: :transient}
+    assert outcomes["project-management"] == %{status: :ok}
+  end
+
   defp profile(key), do: %{key: key, linear_project_id: "#{key}-linear-id"}
 
   defp issue(id, project_id), do: %Issue{id: id, project_id: project_id}
