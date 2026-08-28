@@ -393,7 +393,25 @@ defmodule SymphonyElixir.MultiProjectDispatchTest do
           end
         )
 
-      dispatched = Orchestrator.fire_issue_retry_for_test(state, candidate.id, token, opts)
+      before_token =
+        Orchestrator.multi_project_dispatch_for_test(
+          state,
+          @profiles,
+          dispatch_opts(
+            fn profile_arg ->
+              {:ok, if(profile_arg.key == profile.key, do: [candidate], else: [])}
+            end,
+            %{candidate.id => candidate},
+            events,
+            []
+          )
+        )
+
+      assert before_token.retry_attempts == state.retry_attempts
+      assert before_token.running == %{}
+      refute Enum.any?(Agent.get(events, & &1), &match?({:claim, _id}, &1))
+
+      dispatched = Orchestrator.fire_issue_retry_for_test(before_token, candidate.id, token, opts)
       duplicate = Orchestrator.fire_issue_retry_for_test(dispatched, candidate.id, token, opts)
 
       assert Map.has_key?(dispatched.running, candidate.id), inspect(Agent.get(events, & &1))
@@ -451,10 +469,20 @@ defmodule SymphonyElixir.MultiProjectDispatchTest do
 
     {state, token} = issue_retry_state(candidate, 1)
 
+    drifted = %{
+      issue("profile-drift-token", @project_management_profile, 2)
+      | project_profile: @project_management_profile
+    }
+
     opts =
-      dispatch_opts(fn _profile -> {:ok, []} end, %{}, events,
+      dispatch_opts(fn _profile -> {:ok, []} end, %{candidate.id => drifted}, events,
         project_profiles: @profiles,
-        retry_fetch_fun: fn _issue_id, _metadata -> {:ok, []} end
+        retry_fetch_fun: fn _issue_id, _metadata -> {:ok, [candidate]} end,
+        profile_refresh_fun: fn _ids -> {:ok, [drifted]} end,
+        claim_release_fun: fn state_arg, issue_id ->
+          record(events, {:release, issue_id})
+          %{state_arg | claimed: MapSet.delete(state_arg.claimed, issue_id)}
+        end
       )
 
     result = Orchestrator.fire_issue_retry_for_test(state, candidate.id, token, opts)
@@ -462,6 +490,82 @@ defmodule SymphonyElixir.MultiProjectDispatchTest do
     refute Map.has_key?(result.running, candidate.id)
     refute Map.has_key?(result.retry_attempts, candidate.id)
     refute Enum.any?(Agent.get(events, & &1), &match?({:claim, _id}, &1))
+    refute MapSet.member?(result.claimed, candidate.id), inspect(Agent.get(events, & &1))
+    assert {:release, candidate.id} in Agent.get(events, & &1)
+  end
+
+  test "post-pop transient retry outcomes retain ownership and schedule a new token" do
+    for transient <- [:initial_fetch, :refresh, :route, :preflight_unavailable, :preflight_blocked] do
+      {:ok, events} = Agent.start_link(fn -> [] end)
+
+      candidate = %{
+        issue("#{transient}-pending", @central_profile, 1)
+        | project_profile: @central_profile
+      }
+
+      {state, token} = issue_retry_state(candidate, 1)
+
+      overrides =
+        [
+          project_profiles: @profiles,
+          retry_fetch_fun: fn _issue_id, _metadata ->
+            if transient == :initial_fetch, do: {:error, :transport}, else: {:ok, [candidate]}
+          end,
+          profile_refresh_fun: fn _ids ->
+            if transient == :refresh, do: {:error, :transport}, else: {:ok, [candidate]}
+          end,
+          route_reader: fn _issue ->
+            if transient == :route,
+              do: {:error, :claim_service_unavailable},
+              else: {:ok, %{routing_revision: 7}}
+          end,
+          preflight_fun: fn _profile ->
+            case transient do
+              :preflight_unavailable -> {:error, :transport}
+              :preflight_blocked -> {:blocked, %{code: :repository_unavailable}}
+              _ -> {:ok, %{repository: @central_profile.repository}}
+            end
+          end,
+          claim_release_fun: fn _state_arg, _issue_id -> flunk("transient retry released ownership") end
+        ]
+
+      opts = dispatch_opts(fn _profile -> {:ok, []} end, %{candidate.id => candidate}, events, overrides)
+      result = Orchestrator.fire_issue_retry_for_test(state, candidate.id, token, opts)
+
+      assert %{attempt: 2, retry_token: next_token} = result.retry_attempts[candidate.id]
+      assert is_reference(next_token) and next_token != token
+      assert MapSet.member?(result.claimed, candidate.id)
+      refute Map.has_key?(result.running, candidate.id)
+    end
+  end
+
+  test "ineligible post-pop outcome releases ownership without rescheduling" do
+    {:ok, events} = Agent.start_link(fn -> [] end)
+
+    candidate = %{
+      issue("terminal-pending", @central_profile, 1)
+      | project_profile: @central_profile,
+        labels: []
+    }
+
+    {state, token} = issue_retry_state(candidate, 1)
+
+    opts =
+      dispatch_opts(fn _profile -> {:ok, []} end, %{}, events,
+        project_profiles: @profiles,
+        retry_fetch_fun: fn _issue_id, _metadata -> {:ok, [candidate]} end,
+        profile_refresh_fun: fn _ids -> {:ok, [candidate]} end,
+        claim_release_fun: fn state_arg, issue_id ->
+          record(events, {:release, issue_id})
+          %{state_arg | claimed: MapSet.delete(state_arg.claimed, issue_id)}
+        end
+      )
+
+    result = Orchestrator.fire_issue_retry_for_test(state, candidate.id, token, opts)
+
+    refute MapSet.member?(result.claimed, candidate.id), inspect(Agent.get(events, & &1))
+    refute Map.has_key?(result.retry_attempts, candidate.id)
+    assert {:release, candidate.id} in Agent.get(events, & &1)
   end
 
   defp run_cycle(candidates, refreshed_by_id, events, overrides) do
@@ -481,7 +585,8 @@ defmodule SymphonyElixir.MultiProjectDispatchTest do
 
     state = %{
       base_state()
-      | retry_attempts: %{
+      | claimed: MapSet.new([candidate.id]),
+        retry_attempts: %{
           candidate.id => %{
             attempt: attempt,
             retry_token: token,

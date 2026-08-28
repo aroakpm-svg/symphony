@@ -55,6 +55,9 @@ defmodule SymphonyElixir.ExclusiveRouteClaimApiMigrationTest do
     refute source =~ "create function symphony_staging.claim_exclusive_issue"
     refute source =~ "create function symphony_staging.exclusive_route_snapshot"
     assert source =~ "future_node_role"
+    assert source =~ "created_cluster_roles = @cluster_roles -- existing_cluster_roles"
+    assert source =~ "Enum.reverse(created_cluster_roles)"
+    assert source =~ "existing_roles(cleanup_admin, existing_cluster_roles)"
     assert source =~ "insufficient_privilege"
     assert source =~ "future/non-uuid"
   end

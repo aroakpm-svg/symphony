@@ -738,7 +738,7 @@ defmodule SymphonyElixir.CoreTest do
     assert MapSet.member?(state.completed, issue_id)
     assert %{attempt: 1, due_at_ms: due_at_ms} = state.retry_attempts[issue_id]
     assert state.retry_attempts[issue_id].project_profile.key == "central-brain"
-    refute MapSet.member?(state.claimed, issue_id)
+    assert MapSet.member?(state.claimed, issue_id)
     assert is_integer(due_at_ms)
     assert_due_after(due_at_ms, scheduled_from_ms, 900, 1_100)
   end
@@ -858,7 +858,7 @@ defmodule SymphonyElixir.CoreTest do
              state.retry_attempts[issue_id]
 
     assert state.retry_attempts[issue_id].project_profile.key == "project-management"
-    refute MapSet.member?(state.claimed, issue_id)
+    assert MapSet.member?(state.claimed, issue_id)
 
     assert_due_after(due_at_ms, scheduled_from_ms, 39_500, 40_500)
   end

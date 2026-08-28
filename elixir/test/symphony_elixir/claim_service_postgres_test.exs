@@ -15,6 +15,7 @@ defmodule SymphonyElixir.ClaimServicePostgresTest do
   @future_node_id "00000000-0000-4000-8000-000000000288"
   @future_node_instance_id "00000000-0000-4000-8000-000000001288"
   @issue_id "ARO-287/non-uuid"
+  @cluster_roles ~w(anon authenticated service_role symphony_staging_runtime symphony_staging_provisioner)
 
   @moduletag skip:
                if(@enabled,
@@ -33,6 +34,8 @@ defmodule SymphonyElixir.ClaimServicePostgresTest do
     {:ok, resource_supervisor} = DynamicSupervisor.start_link(strategy: :one_for_one)
     Process.unlink(resource_supervisor)
     admin_connection = start_connection!(resource_supervisor, @admin_url)
+    existing_cluster_roles = existing_roles(admin_connection, @cluster_roles)
+    created_cluster_roles = @cluster_roles -- existing_cluster_roles
 
     cleanup_state = %{
       created?: false,
@@ -52,13 +55,17 @@ defmodule SymphonyElixir.ClaimServicePostgresTest do
       cleanup_admin = start_connection!(resource_supervisor, @admin_url)
       query!(cleanup_admin, ~s(drop role if exists "#{future_node_role}"))
       query!(cleanup_admin, ~s(drop role if exists "#{node_role}"))
+      Enum.each(Enum.reverse(created_cluster_roles), &query!(cleanup_admin, ~s(drop role if exists "#{&1}")))
 
       assert %Postgrex.Result{rows: [[0]]} =
                Postgrex.query!(
                  cleanup_admin,
                  "select count(*) from pg_roles where rolname = any($1::text[])",
-                 [[node_role, future_node_role]]
+                 [[node_role, future_node_role | created_cluster_roles]]
                )
+
+      assert Enum.sort(existing_roles(cleanup_admin, existing_cluster_roles)) ==
+               Enum.sort(existing_cluster_roles)
 
       stop_supervisor!(resource_supervisor)
 
@@ -254,6 +261,13 @@ defmodule SymphonyElixir.ClaimServicePostgresTest do
   defp apply_migration!(connection, filename) do
     path = Path.expand("../../priv/symphony_migrations/#{filename}", __DIR__)
     query!(connection, File.read!(path))
+  end
+
+  defp existing_roles(connection, roles) do
+    %Postgrex.Result{rows: rows} =
+      Postgrex.query!(connection, "select rolname from pg_roles where rolname = any($1::text[])", [roles])
+
+    Enum.map(rows, fn [role] -> role end)
   end
 
   defp install_prerequisites!(connection, node_role) do
