@@ -807,7 +807,12 @@ defmodule SymphonyElixir.MultiProjectDispatchTest do
 
   test "running reconciliation preserves approved profile through normal and abnormal retry creation" do
     for reason <- [:normal, :crashed] do
-      candidate = %{issue("reconcile-#{reason}", @central_profile, 1) | project_profile: @central_profile, repository: @central_profile.repository, routing_revision: 7}
+      candidate = %{
+        issue("reconcile-#{reason}", @central_profile, 1)
+        | project_profile: @central_profile,
+          repository: @central_profile.repository,
+          routing_revision: 7
+      }
       ref = make_ref()
 
       state = %{
