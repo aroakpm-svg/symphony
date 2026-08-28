@@ -1619,6 +1619,7 @@ defmodule SymphonyElixir.Orchestrator do
     bind_fun = Keyword.get(opts, :bind_worker_fun, &ClaimService.bind_worker/2)
     terminate_fun = Keyword.get(opts, :terminate_task_fun, &terminate_task/1)
     finalize_fun = Keyword.get(opts, :finalize_claim_fun, &finalize_distributed_claim/2)
+    track_fun = Keyword.get(opts, :track_worker_fun, &track_spawned_issue/7)
 
     task_fun = fn ->
       AgentRunner.run(issue, recipient,
@@ -1630,24 +1631,19 @@ defmodule SymphonyElixir.Orchestrator do
 
     case start_fun.(task_fun) do
       {:ok, pid} ->
-        case bind_fun.(issue.id, pid) do
-          :ok ->
-            track_spawned_issue(state, issue, attempt, worker_host, distributed_claim, pid)
-
-          {:error, reason} ->
-            terminate_fun.(pid)
-            :ok = finalize_fun.(issue.id, :release)
-            Logger.error("Unable to bind database claim to agent for #{issue_context(issue)}: #{inspect(reason)}")
-
-            transition_retry_unowned_backoff(
-              state,
-              issue,
-              normalize_retry_attempt(attempt) + 1,
-              "failed to bind database claim: #{inspect(reason)}",
-              worker_host,
-              opts
-            )
-        end
+        complete_spawned_worker_startup(%{
+          state: state,
+          issue: issue,
+          attempt: attempt,
+          worker_host: worker_host,
+          claim: distributed_claim,
+          pid: pid,
+          bind_fun: bind_fun,
+          terminate_fun: terminate_fun,
+          finalize_fun: finalize_fun,
+          track_fun: track_fun,
+          opts: opts
+        })
 
       {:error, reason} ->
         :ok = finalize_fun.(issue.id, :release)
@@ -1663,6 +1659,62 @@ defmodule SymphonyElixir.Orchestrator do
           opts
         )
     end
+  end
+
+  defp complete_spawned_worker_startup(context) do
+    do_complete_spawned_worker_startup(Map.put(context, :ref, Process.monitor(context.pid)))
+  end
+
+  defp do_complete_spawned_worker_startup(context) do
+    case context.bind_fun.(context.issue.id, context.pid) do
+      :ok ->
+        context.track_fun.(
+          context.state,
+          context.issue,
+          context.attempt,
+          context.worker_host,
+          context.claim,
+          context.pid,
+          context.ref
+        )
+
+      {:error, reason} ->
+        cleanup_spawned_worker_failure(context, reason)
+    end
+  rescue
+    exception ->
+      cleanup_spawned_worker_failure(context, {:exception, exception})
+  catch
+    kind, reason ->
+      cleanup_spawned_worker_failure(context, {kind, reason})
+  end
+
+  defp cleanup_spawned_worker_failure(context, reason) do
+    ensure_spawned_worker_stopped(context.pid, context.ref, context.terminate_fun)
+    :ok = context.finalize_fun.(context.issue.id, :release)
+    Logger.error("Spawned worker startup failed for #{issue_context(context.issue)}: #{inspect(reason)}")
+
+    transition_retry_unowned_backoff(
+      context.state,
+      context.issue,
+      normalize_retry_attempt(context.attempt) + 1,
+      "spawned worker startup failed: #{inspect(reason)}",
+      context.worker_host,
+      context.opts
+    )
+  end
+
+  defp ensure_spawned_worker_stopped(pid, ref, terminate_fun) do
+    try do
+      terminate_fun.(pid)
+    catch
+      _kind, _reason -> if Process.alive?(pid), do: Process.exit(pid, :kill)
+    after
+      if Process.alive?(pid), do: Process.exit(pid, :kill)
+      Process.demonitor(ref, [:flush])
+    end
+
+    :ok
   end
 
   defp dispatch_failure_retry_metadata(issue, worker_host, error, opts) do
@@ -1697,9 +1749,7 @@ defmodule SymphonyElixir.Orchestrator do
     schedule_issue_retry(state, issue.id, attempt, metadata)
   end
 
-  defp track_spawned_issue(state, issue, attempt, worker_host, distributed_claim, pid) do
-    ref = Process.monitor(pid)
-
+  defp track_spawned_issue(state, issue, attempt, worker_host, distributed_claim, pid, ref) do
     Logger.info("Dispatching issue to agent: #{issue_context(issue)} pid=#{inspect(pid)} attempt=#{inspect(attempt)} worker_host=#{worker_host || "local"}")
 
     running =

@@ -633,7 +633,11 @@ defmodule SymphonyElixir.MultiProjectDispatchTest do
           profile_refresh_fun: fn _ids -> {:ok, [candidate]} end,
           dispatch_fun: nil,
           claim_fun: fn _issue, _owner -> {:ok, %{claim_id: "claim", generation: 1}} end,
-          task_start_fun: fn _fun -> if failure == :spawn, do: {:error, :spawn_failed}, else: {:ok, self()} end,
+          task_start_fun: fn _fun ->
+            if failure == :spawn,
+              do: {:error, :spawn_failed},
+              else: {:ok, spawn(fn -> Process.sleep(:infinity) end)}
+          end,
           bind_worker_fun: fn _issue_id, _pid -> if failure == :bind, do: {:error, :bind_failed}, else: :ok end,
           terminate_task_fun: fn _pid -> :ok end,
           finalize_claim_fun: fn _issue_id, _action -> :ok end
@@ -725,7 +729,11 @@ defmodule SymphonyElixir.MultiProjectDispatchTest do
           %{candidate.id => candidate},
           events,
           project_profiles: @profiles,
-          task_start_fun: fn _fun -> if failure == :spawn, do: {:error, :spawn_failed}, else: {:ok, self()} end,
+          task_start_fun: fn _fun ->
+            if failure == :spawn,
+              do: {:error, :spawn_failed},
+              else: {:ok, spawn(fn -> Process.sleep(:infinity) end)}
+          end,
           bind_worker_fun: fn _id, _pid -> if failure == :bind, do: {:error, :bind_failed}, else: :ok end,
           terminate_task_fun: fn _pid -> :ok end,
           finalize_claim_fun: fn _id, _action -> :ok end
@@ -919,6 +927,74 @@ defmodule SymphonyElixir.MultiProjectDispatchTest do
     refute MapSet.member?(state.claimed, candidate.id)
     refute Map.has_key?(state.retry_attempts, candidate.id)
     assert %{reason: :candidate_failure} = state.profile_retry_attempts["central-brain"]
+  end
+
+  test "post-PID bind, tracking, and termination failures stop the worker before one release" do
+    for stage <- [:bind, :track, :terminate], failure <- [:raise, :exit, :throw] do
+      {:ok, events} = Agent.start_link(fn -> [] end)
+      {:ok, worker_holder} = Agent.start_link(fn -> nil end)
+      candidate = %{issue("post-pid-#{stage}-#{failure}", @central_profile, 1) | project_profile: @central_profile}
+
+      fail = fn ->
+        case failure do
+          :raise -> raise "startup failed"
+          :exit -> exit(:startup_failed)
+          :throw -> throw(:startup_failed)
+        end
+      end
+
+      opts =
+        dispatch_opts(
+          fn profile -> {:ok, if(profile.key == "central-brain", do: [candidate], else: [])} end,
+          %{candidate.id => candidate},
+          events,
+          project_profiles: @profiles,
+          task_start_fun: fn _task_fun ->
+            worker = spawn(fn -> Process.sleep(:infinity) end)
+            Agent.update(worker_holder, fn _ -> worker end)
+            {:ok, worker}
+          end,
+          bind_worker_fun: fn _id, _pid ->
+            cond do
+              stage == :bind -> fail.()
+              stage == :terminate -> {:error, :bind_failed}
+              true -> :ok
+            end
+          end,
+          terminate_task_fun: fn _pid -> if stage == :terminate, do: fail.(), else: :ok end,
+          track_worker_fun: fn state, _issue, _attempt, _host, _claim, _pid, _ref ->
+            if stage == :track, do: fail.(), else: state
+          end,
+          finalize_claim_fun: fn issue_id, action ->
+            record(events, {:finalize, issue_id, action})
+            :ok
+          end
+        )
+        |> Keyword.delete(:dispatch_fun)
+
+      failed = Orchestrator.multi_project_dispatch_for_test(base_state(), @profiles, opts)
+      worker = Agent.get(worker_holder, & &1)
+
+      refute Process.alive?(worker)
+      assert Enum.count(Agent.get(events, & &1), &match?({:finalize, _, :release}, &1)) == 1
+      assert %{ownership: :unowned_backoff, retry_token: token} = failed.retry_attempts[candidate.id]
+      refute MapSet.member?(failed.claimed, candidate.id)
+      refute Map.has_key?(failed.running, candidate.id)
+
+      recovered_opts =
+        opts
+        |> Keyword.delete(:track_worker_fun)
+        |> Keyword.put(:retry_fetch_fun, fn _id, _metadata -> {:ok, [candidate]} end)
+        |> Keyword.put(:profile_refresh_fun, fn _ids -> {:ok, [candidate]} end)
+        |> Keyword.put(:task_start_fun, fn _fun -> {:ok, self()} end)
+        |> Keyword.put(:bind_worker_fun, fn _id, _pid -> :ok end)
+        |> Keyword.put(:terminate_task_fun, fn _pid -> :ok end)
+        |> Keyword.put(:claim_fun, fn _issue, _owner -> {:ok, %{claim_id: "fresh", generation: 2}} end)
+
+      recovered = Orchestrator.fire_issue_retry_for_test(failed, candidate.id, token, recovered_opts)
+      assert Map.keys(recovered.running) == [candidate.id]
+      assert MapSet.member?(recovered.claimed, candidate.id)
+    end
   end
 
   test "worker capacity race retains ownership and reschedules the profile retry" do
