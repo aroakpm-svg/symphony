@@ -28,33 +28,33 @@ defmodule SymphonyElixir.ClaimServicePostgresTest do
     database_name = Harness.database_name(token)
     admin_connection = start_connection!(@admin_url)
 
-    {:ok, cleanup_owner} =
-      Agent.start_link(fn ->
-        %{
-          created?: false,
-          admin_url: @admin_url,
-          admin_connection: admin_connection,
-          database_name: database_name,
-          token: token,
-          database_connections: [],
-          marker_connection: nil
-        }
-      end)
+    initial_cleanup_state = %{
+      created?: false,
+      create_attempted?: false,
+      admin_url: @admin_url,
+      admin_connection: admin_connection,
+      database_name: database_name,
+      token: token,
+      database_connections: [],
+      marker_connection: nil
+    }
+
+    {:ok, cleanup_owner} = Agent.start_link(fn -> initial_cleanup_state end)
 
     Process.unlink(cleanup_owner)
 
     on_exit(fn ->
-      state = Agent.get(cleanup_owner, & &1)
+      fallback = %{initial_cleanup_state | create_attempted?: true}
+      state = Harness.owner_state(cleanup_owner, fallback)
       result = Harness.cleanup(state, cleanup_operations())
       stop_connection!(cleanup_owner)
 
       if result != :ok, do: flunk("disposable database cleanup failed: #{inspect(result)}")
     end)
 
-    Agent.get_and_update(cleanup_owner, fn state ->
-      query!(admin_connection, ~s(create database "#{database_name}"))
-      {:ok, %{state | created?: true}}
-    end)
+    Agent.update(cleanup_owner, &%{&1 | create_attempted?: true})
+    query!(admin_connection, ~s(create database "#{database_name}"))
+    Agent.update(cleanup_owner, &%{&1 | created?: true})
 
     claim_url = Harness.database_url(admin_uri, database_name, "aro287_claim_transaction")
     update_url = Harness.database_url(admin_uri, database_name, "aro287_route_update")

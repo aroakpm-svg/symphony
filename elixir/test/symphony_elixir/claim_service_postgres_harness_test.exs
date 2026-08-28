@@ -55,7 +55,7 @@ defmodule SymphonyElixir.ClaimServicePostgresHarnessTest do
              Harness.cleanup_statements(name, token)
 
     assert terminate_sql =~ "where datname = $1"
-    assert drop_sql == ~s(drop database "#{name}")
+    assert drop_sql == ~s(drop database if exists "#{name}")
     refute terminate_sql =~ name
   end
 
@@ -69,9 +69,31 @@ defmodule SymphonyElixir.ClaimServicePostgresHarnessTest do
              {:ensure_admin, :dead_admin, state.admin_url},
              {:terminate, :reconnected_admin, [state.database_name]},
              {:ensure_admin, :reconnected_admin, state.admin_url},
-             {:drop, :reconnected_admin, ~s(drop database "#{state.database_name}")},
+             {:drop, :reconnected_admin, ~s(drop database if exists "#{state.database_name}")},
              {:stop, :reconnected_admin}
            ]
+  end
+
+  test "uncertain create outcome still cleans the exact attempted database" do
+    events = start_supervised!({Agent, fn -> [] end})
+    state = cleanup_state(created?: false, create_attempted?: true, database_connections: [], marker_connection: nil)
+
+    assert :ok = Harness.cleanup(state, cleanup_ops(events))
+
+    assert Agent.get(events, &Enum.reverse/1)
+           |> Enum.any?(fn
+             {:drop, :reconnected_admin, sql} -> sql == ~s(drop database if exists "#{state.database_name}")
+             _event -> false
+           end)
+  end
+
+  test "dead cleanup owner falls back to immutable attempted ownership state" do
+    owner = spawn(fn -> :ok end)
+    ref = Process.monitor(owner)
+    assert_receive {:DOWN, ^ref, :process, ^owner, _reason}
+
+    fallback = cleanup_state(created?: false, create_attempted?: true)
+    assert Harness.owner_state(owner, fallback) == fallback
   end
 
   test "dead marker, stop failure, and terminate failure cannot skip exact drop" do
@@ -99,7 +121,7 @@ defmodule SymphonyElixir.ClaimServicePostgresHarnessTest do
              {:ensure_admin, :dead_admin, state.admin_url},
              {:terminate, :reconnected_admin, [state.database_name]},
              {:ensure_admin, :reconnected_admin, state.admin_url},
-             {:drop, :reconnected_admin, ~s(drop database "#{state.database_name}")},
+             {:drop, :reconnected_admin, ~s(drop database if exists "#{state.database_name}")},
              {:stop, :reconnected_admin}
            ]
   end
@@ -142,6 +164,7 @@ defmodule SymphonyElixir.ClaimServicePostgresHarnessTest do
     Map.merge(
       %{
         created?: true,
+        create_attempted?: true,
         admin_url: "postgresql://postgres@localhost/postgres",
         admin_connection: :dead_admin,
         database_name: Harness.database_name(token),

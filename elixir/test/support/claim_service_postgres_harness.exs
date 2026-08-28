@@ -64,13 +64,13 @@ defmodule SymphonyElixir.TestSupport.ClaimServicePostgresHarness do
          where datname = $1 and pid <> pg_backend_pid()
          """,
          terminate_params: [database_name],
-         drop_sql: ~s(drop database "#{database_name}")
+         drop_sql: ~s(drop database if exists "#{database_name}")
        }}
     end
   end
 
   @spec cleanup(map(), map()) :: :ok | {:error, keyword()}
-  def cleanup(%{created?: false} = state, operations) do
+  def cleanup(%{created?: false, create_attempted?: false} = state, operations) do
     []
     |> run_step(:stop_admin, fn -> operations.stop.(state.admin_connection) end)
     |> cleanup_result()
@@ -96,6 +96,17 @@ defmodule SymphonyElixir.TestSupport.ClaimServicePostgresHarness do
       end
     else
       _unsafe -> {:error, safety: :unsafe_cleanup_target}
+    end
+  end
+
+  @spec owner_state(pid(), map()) :: map()
+  def owner_state(owner, fallback) do
+    try do
+      Agent.get(owner, & &1)
+    rescue
+      _exception -> fallback
+    catch
+      :exit, _reason -> fallback
     end
   end
 
