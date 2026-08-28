@@ -755,8 +755,8 @@ defmodule SymphonyElixir.MultiProjectDispatchTest do
     end
   end
 
-  test "post-acquisition dispatch raise and exit release then retry through a fresh claim" do
-    for failure <- [:raise, :exit] do
+  test "post-acquisition dispatch raise, exit, and throw release then retry through a fresh claim" do
+    for failure <- [:raise, :exit, :throw] do
       {:ok, events} = Agent.start_link(fn -> [] end)
       candidate = %{issue("post-claim-#{failure}", @central_profile, 1) | project_profile: @central_profile}
 
@@ -771,13 +771,18 @@ defmodule SymphonyElixir.MultiProjectDispatchTest do
             :ok
           end,
           dispatch_fun: fn _state, _issue, _attempt, _recipient, _host, _claim ->
-            if failure == :raise, do: raise("dispatch failed"), else: exit(:dispatch_failed)
+            case failure do
+              :raise -> raise "dispatch failed"
+              :exit -> exit(:dispatch_failed)
+              :throw -> throw(:dispatch_failed)
+            end
           end
         )
 
       failed = Orchestrator.multi_project_dispatch_for_test(base_state(), @profiles, opts)
 
       assert {:finalize, candidate.id, :release} in Agent.get(events, & &1)
+      assert Enum.count(Agent.get(events, & &1), &match?({:finalize, _, :release}, &1)) == 1
       assert %{ownership: :unowned_backoff, retry_token: token} = failed.retry_attempts[candidate.id]
       refute MapSet.member?(failed.claimed, candidate.id)
 
