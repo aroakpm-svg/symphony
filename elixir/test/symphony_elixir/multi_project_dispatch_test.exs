@@ -532,7 +532,9 @@ defmodule SymphonyElixir.MultiProjectDispatchTest do
       opts = dispatch_opts(fn _profile -> {:ok, []} end, %{candidate.id => candidate}, events, overrides)
       result = Orchestrator.fire_issue_retry_for_test(state, candidate.id, token, opts)
 
-      assert %{attempt: 2, retry_token: next_token} = result.retry_attempts[candidate.id]
+      assert %{attempt: 2, ownership: :retained_owner, retry_token: next_token} =
+               result.retry_attempts[candidate.id]
+
       assert is_reference(next_token) and next_token != token
       assert MapSet.member?(result.claimed, candidate.id)
       refute Map.has_key?(result.running, candidate.id)
@@ -644,19 +646,33 @@ defmodule SymphonyElixir.MultiProjectDispatchTest do
 
       result = Orchestrator.fire_issue_retry_for_test(state, candidate.id, token, opts)
 
-      assert %{project_profile: %{key: "central-brain"}, retry_token: next_token} =
+      assert %{
+               project_profile: %{key: "central-brain"},
+               ownership: :unowned_backoff,
+               retry_token: next_token
+             } =
                result.retry_attempts[candidate.id]
 
-      retried =
-        Orchestrator.fire_issue_retry_for_test(result, candidate.id, next_token,
-          retry_fetch_fun: fn _id, metadata ->
-            assert %{project_profile: %{key: "central-brain"}} = metadata
-            {:error, :transport}
-          end,
-          claim_release_fun: fn _state, _id -> flunk("profile-scoped transport retry released ownership") end
-        )
+      refute MapSet.member?(result.claimed, candidate.id)
+      refute Orchestrator.should_dispatch_issue_for_test(candidate, result)
 
-      assert %{attempt: 3, project_profile: %{key: "central-brain"}} = retried.retry_attempts[candidate.id]
+      retried =
+        opts
+        |> Keyword.put(:retry_fetch_fun, fn _id, metadata ->
+          assert %{project_profile: %{key: "central-brain"}, ownership: :unowned_backoff} = metadata
+          {:ok, [candidate]}
+        end)
+        |> Keyword.put(:task_start_fun, fn _fun -> {:ok, self()} end)
+        |> Keyword.put(:bind_worker_fun, fn _issue_id, _pid -> :ok end)
+        |> Keyword.put(:claim_fun, fn _issue, _owner ->
+          record(events, {:fresh_claim, failure})
+          {:ok, %{claim_id: "fresh", generation: 2}}
+        end)
+        |> then(&Orchestrator.fire_issue_retry_for_test(result, candidate.id, next_token, &1))
+
+      assert Map.has_key?(retried.running, candidate.id)
+      assert MapSet.member?(retried.claimed, candidate.id)
+      assert {:fresh_claim, failure} in Agent.get(events, & &1)
     end
   end
 
@@ -698,6 +714,47 @@ defmodule SymphonyElixir.MultiProjectDispatchTest do
     assert Enum.count(Agent.get(events, & &1), &match?({:claim, "claim-reacquire"}, &1)) == 1
   end
 
+  test "initial spawn and bind failures back off unowned then fire through a fresh atomic claim" do
+    for failure <- [:spawn, :bind] do
+      {:ok, events} = Agent.start_link(fn -> [] end)
+      candidate = %{issue("initial-#{failure}", @central_profile, 1) | project_profile: @central_profile}
+
+      opts =
+        dispatch_opts(
+          fn profile -> {:ok, if(profile.key == "central-brain", do: [candidate], else: [])} end,
+          %{candidate.id => candidate},
+          events,
+          project_profiles: @profiles,
+          task_start_fun: fn _fun -> if failure == :spawn, do: {:error, :spawn_failed}, else: {:ok, self()} end,
+          bind_worker_fun: fn _id, _pid -> if failure == :bind, do: {:error, :bind_failed}, else: :ok end,
+          terminate_task_fun: fn _pid -> :ok end,
+          finalize_claim_fun: fn _id, _action -> :ok end
+        )
+        |> Keyword.delete(:dispatch_fun)
+
+      failed = Orchestrator.multi_project_dispatch_for_test(base_state(), @profiles, opts)
+
+      assert %{ownership: :unowned_backoff, retry_token: token} = failed.retry_attempts[candidate.id]
+      refute MapSet.member?(failed.claimed, candidate.id)
+
+      recovered_opts =
+        opts
+        |> Keyword.put(:retry_fetch_fun, fn _id, _metadata -> {:ok, [candidate]} end)
+        |> Keyword.put(:profile_refresh_fun, fn _ids -> {:ok, [candidate]} end)
+        |> Keyword.put(:task_start_fun, fn _fun -> {:ok, self()} end)
+        |> Keyword.put(:bind_worker_fun, fn _id, _pid -> :ok end)
+        |> Keyword.put(:claim_fun, fn _issue, _owner ->
+          record(events, {:fresh_claim, failure})
+          {:ok, %{claim_id: "fresh", generation: 2}}
+        end)
+
+      recovered = Orchestrator.fire_issue_retry_for_test(failed, candidate.id, token, recovered_opts)
+      assert Map.has_key?(recovered.running, candidate.id), inspect({recovered, Agent.get(events, & &1)})
+      assert MapSet.member?(recovered.claimed, candidate.id)
+      assert {:fresh_claim, failure} in Agent.get(events, & &1)
+    end
+  end
+
   test "worker capacity race retains ownership and reschedules the profile retry" do
     candidate = %{issue("capacity-race", @central_profile, 1) | project_profile: @central_profile}
     {state, token} = issue_retry_state(candidate, 1)
@@ -714,7 +771,9 @@ defmodule SymphonyElixir.MultiProjectDispatchTest do
 
     result = Orchestrator.fire_issue_retry_for_test(state, candidate.id, token, opts)
     assert MapSet.member?(result.claimed, candidate.id)
-    assert %{attempt: 2, project_profile: %{key: "central-brain"}} = result.retry_attempts[candidate.id]
+
+    assert %{attempt: 2, ownership: :retained_owner, project_profile: %{key: "central-brain"}} =
+             result.retry_attempts[candidate.id]
   end
 
   test "removing multi-project mode releases a pending retry instead of renewing it" do

@@ -618,6 +618,16 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   defp retry_dispatch_allowed?(issue, state, opts) do
+    case get_in(opts, [:retry_metadata, :ownership]) do
+      :unowned_backoff ->
+        should_dispatch_issue?(issue, state, active_state_set(), terminal_state_set())
+
+      _retained_owner ->
+        retained_owner_retry_allowed?(issue, state, opts)
+    end
+  end
+
+  defp retained_owner_retry_allowed?(issue, state, opts) do
     candidate_issue?(issue, active_state_set(), terminal_state_set()) and
       !todo_issue_blocked_by_non_terminal?(issue, terminal_state_set()) and
       MapSet.member?(state.claimed, issue.id) and
@@ -1175,11 +1185,14 @@ defmodule SymphonyElixir.Orchestrator do
 
         state
         |> terminate_running_issue(issue_id, false)
-        |> schedule_issue_retry(issue_id, next_attempt, %{
-          identifier: identifier,
-          issue_url: running_entry.issue.url,
-          error: "stalled for #{elapsed_ms}ms without codex activity"
-        })
+        |> schedule_issue_retry(
+          issue_id,
+          next_attempt,
+          running_retry_metadata(running_entry, %{
+            error: "stalled for #{elapsed_ms}ms without codex activity",
+            ownership: :unowned_backoff
+          })
+        )
       end
     else
       state
@@ -1367,6 +1380,7 @@ defmodule SymphonyElixir.Orchestrator do
     candidate_issue?(issue, active_states, terminal_states) and
       !todo_issue_blocked_by_non_terminal?(issue, terminal_states) and
       !MapSet.member?(claimed, issue.id) and
+      !Map.has_key?(state.retry_attempts, issue.id) and
       !Map.has_key?(running, issue.id) and
       !Map.has_key?(blocked, issue.id) and
       available_slots(state) > 0 and
@@ -1545,11 +1559,13 @@ defmodule SymphonyElixir.Orchestrator do
             :ok = finalize_fun.(issue.id, :release)
             Logger.error("Unable to bind database claim to agent for #{issue_context(issue)}: #{inspect(reason)}")
 
-            schedule_issue_retry(
+            transition_retry_unowned_backoff(
               state,
-              issue.id,
+              issue,
               normalize_retry_attempt(attempt) + 1,
-              dispatch_failure_retry_metadata(issue, worker_host, "failed to bind database claim: #{inspect(reason)}", opts)
+              "failed to bind database claim: #{inspect(reason)}",
+              worker_host,
+              opts
             )
         end
 
@@ -1558,11 +1574,13 @@ defmodule SymphonyElixir.Orchestrator do
         Logger.error("Unable to spawn agent for #{issue_context(issue)}: #{inspect(reason)}")
         next_attempt = if is_integer(attempt), do: attempt + 1, else: nil
 
-        schedule_issue_retry(
+        transition_retry_unowned_backoff(
           state,
-          issue.id,
+          issue,
           next_attempt,
-          dispatch_failure_retry_metadata(issue, worker_host, "failed to spawn agent: #{inspect(reason)}", opts)
+          "failed to spawn agent: #{inspect(reason)}",
+          worker_host,
+          opts
         )
     end
   end
@@ -1586,6 +1604,17 @@ defmodule SymphonyElixir.Orchestrator do
   defp transition_retry_unowned(state, issue_id, opts) do
     release_fun = Keyword.get(opts, :claim_release_fun, &release_issue_claim/2)
     release_fun.(state, issue_id)
+  end
+
+  defp transition_retry_unowned_backoff(state, issue, attempt, error, worker_host, opts) do
+    state = %{state | claimed: MapSet.delete(state.claimed, issue.id)}
+
+    metadata =
+      issue
+      |> dispatch_failure_retry_metadata(worker_host, error, opts)
+      |> Map.put(:ownership, :unowned_backoff)
+
+    schedule_issue_retry(state, issue.id, attempt, metadata)
   end
 
   defp track_spawned_issue(state, issue, attempt, worker_host, distributed_claim, pid) do
@@ -1669,6 +1698,10 @@ defmodule SymphonyElixir.Orchestrator do
     workspace_path = pick_retry_workspace_path(previous_retry, metadata)
     project_profile = Map.get(metadata, :project_profile) || Map.get(previous_retry, :project_profile)
 
+    ownership =
+      Map.get(metadata, :ownership) || Map.get(previous_retry, :ownership) ||
+        if(MapSet.member?(state.claimed, issue_id), do: :retained_owner, else: :unowned_backoff)
+
     if is_reference(old_timer) do
       Process.cancel_timer(old_timer)
     end
@@ -1692,7 +1725,8 @@ defmodule SymphonyElixir.Orchestrator do
             error: error,
             worker_host: worker_host,
             workspace_path: workspace_path,
-            project_profile: project_profile
+            project_profile: project_profile,
+            ownership: ownership
           })
     }
   end
@@ -1706,7 +1740,10 @@ defmodule SymphonyElixir.Orchestrator do
           error: Map.get(retry_entry, :error),
           worker_host: Map.get(retry_entry, :worker_host),
           workspace_path: Map.get(retry_entry, :workspace_path),
-          project_profile: Map.get(retry_entry, :project_profile)
+          project_profile: Map.get(retry_entry, :project_profile),
+          ownership:
+            Map.get(retry_entry, :ownership) ||
+              if(MapSet.member?(state.claimed, issue_id), do: :retained_owner, else: :unowned_backoff)
         }
 
         {:ok, attempt, metadata, %{state | retry_attempts: Map.delete(state.retry_attempts, issue_id)}}

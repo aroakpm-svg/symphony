@@ -1053,8 +1053,11 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
              due_at_ms: due_at_ms,
              identifier: "MT-STALL",
              issue_url: "https://example.org/issues/MT-STALL",
+             ownership: :unowned_backoff,
              error: "stalled for " <> _
            } = state.retry_attempts[issue_id]
+
+    refute MapSet.member?(state.claimed, issue_id)
 
     assert is_integer(due_at_ms)
     delay_ms = due_at_ms - scheduled_from_ms
