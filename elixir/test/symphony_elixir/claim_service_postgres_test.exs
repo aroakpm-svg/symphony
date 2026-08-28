@@ -1,11 +1,14 @@
+Code.require_file("../support/claim_service_postgres_harness.exs", __DIR__)
+
 defmodule SymphonyElixir.ClaimServicePostgresTest do
   use ExUnit.Case, async: false
 
   alias SymphonyElixir.ClaimService
   alias SymphonyElixir.Linear.Issue
+  alias SymphonyElixir.TestSupport.ClaimServicePostgresHarness, as: Harness
 
-  @database_url System.get_env("ARO287_CLAIM_TEST_DATABASE_URL")
-  @enabled @database_url not in [nil, ""] and
+  @admin_url System.get_env("ARO287_CLAIM_TEST_ADMIN_URL")
+  @enabled match?({:ok, _uri}, Harness.validate_admin_url(@admin_url)) and
              System.get_env("ARO287_ALLOW_DESTRUCTIVE_DB_TEST") == "1"
   @node_id "00000000-0000-4000-8000-000000000287"
   @node_instance_id "00000000-0000-4000-8000-000000001287"
@@ -15,20 +18,38 @@ defmodule SymphonyElixir.ClaimServicePostgresTest do
                if(@enabled,
                  do: false,
                  else:
-                   "set ARO287_CLAIM_TEST_DATABASE_URL and " <>
-                     "ARO287_ALLOW_DESTRUCTIVE_DB_TEST=1 for a disposable PostgreSQL database"
+                   "set a localhost/postgres ARO287_CLAIM_TEST_ADMIN_URL and " <>
+                     "ARO287_ALLOW_DESTRUCTIVE_DB_TEST=1"
                )
 
   setup do
-    {:ok, claim_connection} =
-      Postgrex.start_link(
-        url: @database_url,
-        parameters: [application_name: "aro287_claim_transaction"]
+    {:ok, admin_uri} = Harness.validate_admin_url(@admin_url)
+    token = Harness.random_token()
+    database_name = Harness.database_name(token)
+    admin_connection = start_connection!(@admin_url)
+
+    query!(admin_connection, ~s(create database "#{database_name}"))
+
+    claim_url = Harness.database_url(admin_uri, database_name, "aro287_claim_transaction")
+    update_url = Harness.database_url(admin_uri, database_name, "aro287_route_update")
+    claim_connection = start_connection!(claim_url)
+    update_connection = start_connection!(update_url)
+
+    query!(claim_connection, """
+    create table public.aro287_disposable_run_marker (
+      run_token text primary key
+    );
+    insert into public.aro287_disposable_run_marker (run_token) values ('#{token}');
+    """)
+
+    on_exit(fn ->
+      cleanup_disposable_database!(
+        admin_connection,
+        [claim_connection, update_connection],
+        database_name,
+        token
       )
-
-    {:ok, update_connection} = Postgrex.start_link(url: @database_url)
-
-    query!(claim_connection, "drop schema if exists symphony_staging cascade")
+    end)
 
     query!(claim_connection, """
     create schema symphony_staging;
@@ -73,13 +94,7 @@ defmodule SymphonyElixir.ClaimServicePostgresTest do
     $$;
     """)
 
-    on_exit(fn ->
-      if Process.alive?(claim_connection) do
-        query!(claim_connection, "drop schema if exists symphony_staging cascade")
-      end
-    end)
-
-    {:ok, claim_connection: claim_connection, update_connection: update_connection}
+    {:ok, claim_connection: claim_connection, update_connection: update_connection, database_name: database_name}
   end
 
   test "routing update waits until exclusive validation and claim acquisition commit", context do
@@ -205,6 +220,35 @@ defmodule SymphonyElixir.ClaimServicePostgresTest do
       Postgrex.query!(connection, "select count(*) from symphony_staging.issue_claims", [])
 
     count
+  end
+
+  defp cleanup_disposable_database!(admin_connection, database_connections, database_name, token) do
+    :ok = Harness.validate_cleanup_target(database_name, token)
+    marker_connection = hd(database_connections)
+
+    assert %Postgrex.Result{rows: [[^token]]} =
+             Postgrex.query!(
+               marker_connection,
+               "select run_token from public.aro287_disposable_run_marker",
+               []
+             )
+
+    Enum.each(database_connections, &stop_connection!/1)
+
+    {:ok, cleanup} = Harness.cleanup_statements(database_name, token)
+    Postgrex.query!(admin_connection, cleanup.terminate_sql, cleanup.terminate_params)
+    Postgrex.query!(admin_connection, cleanup.drop_sql, [])
+    stop_connection!(admin_connection)
+  end
+
+  defp start_connection!(url) do
+    {:ok, connection} = Postgrex.start_link(url: url)
+    Process.unlink(connection)
+    connection
+  end
+
+  defp stop_connection!(connection) do
+    if Process.alive?(connection), do: GenServer.stop(connection, :normal, 5_000)
   end
 
   defp query!(connection, sql), do: Postgrex.query!(connection, sql, [])
