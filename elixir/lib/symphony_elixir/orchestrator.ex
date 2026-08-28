@@ -1086,12 +1086,27 @@ defmodule SymphonyElixir.Orchestrator do
 
   defp refresh_running_issue_state(%State{} = state, %Issue{} = issue) do
     case Map.get(state.running, issue.id) do
-      %{issue: _} = running_entry ->
-        %{state | running: Map.put(state.running, issue.id, %{running_entry | issue: issue})}
+      %{issue: existing_issue} = running_entry ->
+        refreshed_issue = merge_running_issue_context(existing_issue, issue)
+        %{state | running: Map.put(state.running, issue.id, %{running_entry | issue: refreshed_issue})}
 
       _ ->
         state
     end
+  end
+
+  defp merge_running_issue_context(%Issue{project_profile: nil}, %Issue{} = refreshed_issue),
+    do: refreshed_issue
+
+  defp merge_running_issue_context(%Issue{} = existing_issue, %Issue{} = refreshed_issue) do
+    %{
+      refreshed_issue
+      | project_id: existing_issue.project_id,
+        project_slug: existing_issue.project_slug,
+        project_profile: existing_issue.project_profile,
+        repository: existing_issue.repository,
+        routing_revision: existing_issue.routing_revision
+    }
   end
 
   defp refresh_blocked_issue_state(%State{} = state, %Issue{} = issue) do

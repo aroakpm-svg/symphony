@@ -805,6 +805,65 @@ defmodule SymphonyElixir.MultiProjectDispatchTest do
     end
   end
 
+  test "running reconciliation preserves approved profile through normal and abnormal retry creation" do
+    for reason <- [:normal, :crashed] do
+      candidate = %{issue("reconcile-#{reason}", @central_profile, 1) | project_profile: @central_profile, repository: @central_profile.repository, routing_revision: 7}
+      ref = make_ref()
+
+      state = %{
+        base_state()
+        | claimed: MapSet.new([candidate.id]),
+          running: %{
+            candidate.id => %{
+              issue: candidate,
+              identifier: candidate.identifier,
+              pid: self(),
+              ref: ref,
+              worker_host: nil,
+              workspace_path: nil,
+              session_id: "session-#{reason}",
+              started_at: DateTime.utc_now(),
+              distributed_claim: %{claim_id: "claim", generation: 1}
+            }
+          }
+      }
+
+      unscoped = %{
+        candidate
+        | project_id: @project_management_profile.linear_project_id,
+          project_slug: "project-management",
+          project_profile: nil,
+          repository: nil,
+          routing_revision: nil,
+          state: "In Progress"
+      }
+
+      reconciled = Orchestrator.reconcile_issue_states_for_test([unscoped], state)
+      preserved = reconciled.running[candidate.id].issue
+      assert preserved.project_profile == @central_profile
+      assert preserved.project_id == @central_profile.linear_project_id
+      assert preserved.repository == @central_profile.repository
+      assert preserved.routing_revision == 7
+
+      assert {:noreply, retried} = Orchestrator.handle_info({:DOWN, ref, :process, self(), reason}, reconciled)
+      assert %{project_profile: %{key: "central-brain"}, ownership: :retained_owner} = retried.retry_attempts[candidate.id]
+    end
+  end
+
+  test "running reconciliation keeps legacy issues legacy" do
+    legacy = %{issue("legacy-reconcile", @central_profile, 1) | project_profile: nil, repository: nil}
+    refreshed = %{legacy | title: "Refreshed legacy", project_profile: nil}
+
+    state = %{
+      base_state()
+      | running: %{legacy.id => %{issue: legacy, identifier: legacy.identifier, pid: self(), ref: make_ref()}}
+    }
+
+    reconciled = Orchestrator.reconcile_issue_states_for_test([refreshed], state)
+    assert reconciled.running[legacy.id].issue.title == "Refreshed legacy"
+    assert is_nil(reconciled.running[legacy.id].issue.project_profile)
+  end
+
   test "pre-claim candidate exception isolates the profile without finalizing an unowned claim" do
     {:ok, events} = Agent.start_link(fn -> [] end)
     candidate = issue("preclaim-raise", @central_profile, 1)
