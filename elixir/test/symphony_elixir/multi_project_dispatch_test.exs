@@ -813,6 +813,58 @@ defmodule SymphonyElixir.MultiProjectDispatchTest do
     end
   end
 
+  test "cleanup finalize and backoff failures fail closed without a second finalize" do
+    for stage <- [:finalize, :backoff], failure <- [:raise, :exit, :throw] do
+      {:ok, events} = Agent.start_link(fn -> [] end)
+      {:ok, worker_holder} = Agent.start_link(fn -> nil end)
+      candidate = %{issue("cleanup-#{stage}-#{failure}", @central_profile, 1) | project_profile: @central_profile}
+
+      fail = fn ->
+        case failure do
+          :raise -> raise "cleanup failed"
+          :exit -> exit(:cleanup_failed)
+          :throw -> throw(:cleanup_failed)
+        end
+      end
+
+      opts =
+        dispatch_opts(
+          fn profile -> {:ok, if(profile.key == "central-brain", do: [candidate], else: [])} end,
+          %{candidate.id => candidate},
+          events,
+          project_profiles: @profiles,
+          task_start_fun: fn _task_fun ->
+            worker = spawn(fn -> receive do: (:stop -> :ok) end)
+            worker_ref = Process.monitor(worker)
+            Agent.update(worker_holder, fn _ -> {worker, worker_ref} end)
+            {:ok, worker}
+          end,
+          bind_worker_fun: fn _id, _pid -> {:error, :bind_failed} end,
+          terminate_task_fun: fn _pid -> :ok end,
+          finalize_claim_fun: fn issue_id, action ->
+            {worker, worker_ref} = Agent.get(worker_holder, & &1)
+            assert_receive {:DOWN, ^worker_ref, :process, ^worker, _reason}
+            refute Process.alive?(worker)
+            record(events, {:finalize, issue_id, action})
+            if stage == :finalize, do: fail.(), else: :ok
+          end,
+          unowned_backoff_fun: fn _state, _issue, _attempt, _error, _host, _opts ->
+            fail.()
+          end
+        )
+        |> Keyword.delete(:dispatch_fun)
+
+      failed = Orchestrator.multi_project_dispatch_for_test(base_state(), @profiles, opts)
+      {worker, _worker_ref} = Agent.get(worker_holder, & &1)
+
+      refute Process.alive?(worker)
+      assert Enum.count(Agent.get(events, & &1), &match?({:finalize, _, :release}, &1)) == 1
+      refute Map.has_key?(failed.running, candidate.id)
+      refute MapSet.member?(failed.claimed, candidate.id)
+      refute Map.has_key?(failed.retry_attempts, candidate.id)
+    end
+  end
+
   test "running reconciliation preserves approved profile through normal and abnormal retry creation" do
     for reason <- [:normal, :crashed] do
       candidate = %{
@@ -865,13 +917,19 @@ defmodule SymphonyElixir.MultiProjectDispatchTest do
       assert preserved.routing_revision == 7
 
       assert {:noreply, retried} = Orchestrator.handle_info({:DOWN, ref, :process, self(), reason}, reconciled)
-      assert %{project_profile: %{key: "central-brain"}, ownership: :retained_owner} = retried.retry_attempts[candidate.id]
+
+      assert %{project_profile: %{key: "central-brain"}, ownership: :retained_owner} =
+               retried.retry_attempts[candidate.id]
     end
   end
 
   test "running reconciliation fails closed on mismatched or missing authoritative project identity" do
     for refreshed_project_id <- [@project_management_profile.linear_project_id, nil] do
-      candidate = %{issue("identity-#{inspect(refreshed_project_id)}", @central_profile, 1) | project_profile: @central_profile}
+      candidate = %{
+        issue("identity-#{inspect(refreshed_project_id)}", @central_profile, 1)
+        | project_profile: @central_profile
+      }
+
       worker = spawn(fn -> Process.sleep(:infinity) end)
 
       state = %{
@@ -950,8 +1008,9 @@ defmodule SymphonyElixir.MultiProjectDispatchTest do
           events,
           project_profiles: @profiles,
           task_start_fun: fn _task_fun ->
-            worker = spawn(fn -> Process.sleep(:infinity) end)
-            Agent.update(worker_holder, fn _ -> worker end)
+            worker = spawn(fn -> receive do: (:stop -> :ok) end)
+            worker_ref = Process.monitor(worker)
+            Agent.update(worker_holder, fn _ -> {worker, worker_ref} end)
             {:ok, worker}
           end,
           bind_worker_fun: fn _id, _pid ->
@@ -966,6 +1025,9 @@ defmodule SymphonyElixir.MultiProjectDispatchTest do
             if stage == :track, do: fail.(), else: state
           end,
           finalize_claim_fun: fn issue_id, action ->
+            {worker, worker_ref} = Agent.get(worker_holder, & &1)
+            assert_receive {:DOWN, ^worker_ref, :process, ^worker, _reason}
+            refute Process.alive?(worker)
             record(events, {:finalize, issue_id, action})
             :ok
           end
@@ -973,7 +1035,7 @@ defmodule SymphonyElixir.MultiProjectDispatchTest do
         |> Keyword.delete(:dispatch_fun)
 
       failed = Orchestrator.multi_project_dispatch_for_test(base_state(), @profiles, opts)
-      worker = Agent.get(worker_holder, & &1)
+      {worker, _worker_ref} = Agent.get(worker_holder, & &1)
 
       refute Process.alive?(worker)
       assert Enum.count(Agent.get(events, & &1), &match?({:finalize, _, :release}, &1)) == 1
@@ -1236,7 +1298,12 @@ defmodule SymphonyElixir.MultiProjectDispatchTest do
     """
 
     workflow = File.read!(Workflow.workflow_file_path())
-    File.write!(Workflow.workflow_file_path(), String.replace(workflow, "---\n", "---\n#{project_profiles}", global: false))
+
+    File.write!(
+      Workflow.workflow_file_path(),
+      String.replace(workflow, "---\n", "---\n#{project_profiles}", global: false)
+    )
+
     assert :ok = WorkflowStore.force_reload()
   end
 

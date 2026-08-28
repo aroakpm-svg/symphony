@@ -40,6 +40,8 @@ defmodule SymphonyElixir.Orchestrator do
   @continuation_retry_delay_ms 1_000
   @failure_retry_base_ms 10_000
   @profile_retry_base_ms 1_000
+  @worker_terminate_grace_ms 100
+  @worker_kill_grace_ms 1_000
   # Slightly above the dashboard render interval so "checking now…" can render.
   @poll_transition_render_delay_ms 20
   @empty_codex_totals %{
@@ -1662,59 +1664,128 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   defp complete_spawned_worker_startup(context) do
-    do_complete_spawned_worker_startup(Map.put(context, :ref, Process.monitor(context.pid)))
+    context = Map.put(context, :ref, Process.monitor(context.pid))
+
+    case spawned_worker_startup_outcome(context) do
+      {:ok, state} -> state
+      {:error, reason} -> cleanup_spawned_worker_failure(context, reason)
+    end
   end
 
-  defp do_complete_spawned_worker_startup(context) do
+  defp spawned_worker_startup_outcome(context) do
     case context.bind_fun.(context.issue.id, context.pid) do
       :ok ->
-        context.track_fun.(
-          context.state,
-          context.issue,
-          context.attempt,
-          context.worker_host,
-          context.claim,
-          context.pid,
-          context.ref
-        )
+        {:ok,
+         context.track_fun.(
+           context.state,
+           context.issue,
+           context.attempt,
+           context.worker_host,
+           context.claim,
+           context.pid,
+           context.ref
+         )}
 
       {:error, reason} ->
-        cleanup_spawned_worker_failure(context, reason)
+        {:error, reason}
     end
   rescue
     exception ->
-      cleanup_spawned_worker_failure(context, {:exception, exception})
+      {:error, {:exception, exception}}
   catch
     kind, reason ->
-      cleanup_spawned_worker_failure(context, {kind, reason})
+      {:error, {kind, reason}}
   end
 
   defp cleanup_spawned_worker_failure(context, reason) do
-    ensure_spawned_worker_stopped(context.pid, context.ref, context.terminate_fun)
-    :ok = context.finalize_fun.(context.issue.id, :release)
-    Logger.error("Spawned worker startup failed for #{issue_context(context.issue)}: #{inspect(reason)}")
-
-    transition_retry_unowned_backoff(
-      context.state,
-      context.issue,
-      normalize_retry_attempt(context.attempt) + 1,
-      "spawned worker startup failed: #{inspect(reason)}",
-      context.worker_host,
-      context.opts
-    )
+    case fence_spawned_worker(context) do
+      :down -> finalize_spawned_worker_failure(context, reason)
+      :timeout -> fail_closed_spawned_worker_state(context, :worker_fence_timeout)
+    end
   end
 
-  defp ensure_spawned_worker_stopped(pid, ref, terminate_fun) do
+  defp fence_spawned_worker(context) do
     try do
-      terminate_fun.(pid)
+      context.terminate_fun.(context.pid)
     catch
-      _kind, _reason -> if Process.alive?(pid), do: Process.exit(pid, :kill)
-    after
-      if Process.alive?(pid), do: Process.exit(pid, :kill)
-      Process.demonitor(ref, [:flush])
+      _kind, _reason -> :ok
     end
 
-    :ok
+    case await_spawned_worker_down(context.ref, context.pid, @worker_terminate_grace_ms) do
+      :down ->
+        :down
+
+      :timeout ->
+        Process.exit(context.pid, :kill)
+        await_spawned_worker_down(context.ref, context.pid, @worker_kill_grace_ms)
+    end
+  end
+
+  defp await_spawned_worker_down(ref, pid, timeout_ms) do
+    receive do
+      {:DOWN, ^ref, :process, ^pid, _reason} -> :down
+    after
+      timeout_ms -> :timeout
+    end
+  end
+
+  defp finalize_spawned_worker_failure(context, reason) do
+    Process.demonitor(context.ref, [:flush])
+
+    case invoke_cleanup_step(fn -> context.finalize_fun.(context.issue.id, :release) end) do
+      {:ok, :ok} ->
+        invoke_backoff_or_fail_closed(context, reason)
+
+      {:ok, other} ->
+        fail_closed_spawned_worker_state(context, {:finalize_failed, other})
+
+      {:error, finalize_reason} ->
+        fail_closed_spawned_worker_state(context, {:finalize_failed, finalize_reason})
+    end
+  end
+
+  defp invoke_backoff_or_fail_closed(context, reason) do
+    backoff_fun =
+      Keyword.get(
+        context.opts,
+        :unowned_backoff_fun,
+        &transition_retry_unowned_backoff/6
+      )
+
+    backoff = fn ->
+      backoff_fun.(
+        context.state,
+        context.issue,
+        normalize_retry_attempt(context.attempt) + 1,
+        "spawned worker startup failed: #{inspect(reason)}",
+        context.worker_host,
+        context.opts
+      )
+    end
+
+    case invoke_cleanup_step(backoff) do
+      {:ok, state} -> state
+      {:error, backoff_reason} -> fail_closed_spawned_worker_state(context, {:backoff_failed, backoff_reason})
+    end
+  end
+
+  defp invoke_cleanup_step(fun) do
+    {:ok, fun.()}
+  rescue
+    exception -> {:error, {:exception, exception}}
+  catch
+    kind, reason -> {:error, {kind, reason}}
+  end
+
+  defp fail_closed_spawned_worker_state(context, reason) do
+    Logger.error("Spawned worker cleanup failed closed for #{issue_context(context.issue)}: #{inspect(reason)}")
+
+    %{
+      context.state
+      | running: Map.delete(context.state.running, context.issue.id),
+        claimed: MapSet.delete(context.state.claimed, context.issue.id),
+        retry_attempts: Map.delete(context.state.retry_attempts, context.issue.id)
+    }
   end
 
   defp dispatch_failure_retry_metadata(issue, worker_host, error, opts) do
