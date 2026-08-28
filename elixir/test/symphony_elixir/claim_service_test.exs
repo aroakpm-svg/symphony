@@ -45,28 +45,21 @@ defmodule SymphonyElixir.ClaimServiceTest do
       send(parent, {:query, String.trim(sql), params})
 
       cond do
-        String.starts_with?(String.trim(sql), "begin") ->
-          {:ok, %Postgrex.Result{rows: [], num_rows: 0}}
-
         sql =~ "routing_assignments" ->
           {:ok, %Postgrex.Result{rows: [["exclusive", @current_node_id, 7]], num_rows: 1}}
 
         sql =~ "claim_issue" ->
           {:ok, %Postgrex.Result{rows: [["claim-1", 1]], num_rows: 1}}
-
-        String.starts_with?(String.trim(sql), "commit") ->
-          {:ok, %Postgrex.Result{rows: [], num_rows: 0}}
       end
     end
 
-    assert {:ok, claim} = claim_with_query(query, 7)
+    assert {:ok, claim} = claim_with_query(query, 7, transaction_seam(parent))
     assert claim.claim_id == "claim-1"
-    assert_receive {:query, "begin", []}
+    assert_receive :transaction_checked_out
     assert_receive {:query, route_sql, ["issue-1", @current_node_id, 7]}
     assert route_sql =~ "for share"
     assert_receive {:query, claim_sql, _params}
     assert claim_sql =~ "claim_issue"
-    assert_receive {:query, "commit", []}
   end
 
   test "multi-project claim rejects a changed routing revision, policy, or node before acquisition" do
@@ -84,25 +77,36 @@ defmodule SymphonyElixir.ClaimServiceTest do
         send(parent, {:query, String.trim(sql), params})
 
         cond do
-          String.starts_with?(String.trim(sql), "begin") ->
-            {:ok, %Postgrex.Result{rows: [], num_rows: 0}}
-
           sql =~ "routing_assignments" ->
             {:ok, %Postgrex.Result{rows: [[policy, target_node_id, revision]], num_rows: 1}}
-
-          String.starts_with?(String.trim(sql), "rollback") ->
-            {:ok, %Postgrex.Result{rows: [], num_rows: 0}}
 
           sql =~ "claim_issue" ->
             flunk("stale routing must be rejected before claim acquisition")
         end
       end
 
-      assert {:error, :routing_changed} = claim_with_query(query, 7)
-      assert_receive {:query, "begin", []}
+      assert {:error, :routing_changed} = claim_with_query(query, 7, transaction_seam(parent))
+      assert_receive :transaction_checked_out
       assert_receive {:query, _route_sql, ["issue-1", @current_node_id, 7]}
-      assert_receive {:query, "rollback", []}
     end
+  end
+
+  test "uncertain transaction outcome stops the claim service and discards local claim state" do
+    owner = self()
+    existing_claim = %{owner: owner, worker: nil, lease_deadline_ms: 1}
+    transaction = fn _connection, _callback -> {:uncertain, :commit_connection_lost} end
+
+    state = claim_state(fn _sql, _params -> flunk("uncertain transaction must own query execution") end, transaction)
+    state = %{state | claims: %{"existing" => existing_claim}}
+
+    assert {:stop, {:claim_transaction_uncertain, :commit_connection_lost}, {:error, :claim_outcome_uncertain}, %{claims: %{}}} =
+             ClaimService.handle_call(
+               {:claim, claim_issue(7), self()},
+               self(),
+               state
+             )
+
+    assert_receive {:claim_lost, "existing", {:claim_transaction_uncertain, :commit_connection_lost}}
   end
 
   test "legacy claim without a routing receipt retains the existing claim acquisition behavior" do
@@ -113,7 +117,7 @@ defmodule SymphonyElixir.ClaimServiceTest do
       {:ok, %Postgrex.Result{rows: [["legacy-claim", 2]], num_rows: 1}}
     end
 
-    assert {:ok, %{claim_id: "legacy-claim"}} = claim_with_query(query, nil)
+    assert {:ok, %{claim_id: "legacy-claim"}} = claim_with_query(query, nil, nil)
     assert_receive {:query, claim_sql, _params}
     assert claim_sql =~ "claim_issue"
     refute_receive {:query, "begin", []}
@@ -302,14 +306,25 @@ defmodule SymphonyElixir.ClaimServiceTest do
     result
   end
 
-  defp claim_with_query(query, routing_revision) do
-    issue = %Issue{
+  defp claim_with_query(query, routing_revision, transaction) do
+    state = claim_state(query, transaction)
+
+    assert {:reply, result, _state} =
+             ClaimService.handle_call({:claim, claim_issue(routing_revision), self()}, self(), state)
+
+    result
+  end
+
+  defp claim_issue(routing_revision) do
+    %Issue{
       id: "issue-1",
       state: "In Progress",
       updated_at: DateTime.utc_now(),
       routing_revision: routing_revision
     }
+  end
 
+  defp claim_state(query, transaction) do
     settings = %{
       node_id: @current_node_id,
       node_instance_id: "00000000-0000-4000-8000-000000000003",
@@ -317,11 +332,17 @@ defmodule SymphonyElixir.ClaimServiceTest do
       fallback_grace_ms: 30_000
     }
 
-    state = %ClaimService{connection: query, settings: settings}
+    %ClaimService{connection: query, settings: settings, transaction_fun: transaction}
+  end
 
-    assert {:reply, result, _state} =
-             ClaimService.handle_call({:claim, issue, self()}, self(), state)
+  defp transaction_seam(parent) do
+    fn connection, callback ->
+      send(parent, :transaction_checked_out)
 
-    result
+      case callback.(connection) do
+        {:commit, value} -> {:ok, value}
+        {:rollback, reason} -> {:error, reason}
+      end
+    end
   end
 end
