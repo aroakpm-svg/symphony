@@ -99,17 +99,6 @@ defmodule SymphonyElixir.TestSupport.ClaimServicePostgresHarness do
     end
   end
 
-  @spec owner_state(pid(), map()) :: map()
-  def owner_state(owner, fallback) do
-    try do
-      Agent.get(owner, & &1)
-    rescue
-      _exception -> fallback
-    catch
-      :exit, _reason -> fallback
-    end
-  end
-
   defp finish_database_cleanup(state, operations, statements, errors) do
     {errors, terminate_admin} =
       ensure_admin(errors, :admin_terminate, state.admin_connection, state.admin_url, operations)

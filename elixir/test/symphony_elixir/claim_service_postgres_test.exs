@@ -26,44 +26,36 @@ defmodule SymphonyElixir.ClaimServicePostgresTest do
     {:ok, admin_uri} = Harness.validate_admin_url(@admin_url)
     token = Harness.random_token()
     database_name = Harness.database_name(token)
-    admin_connection = start_connection!(@admin_url)
+    {:ok, resource_supervisor} = DynamicSupervisor.start_link(strategy: :one_for_one)
+    Process.unlink(resource_supervisor)
+    admin_connection = start_connection!(resource_supervisor, @admin_url)
 
-    initial_cleanup_state = %{
+    cleanup_state = %{
       created?: false,
-      create_attempted?: false,
+      create_attempted?: true,
       admin_url: @admin_url,
       admin_connection: admin_connection,
       database_name: database_name,
       token: token,
       database_connections: [],
-      marker_connection: nil
+      marker_connection: {:fresh, resource_supervisor, Harness.database_url(admin_uri, database_name, "aro287_marker")}
     }
 
-    {:ok, cleanup_owner} = Agent.start_link(fn -> initial_cleanup_state end)
-
-    Process.unlink(cleanup_owner)
-
     on_exit(fn ->
-      fallback = %{initial_cleanup_state | create_attempted?: true}
-      state = Harness.owner_state(cleanup_owner, fallback)
-      result = Harness.cleanup(state, cleanup_operations())
-      stop_connection!(cleanup_owner)
+      children = child_pids(resource_supervisor)
+      state = %{cleanup_state | database_connections: Enum.reject(children, &(&1 == admin_connection))}
+      result = Harness.cleanup(state, cleanup_operations(resource_supervisor))
+      stop_supervisor!(resource_supervisor)
 
       if result != :ok, do: flunk("disposable database cleanup failed: #{inspect(result)}")
     end)
 
-    Agent.update(cleanup_owner, &%{&1 | create_attempted?: true})
     query!(admin_connection, ~s(create database "#{database_name}"))
-    Agent.update(cleanup_owner, &%{&1 | created?: true})
 
     claim_url = Harness.database_url(admin_uri, database_name, "aro287_claim_transaction")
     update_url = Harness.database_url(admin_uri, database_name, "aro287_route_update")
-    claim_connection = start_connection!(claim_url)
-    track_connection(cleanup_owner, claim_connection)
-    update_connection = start_connection!(update_url)
-    track_connection(cleanup_owner, update_connection)
-
-    Agent.update(cleanup_owner, &%{&1 | marker_connection: claim_connection})
+    claim_connection = start_connection!(resource_supervisor, claim_url)
+    update_connection = start_connection!(resource_supervisor, update_url)
 
     query!(claim_connection, """
     create table public.aro287_disposable_run_marker (
@@ -243,9 +235,11 @@ defmodule SymphonyElixir.ClaimServicePostgresTest do
     count
   end
 
-  defp cleanup_operations do
+  defp cleanup_operations(resource_supervisor) do
     %{
-      marker: fn connection, token ->
+      marker: fn {:fresh, supervisor, url}, token ->
+        connection = start_connection!(supervisor, url)
+
         case Postgrex.query!(
                connection,
                "select run_token from public.aro287_disposable_run_marker",
@@ -256,42 +250,55 @@ defmodule SymphonyElixir.ClaimServicePostgresTest do
         end
       end,
       stop: &stop_connection!/1,
-      ensure_admin: &ensure_admin_connection/2,
+      ensure_admin: fn connection, admin_url ->
+        ensure_admin_connection(resource_supervisor, connection, admin_url)
+      end,
       terminate: fn admin, sql, params -> Postgrex.query!(admin, sql, params) end,
       drop: fn admin, sql -> Postgrex.query!(admin, sql, []) end
     }
   end
 
-  defp ensure_admin_connection(connection, admin_url) do
+  defp ensure_admin_connection(supervisor, connection, admin_url) do
     if Process.alive?(connection) do
       try do
         Postgrex.query!(connection, "select 1", [])
         {:ok, connection}
       rescue
-        _exception -> reconnect_admin(connection, admin_url)
+        _exception -> reconnect_admin(supervisor, connection, admin_url)
       catch
-        :exit, _reason -> reconnect_admin(connection, admin_url)
+        :exit, _reason -> reconnect_admin(supervisor, connection, admin_url)
       end
     else
-      reconnect_admin(connection, admin_url)
+      reconnect_admin(supervisor, connection, admin_url)
     end
   end
 
-  defp reconnect_admin(connection, admin_url) do
+  defp reconnect_admin(supervisor, connection, admin_url) do
     stop_connection!(connection)
-    {:ok, start_connection!(admin_url)}
+    {:ok, start_connection!(supervisor, admin_url)}
   end
 
-  defp track_connection(owner, connection) do
-    Agent.update(owner, fn state ->
-      %{state | database_connections: state.database_connections ++ [connection]}
-    end)
-  end
+  defp start_connection!(supervisor, url) do
+    child_spec = %{
+      id: make_ref(),
+      start: {Postgrex, :start_link, [[url: url]]},
+      restart: :temporary
+    }
 
-  defp start_connection!(url) do
-    {:ok, connection} = Postgrex.start_link(url: url)
-    Process.unlink(connection)
+    {:ok, connection} = DynamicSupervisor.start_child(supervisor, child_spec)
     connection
+  end
+
+  defp child_pids(supervisor) do
+    if Process.alive?(supervisor) do
+      DynamicSupervisor.which_children(supervisor) |> Enum.map(&elem(&1, 1))
+    else
+      []
+    end
+  end
+
+  defp stop_supervisor!(supervisor) do
+    if Process.alive?(supervisor), do: DynamicSupervisor.stop(supervisor, :normal, 5_000)
   end
 
   defp stop_connection!(connection) do

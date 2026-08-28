@@ -87,13 +87,26 @@ defmodule SymphonyElixir.ClaimServicePostgresHarnessTest do
            end)
   end
 
-  test "dead cleanup owner falls back to immutable attempted ownership state" do
-    owner = spawn(fn -> :ok end)
-    ref = Process.monitor(owner)
-    assert_receive {:DOWN, ^ref, :process, ^owner, _reason}
+  test "resource supervisor terminates every connection child independently of metadata process death" do
+    {:ok, supervisor} = DynamicSupervisor.start_link(strategy: :one_for_one)
+    Process.unlink(supervisor)
 
-    fallback = cleanup_state(created?: false, create_attempted?: true)
-    assert Harness.owner_state(owner, fallback) == fallback
+    children =
+      for role <- [:admin, :claim, :marker] do
+        spec = %{id: role, start: {Agent, :start_link, [fn -> role end]}, restart: :temporary}
+        {:ok, child} = DynamicSupervisor.start_child(supervisor, spec)
+        {child, Process.monitor(child)}
+      end
+
+    metadata = spawn(fn -> :ok end)
+    metadata_ref = Process.monitor(metadata)
+    assert_receive {:DOWN, ^metadata_ref, :process, ^metadata, _reason}
+
+    :ok = DynamicSupervisor.stop(supervisor, :normal, 5_000)
+
+    for {child, ref} <- children do
+      assert_receive {:DOWN, ^ref, :process, ^child, :shutdown}
+    end
   end
 
   test "dead marker, stop failure, and terminate failure cannot skip exact drop" do
