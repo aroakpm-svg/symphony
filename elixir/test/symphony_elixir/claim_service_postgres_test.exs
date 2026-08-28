@@ -12,6 +12,8 @@ defmodule SymphonyElixir.ClaimServicePostgresTest do
              System.get_env("ARO287_ALLOW_DESTRUCTIVE_DB_TEST") == "1"
   @node_id "00000000-0000-4000-8000-000000000287"
   @node_instance_id "00000000-0000-4000-8000-000000001287"
+  @future_node_id "00000000-0000-4000-8000-000000000288"
+  @future_node_instance_id "00000000-0000-4000-8000-000000001288"
   @issue_id "ARO-287/non-uuid"
 
   @moduletag skip:
@@ -27,6 +29,7 @@ defmodule SymphonyElixir.ClaimServicePostgresTest do
     token = Harness.random_token()
     database_name = Harness.database_name(token)
     node_role = "aro287_node_#{token}"
+    future_node_role = "aro287_future_node_#{token}"
     {:ok, resource_supervisor} = DynamicSupervisor.start_link(strategy: :one_for_one)
     Process.unlink(resource_supervisor)
     admin_connection = start_connection!(resource_supervisor, @admin_url)
@@ -46,7 +49,17 @@ defmodule SymphonyElixir.ClaimServicePostgresTest do
       children = child_pids(resource_supervisor)
       state = %{cleanup_state | database_connections: Enum.reject(children, &(&1 == admin_connection))}
       result = Harness.cleanup(state, cleanup_operations(resource_supervisor))
-      Postgrex.query(admin_connection, ~s(drop role if exists "#{node_role}"), [])
+      cleanup_admin = start_connection!(resource_supervisor, @admin_url)
+      query!(cleanup_admin, ~s(drop role if exists "#{future_node_role}"))
+      query!(cleanup_admin, ~s(drop role if exists "#{node_role}"))
+
+      assert %Postgrex.Result{rows: [[0]]} =
+               Postgrex.query!(
+                 cleanup_admin,
+                 "select count(*) from pg_roles where rolname = any($1::text[])",
+                 [[node_role, future_node_role]]
+               )
+
       stop_supervisor!(resource_supervisor)
 
       if result != :ok, do: flunk("disposable database cleanup failed: #{inspect(result)}")
@@ -68,112 +81,31 @@ defmodule SymphonyElixir.ClaimServicePostgresTest do
     insert into public.aro287_disposable_run_marker (run_token) values ('#{token}');
     """)
 
-    query!(claim_connection, """
-    create schema symphony_staging;
+    install_prerequisites!(claim_connection, node_role)
+    apply_migration!(claim_connection, "20260804000000_aro_164_cross_machine_claims.sql")
+    apply_migration!(claim_connection, "20260827000000_aro_288_node_capacity_contract.sql")
+    apply_migration!(claim_connection, "20260828000000_aro_287_exclusive_route_claim_api.sql")
 
-    create table symphony_staging.routing_assignments (
-      issue_id text primary key,
-      routing_policy text not null,
-      target_node_id uuid,
-      routing_revision bigint not null
-    );
-
-    create table symphony_staging.issue_claims (
-      issue_id text primary key,
-      claim_id uuid not null,
-      generation bigint not null
-    );
-
-    create function symphony_staging.claim_issue(
-      requested_issue_id text,
-      requested_node_id uuid,
-      requested_node_instance_id uuid,
-      requested_linear_updated_at timestamptz,
-      requested_issue_state text,
-      requested_active_states text[],
-      requested_lease_ms integer,
-      requested_fallback_grace_ms integer
-    ) returns table (claim_id uuid, generation bigint)
-    language plpgsql
-    as $$
-    begin
-      perform pg_sleep(0.6);
-
-      return query
-      insert into symphony_staging.issue_claims (issue_id, claim_id, generation)
-      values (
-        requested_issue_id,
-        '00000000-0000-4000-8000-000000003287'::uuid,
-        1
-      )
-      returning issue_claims.claim_id, issue_claims.generation;
-    end
-    $$;
-
-    create table symphony_staging.nodes (
-      node_id uuid primary key,
-      status text not null
-    );
-    create table symphony_staging.node_login_principals (
-      node_id uuid not null,
-      login_role name not null,
-      revoked_at timestamptz
-    );
-    insert into symphony_staging.nodes values ('#{@node_id}', 'active');
-    insert into symphony_staging.node_login_principals values ('#{@node_id}', '#{node_role}', null);
-
-    create function symphony_staging.exclusive_route_snapshot(requested_issue_id text)
-    returns table (routing_policy text, target_node_id uuid, routing_revision bigint)
-    language sql stable security definer set search_path = pg_catalog, pg_temp
-    as $$
-      select assignments.routing_policy, assignments.target_node_id, assignments.routing_revision
-      from symphony_staging.routing_assignments assignments
-      join symphony_staging.node_login_principals principals
-        on principals.node_id = assignments.target_node_id
-       and principals.login_role = session_user
-       and principals.revoked_at is null
-      where assignments.issue_id = requested_issue_id
-        and assignments.routing_policy = 'exclusive'
-    $$;
-
-    create function symphony_staging.claim_exclusive_issue(
-      requested_issue_id text, expected_routing_revision bigint, requested_node_id uuid,
-      requested_node_instance_id uuid, requested_linear_updated_at timestamptz,
-      requested_issue_state text, requested_active_states text[], requested_lease_ms integer,
-      requested_fallback_grace_ms integer
-    ) returns table (claim_id uuid, generation bigint)
-    language plpgsql security definer set search_path = pg_catalog, pg_temp
-    as $$
-    begin
-      perform 1 from symphony_staging.routing_assignments assignments
-      join symphony_staging.node_login_principals principals
-        on principals.node_id = requested_node_id
-       and principals.login_role = session_user
-       and principals.revoked_at is null
-      where assignments.issue_id = requested_issue_id
-        and assignments.routing_policy = 'exclusive'
-        and assignments.target_node_id = requested_node_id
-        and assignments.routing_revision = expected_routing_revision
-      for share of assignments;
-      if not found then raise exception using errcode = '55000', message = 'routing changed'; end if;
-      return query select * from symphony_staging.claim_issue(
-        requested_issue_id, requested_node_id, requested_node_instance_id,
-        requested_linear_updated_at, requested_issue_state, requested_active_states,
-        requested_lease_ms, requested_fallback_grace_ms
-      );
-    end
-    $$;
-    grant usage on schema symphony_staging to "#{node_role}";
-    grant execute on function symphony_staging.exclusive_route_snapshot(text),
-      symphony_staging.claim_exclusive_issue(text, bigint, uuid, uuid, timestamptz, text, text[], integer, integer)
-      to "#{node_role}";
-    """)
+    query!(admin_connection, ~s(create role "#{future_node_role}" noinherit login password '#{token}'))
+    query!(admin_connection, ~s(grant connect on database "#{database_name}" to "#{future_node_role}"))
+    install_future_node!(claim_connection, future_node_role)
+    install_claim_delay_trigger!(claim_connection)
 
     node_uri = %{admin_uri | userinfo: "#{node_role}:#{token}"}
     node_url = Harness.database_url(node_uri, database_name, "aro287_node_claim")
     node_connection = start_connection!(resource_supervisor, node_url)
 
-    {:ok, claim_connection: node_connection, update_connection: update_connection, database_name: database_name}
+    future_uri = %{admin_uri | userinfo: "#{future_node_role}:#{token}"}
+    future_url = Harness.database_url(future_uri, database_name, "aro287_future_node_claim")
+    future_connection = start_connection!(resource_supervisor, future_url)
+
+    {:ok,
+     %{
+       claim_connection: node_connection,
+       future_connection: future_connection,
+       update_connection: update_connection,
+       database_name: database_name
+     }}
   end
 
   test "routing update waits until exclusive validation and claim acquisition commit", context do
@@ -230,6 +162,62 @@ defmodule SymphonyElixir.ClaimServicePostgresTest do
     end
   end
 
+  test "existing and trigger-granted future node logins have function-only access", context do
+    insert_route(context.update_connection, "exclusive", @node_id, 11, "existing/non-uuid")
+    insert_route(context.update_connection, "exclusive", @future_node_id, 12, "future/non-uuid")
+
+    assert %Postgrex.Result{rows: [["exclusive", @node_id, 11]]} =
+             Postgrex.query!(
+               context.claim_connection,
+               "select routing_policy, target_node_id::text, routing_revision " <>
+                 "from symphony_staging.exclusive_route_snapshot($1)",
+               ["existing/non-uuid"]
+             )
+
+    assert %Postgrex.Result{rows: [["exclusive", @future_node_id, 12]]} =
+             Postgrex.query!(
+               context.future_connection,
+               "select routing_policy, target_node_id::text, routing_revision " <>
+                 "from symphony_staging.exclusive_route_snapshot($1)",
+               ["future/non-uuid"]
+             )
+
+    future_issue = %Issue{
+      id: "future/non-uuid",
+      state: "In Progress",
+      updated_at: DateTime.utc_now(),
+      routing_revision: 12
+    }
+
+    future_state = %{
+      claim_state(context.future_connection)
+      | settings: %{
+          node_id: @future_node_id,
+          node_instance_id: @future_node_instance_id,
+          lease_ms: 60_000,
+          fallback_grace_ms: 30_000
+        }
+    }
+
+    assert {:reply, {:ok, %{issue_id: "future/non-uuid"}}, _state} =
+             ClaimService.handle_call({:claim, future_issue, self()}, self(), future_state)
+
+    for connection <- [context.claim_connection, context.future_connection],
+        table <- ["routing_assignments", "node_login_principals"] do
+      assert {:error, %Postgrex.Error{postgres: %{code: :insufficient_privilege}}} =
+               Postgrex.query(connection, "select * from symphony_staging.#{table}", [])
+    end
+
+    query!(context.update_connection, "update symphony_staging.nodes set status = 'inactive' where node_id = '#{@future_node_id}'")
+
+    assert {:error, %Postgrex.Error{postgres: %{code: :invalid_authorization_specification}}} =
+             Postgrex.query(
+               context.future_connection,
+               "select * from symphony_staging.exclusive_route_snapshot($1)",
+               ["future/non-uuid"]
+             )
+  end
+
   defp claim_state(connection) do
     %ClaimService{
       connection: connection,
@@ -251,16 +239,93 @@ defmodule SymphonyElixir.ClaimServicePostgresTest do
     }
   end
 
-  defp insert_route(connection, policy, node_id, revision) do
+  defp insert_route(connection, policy, node_id, revision, issue_id \\ @issue_id) do
     Postgrex.query!(
       connection,
       """
       insert into symphony_staging.routing_assignments (
-        issue_id, routing_policy, target_node_id, routing_revision
-      ) values ($1, $2, $3::uuid, $4)
+        issue_id, routing_policy, target_node_id, routing_revision, contract_version
+      ) values ($1, $2, $3::uuid, $4, 1)
       """,
-      [@issue_id, policy, node_id, revision]
+      [issue_id, policy, node_id, revision]
     )
+  end
+
+  defp apply_migration!(connection, filename) do
+    path = Path.expand("../../priv/symphony_migrations/#{filename}", __DIR__)
+    query!(connection, File.read!(path))
+  end
+
+  defp install_prerequisites!(connection, node_role) do
+    query!(connection, """
+    do $$ begin
+      if not exists (select 1 from pg_roles where rolname = 'anon') then create role anon nologin; end if;
+      if not exists (select 1 from pg_roles where rolname = 'authenticated') then create role authenticated nologin; end if;
+      if not exists (select 1 from pg_roles where rolname = 'service_role') then create role service_role nologin; end if;
+      if not exists (select 1 from pg_roles where rolname = 'symphony_staging_runtime') then
+        create role symphony_staging_runtime nologin;
+      end if;
+      if not exists (select 1 from pg_roles where rolname = 'symphony_staging_provisioner') then
+        create role symphony_staging_provisioner nologin;
+      end if;
+    end $$;
+    create schema symphony_staging;
+    grant usage on schema symphony_staging to symphony_staging_runtime,
+      symphony_staging_provisioner, "#{node_role}";
+    create table symphony_staging.contract_versions (
+      contract_name text primary key, contract_version integer not null,
+      migration_name text not null, installed_at timestamptz not null default clock_timestamp()
+    );
+    create table symphony_staging.nodes (
+      node_id uuid primary key, display_alias text, status text not null,
+      credential_version integer not null default 1, created_at timestamptz default clock_timestamp(),
+      updated_at timestamptz default clock_timestamp(), rotated_at timestamptz,
+      revoked_at timestamptz, retired_at timestamptz
+    );
+    create table symphony_staging.routing_assignments (
+      issue_id text primary key, routing_policy text not null,
+      target_node_id uuid references symphony_staging.nodes,
+      routing_revision bigint not null, contract_version integer not null,
+      updated_at timestamptz not null default clock_timestamp()
+    );
+    create table symphony_staging.node_login_principals (
+      node_id uuid primary key references symphony_staging.nodes,
+      login_role name not null unique, created_at timestamptz default clock_timestamp(),
+      revoked_at timestamptz
+    );
+    create table symphony_staging.active_node_instances (
+      node_id uuid primary key references symphony_staging.node_login_principals,
+      node_instance_id uuid not null, authenticated_at timestamptz default clock_timestamp(),
+      unique (node_id, node_instance_id)
+    );
+    insert into symphony_staging.nodes(node_id, display_alias, status) values
+      ('#{@node_id}', 'existing', 'active');
+    insert into symphony_staging.node_login_principals(node_id, login_role) values
+      ('#{@node_id}', '#{node_role}');
+    insert into symphony_staging.active_node_instances(node_id, node_instance_id) values
+      ('#{@node_id}', '#{@node_instance_id}');
+    """)
+  end
+
+  defp install_future_node!(connection, future_node_role) do
+    query!(connection, """
+    grant usage on schema symphony_staging to "#{future_node_role}";
+    insert into symphony_staging.nodes(node_id, display_alias, status, claim_capacity) values
+      ('#{@future_node_id}', 'future', 'active', 1);
+    insert into symphony_staging.node_login_principals(node_id, login_role) values
+      ('#{@future_node_id}', '#{future_node_role}');
+    insert into symphony_staging.active_node_instances(node_id, node_instance_id) values
+      ('#{@future_node_id}', '#{@future_node_instance_id}');
+    """)
+  end
+
+  defp install_claim_delay_trigger!(connection) do
+    query!(connection, """
+    create function public.aro287_delay_claim() returns trigger language plpgsql as $$
+    begin perform pg_sleep(0.6); return new; end $$;
+    create trigger aro287_delay_claim before insert or update on symphony_staging.issue_claims
+    for each row execute function public.aro287_delay_claim();
+    """)
   end
 
   defp wait_until_claim_query_is_active!(connection, attempts \\ 50)

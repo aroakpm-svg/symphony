@@ -738,6 +738,7 @@ defmodule SymphonyElixir.CoreTest do
     assert MapSet.member?(state.completed, issue_id)
     assert %{attempt: 1, due_at_ms: due_at_ms} = state.retry_attempts[issue_id]
     assert state.retry_attempts[issue_id].project_profile.key == "central-brain"
+    refute MapSet.member?(state.claimed, issue_id)
     assert is_integer(due_at_ms)
     assert_due_after(due_at_ms, scheduled_from_ms, 900, 1_100)
   end
@@ -857,17 +858,18 @@ defmodule SymphonyElixir.CoreTest do
              state.retry_attempts[issue_id]
 
     assert state.retry_attempts[issue_id].project_profile.key == "project-management"
+    refute MapSet.member?(state.claimed, issue_id)
 
     assert_due_after(due_at_ms, scheduled_from_ms, 39_500, 40_500)
   end
 
   test "startup terminal cleanup isolates profile failures and cleans every successful profile" do
-    profiles = [%{key: "central-brain"}, %{key: "project-management"}]
+    profiles = [%{key: "central-brain"}, %{key: "project-management"}, %{key: "failed-profile"}]
     parent = self()
 
     fetcher = fn
       %{key: "central-brain"}, _states ->
-        {:error, :linear_unavailable}
+        {:ok, [%Issue{identifier: "PM-1"}]}
 
       %{key: "project-management"}, _states ->
         {:ok,
@@ -876,6 +878,9 @@ defmodule SymphonyElixir.CoreTest do
            %Issue{identifier: "PM-fails"},
            %Issue{identifier: "PM-2"}
          ]}
+
+      %{key: "failed-profile"}, _states ->
+        {:error, :linear_unavailable}
     end
 
     cleanup_fun = fn
@@ -893,6 +898,7 @@ defmodule SymphonyElixir.CoreTest do
 
     assert_receive {:cleaned, "PM-1"}
     assert_receive {:cleaned, "PM-2"}
+    refute_receive {:cleaned, "PM-1"}
   end
 
   test "first abnormal worker exit waits before retrying" do

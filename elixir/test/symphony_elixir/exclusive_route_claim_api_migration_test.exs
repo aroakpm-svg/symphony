@@ -42,4 +42,20 @@ defmodule SymphonyElixir.ExclusiveRouteClaimApiMigrationTest do
     refute sql =~ "drop table"
     refute sql =~ "drop schema"
   end
+
+  test "disposable PostgreSQL proof executes the real claim, capacity, and route migrations" do
+    source = File.read!(Path.expand("claim_service_postgres_test.exs", __DIR__))
+
+    assert source =~ "apply_migration!(claim_connection, \"20260804000000_aro_164_cross_machine_claims.sql\")"
+    assert source =~ "apply_migration!(claim_connection, \"20260827000000_aro_288_node_capacity_contract.sql\")"
+
+    assert source =~
+             "apply_migration!(claim_connection, \"20260828000000_aro_287_exclusive_route_claim_api.sql\")"
+
+    refute source =~ "create function symphony_staging.claim_exclusive_issue"
+    refute source =~ "create function symphony_staging.exclusive_route_snapshot"
+    assert source =~ "future_node_role"
+    assert source =~ "insufficient_privilege"
+    assert source =~ "future/non-uuid"
+  end
 end

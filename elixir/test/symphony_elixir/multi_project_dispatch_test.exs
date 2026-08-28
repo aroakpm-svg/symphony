@@ -371,6 +371,99 @@ defmodule SymphonyElixir.MultiProjectDispatchTest do
     assert bounded_delay in 900..1_200
   end
 
+  test "normal and abnormal issue retry tokens re-enter the full pipeline exactly once" do
+    for {kind, attempt, profile} <- [
+          {:normal, 1, @central_profile},
+          {:abnormal, 3, @project_management_profile}
+        ] do
+      {:ok, events} = Agent.start_link(fn -> [] end)
+      candidate = %{issue("#{kind}-token", profile, attempt) | project_profile: profile}
+      {state, token} = issue_retry_state(candidate, attempt)
+
+      opts =
+        dispatch_opts(fn _profile -> {:ok, []} end, %{candidate.id => candidate}, events,
+          project_profiles: @profiles,
+          retry_fetch_fun: fn issue_id, metadata ->
+            record(events, {:retry_fetch, issue_id, metadata.project_profile.key})
+            {:ok, [candidate]}
+          end,
+          profile_refresh_fun: fn [issue_id] ->
+            record(events, {:profile_refresh, issue_id, profile.key})
+            {:ok, [candidate]}
+          end
+        )
+
+      dispatched = Orchestrator.fire_issue_retry_for_test(state, candidate.id, token, opts)
+      duplicate = Orchestrator.fire_issue_retry_for_test(dispatched, candidate.id, token, opts)
+
+      assert Map.has_key?(dispatched.running, candidate.id), inspect(Agent.get(events, & &1))
+      assert duplicate == dispatched
+      assert for({:claim, id} <- Agent.get(events, & &1), do: id) == [candidate.id]
+      assert {:retry_fetch, candidate.id, profile.key} in Agent.get(events, & &1)
+      assert {:profile_refresh, candidate.id, profile.key} in Agent.get(events, & &1)
+    end
+  end
+
+  test "capacity backoff after a fired issue retry schedules a new token" do
+    {:ok, events} = Agent.start_link(fn -> [] end)
+    candidate = %{issue("capacity-token", @central_profile, 1) | project_profile: @central_profile}
+    blocker = issue("capacity-blocker", @project_management_profile, 1)
+    {state, token} = issue_retry_state(candidate, 1)
+
+    state = %{
+      state
+      | max_concurrent_agents: 1,
+        running: %{
+          blocker.id => %{
+            issue: blocker,
+            identifier: blocker.identifier,
+            pid: self(),
+            ref: make_ref(),
+            started_at: DateTime.utc_now()
+          }
+        }
+    }
+
+    opts =
+      dispatch_opts(fn _profile -> {:ok, []} end, %{candidate.id => candidate}, events,
+        project_profiles: @profiles,
+        retry_fetch_fun: fn _issue_id, _metadata -> {:ok, [candidate]} end,
+        profile_refresh_fun: fn _ids -> {:ok, [candidate]} end
+      )
+
+    backed_off = Orchestrator.fire_issue_retry_for_test(state, candidate.id, token, opts)
+
+    assert %{attempt: 2, retry_token: next_token} = backed_off.retry_attempts[candidate.id],
+           inspect(Agent.get(events, & &1))
+
+    assert is_reference(next_token) and next_token != token
+    refute Map.has_key?(backed_off.running, candidate.id)
+    refute Enum.any?(Agent.get(events, & &1), &match?({:claim, _id}, &1))
+  end
+
+  test "current profile drift on a fired retry fails closed before dispatch" do
+    {:ok, events} = Agent.start_link(fn -> [] end)
+
+    candidate = %{
+      issue("profile-drift-token", @central_profile, 1)
+      | project_profile: @central_profile
+    }
+
+    {state, token} = issue_retry_state(candidate, 1)
+
+    opts =
+      dispatch_opts(fn _profile -> {:ok, []} end, %{}, events,
+        project_profiles: @profiles,
+        retry_fetch_fun: fn _issue_id, _metadata -> {:ok, []} end
+      )
+
+    result = Orchestrator.fire_issue_retry_for_test(state, candidate.id, token, opts)
+
+    refute Map.has_key?(result.running, candidate.id)
+    refute Map.has_key?(result.retry_attempts, candidate.id)
+    refute Enum.any?(Agent.get(events, & &1), &match?({:claim, _id}, &1))
+  end
+
   defp run_cycle(candidates, refreshed_by_id, events, overrides) do
     fetcher = fn profile ->
       {:ok, Enum.filter(candidates, &(&1.project_id == profile.linear_project_id))}
@@ -381,6 +474,24 @@ defmodule SymphonyElixir.MultiProjectDispatchTest do
       @profiles,
       dispatch_opts(fetcher, refreshed_by_id, events, overrides)
     )
+  end
+
+  defp issue_retry_state(candidate, attempt) do
+    token = make_ref()
+
+    state = %{
+      base_state()
+      | retry_attempts: %{
+          candidate.id => %{
+            attempt: attempt,
+            retry_token: token,
+            project_profile: candidate.project_profile,
+            identifier: candidate.identifier
+          }
+        }
+    }
+
+    {state, token}
   end
 
   defp dispatch_opts(fetcher, refreshed_by_id, events, overrides) do
