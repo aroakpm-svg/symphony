@@ -93,10 +93,7 @@ defmodule SymphonyElixir.TestSupport.ClaimServicePostgresHarness do
          {:ok, statements} <- cleanup_statements(state.database_name, state.token) do
       {errors, marker_allows_drop?} = marker_result(state, operations)
 
-      errors =
-        Enum.reduce(state.database_connections, errors, fn connection, acc ->
-          run_step(acc, :stop, fn -> operations.stop.(connection) end)
-        end)
+      errors = stop_database_connections(state.database_connections, errors, operations)
 
       if marker_allows_drop? do
         finish_database_cleanup(state, operations, statements, errors)
@@ -181,14 +178,18 @@ defmodule SymphonyElixir.TestSupport.ClaimServicePostgresHarness do
     end
   end
 
+  defp stop_database_connections(connections, errors, operations) do
+    Enum.reduce(connections, errors, fn connection, acc ->
+      run_step(acc, :stop, fn -> operations.stop.(connection) end)
+    end)
+  end
+
   defp run_operation(operation) do
-    try do
-      {:ok, operation.()}
-    rescue
-      exception -> {:error, {:raised, exception.__struct__}}
-    catch
-      kind, _reason -> {:error, kind}
-    end
+    {:ok, operation.()}
+  rescue
+    exception -> {:error, {:raised, exception.__struct__}}
+  catch
+    kind, _reason -> {:error, kind}
   end
 
   defp cleanup_result([]), do: :ok

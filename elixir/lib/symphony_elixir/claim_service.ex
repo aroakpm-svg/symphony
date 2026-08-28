@@ -429,26 +429,24 @@ defmodule SymphonyElixir.ClaimService do
        do: transaction_fun.(connection, callback)
 
   defp run_transaction(%{connection: connection}, callback) do
-    try do
-      case Postgrex.transaction(
-             connection,
-             fn transaction_connection ->
-               case callback.(transaction_connection) do
-                 {:commit, value} -> value
-                 {:rollback, reason} -> Postgrex.rollback(transaction_connection, {:expected, reason})
-               end
-             end,
-             timeout: @call_timeout_ms
-           ) do
-        {:ok, value} -> {:ok, value}
-        {:error, {:expected, reason}} -> {:error, reason}
-        {:error, _reason} -> {:uncertain, :transaction_failed}
-      end
-    rescue
-      _exception -> {:uncertain, :transaction_failed}
-    catch
-      :exit, _reason -> {:uncertain, :transaction_failed}
+    case Postgrex.transaction(
+           connection,
+           fn transaction_connection ->
+             case callback.(transaction_connection) do
+               {:commit, value} -> value
+               {:rollback, reason} -> Postgrex.rollback(transaction_connection, {:expected, reason})
+             end
+           end,
+           timeout: @call_timeout_ms
+         ) do
+      {:ok, value} -> {:ok, value}
+      {:error, {:expected, reason}} -> {:error, reason}
+      {:error, _reason} -> {:uncertain, :transaction_failed}
     end
+  rescue
+    _exception -> {:uncertain, :transaction_failed}
+  catch
+    :exit, _reason -> {:uncertain, :transaction_failed}
   end
 
   defp renew_query(state, claim) do

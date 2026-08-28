@@ -96,7 +96,11 @@ defmodule SymphonyElixir.ClaimServiceTest do
     existing_claim = %{owner: owner, worker: nil, lease_deadline_ms: 1}
     transaction = fn _connection, _callback -> {:uncertain, :commit_connection_lost} end
 
-    state = claim_state(fn _sql, _params -> flunk("uncertain transaction must own query execution") end, transaction)
+    query = fn _sql, _params ->
+      flunk("uncertain transaction must own query execution")
+    end
+
+    state = claim_state(query, transaction)
     state = %{state | claims: %{"existing" => existing_claim}}
 
     assert {:stop, {:claim_transaction_uncertain, :commit_connection_lost}, {:error, :claim_outcome_uncertain}, %{claims: %{}}} =
