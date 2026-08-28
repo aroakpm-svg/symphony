@@ -11,8 +11,9 @@ tracker:
     - "Canceled"
     - "Cancelled"
     - "Duplicate"
-# Optional versioned mapping only; keeping this example commented means disabled.
-# Loading it validates identities but does not enable multi-project polling or dispatch.
+# Optional versioned mapping; keeping this example commented preserves legacy single-project polling.
+# Enabling the complete set activates approved multi-project polling and exclusive-only dispatch.
+# Credential resolution and per-project workspace isolation remain ARO-286 scope.
 # project_profiles:
 #   version: 1
 #   profiles:

@@ -6,21 +6,44 @@ defmodule SymphonyElixir.Tracker do
   alias SymphonyElixir.Config
 
   @callback fetch_candidate_issues() :: {:ok, [term()]} | {:error, term()}
+  @callback fetch_candidate_issues(map()) :: {:ok, [term()]} | {:error, term()}
   @callback fetch_issues_by_states([String.t()]) :: {:ok, [term()]} | {:error, term()}
+  @callback fetch_issues_by_states(map(), [String.t()]) :: {:ok, [term()]} | {:error, term()}
   @callback fetch_routed_issues_by_states([String.t()]) :: {:ok, [term()]} | {:error, term()}
   @callback fetch_issue_states_by_ids([String.t()]) :: {:ok, [term()]} | {:error, term()}
+  @callback fetch_issue_states_by_ids(map(), [String.t()]) :: {:ok, [term()]} | {:error, term()}
   @callback create_comment(String.t(), String.t()) :: :ok | {:error, term()}
   @callback update_issue_state(String.t(), String.t()) :: :ok | {:error, term()}
   @callback review_history(String.t()) :: {:ok, map()} | {:error, term()}
+
+  @optional_callbacks fetch_candidate_issues: 1
 
   @spec fetch_candidate_issues() :: {:ok, [term()]} | {:error, term()}
   def fetch_candidate_issues do
     adapter().fetch_candidate_issues()
   end
 
+  @spec fetch_candidate_issues(map()) :: {:ok, [term()]} | {:error, term()}
+  def fetch_candidate_issues(profile) when is_map(profile) do
+    adapter = adapter()
+
+    if function_exported?(adapter, :fetch_candidate_issues, 1) do
+      # The adapter is selected at runtime and this arity is an optional callback.
+      # credo:disable-for-next-line Credo.Check.Refactor.Apply
+      apply(adapter, :fetch_candidate_issues, [profile])
+    else
+      {:error, :profile_scoped_candidate_fetch_unsupported}
+    end
+  end
+
   @spec fetch_issues_by_states([String.t()]) :: {:ok, [term()]} | {:error, term()}
   def fetch_issues_by_states(states) do
     adapter().fetch_issues_by_states(states)
+  end
+
+  @spec fetch_issues_by_states(map(), [String.t()]) :: {:ok, [term()]} | {:error, term()}
+  def fetch_issues_by_states(profile, states) when is_map(profile) and is_list(states) do
+    adapter().fetch_issues_by_states(profile, states)
   end
 
   @spec fetch_routed_issues_by_states([String.t()]) :: {:ok, [term()]} | {:error, term()}
@@ -31,6 +54,11 @@ defmodule SymphonyElixir.Tracker do
   @spec fetch_issue_states_by_ids([String.t()]) :: {:ok, [term()]} | {:error, term()}
   def fetch_issue_states_by_ids(issue_ids) do
     adapter().fetch_issue_states_by_ids(issue_ids)
+  end
+
+  @spec fetch_issue_states_by_ids(map(), [String.t()]) :: {:ok, [term()]} | {:error, term()}
+  def fetch_issue_states_by_ids(profile, issue_ids) when is_map(profile) and is_list(issue_ids) do
+    adapter().fetch_issue_states_by_ids(profile, issue_ids)
   end
 
   @spec create_comment(String.t(), String.t()) :: :ok | {:error, term()}

@@ -51,14 +51,23 @@ defmodule SymphonyElixir.Linear.Adapter do
   @spec fetch_candidate_issues() :: {:ok, [term()]} | {:error, term()}
   def fetch_candidate_issues, do: client_module().fetch_candidate_issues()
 
+  @spec fetch_candidate_issues(map()) :: {:ok, [term()]} | {:error, term()}
+  def fetch_candidate_issues(profile) when is_map(profile), do: client_module().fetch_candidate_issues(profile)
+
   @spec fetch_issues_by_states([String.t()]) :: {:ok, [term()]} | {:error, term()}
   def fetch_issues_by_states(states), do: client_module().fetch_issues_by_states(states)
+
+  @spec fetch_issues_by_states(map(), [String.t()]) :: {:ok, [term()]} | {:error, term()}
+  def fetch_issues_by_states(profile, states), do: client_module().fetch_issues_by_states(profile, states)
 
   @spec fetch_routed_issues_by_states([String.t()]) :: {:ok, [term()]} | {:error, term()}
   def fetch_routed_issues_by_states(states), do: client_module().fetch_routed_issues_by_states(states)
 
   @spec fetch_issue_states_by_ids([String.t()]) :: {:ok, [term()]} | {:error, term()}
   def fetch_issue_states_by_ids(issue_ids), do: client_module().fetch_issue_states_by_ids(issue_ids)
+
+  @spec fetch_issue_states_by_ids(map(), [String.t()]) :: {:ok, [term()]} | {:error, term()}
+  def fetch_issue_states_by_ids(profile, issue_ids), do: client_module().fetch_issue_states_by_ids(profile, issue_ids)
 
   @spec review_history(String.t()) :: {:ok, map()} | {:error, term()}
   def review_history(issue_id) when is_binary(issue_id) do

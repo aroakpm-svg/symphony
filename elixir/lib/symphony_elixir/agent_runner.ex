@@ -319,6 +319,16 @@ defmodule SymphonyElixir.AgentRunner do
   end
 
   defp continue_with_issue?(%Issue{id: issue_id} = issue, issue_state_fetcher) when is_binary(issue_id) do
+    if is_map(issue.project_profile) do
+      {:done, issue}
+    else
+      continue_legacy_issue(issue, issue_id, issue_state_fetcher)
+    end
+  end
+
+  defp continue_with_issue?(issue, _issue_state_fetcher), do: {:done, issue}
+
+  defp continue_legacy_issue(issue, issue_id, issue_state_fetcher) do
     case issue_state_fetcher.([issue_id]) do
       {:ok, [%Issue{} = refreshed_issue | _]} ->
         if active_issue_state?(refreshed_issue.state) and issue_routable?(refreshed_issue) do
@@ -334,8 +344,6 @@ defmodule SymphonyElixir.AgentRunner do
         {:error, {:issue_state_refresh_failed, reason}}
     end
   end
-
-  defp continue_with_issue?(issue, _issue_state_fetcher), do: {:done, issue}
 
   defp active_issue_state?(state_name) when is_binary(state_name) do
     normalized_state = normalize_issue_state(state_name)

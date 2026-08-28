@@ -2,11 +2,102 @@ defmodule SymphonyElixir.ClaimServiceTest do
   use ExUnit.Case, async: false
 
   alias SymphonyElixir.ClaimService
+  alias SymphonyElixir.Linear.Issue
+
+  @current_node_id "00000000-0000-4000-8000-000000000001"
+  @other_node_id "00000000-0000-4000-8000-000000000002"
+
+  test "exclusive routing accepts only the current node and returns its revision" do
+    assert {:ok, %{routing_revision: 7}} = exclusive_route("exclusive", @current_node_id, 7)
+    assert {:ineligible, :wrong_node} = exclusive_route("exclusive", @other_node_id, 7)
+    assert {:ineligible, :missing_routing} = exclusive_route(nil, nil, nil)
+    assert {:ineligible, :non_exclusive_routing} = exclusive_route("unassigned", nil, 3)
+
+    assert {:ineligible, :non_exclusive_routing} =
+             exclusive_route("preferred-with-fallback", @current_node_id, 4)
+  end
+
+  test "exclusive routing compares UUID node identities semantically and rejects invalid identities" do
+    assert {:ok, %{routing_revision: 7}} = exclusive_route("exclusive", String.upcase(@current_node_id), 7)
+
+    mixed_case = "00000000-0000-4000-8000-00000000000A"
+    assert {:ok, %{routing_revision: 8}} = exclusive_route_for_node("exclusive", mixed_case, 8, String.downcase(mixed_case))
+
+    assert {:error, :routing_lookup_failed} = exclusive_route_for_node("exclusive", @current_node_id, 9, "not-a-uuid")
+    assert {:error, :routing_lookup_failed} = exclusive_route_for_node("exclusive", "not-a-uuid", 9, @current_node_id)
+  end
+
+  test "exclusive routing reads the assignment by issue id without exposing query errors" do
+    parent = self()
+
+    query = fn sql, params ->
+      send(parent, {:routing_query, sql, params})
+      {:error, RuntimeError.exception("postgresql://secret@database.internal/symphony")}
+    end
+
+    assert {:error, :routing_lookup_failed} = route_with_query(query)
+    assert_receive {:routing_query, sql, ["issue-1"]}
+    assert sql =~ "from symphony_staging.exclusive_route_snapshot($1)"
+    assert String.trim_leading(sql) =~ ~r/^select\b/i
+    refute sql =~ ~r/\b(insert|update|delete|call)\b/i
+
+    result = ClaimService.exclusive_route(%Issue{id: "issue-1"})
+
+    assert result == {:error, :claim_service_unavailable}
+    refute inspect(result) =~ "database.internal"
+  end
+
+  test "multi-project claim passes the exclusive routing receipt to the atomic database API" do
+    parent = self()
+
+    query = fn sql, params ->
+      send(parent, {:query, String.trim(sql), params})
+
+      cond do
+        sql =~ "claim_exclusive_issue" ->
+          {:ok, %Postgrex.Result{rows: [["claim-1", 1]], num_rows: 1}}
+      end
+    end
+
+    assert {:ok, claim} = claim_with_query(query, 7, nil)
+    assert claim.claim_id == "claim-1"
+    assert_receive {:query, claim_sql, ["issue-1", 7 | _params]}
+    assert claim_sql =~ "claim_exclusive_issue"
+  end
+
+  test "multi-project claim exposes an atomic API rejection without a second application query" do
+    parent = self()
+
+    query = fn sql, params ->
+      send(parent, {:query, String.trim(sql), params})
+      {:error, %Postgrex.Error{postgres: %{code: :object_not_in_prerequisite_state}}}
+    end
+
+    assert {:error, :routing_changed} = claim_with_query(query, 7, nil)
+    assert_receive {:query, claim_sql, ["issue-1", 7 | _params]}
+    assert claim_sql =~ "claim_exclusive_issue"
+    refute_receive {:query, _other_sql, _other_params}
+  end
+
+  test "legacy claim without a routing receipt retains the existing claim acquisition behavior" do
+    parent = self()
+
+    query = fn sql, params ->
+      send(parent, {:query, String.trim(sql), params})
+      {:ok, %Postgrex.Result{rows: [["legacy-claim", 2]], num_rows: 1}}
+    end
+
+    assert {:ok, %{claim_id: "legacy-claim"}} = claim_with_query(query, nil, nil)
+    assert_receive {:query, claim_sql, _params}
+    assert claim_sql =~ "claim_issue"
+    refute_receive {:query, "begin", []}
+  end
 
   test "database calls bind textual UUIDs through text before UUID casts" do
     source = File.read!(Path.expand("../../lib/symphony_elixir/claim_service.ex", __DIR__))
 
-    assert length(Regex.scan(~r/::text::uuid/, source)) == 11
+    refute source =~ "exclusive_route_snapshot($1::text::uuid)"
+    refute source =~ "claim_exclusive_issue($1::text::uuid"
     refute source =~ "DateTime.to_iso8601(updated_at)"
   end
 
@@ -158,5 +249,70 @@ defmodule SymphonyElixir.ClaimServiceTest do
 
     assert elem(application_supervisor_state, 2) == :one_for_one
     assert elem(supervisor_state, 2) == :one_for_all
+  end
+
+  defp exclusive_route(nil, nil, nil) do
+    route_with_query(fn _sql, _params ->
+      {:ok, %Postgrex.Result{rows: [], num_rows: 0}}
+    end)
+  end
+
+  defp exclusive_route(policy, target_node_id, routing_revision) do
+    route_with_query(fn _sql, _params ->
+      {:ok,
+       %Postgrex.Result{
+         rows: [[policy, target_node_id, routing_revision]],
+         num_rows: 1
+       }}
+    end)
+  end
+
+  defp route_with_query(query) do
+    issue = %Issue{id: "issue-1"}
+    state = %ClaimService{connection: query, settings: %{node_id: @current_node_id}}
+
+    assert {:reply, result, ^state} =
+             ClaimService.handle_call({:exclusive_route, issue}, self(), state)
+
+    result
+  end
+
+  defp exclusive_route_for_node(policy, target_node_id, routing_revision, current_node_id) do
+    query = fn _sql, _params ->
+      {:ok, %Postgrex.Result{rows: [[policy, target_node_id, routing_revision]], num_rows: 1}}
+    end
+
+    state = %ClaimService{connection: query, settings: %{node_id: current_node_id}}
+    assert {:reply, result, ^state} = ClaimService.handle_call({:exclusive_route, %Issue{id: "issue-1"}}, self(), state)
+    result
+  end
+
+  defp claim_with_query(query, routing_revision, transaction) do
+    state = claim_state(query, transaction)
+
+    assert {:reply, result, _state} =
+             ClaimService.handle_call({:claim, claim_issue(routing_revision), self()}, self(), state)
+
+    result
+  end
+
+  defp claim_issue(routing_revision) do
+    %Issue{
+      id: "issue-1",
+      state: "In Progress",
+      updated_at: DateTime.utc_now(),
+      routing_revision: routing_revision
+    }
+  end
+
+  defp claim_state(query, _transaction) do
+    settings = %{
+      node_id: @current_node_id,
+      node_instance_id: "00000000-0000-4000-8000-000000000003",
+      lease_ms: 60_000,
+      fallback_grace_ms: 30_000
+    }
+
+    %ClaimService{connection: query, settings: settings}
   end
 end

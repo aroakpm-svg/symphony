@@ -375,36 +375,62 @@ The observability UI now runs on a minimal Phoenix stack:
 - Phoenix dependency static assets for the LiveView client bootstrap
 - Tracker issue identifiers link to the tracker-provided URL when it uses `http` or `https`
 
-## Project-Management repository preflight
+## Approved project repository preflight
 
-`SymphonyElixir.ProjectRepoPreflight` contains the approved, read-only
-`project-management` mapping. It verifies GitHub CLI read authentication, the
-repository identity, the `main` default branch and head, and the repository's
-`typecheck`, `build`, and `db:test` quality-script contract.
+`SymphonyElixir.ProjectRepoPreflight.check/1` accepts one complete profile map from the validated
+`project_profiles` contract. It verifies GitHub CLI read authentication, repository identity, the
+`main` default branch and exact head, and the approved quality-script contract. The supported
+profiles are:
+
+- `aroakpm-svg/aroak-central-brain`: `typecheck`, `build`, and `test`
+- `aroakpm-svg/aroak-project-management`: `typecheck`, `build`, and `db:test`
 
 Run the dry check without starting a worker:
 
 ```elixir
-SymphonyElixir.ProjectRepoPreflight.check("project-management")
+settings = SymphonyElixir.Config.settings!()
+
+settings.project_profiles
+|> SymphonyElixir.ProjectProfiles.list()
+|> Enum.map(&SymphonyElixir.ProjectRepoPreflight.check/1)
 ```
 
-The result is either `{:ok, receipt}` or `{:blocked, reason}` with one minimal
-human next step. This readiness check does not add Project-Management polling,
-dispatch, credentials, deployment authority, or automatic pickup permission.
+Each result is either `{:ok, receipt}` or `{:blocked, reason}` with one minimal human next step.
+Preflight is a necessary dispatch gate, but success is readiness evidence rather than authorization:
+it does not independently enable polling, dispatch, credentials, deployment authority, or automatic
+pickup permission. Credential resolution and per-project workspace isolation remain out of scope
+here and remain ARO-286 work.
 
 ## Approved multi-project profile contract
 
-The optional `project_profiles` WORKFLOW setting defines the complete approved
-Central-Brain and Project-Management mapping. Version `1` must exactly match the
-profile identities compiled into this Symphony release. The parser rejects the
-whole candidate when a profile is missing or extra, an identity is duplicated,
-or any approved field differs. Failed reloads preserve the previous valid value.
+The optional `project_profiles` WORKFLOW setting enables the existing orchestrator's
+approved multi-project path and defines the complete Central-Brain and Project-Management
+mapping. Version `1` must exactly match the profile identities compiled into this Symphony
+release. The parser rejects the whole candidate when a profile is missing or extra, an
+identity is duplicated, or any approved field differs. Failed reloads preserve the previous
+valid value.
 
 Profiles contain a credential reference name, not credential material. Validation
-errors identify the profile or field without echoing submitted values. The setting
-is disabled when absent, and loading it does not enable polling, dispatch, cloning,
-deployment, or issue pickup; those capabilities remain the responsibility of later
-policy-controlled work.
+errors identify the profile or field without echoing submitted values. With the setting
+present, every poll cycle uses this order:
+
+1. Aggregate every enabled approved profile independently.
+2. Filter candidates and re-fetch each issue by UUID.
+3. Resolve the refreshed project UUID to the same unique approved profile.
+4. Require shared routing to be `exclusive` for the authenticated current node.
+5. Run the approved profile's read-only repository preflight.
+6. Check the existing node-wide capacity.
+7. Acquire the existing ARO-164 claim.
+8. Continue through the existing worker dispatch path.
+
+A profile timeout or error is retried independently: it cannot contribute substitute identity
+evidence and does not stop another profile's candidates. Unknown, duplicated, changed, stale,
+wrong-node, non-exclusive, or repository-mismatched candidates fail closed and iteration continues.
+When `project_profiles` is absent, Symphony retains the legacy single-project tracker path.
+
+This contract selects an approved repository but does not resolve or install credentials, create
+per-project workspace namespaces, clone repositories, grant deployment authority, or operate in
+Production. Credential and workspace isolation remain ARO-286 scope.
 
 See the commented example in [`WORKFLOW.md`](WORKFLOW.md). Remove the comment
 markers only when intentionally configuring the exact approved set.

@@ -1,11 +1,21 @@
 defmodule SymphonyElixir.ClaimConfigTest do
   use ExUnit.Case, async: false
 
+  alias SymphonyElixir.ClaimService
   alias SymphonyElixir.Config.Schema
+  alias SymphonyElixir.Linear.Issue
 
   test "claim service is disabled by default" do
     assert {:ok, settings} = Schema.parse(%{})
     refute settings.claim.enabled
+  end
+
+  test "disabled claim service fails closed for exclusive routing" do
+    assert {:ok, settings} = Schema.parse(%{})
+    refute settings.claim.enabled
+
+    assert ClaimService.exclusive_route(%Issue{id: "issue-1"}) ==
+             {:error, :claim_service_unavailable}
   end
 
   test "enabled claim service requires identity, a database URL, and a CA" do

@@ -67,6 +67,21 @@ defmodule SymphonyElixir.ProjectProfiles do
 
   def fetch(_profiles, _key), do: :error
 
+  @spec list(t()) :: [profile()]
+  def list(%{profiles: profiles}) do
+    profiles
+    |> Map.values()
+    |> Enum.sort_by(& &1.key)
+  end
+
+  @spec fetch_by_linear_project_id(t(), String.t()) :: {:ok, profile()} | :error
+  def fetch_by_linear_project_id(profiles, project_id) do
+    case Enum.filter(list(profiles), &(&1.linear_project_id == project_id)) do
+      [profile] -> {:ok, profile}
+      _ -> :error
+    end
+  end
+
   @spec reload(t() | nil, term()) :: {:ok, t()} | {:error, reason(), t() | nil}
   def reload(last_known_good, candidate) do
     case parse(candidate) do

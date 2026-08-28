@@ -803,6 +803,48 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
     assert due_in_ms > 0
   end
 
+  test "orchestrator snapshot includes per-profile poll retry metadata" do
+    orchestrator_name = Module.concat(__MODULE__, :ProjectRetryOrchestrator)
+    {:ok, pid} = Orchestrator.start_link(name: orchestrator_name)
+
+    on_exit(fn ->
+      if Process.alive?(pid) do
+        Process.exit(pid, :normal)
+      end
+    end)
+
+    now_ms = System.monotonic_time(:millisecond)
+
+    :sys.replace_state(pid, fn state ->
+      %{
+        state
+        | profile_retry_attempts: %{
+            "central-brain" => %{
+              attempt: 2,
+              due_at_ms: now_ms + 4_000,
+              reason: :poll_timeout,
+              retry_token: make_ref(),
+              timer_ref: make_ref()
+            }
+          }
+      }
+    end)
+
+    snapshot = GenServer.call(pid, :snapshot)
+
+    assert [
+             %{
+               profile: "central-brain",
+               attempt: 2,
+               due_in_ms: due_in_ms,
+               reason: :poll_timeout
+             }
+           ] = snapshot.profile_retries
+
+    assert due_in_ms > 0
+    assert due_in_ms <= 4_000
+  end
+
   test "orchestrator snapshot includes poll countdown and checking status" do
     orchestrator_name = Module.concat(__MODULE__, :PollingSnapshotOrchestrator)
     {:ok, pid} = Orchestrator.start_link(name: orchestrator_name)
@@ -1011,8 +1053,11 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
              due_at_ms: due_at_ms,
              identifier: "MT-STALL",
              issue_url: "https://example.org/issues/MT-STALL",
+             ownership: :unowned_backoff,
              error: "stalled for " <> _
            } = state.retry_attempts[issue_id]
+
+    refute MapSet.member?(state.claimed, issue_id)
 
     assert is_integer(due_at_ms)
     delay_ms = due_at_ms - scheduled_from_ms

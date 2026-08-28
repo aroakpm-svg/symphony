@@ -19,6 +19,23 @@ defmodule SymphonyElixir.ProjectProfilesTest do
     assert :error = ProjectProfiles.fetch(profiles, "unknown")
   end
 
+  test "lists approved profiles stably and looks them up by exact Linear project identity" do
+    assert {:ok, profiles} = ProjectProfiles.parse(valid_config())
+
+    assert Enum.map(ProjectProfiles.list(profiles), & &1.key) == [
+             "central-brain",
+             "project-management"
+           ]
+
+    assert {:ok, %{key: "central-brain"}} =
+             ProjectProfiles.fetch_by_linear_project_id(
+               profiles,
+               "d0acfb71-f68c-4a9f-8a1a-477265d3c3ec"
+             )
+
+    assert :error = ProjectProfiles.fetch_by_linear_project_id(profiles, "unknown")
+  end
+
   test "rejects unsupported versions, incomplete sets, and unknown fields" do
     assert {:error, :unsupported_version} =
              valid_config()

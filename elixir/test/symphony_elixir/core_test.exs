@@ -27,7 +27,8 @@ defmodule SymphonyElixir.CoreTest do
     assert {:error, {:invalid_workflow_config, message}} = Config.validate!()
     assert message =~ "polling.interval_ms"
 
-    assert %Orchestrator.State{} = Orchestrator.maybe_dispatch_for_test(%Orchestrator.State{})
+    assert %Orchestrator.State{} = state = Orchestrator.maybe_dispatch_for_test(%Orchestrator.State{})
+    assert state.profile_retry_attempts == %{}
 
     write_workflow_file!(Workflow.workflow_file_path(), poll_interval_ms: 45_000)
     assert Config.settings!().polling.interval_ms == 45_000
@@ -118,6 +119,44 @@ defmodule SymphonyElixir.CoreTest do
     assert prompt =~ "Todo: ready for agent work"
     assert is_binary(Config.workflow_prompt())
     assert Config.workflow_prompt() == prompt
+  end
+
+  test "configured project profiles use the single orchestrator cycle and fail closed per profile" do
+    write_workflow_file!(Workflow.workflow_file_path(), tracker_kind: "memory")
+
+    project_profiles = """
+    project_profiles:
+      version: 1
+      profiles:
+        - key: central-brain
+          linear_project_id: d0acfb71-f68c-4a9f-8a1a-477265d3c3ec
+          repository: aroakpm-svg/aroak-central-brain
+          canonical_branch: main
+          workspace_namespace: central-brain
+          credential_ref: github-central-brain
+          environment: local_non_production
+        - key: project-management
+          linear_project_id: 708053e0-f42c-4e93-bec4-7abbb37e74af
+          repository: aroakpm-svg/aroak-project-management
+          canonical_branch: main
+          workspace_namespace: project-management
+          credential_ref: github-project-management
+          environment: local_non_production
+    """
+
+    workflow = File.read!(Workflow.workflow_file_path())
+    File.write!(Workflow.workflow_file_path(), String.replace(workflow, "---\n", "---\n#{project_profiles}", global: false))
+    assert :ok = WorkflowStore.force_reload()
+
+    state =
+      Orchestrator.maybe_dispatch_for_test(%Orchestrator.State{
+        max_concurrent_agents: 3,
+        codex_totals: %{input_tokens: 0, output_tokens: 0, total_tokens: 0, seconds_running: 0}
+      })
+
+    assert Map.keys(state.profile_retry_attempts) |> Enum.sort() == ["central-brain", "project-management"]
+    assert state.running == %{}
+    assert state.claimed == MapSet.new()
   end
 
   test "linear api token resolves from LINEAR_API_KEY env var" do
@@ -643,6 +682,19 @@ defmodule SymphonyElixir.CoreTest do
              AgentRunner.continue_with_issue_for_test(issue, fetcher)
   end
 
+  test "multi-project active continuation returns to orchestrator without legacy state fetch" do
+    issue = %Issue{
+      id: "profile-continuation",
+      identifier: "ARO-287",
+      state: "In Progress",
+      project_profile: %{key: "central-brain"}
+    }
+
+    fetcher = fn _ids -> flunk("multi-project continuation must not use the legacy fetch") end
+
+    assert {:done, ^issue} = AgentRunner.continue_with_issue_for_test(issue, fetcher)
+  end
+
   test "normal worker exit schedules active-state continuation retry" do
     issue_id = "issue-resume"
     ref = make_ref()
@@ -661,7 +713,12 @@ defmodule SymphonyElixir.CoreTest do
       pid: self(),
       ref: ref,
       identifier: "MT-558",
-      issue: %Issue{id: issue_id, identifier: "MT-558", state: "In Progress"},
+      issue: %Issue{
+        id: issue_id,
+        identifier: "MT-558",
+        state: "In Progress",
+        project_profile: %{key: "central-brain"}
+      },
       started_at: DateTime.utc_now()
     }
 
@@ -680,6 +737,8 @@ defmodule SymphonyElixir.CoreTest do
     refute Map.has_key?(state.running, issue_id)
     assert MapSet.member?(state.completed, issue_id)
     assert %{attempt: 1, due_at_ms: due_at_ms} = state.retry_attempts[issue_id]
+    assert state.retry_attempts[issue_id].project_profile.key == "central-brain"
+    assert MapSet.member?(state.claimed, issue_id)
     assert is_integer(due_at_ms)
     assert_due_after(due_at_ms, scheduled_from_ms, 900, 1_100)
   end
@@ -774,7 +833,12 @@ defmodule SymphonyElixir.CoreTest do
       ref: ref,
       identifier: "MT-559",
       retry_attempt: 2,
-      issue: %Issue{id: issue_id, identifier: "MT-559", state: "In Progress"},
+      issue: %Issue{
+        id: issue_id,
+        identifier: "MT-559",
+        state: "In Progress",
+        project_profile: %{key: "project-management"}
+      },
       started_at: DateTime.utc_now()
     }
 
@@ -793,7 +857,48 @@ defmodule SymphonyElixir.CoreTest do
     assert %{attempt: 3, due_at_ms: due_at_ms, identifier: "MT-559", error: "agent exited: :boom"} =
              state.retry_attempts[issue_id]
 
+    assert state.retry_attempts[issue_id].project_profile.key == "project-management"
+    assert MapSet.member?(state.claimed, issue_id)
+
     assert_due_after(due_at_ms, scheduled_from_ms, 39_500, 40_500)
+  end
+
+  test "startup terminal cleanup isolates profile failures and cleans every successful profile" do
+    profiles = [%{key: "central-brain"}, %{key: "project-management"}, %{key: "failed-profile"}]
+    parent = self()
+
+    fetcher = fn
+      %{key: "central-brain"}, _states ->
+        {:ok, [%Issue{identifier: "PM-1"}]}
+
+      %{key: "project-management"}, _states ->
+        {:ok,
+         [
+           %Issue{identifier: "PM-1"},
+           %Issue{identifier: "PM-fails"},
+           %Issue{identifier: "PM-2"}
+         ]}
+
+      %{key: "failed-profile"}, _states ->
+        {:error, :linear_unavailable}
+    end
+
+    cleanup_fun = fn
+      "PM-fails" -> raise "cleanup unavailable"
+      identifier -> send(parent, {:cleaned, identifier})
+    end
+
+    assert :ok =
+             Orchestrator.terminal_cleanup_for_test(
+               profiles,
+               ["Done"],
+               fetcher,
+               cleanup_fun
+             )
+
+    assert_receive {:cleaned, "PM-1"}
+    assert_receive {:cleaned, "PM-2"}
+    refute_receive {:cleaned, "PM-1"}
   end
 
   test "first abnormal worker exit waits before retrying" do
