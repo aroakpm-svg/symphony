@@ -103,7 +103,12 @@ defmodule SymphonyElixir.ClaimServiceTest do
     state = claim_state(query, transaction)
     state = %{state | claims: %{"existing" => existing_claim}}
 
-    assert {:stop, {:claim_transaction_uncertain, :commit_connection_lost}, {:error, :claim_outcome_uncertain}, %{claims: %{}}} =
+    assert {
+             :stop,
+             {:claim_transaction_uncertain, :commit_connection_lost},
+             {:error, :claim_outcome_uncertain},
+             %{claims: %{}}
+           } =
              ClaimService.handle_call(
                {:claim, claim_issue(7), self()},
                self(),

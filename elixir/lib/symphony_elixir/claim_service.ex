@@ -432,10 +432,7 @@ defmodule SymphonyElixir.ClaimService do
     case Postgrex.transaction(
            connection,
            fn transaction_connection ->
-             case callback.(transaction_connection) do
-               {:commit, value} -> value
-               {:rollback, reason} -> Postgrex.rollback(transaction_connection, {:expected, reason})
-             end
+             transaction_callback(callback, transaction_connection)
            end,
            timeout: @call_timeout_ms
          ) do
@@ -447,6 +444,13 @@ defmodule SymphonyElixir.ClaimService do
     _exception -> {:uncertain, :transaction_failed}
   catch
     :exit, _reason -> {:uncertain, :transaction_failed}
+  end
+
+  defp transaction_callback(callback, transaction_connection) do
+    case callback.(transaction_connection) do
+      {:commit, value} -> value
+      {:rollback, reason} -> Postgrex.rollback(transaction_connection, {:expected, reason})
+    end
   end
 
   defp renew_query(state, claim) do
