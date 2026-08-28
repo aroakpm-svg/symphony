@@ -1,7 +1,7 @@
 defmodule SymphonyElixir.MultiProjectPollTest do
   use ExUnit.Case, async: true
 
-  alias SymphonyElixir.{MultiProjectPoll, Linear.Issue}
+  alias SymphonyElixir.{Linear.Issue, MultiProjectPoll}
 
   test "keeps each successful profile's candidates in stable profile order" do
     profiles = [profile("central-brain"), profile("project-management")]

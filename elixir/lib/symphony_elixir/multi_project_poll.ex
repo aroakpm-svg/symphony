@@ -39,14 +39,12 @@ defmodule SymphonyElixir.MultiProjectPoll do
   end
 
   defp safe_fetch(fetcher, profile) do
-    try do
-      fetcher.(profile)
-    rescue
-      _exception -> {:error, :profile_fetch_exception}
-    catch
-      :exit, _reason -> {:error, :profile_fetch_exit}
-      :throw, _value -> {:error, :profile_fetch_throw}
-    end
+    fetcher.(profile)
+  rescue
+    _exception -> {:error, :profile_fetch_exception}
+  catch
+    :exit, _reason -> {:error, :profile_fetch_exit}
+    :throw, _value -> {:error, :profile_fetch_throw}
   end
 
   defp aggregate(profile_results) do

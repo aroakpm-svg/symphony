@@ -26,6 +26,8 @@ defmodule SymphonyElixir.Tracker do
     adapter = adapter()
 
     if function_exported?(adapter, :fetch_candidate_issues, 1) do
+      # The adapter is selected at runtime and this arity is an optional callback.
+      # credo:disable-for-next-line Credo.Check.Refactor.Apply
       apply(adapter, :fetch_candidate_issues, [profile])
     else
       {:error, :profile_scoped_candidate_fetch_unsupported}

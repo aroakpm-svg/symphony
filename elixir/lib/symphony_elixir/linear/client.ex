@@ -183,14 +183,12 @@ defmodule SymphonyElixir.Linear.Client do
   def fetch_candidate_issues(%{linear_project_id: project_id}) when is_binary(project_id) do
     tracker = Config.settings!().tracker
 
-    cond do
-      is_nil(tracker.api_key) ->
-        {:error, :missing_linear_api_token}
-
-      true ->
-        with {:ok, assignee_filter} <- routing_assignee_filter() do
-          do_fetch_by_project_id(project_id, tracker.active_states, assignee_filter)
-        end
+    if is_nil(tracker.api_key) do
+      {:error, :missing_linear_api_token}
+    else
+      with {:ok, assignee_filter} <- routing_assignee_filter() do
+        do_fetch_by_project_id(project_id, tracker.active_states, assignee_filter)
+      end
     end
   end
 
