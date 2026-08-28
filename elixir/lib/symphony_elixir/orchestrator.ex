@@ -23,6 +23,15 @@ defmodule SymphonyElixir.Orchestrator do
 
   alias SymphonyElixir.Linear.Issue
 
+  @permanent_preflight_blockers ~w(
+    project_mapping_missing
+    repository_mismatch
+    default_branch_mismatch
+    required_check_contract_invalid
+    required_check_contract_missing
+  )a
+  @transient_preflight_blockers ~w(repository_unavailable)a
+
   @continuation_retry_delay_ms 1_000
   @failure_retry_base_ms 10_000
   @profile_retry_base_ms 1_000
@@ -552,7 +561,10 @@ defmodule SymphonyElixir.Orchestrator do
       {:blocked, %{code: code}} ->
         Logger.warning("Skipping multi-project candidate after repository preflight: #{issue_context(issue)} profile=#{issue.project_profile.key} reason=#{code}")
 
-        transition_retry_transient(state, issue, {:preflight_blocked, code}, opts)
+        case preflight_blocker_disposition(code) do
+          :transient -> transition_retry_transient(state, issue, {:preflight_blocked, code}, opts)
+          :permanent -> transition_retry_release(state, issue, opts)
+        end
 
       _other ->
         Logger.warning("Skipping multi-project candidate after repository preflight: #{issue_context(issue)} profile=#{issue.project_profile.key} reason=preflight_unavailable")
@@ -560,6 +572,10 @@ defmodule SymphonyElixir.Orchestrator do
         transition_retry_transient(state, issue, :preflight_unavailable, opts)
     end
   end
+
+  defp preflight_blocker_disposition(code) when code in @transient_preflight_blockers, do: :transient
+  defp preflight_blocker_disposition(code) when code in @permanent_preflight_blockers, do: :permanent
+  defp preflight_blocker_disposition(_unknown), do: :permanent
 
   defp dispatch_authorized_multi_project_candidate(state, issue, opts) do
     if dispatch_authorized_issue?(issue, state, opts) do
@@ -852,6 +868,12 @@ defmodule SymphonyElixir.Orchestrator do
       :missing ->
         state
     end
+  end
+
+  @doc false
+  @spec retire_lost_claim_for_test(term(), String.t()) :: term()
+  def retire_lost_claim_for_test(%State{} = state, issue_id) when is_binary(issue_id) do
+    retire_lost_claim(state, issue_id)
   end
 
   @doc false
@@ -1874,8 +1896,21 @@ defmodule SymphonyElixir.Orchestrator do
 
   defp retire_lost_claim(%State{} = state, issue_id) do
     :ok = finalize_distributed_claim(issue_id, :release)
-    %{state | claimed: MapSet.delete(state.claimed, issue_id)}
+    cancel_issue_retry_timer(Map.get(state.retry_attempts, issue_id))
+
+    %{
+      state
+      | claimed: MapSet.delete(state.claimed, issue_id),
+        retry_attempts: Map.delete(state.retry_attempts, issue_id)
+    }
   end
+
+  defp cancel_issue_retry_timer(%{timer_ref: timer_ref}) when is_reference(timer_ref) do
+    Process.cancel_timer(timer_ref)
+    :ok
+  end
+
+  defp cancel_issue_retry_timer(_retry), do: :ok
 
   defp finalize_distributed_claim(issue_id, action) when action in [:release, :complete] do
     result =

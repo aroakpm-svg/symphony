@@ -58,7 +58,20 @@ defmodule SymphonyElixir.ExclusiveRouteClaimApiMigrationTest do
     assert source =~ "created_cluster_roles = @cluster_roles -- existing_cluster_roles"
     assert source =~ "Enum.reverse(created_cluster_roles)"
     assert source =~ "existing_roles(cleanup_admin, existing_cluster_roles)"
+    assert source =~ "pg_advisory_lock"
+    assert source =~ "pg_advisory_unlock"
+    assert source =~ "cluster_lock_connection"
+    assert source =~ "Enum.reject(children, &(&1 == cluster_lock_connection))"
+    assert byte_index(source, "pg_advisory_lock") < byte_index(source, "existing_cluster_roles =")
+    assert byte_index(source, "pg_advisory_unlock") < byte_index(source, "existing_cluster_roles =")
+    assert byte_index(source, "existing_cluster_roles =") < byte_index(source, "Harness.cleanup")
+    refute source =~ "pg_advisory_xact_lock"
     assert source =~ "insufficient_privilege"
     assert source =~ "future/non-uuid"
+  end
+
+  defp byte_index(source, text) do
+    {index, _length} = :binary.match(source, text)
+    index
   end
 end

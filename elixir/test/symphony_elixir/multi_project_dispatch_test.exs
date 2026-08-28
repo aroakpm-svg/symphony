@@ -539,6 +539,58 @@ defmodule SymphonyElixir.MultiProjectDispatchTest do
     end
   end
 
+  test "permanent and unknown preflight blockers release ownership without rescheduling" do
+    blockers = [
+      :project_mapping_missing,
+      :repository_mismatch,
+      :default_branch_mismatch,
+      :required_check_contract_invalid,
+      :required_check_contract_missing,
+      :unknown_preflight_blocker
+    ]
+
+    for blocker <- blockers do
+      {:ok, events} = Agent.start_link(fn -> [] end)
+      candidate = %{issue("#{blocker}-pending", @central_profile, 1) | project_profile: @central_profile}
+      {state, token} = issue_retry_state(candidate, 1)
+
+      opts =
+        dispatch_opts(fn _profile -> {:ok, []} end, %{candidate.id => candidate}, events,
+          project_profiles: @profiles,
+          retry_fetch_fun: fn _issue_id, _metadata -> {:ok, [candidate]} end,
+          profile_refresh_fun: fn _ids -> {:ok, [candidate]} end,
+          preflight_fun: fn _profile -> {:blocked, %{code: blocker}} end,
+          claim_release_fun: fn state_arg, issue_id ->
+            record(events, {:release, issue_id})
+            %{state_arg | claimed: MapSet.delete(state_arg.claimed, issue_id)}
+          end
+        )
+
+      result = Orchestrator.fire_issue_retry_for_test(state, candidate.id, token, opts)
+
+      refute MapSet.member?(result.claimed, candidate.id)
+      refute Map.has_key?(result.retry_attempts, candidate.id)
+      assert {:release, candidate.id} in Agent.get(events, & &1)
+    end
+  end
+
+  test "claim loss retires a pending retry so its stale token cannot fetch or reschedule" do
+    candidate = %{issue("lost-pending", @central_profile, 1) | project_profile: @central_profile}
+    {state, token} = issue_retry_state(candidate, 1)
+
+    retired = Orchestrator.retire_lost_claim_for_test(state, candidate.id)
+
+    refute MapSet.member?(retired.claimed, candidate.id)
+    refute Map.has_key?(retired.retry_attempts, candidate.id)
+
+    assert retired ==
+             Orchestrator.fire_issue_retry_for_test(retired, candidate.id, token,
+               retry_fetch_fun: fn _issue_id, _metadata ->
+                 flunk("stale claim-loss retry fetched and could reschedule")
+               end
+             )
+  end
+
   test "ineligible post-pop outcome releases ownership without rescheduling" do
     {:ok, events} = Agent.start_link(fn -> [] end)
 

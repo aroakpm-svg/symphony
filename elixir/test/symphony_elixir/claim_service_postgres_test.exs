@@ -34,6 +34,30 @@ defmodule SymphonyElixir.ClaimServicePostgresTest do
     {:ok, resource_supervisor} = DynamicSupervisor.start_link(strategy: :one_for_one)
     Process.unlink(resource_supervisor)
     admin_connection = start_connection!(resource_supervisor, @admin_url)
+    cluster_lock_connection = admin_connection
+
+    assert %Postgrex.Result{rows: [[true]]} =
+             Postgrex.query!(
+               cluster_lock_connection,
+               "select pg_advisory_lock(hashtextextended('aro287-prerequisite-roles', 0))",
+               []
+             )
+
+    # ExUnit runs on_exit callbacks in reverse registration order. Register the
+    # lock owner first so every later setup/cleanup failure still unlocks last.
+    on_exit(fn ->
+      try do
+        assert %Postgrex.Result{rows: [[true]]} =
+                 Postgrex.query!(
+                   cluster_lock_connection,
+                   "select pg_advisory_unlock(hashtextextended('aro287-prerequisite-roles', 0))",
+                   []
+                 )
+      after
+        stop_supervisor!(resource_supervisor)
+      end
+    end)
+
     existing_cluster_roles = existing_roles(admin_connection, @cluster_roles)
     created_cluster_roles = @cluster_roles -- existing_cluster_roles
 
@@ -50,7 +74,12 @@ defmodule SymphonyElixir.ClaimServicePostgresTest do
 
     on_exit(fn ->
       children = child_pids(resource_supervisor)
-      state = %{cleanup_state | database_connections: Enum.reject(children, &(&1 == admin_connection))}
+
+      state = %{
+        cleanup_state
+        | database_connections: Enum.reject(children, &(&1 == cluster_lock_connection))
+      }
+
       result = Harness.cleanup(state, cleanup_operations(resource_supervisor))
       cleanup_admin = start_connection!(resource_supervisor, @admin_url)
       query!(cleanup_admin, ~s(drop role if exists "#{future_node_role}"))
@@ -66,8 +95,6 @@ defmodule SymphonyElixir.ClaimServicePostgresTest do
 
       assert Enum.sort(existing_roles(cleanup_admin, existing_cluster_roles)) ==
                Enum.sort(existing_cluster_roles)
-
-      stop_supervisor!(resource_supervisor)
 
       if result != :ok, do: flunk("disposable database cleanup failed: #{inspect(result)}")
     end)
