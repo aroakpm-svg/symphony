@@ -813,6 +813,7 @@ defmodule SymphonyElixir.MultiProjectDispatchTest do
           repository: @central_profile.repository,
           routing_revision: 7
       }
+
       ref = make_ref()
 
       state = %{
