@@ -69,6 +69,17 @@ defmodule SymphonyElixir.TestSupport.ClaimServicePostgresHarness do
     end
   end
 
+  @spec verify_fresh_marker((-> term()), (term(), String.t() -> term()), (term() -> term()), String.t()) :: term()
+  def verify_fresh_marker(start, query, stop, token) do
+    connection = start.()
+
+    try do
+      query.(connection, token)
+    after
+      stop.(connection)
+    end
+  end
+
   @spec cleanup(map(), map()) :: :ok | {:error, keyword()}
   def cleanup(%{created?: false, create_attempted?: false} = state, operations) do
     []

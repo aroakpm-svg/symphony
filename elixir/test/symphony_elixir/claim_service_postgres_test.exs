@@ -238,16 +238,21 @@ defmodule SymphonyElixir.ClaimServicePostgresTest do
   defp cleanup_operations(resource_supervisor) do
     %{
       marker: fn {:fresh, supervisor, url}, token ->
-        connection = start_connection!(supervisor, url)
-
-        case Postgrex.query!(
-               connection,
-               "select run_token from public.aro287_disposable_run_marker",
-               []
-             ) do
-          %Postgrex.Result{rows: [[^token]]} -> :ok
-          _result -> {:error, :marker_mismatch}
-        end
+        Harness.verify_fresh_marker(
+          fn -> start_connection!(supervisor, url) end,
+          fn connection, expected_token ->
+            case Postgrex.query!(
+                   connection,
+                   "select run_token from public.aro287_disposable_run_marker",
+                   []
+                 ) do
+              %Postgrex.Result{rows: [[^expected_token]]} -> :ok
+              _result -> {:error, :marker_mismatch}
+            end
+          end,
+          &stop_connection!/1,
+          token
+        )
       end,
       stop: &stop_connection!/1,
       ensure_admin: fn connection, admin_url ->

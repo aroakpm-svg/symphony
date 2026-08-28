@@ -171,6 +171,39 @@ defmodule SymphonyElixir.ClaimServicePostgresHarnessTest do
     assert Agent.get(events, &Enum.reverse/1) == [{:stop, :claim}, {:stop, :dead_admin}]
   end
 
+  test "fresh marker is stopped after successful verification" do
+    parent = self()
+
+    assert :ok =
+             Harness.verify_fresh_marker(
+               fn -> :marker_pid end,
+               fn :marker_pid, "token" ->
+                 send(parent, :queried)
+                 :ok
+               end,
+               fn :marker_pid -> send(parent, :stopped) end,
+               "token"
+             )
+
+    assert_receive :queried
+    assert_receive :stopped
+  end
+
+  test "fresh marker is stopped when verification raises" do
+    parent = self()
+
+    assert_raise RuntimeError, "query failed", fn ->
+      Harness.verify_fresh_marker(
+        fn -> :marker_pid end,
+        fn :marker_pid, "token" -> raise "query failed" end,
+        fn :marker_pid -> send(parent, :stopped_after_failure) end,
+        "token"
+      )
+    end
+
+    assert_receive :stopped_after_failure
+  end
+
   defp cleanup_state(overrides) do
     token = "0123456789abcdef0123456789abcdef"
 
