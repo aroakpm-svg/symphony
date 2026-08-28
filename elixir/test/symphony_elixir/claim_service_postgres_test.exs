@@ -28,12 +28,42 @@ defmodule SymphonyElixir.ClaimServicePostgresTest do
     database_name = Harness.database_name(token)
     admin_connection = start_connection!(@admin_url)
 
-    query!(admin_connection, ~s(create database "#{database_name}"))
+    {:ok, cleanup_owner} =
+      Agent.start_link(fn ->
+        %{
+          created?: false,
+          admin_url: @admin_url,
+          admin_connection: admin_connection,
+          database_name: database_name,
+          token: token,
+          database_connections: [],
+          marker_connection: nil
+        }
+      end)
+
+    Process.unlink(cleanup_owner)
+
+    on_exit(fn ->
+      state = Agent.get(cleanup_owner, & &1)
+      result = Harness.cleanup(state, cleanup_operations())
+      stop_connection!(cleanup_owner)
+
+      if result != :ok, do: flunk("disposable database cleanup failed: #{inspect(result)}")
+    end)
+
+    Agent.get_and_update(cleanup_owner, fn state ->
+      query!(admin_connection, ~s(create database "#{database_name}"))
+      {:ok, %{state | created?: true}}
+    end)
 
     claim_url = Harness.database_url(admin_uri, database_name, "aro287_claim_transaction")
     update_url = Harness.database_url(admin_uri, database_name, "aro287_route_update")
     claim_connection = start_connection!(claim_url)
+    track_connection(cleanup_owner, claim_connection)
     update_connection = start_connection!(update_url)
+    track_connection(cleanup_owner, update_connection)
+
+    Agent.update(cleanup_owner, &%{&1 | marker_connection: claim_connection})
 
     query!(claim_connection, """
     create table public.aro287_disposable_run_marker (
@@ -41,15 +71,6 @@ defmodule SymphonyElixir.ClaimServicePostgresTest do
     );
     insert into public.aro287_disposable_run_marker (run_token) values ('#{token}');
     """)
-
-    on_exit(fn ->
-      cleanup_disposable_database!(
-        admin_connection,
-        [claim_connection, update_connection],
-        database_name,
-        token
-      )
-    end)
 
     query!(claim_connection, """
     create schema symphony_staging;
@@ -222,23 +243,49 @@ defmodule SymphonyElixir.ClaimServicePostgresTest do
     count
   end
 
-  defp cleanup_disposable_database!(admin_connection, database_connections, database_name, token) do
-    :ok = Harness.validate_cleanup_target(database_name, token)
-    marker_connection = hd(database_connections)
-
-    assert %Postgrex.Result{rows: [[^token]]} =
-             Postgrex.query!(
-               marker_connection,
+  defp cleanup_operations do
+    %{
+      marker: fn connection, token ->
+        case Postgrex.query!(
+               connection,
                "select run_token from public.aro287_disposable_run_marker",
                []
-             )
+             ) do
+          %Postgrex.Result{rows: [[^token]]} -> :ok
+          _result -> {:error, :marker_mismatch}
+        end
+      end,
+      stop: &stop_connection!/1,
+      ensure_admin: &ensure_admin_connection/2,
+      terminate: fn admin, sql, params -> Postgrex.query!(admin, sql, params) end,
+      drop: fn admin, sql -> Postgrex.query!(admin, sql, []) end
+    }
+  end
 
-    Enum.each(database_connections, &stop_connection!/1)
+  defp ensure_admin_connection(connection, admin_url) do
+    if Process.alive?(connection) do
+      try do
+        Postgrex.query!(connection, "select 1", [])
+        {:ok, connection}
+      rescue
+        _exception -> reconnect_admin(connection, admin_url)
+      catch
+        :exit, _reason -> reconnect_admin(connection, admin_url)
+      end
+    else
+      reconnect_admin(connection, admin_url)
+    end
+  end
 
-    {:ok, cleanup} = Harness.cleanup_statements(database_name, token)
-    Postgrex.query!(admin_connection, cleanup.terminate_sql, cleanup.terminate_params)
-    Postgrex.query!(admin_connection, cleanup.drop_sql, [])
-    stop_connection!(admin_connection)
+  defp reconnect_admin(connection, admin_url) do
+    stop_connection!(connection)
+    {:ok, start_connection!(admin_url)}
+  end
+
+  defp track_connection(owner, connection) do
+    Agent.update(owner, fn state ->
+      %{state | database_connections: state.database_connections ++ [connection]}
+    end)
   end
 
   defp start_connection!(url) do

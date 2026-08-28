@@ -58,4 +58,118 @@ defmodule SymphonyElixir.ClaimServicePostgresHarnessTest do
     assert drop_sql == ~s(drop database "#{name}")
     refute terminate_sql =~ name
   end
+
+  test "cleanup after create attempts exact termination and drop with no target connections" do
+    events = start_supervised!({Agent, fn -> [] end})
+    state = cleanup_state(database_connections: [], marker_connection: nil)
+
+    assert :ok = Harness.cleanup(state, cleanup_ops(events))
+
+    assert Agent.get(events, &Enum.reverse/1) == [
+             {:ensure_admin, :dead_admin, state.admin_url},
+             {:terminate, :reconnected_admin, [state.database_name]},
+             {:ensure_admin, :reconnected_admin, state.admin_url},
+             {:drop, :reconnected_admin, ~s(drop database "#{state.database_name}")},
+             {:stop, :reconnected_admin}
+           ]
+  end
+
+  test "dead marker, stop failure, and terminate failure cannot skip exact drop" do
+    events = start_supervised!({Agent, fn -> [] end})
+    state = cleanup_state(database_connections: [:dead_marker, :stop_fails], marker_connection: :dead_marker)
+
+    ops =
+      cleanup_ops(events,
+        marker: fn _connection, _token -> raise "marker connection dead" end,
+        stop: fn
+          :stop_fails -> raise "stop failed"
+          connection -> record(events, {:stop, connection})
+        end,
+        terminate: fn admin, _sql, params ->
+          record(events, {:terminate, admin, params})
+          {:error, :terminate_failed}
+        end
+      )
+
+    assert {:error, errors} = Harness.cleanup(state, ops)
+    assert length(errors) == 3
+
+    assert Agent.get(events, &Enum.reverse/1) == [
+             {:stop, :dead_marker},
+             {:ensure_admin, :dead_admin, state.admin_url},
+             {:terminate, :reconnected_admin, [state.database_name]},
+             {:ensure_admin, :reconnected_admin, state.admin_url},
+             {:drop, :reconnected_admin, ~s(drop database "#{state.database_name}")},
+             {:stop, :reconnected_admin}
+           ]
+  end
+
+  test "admin reconnect failure is reported after all possible independent cleanup steps" do
+    events = start_supervised!({Agent, fn -> [] end})
+    state = cleanup_state(database_connections: [:claim], marker_connection: nil)
+
+    ops =
+      cleanup_ops(events,
+        ensure_admin: fn existing, url ->
+          record(events, {:ensure_admin, existing, url})
+          {:error, :admin_unavailable}
+        end
+      )
+
+    assert {:error, errors} = Harness.cleanup(state, ops)
+    assert errors == [admin_terminate: :admin_unavailable, admin_drop: :admin_unavailable]
+
+    assert Agent.get(events, &Enum.reverse/1) == [
+             {:stop, :claim},
+             {:ensure_admin, :dead_admin, state.admin_url},
+             {:ensure_admin, :dead_admin, state.admin_url}
+           ]
+  end
+
+  test "a readable mismatched marker stops connections but refuses database deletion" do
+    events = start_supervised!({Agent, fn -> [] end})
+    state = cleanup_state(database_connections: [:claim], marker_connection: :claim)
+
+    ops = cleanup_ops(events, marker: fn _connection, _token -> {:error, :marker_mismatch} end)
+
+    assert {:error, [marker: :marker_mismatch]} = Harness.cleanup(state, ops)
+    assert Agent.get(events, &Enum.reverse/1) == [{:stop, :claim}, {:stop, :dead_admin}]
+  end
+
+  defp cleanup_state(overrides) do
+    token = "0123456789abcdef0123456789abcdef"
+
+    Map.merge(
+      %{
+        created?: true,
+        admin_url: "postgresql://postgres@localhost/postgres",
+        admin_connection: :dead_admin,
+        database_name: Harness.database_name(token),
+        token: token,
+        database_connections: [],
+        marker_connection: nil
+      },
+      Map.new(overrides)
+    )
+  end
+
+  defp cleanup_ops(events, overrides \\ []) do
+    defaults = [
+      marker: fn connection, token ->
+        record(events, {:marker, connection, token})
+        :ok
+      end,
+      stop: fn connection -> record(events, {:stop, connection}) end,
+      ensure_admin: fn existing, url ->
+        record(events, {:ensure_admin, existing, url})
+        {:ok, :reconnected_admin}
+      end,
+      terminate: fn admin, _sql, params -> record(events, {:terminate, admin, params}) end,
+      drop: fn admin, sql -> record(events, {:drop, admin, sql}) end
+    ]
+
+    defaults |> Keyword.merge(overrides) |> Map.new()
+  end
+
+  defp record(events, event), do: Agent.update(events, &[event | &1])
 end
