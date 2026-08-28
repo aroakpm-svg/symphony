@@ -755,6 +755,66 @@ defmodule SymphonyElixir.MultiProjectDispatchTest do
     end
   end
 
+  test "post-acquisition dispatch raise and exit release then retry through a fresh claim" do
+    for failure <- [:raise, :exit] do
+      {:ok, events} = Agent.start_link(fn -> [] end)
+      candidate = %{issue("post-claim-#{failure}", @central_profile, 1) | project_profile: @central_profile}
+
+      opts =
+        dispatch_opts(
+          fn profile -> {:ok, if(profile.key == "central-brain", do: [candidate], else: [])} end,
+          %{candidate.id => candidate},
+          events,
+          project_profiles: @profiles,
+          finalize_claim_fun: fn issue_id, action ->
+            record(events, {:finalize, issue_id, action})
+            :ok
+          end,
+          dispatch_fun: fn _state, _issue, _attempt, _recipient, _host, _claim ->
+            if failure == :raise, do: raise("dispatch failed"), else: exit(:dispatch_failed)
+          end
+        )
+
+      failed = Orchestrator.multi_project_dispatch_for_test(base_state(), @profiles, opts)
+
+      assert {:finalize, candidate.id, :release} in Agent.get(events, & &1)
+      assert %{ownership: :unowned_backoff, retry_token: token} = failed.retry_attempts[candidate.id]
+      refute MapSet.member?(failed.claimed, candidate.id)
+
+      recovered_opts =
+        opts
+        |> Keyword.delete(:dispatch_fun)
+        |> Keyword.put(:retry_fetch_fun, fn _id, _metadata -> {:ok, [candidate]} end)
+        |> Keyword.put(:profile_refresh_fun, fn _ids -> {:ok, [candidate]} end)
+        |> Keyword.put(:task_start_fun, fn _fun -> {:ok, self()} end)
+        |> Keyword.put(:bind_worker_fun, fn _id, _pid -> :ok end)
+        |> Keyword.put(:claim_fun, fn _issue, _owner ->
+          record(events, {:fresh_claim, failure})
+          {:ok, %{claim_id: "fresh", generation: 2}}
+        end)
+
+      recovered = Orchestrator.fire_issue_retry_for_test(failed, candidate.id, token, recovered_opts)
+      assert Map.has_key?(recovered.running, candidate.id)
+      assert MapSet.member?(recovered.claimed, candidate.id)
+      assert {:fresh_claim, failure} in Agent.get(events, & &1)
+    end
+  end
+
+  test "pre-claim candidate exception isolates the profile without finalizing an unowned claim" do
+    {:ok, events} = Agent.start_link(fn -> [] end)
+    candidate = issue("preclaim-raise", @central_profile, 1)
+
+    state =
+      run_cycle([candidate], %{candidate.id => candidate}, events,
+        claim_fun: fn _issue, _owner -> raise "claim callback failed before acquisition" end,
+        finalize_claim_fun: fn _issue_id, _action -> flunk("pre-claim failure finalized an unowned claim") end
+      )
+
+    refute MapSet.member?(state.claimed, candidate.id)
+    refute Map.has_key?(state.retry_attempts, candidate.id)
+    assert %{reason: :candidate_failure} = state.profile_retry_attempts["central-brain"]
+  end
+
   test "worker capacity race retains ownership and reschedules the profile retry" do
     candidate = %{issue("capacity-race", @central_profile, 1) | project_profile: @central_profile}
     {state, token} = issue_retry_state(candidate, 1)

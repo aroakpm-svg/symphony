@@ -1516,13 +1516,47 @@ defmodule SymphonyElixir.Orchestrator do
       worker_host ->
         case claim_fun.(issue, recipient) do
           {:ok, distributed_claim} ->
-            dispatch_fun.(state, issue, attempt, recipient, worker_host, distributed_claim)
+            dispatch_acquired_claim(
+              dispatch_fun,
+              state,
+              issue,
+              attempt,
+              recipient,
+              worker_host,
+              distributed_claim,
+              opts
+            )
 
           {:error, reason} ->
             Logger.warning("Skipping dispatch; database claim rejected for #{issue_context(issue)}: #{inspect(reason)}")
             handle_claim_rejection(state, issue, attempt, worker_host, reason, opts)
         end
     end
+  end
+
+  defp dispatch_acquired_claim(dispatch_fun, state, issue, attempt, recipient, worker_host, claim, opts) do
+    dispatch_fun.(state, issue, attempt, recipient, worker_host, claim)
+  rescue
+    exception ->
+      cleanup_acquired_dispatch_failure(state, issue, attempt, worker_host, {:exception, exception}, opts)
+  catch
+    kind, reason ->
+      cleanup_acquired_dispatch_failure(state, issue, attempt, worker_host, {kind, reason}, opts)
+  end
+
+  defp cleanup_acquired_dispatch_failure(state, issue, attempt, worker_host, reason, opts) do
+    finalize_fun = Keyword.get(opts, :finalize_claim_fun, &finalize_distributed_claim/2)
+    :ok = finalize_fun.(issue.id, :release)
+    Logger.error("Dispatch failed after database claim acquisition for #{issue_context(issue)}: #{inspect(reason)}")
+
+    transition_retry_unowned_backoff(
+      state,
+      issue,
+      if(is_integer(attempt), do: attempt + 1, else: nil),
+      "post-claim dispatch failed: #{inspect(reason)}",
+      worker_host,
+      opts
+    )
   end
 
   defp handle_claim_rejection(state, issue, attempt, worker_host, reason, opts) when is_integer(attempt) do
