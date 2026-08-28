@@ -4,7 +4,7 @@
 
 **Goal:** Poll both approved Linear projects in one Symphony runtime and dispatch only refreshed issues exclusively routed to the current node through the unique approved repository profile.
 
-**Architecture:** Keep the single orchestrator, node-wide capacity counter, and ARO-164 claim path. Add profile-scoped Linear reads, a pure aggregation/authorization boundary, and a read-only exclusive-routing check backed by the existing claim connection; pass the approved profile into the existing repository preflight before claim acquisition.
+**Architecture:** Keep the single orchestrator, node-wide capacity counter, and ARO-164 claim path. Add profile-scoped Linear reads, a pure aggregation/authorization boundary, and execute-only `SECURITY DEFINER` snapshot/atomic-exclusive-claim functions because the `NOINHERIT` node login cannot read `routing_assignments`; pass the approved profile into the existing repository preflight before claim acquisition. The minimal migration grants no table access and its wrapper invokes the existing claim function rather than creating another claim authority.
 
 **Tech Stack:** Elixir 1.19, OTP 28, Ecto, Postgrex, Req, ExUnit, Mox-free injected function seams.
 

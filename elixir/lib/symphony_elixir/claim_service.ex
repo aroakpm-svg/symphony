@@ -15,7 +15,7 @@ defmodule SymphonyElixir.ClaimService do
 
   @call_timeout_ms 15_000
 
-  defstruct [:connection, :settings, :timer_ref, :transaction_fun, claims: %{}]
+  defstruct [:connection, :settings, :timer_ref, claims: %{}]
 
   @type claim :: %{
           issue_id: String.t(),
@@ -152,11 +152,6 @@ defmodule SymphonyElixir.ClaimService do
 
       {:error, reason} ->
         {:reply, {:error, reason}, state}
-
-      {:uncertain, reason} ->
-        stop_reason = {:claim_transaction_uncertain, reason}
-        notify_claim_lost(state.claims, stop_reason)
-        {:stop, stop_reason, {:error, :claim_outcome_uncertain}, %{state | claims: %{}}}
     end
   end
 
@@ -303,8 +298,7 @@ defmodule SymphonyElixir.ClaimService do
   defp exclusive_route_query(state, issue) do
     sql = """
     select routing_policy, target_node_id::text, routing_revision
-    from symphony_staging.routing_assignments
-    where issue_id = $1::text::uuid
+    from symphony_staging.exclusive_route_snapshot($1)
     """
 
     state.connection
@@ -354,44 +348,31 @@ defmodule SymphonyElixir.ClaimService do
   end
 
   defp exclusive_claim_query(state, issue, expected_revision) do
-    run_transaction(state, fn transaction_connection ->
-      with :ok <- lock_expected_exclusive_route(state, transaction_connection, issue, expected_revision),
-           {:ok, claim} <- acquire_claim_query(state, transaction_connection, issue) do
-        {:commit, claim}
-      else
-        {:error, reason} -> {:rollback, reason}
-      end
-    end)
-  end
+    params = claim_params(state, issue)
 
-  defp lock_expected_exclusive_route(state, connection, issue, expected_revision) do
     sql = """
-    select routing_policy, target_node_id::text, routing_revision
-    from symphony_staging.routing_assignments
-    where issue_id = $1::text::uuid
-      and routing_policy = 'exclusive'
-      and target_node_id = $2::text::uuid
-      and routing_revision = $3
-    for share
+    select claim_id::text, generation
+    from symphony_staging.claim_exclusive_issue($1, $2, $3::text::uuid, $4::text::uuid, $5, $6, $7::text[], $8, $9)
     """
 
-    case query(connection, sql, [issue.id, state.settings.node_id, expected_revision]) do
-      {:ok, %Postgrex.Result{rows: [["exclusive", node_id, ^expected_revision]], num_rows: 1}}
-      when node_id == state.settings.node_id ->
-        :ok
-
-      {:ok, %Postgrex.Result{}} ->
-        {:error, :routing_changed}
-
-      {:error, _reason} ->
-        {:error, :routing_revalidation_failed}
-    end
+    claim_result(query(state.connection, sql, [issue.id, expected_revision | tl(params)]), issue.id)
   end
 
   defp acquire_claim_query(state, issue), do: acquire_claim_query(state, state.connection, issue)
 
   defp acquire_claim_query(state, connection, issue) do
-    params = [
+    params = claim_params(state, issue)
+
+    sql = """
+    select claim_id::text, generation
+    from symphony_staging.claim_issue($1, $2::text::uuid, $3::text::uuid, $4, $5, $6::text[], $7, $8)
+    """
+
+    claim_result(query(connection, sql, params), issue.id)
+  end
+
+  defp claim_params(state, issue) do
+    [
       issue.id,
       state.settings.node_id,
       state.settings.node_instance_id,
@@ -401,18 +382,18 @@ defmodule SymphonyElixir.ClaimService do
       state.settings.lease_ms,
       state.settings.fallback_grace_ms
     ]
+  end
 
-    sql = """
-    select claim_id::text, generation
-    from symphony_staging.claim_issue($1, $2::text::uuid, $3::text::uuid, $4, $5, $6::text[], $7, $8)
-    """
-
-    case query(connection, sql, params) do
+  defp claim_result(result, issue_id) do
+    case result do
       {:ok, %Postgrex.Result{rows: [[claim_id, generation]]}} ->
-        {:ok, %{issue_id: issue.id, claim_id: claim_id, generation: generation}}
+        {:ok, %{issue_id: issue_id, claim_id: claim_id, generation: generation}}
 
       {:ok, result} ->
         {:error, {:unexpected_claim_result, result.num_rows}}
+
+      {:error, %Postgrex.Error{postgres: %{code: :object_not_in_prerequisite_state}}} ->
+        {:error, :routing_changed}
 
       {:error, reason} ->
         {:error, reason}
@@ -423,35 +404,6 @@ defmodule SymphonyElixir.ClaimService do
     do: connection.(sql, params)
 
   defp query(connection, sql, params), do: Postgrex.query(connection, sql, params)
-
-  defp run_transaction(%{transaction_fun: transaction_fun, connection: connection}, callback)
-       when is_function(transaction_fun, 2),
-       do: transaction_fun.(connection, callback)
-
-  defp run_transaction(%{connection: connection}, callback) do
-    case Postgrex.transaction(
-           connection,
-           fn transaction_connection ->
-             transaction_callback(callback, transaction_connection)
-           end,
-           timeout: @call_timeout_ms
-         ) do
-      {:ok, value} -> {:ok, value}
-      {:error, {:expected, reason}} -> {:error, reason}
-      {:error, _reason} -> {:uncertain, :transaction_failed}
-    end
-  rescue
-    _exception -> {:uncertain, :transaction_failed}
-  catch
-    :exit, _reason -> {:uncertain, :transaction_failed}
-  end
-
-  defp transaction_callback(callback, transaction_connection) do
-    case callback.(transaction_connection) do
-      {:commit, value} -> value
-      {:rollback, reason} -> Postgrex.rollback(transaction_connection, {:expected, reason})
-    end
-  end
 
   defp renew_query(state, claim) do
     sql = "select symphony_staging.renew_claim($1::text::uuid, $2, $3::text::uuid, $4::text::uuid, $5)"

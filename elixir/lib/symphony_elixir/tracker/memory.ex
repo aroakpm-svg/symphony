@@ -25,6 +25,13 @@ defmodule SymphonyElixir.Tracker.Memory do
      end)}
   end
 
+  @spec fetch_issues_by_states(map(), [String.t()]) :: {:ok, [Issue.t()]}
+  def fetch_issues_by_states(profile, state_names) do
+    with {:ok, issues} <- fetch_issues_by_states(state_names) do
+      {:ok, profile_issues(issues, profile)}
+    end
+  end
+
   @spec fetch_routed_issues_by_states([String.t()]) :: {:ok, [Issue.t()]} | {:error, term()}
   def fetch_routed_issues_by_states(state_names), do: fetch_issues_by_states(state_names)
 
@@ -36,6 +43,19 @@ defmodule SymphonyElixir.Tracker.Memory do
      Enum.filter(issue_entries(), fn %Issue{id: id} ->
        MapSet.member?(wanted_ids, id)
      end)}
+  end
+
+  @spec fetch_issue_states_by_ids(map(), [String.t()]) :: {:ok, [Issue.t()]}
+  def fetch_issue_states_by_ids(profile, issue_ids) do
+    with {:ok, issues} <- fetch_issue_states_by_ids(issue_ids) do
+      {:ok, profile_issues(issues, profile)}
+    end
+  end
+
+  defp profile_issues(issues, profile) do
+    issues
+    |> Enum.filter(&(&1.project_id == profile.linear_project_id))
+    |> Enum.map(&%{&1 | project_profile: profile, repository: profile.repository})
   end
 
   @spec create_comment(String.t(), String.t()) :: :ok | {:error, term()}

@@ -11,9 +11,17 @@ pipeline.
 ## Scope boundary
 
 ARO-287 extends the existing polling-to-dispatch path. It does not add another scheduler, queue,
-claim implementation, capacity counter, worker pool, database schema, deployment path, or Production
+claim implementation, capacity counter, worker pool, general database schema, deployment path, or Production
 authority. ARO-164 remains the sole claim and lease authority, and ARO-288 remains the sole node-wide
 capacity contract.
+
+The production node login is `NOINHERIT` and intentionally cannot select from
+`routing_assignments`. A minimal forward migration therefore exposes only a read-only exclusive
+route snapshot and an atomic exclusive-claim wrapper. Both are `SECURITY DEFINER`, authenticate
+`session_user` through the ARO-164 node principal, and are execute-only for runtime and node logins.
+The wrapper locks and validates the text issue ID, exclusive policy, authenticated node, and expected
+routing revision before invoking the existing ARO-164 `claim_issue` in the same transaction. It adds
+no table privilege, generic routing read, second claim authority, or Production object.
 
 ARO-286 owns per-project workspace namespaces, credential resolution, credential isolation, and
 expanded observability. ARO-287 passes the selected approved profile through dispatch and proves the

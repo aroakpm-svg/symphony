@@ -682,6 +682,19 @@ defmodule SymphonyElixir.CoreTest do
              AgentRunner.continue_with_issue_for_test(issue, fetcher)
   end
 
+  test "multi-project active continuation returns to orchestrator without legacy state fetch" do
+    issue = %Issue{
+      id: "profile-continuation",
+      identifier: "ARO-287",
+      state: "In Progress",
+      project_profile: %{key: "central-brain"}
+    }
+
+    fetcher = fn _ids -> flunk("multi-project continuation must not use the legacy fetch") end
+
+    assert {:done, ^issue} = AgentRunner.continue_with_issue_for_test(issue, fetcher)
+  end
+
   test "normal worker exit schedules active-state continuation retry" do
     issue_id = "issue-resume"
     ref = make_ref()
@@ -700,7 +713,12 @@ defmodule SymphonyElixir.CoreTest do
       pid: self(),
       ref: ref,
       identifier: "MT-558",
-      issue: %Issue{id: issue_id, identifier: "MT-558", state: "In Progress"},
+      issue: %Issue{
+        id: issue_id,
+        identifier: "MT-558",
+        state: "In Progress",
+        project_profile: %{key: "central-brain"}
+      },
       started_at: DateTime.utc_now()
     }
 
@@ -719,6 +737,7 @@ defmodule SymphonyElixir.CoreTest do
     refute Map.has_key?(state.running, issue_id)
     assert MapSet.member?(state.completed, issue_id)
     assert %{attempt: 1, due_at_ms: due_at_ms} = state.retry_attempts[issue_id]
+    assert state.retry_attempts[issue_id].project_profile.key == "central-brain"
     assert is_integer(due_at_ms)
     assert_due_after(due_at_ms, scheduled_from_ms, 900, 1_100)
   end
@@ -813,7 +832,12 @@ defmodule SymphonyElixir.CoreTest do
       ref: ref,
       identifier: "MT-559",
       retry_attempt: 2,
-      issue: %Issue{id: issue_id, identifier: "MT-559", state: "In Progress"},
+      issue: %Issue{
+        id: issue_id,
+        identifier: "MT-559",
+        state: "In Progress",
+        project_profile: %{key: "project-management"}
+      },
       started_at: DateTime.utc_now()
     }
 
@@ -832,7 +856,43 @@ defmodule SymphonyElixir.CoreTest do
     assert %{attempt: 3, due_at_ms: due_at_ms, identifier: "MT-559", error: "agent exited: :boom"} =
              state.retry_attempts[issue_id]
 
+    assert state.retry_attempts[issue_id].project_profile.key == "project-management"
+
     assert_due_after(due_at_ms, scheduled_from_ms, 39_500, 40_500)
+  end
+
+  test "startup terminal cleanup isolates profile failures and cleans every successful profile" do
+    profiles = [%{key: "central-brain"}, %{key: "project-management"}]
+    parent = self()
+
+    fetcher = fn
+      %{key: "central-brain"}, _states ->
+        {:error, :linear_unavailable}
+
+      %{key: "project-management"}, _states ->
+        {:ok,
+         [
+           %Issue{identifier: "PM-1"},
+           %Issue{identifier: "PM-fails"},
+           %Issue{identifier: "PM-2"}
+         ]}
+    end
+
+    cleanup_fun = fn
+      "PM-fails" -> raise "cleanup unavailable"
+      identifier -> send(parent, {:cleaned, identifier})
+    end
+
+    assert :ok =
+             Orchestrator.terminal_cleanup_for_test(
+               profiles,
+               ["Done"],
+               fetcher,
+               cleanup_fun
+             )
+
+    assert_receive {:cleaned, "PM-1"}
+    assert_receive {:cleaned, "PM-2"}
   end
 
   test "first abnormal worker exit waits before retrying" do

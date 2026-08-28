@@ -291,7 +291,8 @@ defmodule SymphonyElixir.Orchestrator do
         issue_url: running_entry.issue.url,
         delay_type: :continuation,
         worker_host: Map.get(running_entry, :worker_host),
-        workspace_path: Map.get(running_entry, :workspace_path)
+        workspace_path: Map.get(running_entry, :workspace_path),
+        project_profile: running_entry.issue.project_profile
       })
     end
   end
@@ -322,7 +323,8 @@ defmodule SymphonyElixir.Orchestrator do
       issue_url: running_entry.issue.url,
       error: "agent exited: #{inspect(reason)}",
       worker_host: Map.get(running_entry, :worker_host),
-      workspace_path: Map.get(running_entry, :workspace_path)
+      workspace_path: Map.get(running_entry, :workspace_path),
+      project_profile: running_entry.issue.project_profile
     })
   end
 
@@ -561,7 +563,13 @@ defmodule SymphonyElixir.Orchestrator do
 
   defp dispatch_authorized_multi_project_candidate(state, issue, opts) do
     if should_dispatch_issue?(issue, state, active_state_set(), terminal_state_set()) do
-      do_dispatch_issue(state, issue, nil, nil, opts)
+      do_dispatch_issue(
+        state,
+        issue,
+        Keyword.get(opts, :issue_retry_attempt),
+        Keyword.get(opts, :preferred_worker_host),
+        opts
+      )
     else
       state
     end
@@ -781,6 +789,13 @@ defmodule SymphonyElixir.Orchestrator do
   @spec select_worker_host_for_test(term(), String.t() | nil) :: String.t() | nil | :no_worker_capacity
   def select_worker_host_for_test(%State{} = state, preferred_worker_host) do
     select_worker_host(state, preferred_worker_host)
+  end
+
+  @doc false
+  @spec terminal_cleanup_for_test([map()], [String.t()], (map(), [String.t()] -> term()), (String.t() -> term())) :: :ok
+  def terminal_cleanup_for_test(profiles, states, fetcher, cleanup_fun)
+      when is_list(profiles) and is_function(fetcher, 2) and is_function(cleanup_fun, 1) do
+    cleanup_terminal_profiles(profiles, states, fetcher, cleanup_fun)
   end
 
   @doc false
@@ -1478,6 +1493,7 @@ defmodule SymphonyElixir.Orchestrator do
     error = pick_retry_error(previous_retry, metadata)
     worker_host = pick_retry_worker_host(previous_retry, metadata)
     workspace_path = pick_retry_workspace_path(previous_retry, metadata)
+    project_profile = Map.get(metadata, :project_profile) || Map.get(previous_retry, :project_profile)
 
     if is_reference(old_timer) do
       Process.cancel_timer(old_timer)
@@ -1501,7 +1517,8 @@ defmodule SymphonyElixir.Orchestrator do
             issue_url: issue_url,
             error: error,
             worker_host: worker_host,
-            workspace_path: workspace_path
+            workspace_path: workspace_path,
+            project_profile: project_profile
           })
     }
   end
@@ -1514,7 +1531,8 @@ defmodule SymphonyElixir.Orchestrator do
           issue_url: Map.get(retry_entry, :issue_url),
           error: Map.get(retry_entry, :error),
           worker_host: Map.get(retry_entry, :worker_host),
-          workspace_path: Map.get(retry_entry, :workspace_path)
+          workspace_path: Map.get(retry_entry, :workspace_path),
+          project_profile: Map.get(retry_entry, :project_profile)
         }
 
         {:ok, attempt, metadata, %{state | retry_attempts: Map.delete(state.retry_attempts, issue_id)}}
@@ -1525,7 +1543,7 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   defp handle_retry_issue(%State{} = state, issue_id, attempt, metadata) do
-    case Tracker.fetch_candidate_issues() do
+    case retry_issue_fetch(issue_id, metadata) do
       {:ok, issues} ->
         issues
         |> find_issue_by_id(issue_id)
@@ -1541,6 +1559,24 @@ defmodule SymphonyElixir.Orchestrator do
            attempt + 1,
            Map.merge(metadata, %{error: "retry poll failed: #{inspect(reason)}"})
          )}
+    end
+  end
+
+  defp retry_issue_fetch(issue_id, %{project_profile: %{key: key}}) do
+    with {:ok, profiles} <- current_project_profiles_result(),
+         {:ok, profile} <- ProjectProfiles.fetch(profiles, key) do
+      Tracker.fetch_issue_states_by_ids(profile, [issue_id])
+    else
+      _ -> {:error, :approved_project_profile_unavailable}
+    end
+  end
+
+  defp retry_issue_fetch(_issue_id, _metadata), do: Tracker.fetch_candidate_issues()
+
+  defp current_project_profiles_result do
+    case Config.settings() do
+      {:ok, settings} -> {:ok, settings.project_profiles}
+      error -> error
     end
   end
 
@@ -1584,20 +1620,66 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   defp run_terminal_workspace_cleanup do
-    case Tracker.fetch_issues_by_states(Config.settings!().tracker.terminal_states) do
+    settings = Config.settings!()
+
+    case settings.project_profiles do
+      %{profiles: profiles} when map_size(profiles) > 0 ->
+        cleanup_terminal_profiles(
+          ProjectProfiles.list(settings.project_profiles),
+          settings.tracker.terminal_states,
+          &Tracker.fetch_issues_by_states/2,
+          &cleanup_issue_workspace/1
+        )
+
+      _legacy ->
+        cleanup_terminal_fetch(Tracker.fetch_issues_by_states(settings.tracker.terminal_states), nil)
+    end
+  end
+
+  defp cleanup_terminal_profiles(profiles, terminal_states, fetcher, cleanup_fun) do
+    Enum.each(profiles, &cleanup_terminal_profile(&1, terminal_states, fetcher, cleanup_fun))
+  end
+
+  defp cleanup_terminal_profile(profile, terminal_states, fetcher, cleanup_fun) do
+    result =
+      try do
+        fetcher.(profile, terminal_states)
+      rescue
+        exception -> {:error, Exception.message(exception)}
+      catch
+        kind, reason -> {:error, {kind, reason}}
+      end
+
+    cleanup_terminal_fetch(result, profile.key, cleanup_fun)
+  end
+
+  defp cleanup_terminal_fetch(result, profile_key, cleanup_fun \\ &cleanup_issue_workspace/1) do
+    case result do
       {:ok, issues} ->
         issues
         |> Enum.each(fn
           %Issue{identifier: identifier} when is_binary(identifier) ->
-            cleanup_issue_workspace(identifier)
+            safely_cleanup_terminal_workspace(cleanup_fun, identifier, profile_key)
 
           _ ->
             :ok
         end)
 
       {:error, reason} ->
-        Logger.warning("Skipping startup terminal workspace cleanup; failed to fetch terminal issues: #{inspect(reason)}")
+        Logger.warning("Skipping startup terminal workspace cleanup profile=#{profile_key || "legacy"}; failed to fetch terminal issues: #{inspect(reason)}")
     end
+  end
+
+  defp safely_cleanup_terminal_workspace(cleanup_fun, identifier, profile_key) do
+    cleanup_fun.(identifier)
+  rescue
+    exception ->
+      Logger.warning("Skipping failed terminal workspace cleanup profile=#{profile_key || "legacy"} issue_identifier=#{identifier}: #{Exception.message(exception)}")
+      :ok
+  catch
+    kind, reason ->
+      Logger.warning("Skipping failed terminal workspace cleanup profile=#{profile_key || "legacy"} issue_identifier=#{identifier}: #{inspect({kind, reason})}")
+      :ok
   end
 
   defp notify_dashboard do
@@ -1605,6 +1687,25 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   defp handle_active_retry(state, issue, attempt, metadata) do
+    if is_map(metadata[:project_profile]) do
+      profile = issue.project_profile
+
+      {:noreply,
+       dispatch_multi_project_candidate(
+         state,
+         issue,
+         current_project_profiles(),
+         profile_retry_attempt: attempt,
+         issue_retry_attempt: attempt,
+         preferred_worker_host: metadata[:worker_host],
+         refresh_fun: fn ids -> Tracker.fetch_issue_states_by_ids(profile, ids) end
+       )}
+    else
+      handle_legacy_active_retry(state, issue, attempt, metadata)
+    end
+  end
+
+  defp handle_legacy_active_retry(state, issue, attempt, metadata) do
     if retry_candidate_issue?(issue, terminal_state_set()) and
          dispatch_slots_available?(issue, state) and
          worker_slots_available?(state, metadata[:worker_host]) do

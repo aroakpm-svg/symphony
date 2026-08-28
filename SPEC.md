@@ -923,7 +923,11 @@ Tick sequence:
 6. Require shared routing to be `exclusive` for the authenticated current node.
 7. Run the selected approved repository's read-only preflight.
 8. Check the existing node-wide capacity, acquire the existing ARO-164 claim, and launch through the
-   existing worker dispatch path. These steps do not add a scheduler, queue, or claim path.
+   existing worker dispatch path. Multi-project dispatch obtains its routing receipt through a
+   minimal execute-only `SECURITY DEFINER` snapshot API and submits it to an atomic exclusive-claim
+   wrapper. Node logins receive no routing table privilege, issue IDs remain text, and the wrapper
+   reuses ARO-164 `claim_issue` as the sole claim authority. These steps do not add a scheduler,
+   queue, or claim path.
 9. Notify observability/status consumers of state changes.
 
 If per-tick validation fails, dispatch is skipped for that tick, but reconciliation still happens

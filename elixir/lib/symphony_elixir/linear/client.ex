@@ -196,17 +196,26 @@ defmodule SymphonyElixir.Linear.Client do
 
   @spec fetch_issues_by_states([String.t()]) :: {:ok, [Issue.t()]} | {:error, term()}
   def fetch_issues_by_states(state_names) when is_list(state_names) do
-    fetch_issues_by_states(state_names, nil)
+    fetch_legacy_issues_by_states(state_names, nil)
+  end
+
+  @spec fetch_issues_by_states(map(), [String.t()]) :: {:ok, [Issue.t()]} | {:error, term()}
+  def fetch_issues_by_states(%{linear_project_id: project_id} = profile, state_names)
+      when is_binary(project_id) and is_list(state_names) do
+    with {:ok, assignee_filter} <- routing_assignee_filter(),
+         {:ok, issues} <- do_fetch_by_project_id(project_id, state_names, assignee_filter) do
+      {:ok, Enum.map(issues, &attach_profile(&1, profile))}
+    end
   end
 
   @spec fetch_routed_issues_by_states([String.t()]) :: {:ok, [Issue.t()]} | {:error, term()}
   def fetch_routed_issues_by_states(state_names) when is_list(state_names) do
     with {:ok, assignee_filter} <- routing_assignee_filter() do
-      fetch_issues_by_states(state_names, assignee_filter)
+      fetch_legacy_issues_by_states(state_names, assignee_filter)
     end
   end
 
-  defp fetch_issues_by_states(state_names, assignee_filter) do
+  defp fetch_legacy_issues_by_states(state_names, assignee_filter) do
     normalized_states = Enum.map(state_names, &to_string/1) |> Enum.uniq()
 
     if normalized_states == [] do
@@ -241,6 +250,21 @@ defmodule SymphonyElixir.Linear.Client do
           do_fetch_issue_states(ids, assignee_filter)
         end
     end
+  end
+
+  @spec fetch_issue_states_by_ids(map(), [String.t()]) :: {:ok, [Issue.t()]} | {:error, term()}
+  def fetch_issue_states_by_ids(%{linear_project_id: project_id} = profile, issue_ids)
+      when is_binary(project_id) and is_list(issue_ids) do
+    with {:ok, issues} <- fetch_issue_states_by_ids(issue_ids) do
+      {:ok,
+       issues
+       |> Enum.filter(&(&1.project_id == project_id))
+       |> Enum.map(&attach_profile(&1, profile))}
+    end
+  end
+
+  defp attach_profile(%Issue{} = issue, profile) do
+    %{issue | project_profile: profile, repository: profile.repository}
   end
 
   @spec graphql(String.t(), map(), keyword()) :: {:ok, map()} | {:error, term()}

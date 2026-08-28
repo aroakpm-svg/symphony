@@ -12,7 +12,7 @@ defmodule SymphonyElixir.ClaimServicePostgresTest do
              System.get_env("ARO287_ALLOW_DESTRUCTIVE_DB_TEST") == "1"
   @node_id "00000000-0000-4000-8000-000000000287"
   @node_instance_id "00000000-0000-4000-8000-000000001287"
-  @issue_id "00000000-0000-4000-8000-000000002287"
+  @issue_id "ARO-287/non-uuid"
 
   @moduletag skip:
                if(@enabled,
@@ -26,6 +26,7 @@ defmodule SymphonyElixir.ClaimServicePostgresTest do
     {:ok, admin_uri} = Harness.validate_admin_url(@admin_url)
     token = Harness.random_token()
     database_name = Harness.database_name(token)
+    node_role = "aro287_node_#{token}"
     {:ok, resource_supervisor} = DynamicSupervisor.start_link(strategy: :one_for_one)
     Process.unlink(resource_supervisor)
     admin_connection = start_connection!(resource_supervisor, @admin_url)
@@ -45,12 +46,15 @@ defmodule SymphonyElixir.ClaimServicePostgresTest do
       children = child_pids(resource_supervisor)
       state = %{cleanup_state | database_connections: Enum.reject(children, &(&1 == admin_connection))}
       result = Harness.cleanup(state, cleanup_operations(resource_supervisor))
+      Postgrex.query(admin_connection, ~s(drop role if exists "#{node_role}"), [])
       stop_supervisor!(resource_supervisor)
 
       if result != :ok, do: flunk("disposable database cleanup failed: #{inspect(result)}")
     end)
 
     query!(admin_connection, ~s(create database "#{database_name}"))
+    query!(admin_connection, ~s(create role "#{node_role}" noinherit login password '#{token}'))
+    query!(admin_connection, ~s(grant connect on database "#{database_name}" to "#{node_role}"))
 
     claim_url = Harness.database_url(admin_uri, database_name, "aro287_claim_transaction")
     update_url = Harness.database_url(admin_uri, database_name, "aro287_route_update")
@@ -68,14 +72,14 @@ defmodule SymphonyElixir.ClaimServicePostgresTest do
     create schema symphony_staging;
 
     create table symphony_staging.routing_assignments (
-      issue_id uuid primary key,
+      issue_id text primary key,
       routing_policy text not null,
       target_node_id uuid,
       routing_revision bigint not null
     );
 
     create table symphony_staging.issue_claims (
-      issue_id uuid primary key,
+      issue_id text primary key,
       claim_id uuid not null,
       generation bigint not null
     );
@@ -98,20 +102,82 @@ defmodule SymphonyElixir.ClaimServicePostgresTest do
       return query
       insert into symphony_staging.issue_claims (issue_id, claim_id, generation)
       values (
-        requested_issue_id::uuid,
+        requested_issue_id,
         '00000000-0000-4000-8000-000000003287'::uuid,
         1
       )
       returning issue_claims.claim_id, issue_claims.generation;
     end
     $$;
+
+    create table symphony_staging.nodes (
+      node_id uuid primary key,
+      status text not null
+    );
+    create table symphony_staging.node_login_principals (
+      node_id uuid not null,
+      login_role name not null,
+      revoked_at timestamptz
+    );
+    insert into symphony_staging.nodes values ('#{@node_id}', 'active');
+    insert into symphony_staging.node_login_principals values ('#{@node_id}', '#{node_role}', null);
+
+    create function symphony_staging.exclusive_route_snapshot(requested_issue_id text)
+    returns table (routing_policy text, target_node_id uuid, routing_revision bigint)
+    language sql stable security definer set search_path = pg_catalog, pg_temp
+    as $$
+      select assignments.routing_policy, assignments.target_node_id, assignments.routing_revision
+      from symphony_staging.routing_assignments assignments
+      join symphony_staging.node_login_principals principals
+        on principals.node_id = assignments.target_node_id
+       and principals.login_role = session_user
+       and principals.revoked_at is null
+      where assignments.issue_id = requested_issue_id
+        and assignments.routing_policy = 'exclusive'
+    $$;
+
+    create function symphony_staging.claim_exclusive_issue(
+      requested_issue_id text, expected_routing_revision bigint, requested_node_id uuid,
+      requested_node_instance_id uuid, requested_linear_updated_at timestamptz,
+      requested_issue_state text, requested_active_states text[], requested_lease_ms integer,
+      requested_fallback_grace_ms integer
+    ) returns table (claim_id uuid, generation bigint)
+    language plpgsql security definer set search_path = pg_catalog, pg_temp
+    as $$
+    begin
+      perform 1 from symphony_staging.routing_assignments assignments
+      join symphony_staging.node_login_principals principals
+        on principals.node_id = requested_node_id
+       and principals.login_role = session_user
+       and principals.revoked_at is null
+      where assignments.issue_id = requested_issue_id
+        and assignments.routing_policy = 'exclusive'
+        and assignments.target_node_id = requested_node_id
+        and assignments.routing_revision = expected_routing_revision
+      for share of assignments;
+      if not found then raise exception using errcode = '55000', message = 'routing changed'; end if;
+      return query select * from symphony_staging.claim_issue(
+        requested_issue_id, requested_node_id, requested_node_instance_id,
+        requested_linear_updated_at, requested_issue_state, requested_active_states,
+        requested_lease_ms, requested_fallback_grace_ms
+      );
+    end
+    $$;
+    grant usage on schema symphony_staging to "#{node_role}";
+    grant execute on function symphony_staging.exclusive_route_snapshot(text),
+      symphony_staging.claim_exclusive_issue(text, bigint, uuid, uuid, timestamptz, text, text[], integer, integer)
+      to "#{node_role}";
     """)
 
-    {:ok, claim_connection: claim_connection, update_connection: update_connection, database_name: database_name}
+    node_uri = %{admin_uri | userinfo: "#{node_role}:#{token}"}
+    node_url = Harness.database_url(node_uri, database_name, "aro287_node_claim")
+    node_connection = start_connection!(resource_supervisor, node_url)
+
+    {:ok, claim_connection: node_connection, update_connection: update_connection, database_name: database_name}
   end
 
   test "routing update waits until exclusive validation and claim acquisition commit", context do
-    insert_route(context.claim_connection, "exclusive", @node_id, 7)
+    insert_route(context.update_connection, "exclusive", @node_id, 7)
     state = claim_state(context.claim_connection)
 
     claim_task =
@@ -128,7 +194,7 @@ defmodule SymphonyElixir.ClaimServicePostgresTest do
           """
           update symphony_staging.routing_assignments
           set routing_policy = 'unassigned', target_node_id = null, routing_revision = 8
-          where issue_id = $1::uuid
+          where issue_id = $1
           """,
           [@issue_id]
         )
@@ -138,7 +204,7 @@ defmodule SymphonyElixir.ClaimServicePostgresTest do
     assert {:reply, {:ok, %{claim_id: claim_id}}, _state} = Task.await(claim_task, 2_000)
     assert is_binary(claim_id)
     assert %Postgrex.Result{num_rows: 1} = Task.await(update_task, 2_000)
-    assert claim_count(context.claim_connection) == 1
+    assert claim_count(context.update_connection) == 1
   end
 
   test "stale revision, policy, and node are rejected without creating a claim", context do
@@ -150,8 +216,8 @@ defmodule SymphonyElixir.ClaimServicePostgresTest do
     ]
 
     for {policy, node_id, revision} <- cases do
-      query!(context.claim_connection, "delete from symphony_staging.routing_assignments")
-      insert_route(context.claim_connection, policy, node_id, revision)
+      query!(context.update_connection, "delete from symphony_staging.routing_assignments")
+      insert_route(context.update_connection, policy, node_id, revision)
 
       assert {:reply, {:error, :routing_changed}, _state} =
                ClaimService.handle_call(
@@ -160,7 +226,7 @@ defmodule SymphonyElixir.ClaimServicePostgresTest do
                  claim_state(context.claim_connection)
                )
 
-      assert claim_count(context.claim_connection) == 0
+      assert claim_count(context.update_connection) == 0
     end
   end
 
@@ -191,7 +257,7 @@ defmodule SymphonyElixir.ClaimServicePostgresTest do
       """
       insert into symphony_staging.routing_assignments (
         issue_id, routing_policy, target_node_id, routing_revision
-      ) values ($1::uuid, $2, $3::uuid, $4)
+      ) values ($1, $2, $3::uuid, $4)
       """,
       [@issue_id, policy, node_id, revision]
     )
@@ -212,7 +278,7 @@ defmodule SymphonyElixir.ClaimServicePostgresTest do
           from pg_stat_activity
           where application_name = 'aro287_claim_transaction'
             and state = 'active'
-            and query like '%symphony_staging.claim_issue%'
+            and query like '%symphony_staging.claim_exclusive_issue%'
         )
         """,
         []

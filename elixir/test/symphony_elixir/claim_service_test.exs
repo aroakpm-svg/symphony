@@ -27,8 +27,7 @@ defmodule SymphonyElixir.ClaimServiceTest do
 
     assert {:error, :routing_lookup_failed} = route_with_query(query)
     assert_receive {:routing_query, sql, ["issue-1"]}
-    assert sql =~ "from symphony_staging.routing_assignments"
-    assert sql =~ "where issue_id = $1::text::uuid"
+    assert sql =~ "from symphony_staging.exclusive_route_snapshot($1)"
     assert String.trim_leading(sql) =~ ~r/^select\b/i
     refute sql =~ ~r/\b(insert|update|delete|call)\b/i
 
@@ -38,84 +37,36 @@ defmodule SymphonyElixir.ClaimServiceTest do
     refute inspect(result) =~ "database.internal"
   end
 
-  test "multi-project claim locks and revalidates the exclusive routing receipt before acquisition" do
+  test "multi-project claim passes the exclusive routing receipt to the atomic database API" do
     parent = self()
 
     query = fn sql, params ->
       send(parent, {:query, String.trim(sql), params})
 
       cond do
-        sql =~ "routing_assignments" ->
-          {:ok, %Postgrex.Result{rows: [["exclusive", @current_node_id, 7]], num_rows: 1}}
-
-        sql =~ "claim_issue" ->
+        sql =~ "claim_exclusive_issue" ->
           {:ok, %Postgrex.Result{rows: [["claim-1", 1]], num_rows: 1}}
       end
     end
 
-    assert {:ok, claim} = claim_with_query(query, 7, transaction_seam(parent))
+    assert {:ok, claim} = claim_with_query(query, 7, nil)
     assert claim.claim_id == "claim-1"
-    assert_receive :transaction_checked_out
-    assert_receive {:query, route_sql, ["issue-1", @current_node_id, 7]}
-    assert route_sql =~ "for share"
-    assert_receive {:query, claim_sql, _params}
-    assert claim_sql =~ "claim_issue"
+    assert_receive {:query, claim_sql, ["issue-1", 7 | _params]}
+    assert claim_sql =~ "claim_exclusive_issue"
   end
 
-  test "multi-project claim rejects a changed routing revision, policy, or node before acquisition" do
-    cases = [
-      {"exclusive", @current_node_id, 8},
-      {"unassigned", nil, 7},
-      {"preferred-with-fallback", @current_node_id, 7},
-      {"exclusive", @other_node_id, 7}
-    ]
+  test "multi-project claim exposes an atomic API rejection without a second application query" do
+    parent = self()
 
-    for {policy, target_node_id, revision} <- cases do
-      parent = self()
-
-      query = fn sql, params ->
-        send(parent, {:query, String.trim(sql), params})
-
-        cond do
-          sql =~ "routing_assignments" ->
-            {:ok, %Postgrex.Result{rows: [[policy, target_node_id, revision]], num_rows: 1}}
-
-          sql =~ "claim_issue" ->
-            flunk("stale routing must be rejected before claim acquisition")
-        end
-      end
-
-      assert {:error, :routing_changed} = claim_with_query(query, 7, transaction_seam(parent))
-      assert_receive :transaction_checked_out
-      assert_receive {:query, _route_sql, ["issue-1", @current_node_id, 7]}
-    end
-  end
-
-  test "uncertain transaction outcome stops the claim service and discards local claim state" do
-    owner = self()
-    existing_claim = %{owner: owner, worker: nil, lease_deadline_ms: 1}
-    transaction = fn _connection, _callback -> {:uncertain, :commit_connection_lost} end
-
-    query = fn _sql, _params ->
-      flunk("uncertain transaction must own query execution")
+    query = fn sql, params ->
+      send(parent, {:query, String.trim(sql), params})
+      {:error, %Postgrex.Error{postgres: %{code: :object_not_in_prerequisite_state}}}
     end
 
-    state = claim_state(query, transaction)
-    state = %{state | claims: %{"existing" => existing_claim}}
-
-    assert {
-             :stop,
-             {:claim_transaction_uncertain, :commit_connection_lost},
-             {:error, :claim_outcome_uncertain},
-             %{claims: %{}}
-           } =
-             ClaimService.handle_call(
-               {:claim, claim_issue(7), self()},
-               self(),
-               state
-             )
-
-    assert_receive {:claim_lost, "existing", {:claim_transaction_uncertain, :commit_connection_lost}}
+    assert {:error, :routing_changed} = claim_with_query(query, 7, nil)
+    assert_receive {:query, claim_sql, ["issue-1", 7 | _params]}
+    assert claim_sql =~ "claim_exclusive_issue"
+    refute_receive {:query, _other_sql, _other_params}
   end
 
   test "legacy claim without a routing receipt retains the existing claim acquisition behavior" do
@@ -135,7 +86,8 @@ defmodule SymphonyElixir.ClaimServiceTest do
   test "database calls bind textual UUIDs through text before UUID casts" do
     source = File.read!(Path.expand("../../lib/symphony_elixir/claim_service.ex", __DIR__))
 
-    assert length(Regex.scan(~r/::text::uuid/, source)) == 14
+    refute source =~ "exclusive_route_snapshot($1::text::uuid)"
+    refute source =~ "claim_exclusive_issue($1::text::uuid"
     refute source =~ "DateTime.to_iso8601(updated_at)"
   end
 
@@ -333,7 +285,7 @@ defmodule SymphonyElixir.ClaimServiceTest do
     }
   end
 
-  defp claim_state(query, transaction) do
+  defp claim_state(query, _transaction) do
     settings = %{
       node_id: @current_node_id,
       node_instance_id: "00000000-0000-4000-8000-000000000003",
@@ -341,17 +293,6 @@ defmodule SymphonyElixir.ClaimServiceTest do
       fallback_grace_ms: 30_000
     }
 
-    %ClaimService{connection: query, settings: settings, transaction_fun: transaction}
-  end
-
-  defp transaction_seam(parent) do
-    fn connection, callback ->
-      send(parent, :transaction_checked_out)
-
-      case callback.(connection) do
-        {:commit, value} -> {:ok, value}
-        {:rollback, reason} -> {:error, reason}
-      end
-    end
+    %ClaimService{connection: query, settings: settings}
   end
 end
