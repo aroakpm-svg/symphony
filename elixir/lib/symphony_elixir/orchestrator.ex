@@ -864,7 +864,8 @@ defmodule SymphonyElixir.Orchestrator do
           term()
   def handle_retry_issue_lookup_for_test(%Issue{} = issue, %State{} = state, issue_id, attempt, metadata)
       when is_binary(issue_id) and is_integer(attempt) and attempt >= 0 and is_map(metadata) do
-    {:noreply, updated_state} = handle_retry_issue_lookup(issue, state, issue_id, attempt, metadata, [])
+    opts = [issue_retry_attempt: attempt, retry_metadata: metadata]
+    {:noreply, updated_state} = handle_retry_issue_lookup(issue, state, issue_id, attempt, metadata, opts)
     updated_state
   end
 
