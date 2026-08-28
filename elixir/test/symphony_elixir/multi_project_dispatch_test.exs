@@ -574,6 +574,33 @@ defmodule SymphonyElixir.MultiProjectDispatchTest do
     end
   end
 
+  test "every ProjectRepoPreflight blocker code has an explicit retry classification" do
+    source = File.read!(Path.expand("../../lib/symphony_elixir/project_repo_preflight.ex", __DIR__))
+
+    producer_codes =
+      ~r/blocked\(:(\w+)/
+      |> Regex.scan(source, capture: :all_but_first)
+      |> List.flatten()
+      |> Enum.map(&String.to_existing_atom/1)
+      |> MapSet.new()
+
+    classified_codes =
+      producer_codes
+      |> Enum.map(&{&1, Orchestrator.preflight_blocker_classification_for_test(&1)})
+      |> Map.new()
+
+    assert MapSet.size(producer_codes) == 9
+    refute :unclassified in Map.values(classified_codes)
+
+    assert MapSet.new(for {code, :transient} <- classified_codes, do: code) ==
+             MapSet.new([
+               :repository_unavailable,
+               :repository_metadata_invalid,
+               :default_branch_unresolvable,
+               :required_check_contract_unreadable
+             ])
+  end
+
   test "claim loss retires a pending retry so its stale token cannot fetch or reschedule" do
     candidate = %{issue("lost-pending", @central_profile, 1) | project_profile: @central_profile}
     {state, token} = issue_retry_state(candidate, 1)

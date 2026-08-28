@@ -30,7 +30,12 @@ defmodule SymphonyElixir.Orchestrator do
     required_check_contract_invalid
     required_check_contract_missing
   )a
-  @transient_preflight_blockers ~w(repository_unavailable)a
+  @transient_preflight_blockers ~w(
+    repository_unavailable
+    repository_metadata_invalid
+    default_branch_unresolvable
+    required_check_contract_unreadable
+  )a
 
   @continuation_retry_delay_ms 1_000
   @failure_retry_base_ms 10_000
@@ -573,9 +578,16 @@ defmodule SymphonyElixir.Orchestrator do
     end
   end
 
-  defp preflight_blocker_disposition(code) when code in @transient_preflight_blockers, do: :transient
-  defp preflight_blocker_disposition(code) when code in @permanent_preflight_blockers, do: :permanent
-  defp preflight_blocker_disposition(_unknown), do: :permanent
+  defp preflight_blocker_disposition(code) do
+    case preflight_blocker_classification(code) do
+      :unclassified -> :permanent
+      classification -> classification
+    end
+  end
+
+  defp preflight_blocker_classification(code) when code in @transient_preflight_blockers, do: :transient
+  defp preflight_blocker_classification(code) when code in @permanent_preflight_blockers, do: :permanent
+  defp preflight_blocker_classification(_unknown), do: :unclassified
 
   defp dispatch_authorized_multi_project_candidate(state, issue, opts) do
     if dispatch_authorized_issue?(issue, state, opts) do
@@ -868,6 +880,12 @@ defmodule SymphonyElixir.Orchestrator do
       :missing ->
         state
     end
+  end
+
+  @doc false
+  @spec preflight_blocker_classification_for_test(atom()) :: :permanent | :transient | :unclassified
+  def preflight_blocker_classification_for_test(code) when is_atom(code) do
+    preflight_blocker_classification(code)
   end
 
   @doc false
