@@ -92,6 +92,26 @@ defmodule SymphonyElixir.MultiProjectDispatchTest do
     assert Map.has_key?(state.running, "later-eligible")
   end
 
+  for stage <- [:refresh, :route, :preflight, :claim], failure <- [:raise, :throw, :exit] do
+    test "isolates #{failure} from the first candidate's #{stage} callback" do
+      stage = unquote(stage)
+      failure = unquote(failure)
+      {:ok, events} = Agent.start_link(fn -> [] end)
+      first = issue("first-#{stage}-#{failure}", @central_profile, 1)
+      later = issue("later-#{stage}-#{failure}", @project_management_profile, 2)
+      refreshed_by_id = %{first.id => first, later.id => later}
+
+      overrides = callback_failure_overrides(stage, failure, first, refreshed_by_id, events)
+      state = run_cycle([first, later], refreshed_by_id, events, overrides)
+
+      assert for({:dispatch, id, _repository} <- Agent.get(events, & &1), do: id) == [later.id]
+      assert Map.has_key?(state.running, later.id)
+
+      assert %{attempt: 1, reason: :candidate_failure} =
+               state.profile_retry_attempts["central-brain"]
+    end
+  end
+
   test "one profile timeout schedules only that profile for retry and dispatches the other" do
     {:ok, events} = Agent.start_link(fn -> [] end)
     later = issue("pm-after-central-timeout", @project_management_profile, 1)
@@ -406,6 +426,56 @@ defmodule SymphonyElixir.MultiProjectDispatchTest do
 
     Keyword.merge(defaults, overrides)
   end
+
+  defp callback_failure_overrides(:refresh, failure, first, refreshed_by_id, events) do
+    [
+      refresh_fun: fn issue_ids ->
+        record(events, {:refresh, issue_ids})
+
+        if issue_ids == [first.id],
+          do: fail_callback(failure),
+          else: {:ok, Enum.map(issue_ids, &Map.fetch!(refreshed_by_id, &1))}
+      end
+    ]
+  end
+
+  defp callback_failure_overrides(:route, failure, first, _refreshed_by_id, events) do
+    [
+      route_reader: fn issue ->
+        record(events, {:route, issue.id})
+        if issue.id == first.id, do: fail_callback(failure), else: {:ok, %{routing_revision: 7}}
+      end
+    ]
+  end
+
+  defp callback_failure_overrides(:preflight, failure, first, _refreshed_by_id, events) do
+    [
+      preflight_fun: fn profile ->
+        record(events, {:preflight, profile.key})
+
+        if profile.linear_project_id == first.project_id,
+          do: fail_callback(failure),
+          else: {:ok, %{repository: profile.repository}}
+      end
+    ]
+  end
+
+  defp callback_failure_overrides(:claim, failure, first, _refreshed_by_id, events) do
+    [
+      claim_fun: fn issue, owner ->
+        assert owner == self()
+        record(events, {:claim, issue.id})
+
+        if issue.id == first.id,
+          do: fail_callback(failure),
+          else: {:ok, %{claim_id: "claim-#{issue.id}", generation: 1}}
+      end
+    ]
+  end
+
+  defp fail_callback(:raise), do: raise("candidate callback failure")
+  defp fail_callback(:throw), do: throw(:candidate_callback_failure)
+  defp fail_callback(:exit), do: exit(:candidate_callback_failure)
 
   defp base_state do
     %Orchestrator.State{

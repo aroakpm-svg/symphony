@@ -375,22 +375,31 @@ The observability UI now runs on a minimal Phoenix stack:
 - Phoenix dependency static assets for the LiveView client bootstrap
 - Tracker issue identifiers link to the tracker-provided URL when it uses `http` or `https`
 
-## Project-Management repository preflight
+## Approved project repository preflight
 
-`SymphonyElixir.ProjectRepoPreflight` contains the approved, read-only
-`project-management` mapping. It verifies GitHub CLI read authentication, the
-repository identity, the `main` default branch and head, and the repository's
-`typecheck`, `build`, and `db:test` quality-script contract.
+`SymphonyElixir.ProjectRepoPreflight.check/1` accepts one complete profile map from the validated
+`project_profiles` contract. It verifies GitHub CLI read authentication, repository identity, the
+`main` default branch and exact head, and the approved quality-script contract. The supported
+profiles are:
+
+- `aroakpm-svg/aroak-central-brain`: `typecheck`, `build`, and `test`
+- `aroakpm-svg/aroak-project-management`: `typecheck`, `build`, and `db:test`
 
 Run the dry check without starting a worker:
 
 ```elixir
-SymphonyElixir.ProjectRepoPreflight.check("project-management")
+settings = SymphonyElixir.Config.settings!()
+
+settings.project_profiles
+|> SymphonyElixir.ProjectProfiles.list()
+|> Enum.map(&SymphonyElixir.ProjectRepoPreflight.check/1)
 ```
 
-The result is either `{:ok, receipt}` or `{:blocked, reason}` with one minimal
-human next step. This readiness check does not add Project-Management polling,
-dispatch, credentials, deployment authority, or automatic pickup permission.
+Each result is either `{:ok, receipt}` or `{:blocked, reason}` with one minimal human next step.
+Preflight is a necessary dispatch gate, but success is readiness evidence rather than authorization:
+it does not independently enable polling, dispatch, credentials, deployment authority, or automatic
+pickup permission. Credential resolution and per-project workspace isolation remain out of scope
+here and remain ARO-286 work.
 
 ## Approved multi-project profile contract
 

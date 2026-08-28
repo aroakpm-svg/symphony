@@ -56,6 +56,7 @@ defmodule SymphonyElixir.MultiProjectPoll do
         {candidates ++ profile_candidates, Map.put(outcomes, profile.key, outcome)}
       end)
 
+    candidates = Enum.uniq_by(candidates, &{&1.project_profile.key, &1.id})
     ambiguous_issue_ids = ambiguous_issue_ids(candidates)
 
     %{
@@ -79,13 +80,12 @@ defmodule SymphonyElixir.MultiProjectPoll do
 
   defp ambiguous_issue_ids(candidates) do
     candidates
-    |> Enum.frequencies_by(& &1.id)
+    |> Enum.group_by(& &1.id, & &1.project_profile.key)
     |> Enum.reduce(MapSet.new(), fn
-      {issue_id, count}, ambiguous_issue_ids when count > 1 ->
-        MapSet.put(ambiguous_issue_ids, issue_id)
-
-      _entry, ambiguous_issue_ids ->
-        ambiguous_issue_ids
+      {issue_id, profile_keys}, ambiguous_issue_ids ->
+        if profile_keys |> Enum.uniq() |> length() > 1,
+          do: MapSet.put(ambiguous_issue_ids, issue_id),
+          else: ambiguous_issue_ids
     end)
   end
 

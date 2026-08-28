@@ -36,16 +36,19 @@ help with the setup:
 
 #### Project repository readiness boundary
 
-Before a project repository can be considered for worker pickup, Symphony may run an explicitly
-approved, read-only repository preflight. The current Project-Management mapping is bound to
-`aroakpm-svg/aroak-project-management` on `github.com`; the preflight verifies the repository
-identity, `main` default branch and exact head, and required quality-script contract. Missing,
-unreadable, mismatched, or malformed evidence fails closed with a human next step.
+Before dispatching a multi-project candidate, Symphony runs an explicitly approved, read-only
+repository preflight using that candidate's validated profile map. The two approved mappings are
+`aroakpm-svg/aroak-central-brain` (`typecheck`, `build`, and `test`) and
+`aroakpm-svg/aroak-project-management` (`typecheck`, `build`, and `db:test`), both on `github.com`
+with canonical branch `main`. The preflight verifies repository identity, default branch and exact
+head, and the profile's required quality-script contract. Missing, unreadable, mismatched, or
+malformed evidence fails closed with a human next step.
 
-Passing this check proves repository readiness only. It does not enable project polling, dispatch,
-credentials, deployment authority, or automatic issue pickup. See the
-[Elixir preflight documentation](elixir/README.md#project-management-repository-preflight) for the
-implementation and dry-check command.
+The preflight is a required dispatch gate, but passing it does not itself authorize polling,
+dispatch, credentials, deployment, or automatic issue pickup; the other profile, routing, capacity,
+and claim gates still apply. See the
+[Elixir preflight documentation](elixir/README.md#approved-project-repository-preflight) for the
+profile-map API and dry-check example.
 
 Symphony also accepts an optional, versioned `project_profiles` contract for the complete approved
 Central-Brain and Project-Management mapping. The contract is validated as one unit against the
@@ -55,7 +58,8 @@ orchestrator polls every enabled approved profile independently and dispatches o
 whose unique approved profile, exclusive current-node route, and repository preflight all pass.
 One project's polling failure neither substitutes another project's identity nor stops healthy
 projects from progressing. Without `project_profiles`, the existing single-project tracker path is
-preserved. Credential resolution and per-project workspace isolation remain ARO-286 work.
+preserved. Credential resolution and per-project workspace isolation remain out of scope here and
+remain ARO-286 work.
 
 #### Distributed claim safety
 

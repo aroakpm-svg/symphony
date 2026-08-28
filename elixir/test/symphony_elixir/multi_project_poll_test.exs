@@ -80,6 +80,27 @@ defmodule SymphonyElixir.MultiProjectPollTest do
     assert ambiguous_issue_ids == MapSet.new(["duplicate"])
   end
 
+  test "deduplicates a repeated UUID from one profile without marking it ambiguous" do
+    profiles = [profile("central-brain"), profile("project-management")]
+
+    fetcher = fn
+      %{key: "central-brain"} ->
+        {:ok, [issue("repeated", "central-id"), issue("repeated", "central-id")]}
+
+      %{key: "project-management"} ->
+        {:ok, []}
+    end
+
+    assert %{candidates: candidates, ambiguous_issue_ids: ambiguous_issue_ids} =
+             MultiProjectPoll.fetch(profiles, fetcher)
+
+    assert Enum.map(candidates, &{&1.id, &1.project_profile.key}) == [
+             {"repeated", "central-brain"}
+           ]
+
+    assert ambiguous_issue_ids == MapSet.new()
+  end
+
   test "classifies fetch failures without retaining secret error contents" do
     profiles = [profile("central-brain"), profile("project-management")]
 
