@@ -40,7 +40,7 @@ defmodule SymphonyElixir.ProjectRepoPreflight do
   end
 
   defp mapping_from_profile(%{} = profile) do
-    with true <- MapSet.new(Map.keys(profile)) == @profile_fields,
+    with true <- MapSet.equal?(MapSet.new(Map.keys(profile)), @profile_fields),
          %{key: key, repository: repository, canonical_branch: canonical_branch} <- profile,
          true <- Enum.all?([key, repository, canonical_branch], &is_binary/1),
          {:ok, required_scripts} <- Map.fetch(@required_scripts_by_profile, key) do

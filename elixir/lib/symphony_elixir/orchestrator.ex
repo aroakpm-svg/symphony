@@ -374,9 +374,6 @@ defmodule SymphonyElixir.Orchestrator do
       {:error, reason} ->
         Logger.error("Failed to fetch from Linear: #{inspect(reason)}")
         state
-
-      false ->
-        state
     end
   end
 
