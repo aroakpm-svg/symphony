@@ -300,14 +300,7 @@ defmodule SymphonyElixir.Orchestrator do
 
       state
       |> complete_issue(issue_id)
-      |> schedule_issue_retry(issue_id, 1, %{
-        identifier: running_entry.identifier,
-        issue_url: running_entry.issue.url,
-        delay_type: :continuation,
-        worker_host: Map.get(running_entry, :worker_host),
-        workspace_path: Map.get(running_entry, :workspace_path),
-        project_profile: running_entry.issue.project_profile
-      })
+      |> schedule_issue_retry(issue_id, 1, running_retry_metadata(running_entry, %{delay_type: :continuation}))
     end
   end
 
@@ -332,14 +325,27 @@ defmodule SymphonyElixir.Orchestrator do
 
     next_attempt = next_retry_attempt_from_running(running_entry)
 
-    schedule_issue_retry(state, issue_id, next_attempt, %{
-      identifier: running_entry.identifier,
-      issue_url: running_entry.issue.url,
-      error: "agent exited: #{inspect(reason)}",
-      worker_host: Map.get(running_entry, :worker_host),
-      workspace_path: Map.get(running_entry, :workspace_path),
-      project_profile: running_entry.issue.project_profile
-    })
+    schedule_issue_retry(
+      state,
+      issue_id,
+      next_attempt,
+      running_retry_metadata(running_entry, %{
+        error: "agent exited: #{inspect(reason)}"
+      })
+    )
+  end
+
+  defp running_retry_metadata(running_entry, extra) do
+    Map.merge(
+      %{
+        identifier: running_entry.identifier,
+        issue_url: running_entry.issue.url,
+        worker_host: Map.get(running_entry, :worker_host),
+        workspace_path: Map.get(running_entry, :workspace_path),
+        project_profile: running_entry.issue.project_profile
+      },
+      extra
+    )
   end
 
   defp maybe_dispatch(%State{} = state, opts \\ []) do
@@ -888,6 +894,10 @@ defmodule SymphonyElixir.Orchestrator do
   def retry_issue_fetch_for_test(issue_id, metadata) when is_binary(issue_id) and is_map(metadata) do
     retry_issue_fetch(issue_id, metadata)
   end
+
+  @doc false
+  @spec approved_profile_result_for_test(term(), String.t()) :: {:ok, map()} | {:error, atom()}
+  def approved_profile_result_for_test(profiles, key) when is_binary(key), do: approved_profile_result(profiles, key)
 
   @doc false
   @spec preflight_blocker_classification_for_test(atom()) :: :permanent | :transient | :unclassified
@@ -1476,6 +1486,7 @@ defmodule SymphonyElixir.Orchestrator do
   defp do_dispatch_issue(%State{} = state, issue, attempt, preferred_worker_host, opts \\ []) do
     recipient = self()
     claim_fun = Keyword.get(opts, :claim_fun, &ClaimService.claim/2)
+    worker_host_selector = Keyword.get(opts, :worker_host_selector, &select_worker_host/2)
 
     dispatch_fun =
       Keyword.get(opts, :dispatch_fun) ||
@@ -1483,10 +1494,10 @@ defmodule SymphonyElixir.Orchestrator do
           spawn_issue_on_worker_host(state, issue, attempt, recipient, worker_host, distributed_claim, opts)
         end
 
-    case select_worker_host(state, preferred_worker_host) do
+    case worker_host_selector.(state, preferred_worker_host) do
       :no_worker_capacity ->
         Logger.debug("No SSH worker slots available for #{issue_context(issue)} preferred_worker_host=#{inspect(preferred_worker_host)}")
-        state
+        transition_retry_retained(state, issue, :worker_capacity_race, opts)
 
       worker_host ->
         case claim_fun.(issue, recipient) do
@@ -1501,17 +1512,12 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   defp handle_claim_rejection(state, issue, attempt, worker_host, reason, opts) when is_integer(attempt) do
-    state
-    |> release_issue_claim(issue.id)
-    |> schedule_issue_retry(
-      issue.id,
-      attempt + 1,
-      dispatch_failure_retry_metadata(issue, worker_host, "database claim rejected: #{inspect(reason)}", opts)
-    )
+    Logger.info("Returning rejected retry claim to ordinary authorization: #{issue_context(issue)} attempt=#{attempt} worker_host=#{inspect(worker_host)} reason=#{inspect(reason)}")
+    transition_retry_unowned(state, issue.id, opts)
   end
 
   defp handle_claim_rejection(state, issue, _attempt, _worker_host, _reason, _opts) do
-    release_issue_claim(state, issue.id)
+    transition_retry_unowned(state, issue.id, [])
   end
 
   defp spawn_issue_on_worker_host(%State{} = state, issue, attempt, recipient, worker_host, distributed_claim, opts) do
@@ -1571,6 +1577,15 @@ defmodule SymphonyElixir.Orchestrator do
       worker_host: worker_host,
       project_profile: issue.project_profile || retry_metadata[:project_profile]
     })
+  end
+
+  defp transition_retry_retained(state, issue, reason, opts) do
+    transition_retry_transient(state, issue, reason, opts)
+  end
+
+  defp transition_retry_unowned(state, issue_id, opts) do
+    release_fun = Keyword.get(opts, :claim_release_fun, &release_issue_claim/2)
+    release_fun.(state, issue_id)
   end
 
   defp track_spawned_issue(state, issue, attempt, worker_host, distributed_claim, pid) do
@@ -1740,9 +1755,9 @@ defmodule SymphonyElixir.Orchestrator do
         {:error, :approved_project_profiles_removed}
 
       {:ok, profiles} ->
-        case ProjectProfiles.fetch(profiles, key) do
+        case approved_profile_result(profiles, key) do
           {:ok, profile} -> Tracker.fetch_issue_states_by_ids(profile, [issue_id])
-          :error -> {:error, :approved_project_profile_unavailable}
+          {:error, reason} -> {:error, reason}
         end
 
       {:error, reason} ->
@@ -1751,6 +1766,15 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   defp retry_issue_fetch(_issue_id, _metadata), do: Tracker.fetch_candidate_issues()
+
+  defp approved_profile_result(nil, _key), do: {:error, :approved_project_profiles_removed}
+
+  defp approved_profile_result(profiles, key) do
+    case ProjectProfiles.fetch(profiles, key) do
+      {:ok, profile} -> {:ok, profile}
+      :error -> {:error, :approved_project_profiles_removed}
+    end
+  end
 
   defp current_project_profiles_result do
     case Config.settings() do

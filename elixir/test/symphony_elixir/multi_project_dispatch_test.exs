@@ -619,7 +619,7 @@ defmodule SymphonyElixir.MultiProjectDispatchTest do
   end
 
   test "authorized retry failure schedulers preserve the approved profile context" do
-    for failure <- [:claim, :spawn, :bind] do
+    for failure <- [:spawn, :bind] do
       {:ok, events} = Agent.start_link(fn -> [] end)
       candidate = %{issue("#{failure}-context", @central_profile, 1) | project_profile: @central_profile}
       {state, token} = issue_retry_state(candidate, 1)
@@ -630,9 +630,7 @@ defmodule SymphonyElixir.MultiProjectDispatchTest do
           retry_fetch_fun: fn _id, _metadata -> {:ok, [candidate]} end,
           profile_refresh_fun: fn _ids -> {:ok, [candidate]} end,
           dispatch_fun: nil,
-          claim_fun: fn _issue, _owner ->
-            if failure == :claim, do: {:error, :claim_timeout}, else: {:ok, %{claim_id: "claim", generation: 1}}
-          end,
+          claim_fun: fn _issue, _owner -> {:ok, %{claim_id: "claim", generation: 1}} end,
           task_start_fun: fn _fun -> if failure == :spawn, do: {:error, :spawn_failed}, else: {:ok, self()} end,
           bind_worker_fun: fn _issue_id, _pid -> if failure == :bind, do: {:error, :bind_failed}, else: :ok end,
           terminate_task_fun: fn _pid -> :ok end,
@@ -662,6 +660,63 @@ defmodule SymphonyElixir.MultiProjectDispatchTest do
     end
   end
 
+  test "claim rejection ends owned retry and ordinary poll can freshly authorize and claim" do
+    {:ok, events} = Agent.start_link(fn -> [] end)
+    candidate = %{issue("claim-reacquire", @central_profile, 1) | project_profile: @central_profile}
+    {state, token} = issue_retry_state(candidate, 1)
+
+    rejected_opts =
+      dispatch_opts(fn _profile -> {:ok, []} end, %{candidate.id => candidate}, events,
+        project_profiles: @profiles,
+        retry_fetch_fun: fn _id, _metadata -> {:ok, [candidate]} end,
+        profile_refresh_fun: fn _ids -> {:ok, [candidate]} end,
+        claim_fun: fn _issue, _owner -> {:error, :claim_timeout} end,
+        claim_release_fun: fn state_arg, issue_id ->
+          record(events, {:release, issue_id})
+          %{state_arg | claimed: MapSet.delete(state_arg.claimed, issue_id)}
+        end
+      )
+
+    rejected = Orchestrator.fire_issue_retry_for_test(state, candidate.id, token, rejected_opts)
+    refute MapSet.member?(rejected.claimed, candidate.id)
+    refute Map.has_key?(rejected.retry_attempts, candidate.id)
+
+    recovered =
+      Orchestrator.multi_project_dispatch_for_test(
+        rejected,
+        @profiles,
+        dispatch_opts(
+          fn profile -> {:ok, if(profile.key == "central-brain", do: [candidate], else: [])} end,
+          %{candidate.id => candidate},
+          events,
+          []
+        )
+      )
+
+    assert Map.has_key?(recovered.running, candidate.id)
+    assert {:release, candidate.id} in Agent.get(events, & &1)
+    assert Enum.count(Agent.get(events, & &1), &match?({:claim, "claim-reacquire"}, &1)) == 1
+  end
+
+  test "worker capacity race retains ownership and reschedules the profile retry" do
+    candidate = %{issue("capacity-race", @central_profile, 1) | project_profile: @central_profile}
+    {state, token} = issue_retry_state(candidate, 1)
+    {:ok, events} = Agent.start_link(fn -> [] end)
+
+    opts =
+      dispatch_opts(fn _profile -> {:ok, []} end, %{candidate.id => candidate}, events,
+        project_profiles: @profiles,
+        retry_fetch_fun: fn _id, _metadata -> {:ok, [candidate]} end,
+        profile_refresh_fun: fn _ids -> {:ok, [candidate]} end,
+        worker_host_selector: fn _state, _preferred -> :no_worker_capacity end,
+        claim_fun: fn _issue, _owner -> flunk("capacity race must not claim") end
+      )
+
+    result = Orchestrator.fire_issue_retry_for_test(state, candidate.id, token, opts)
+    assert MapSet.member?(result.claimed, candidate.id)
+    assert %{attempt: 2, project_profile: %{key: "central-brain"}} = result.retry_attempts[candidate.id]
+  end
+
   test "removing multi-project mode releases a pending retry instead of renewing it" do
     candidate = %{issue("profiles-removed", @central_profile, 1) | project_profile: @central_profile}
     {state, token} = issue_retry_state(candidate, 1)
@@ -672,6 +727,12 @@ defmodule SymphonyElixir.MultiProjectDispatchTest do
 
     assert {:error, :approved_project_profiles_removed} =
              Orchestrator.retry_issue_fetch_for_test(candidate.id, %{project_profile: @central_profile})
+
+    assert {:error, :approved_project_profiles_removed} =
+             Orchestrator.approved_profile_result_for_test(
+               %{version: 1, profiles: %{"project-management" => @project_management_profile}},
+               "central-brain"
+             )
 
     opts = [
       retry_fetch_fun: fn _id, _metadata -> {:error, :approved_project_profiles_removed} end,
