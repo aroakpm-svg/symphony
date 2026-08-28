@@ -884,6 +884,12 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   @doc false
+  @spec retry_issue_fetch_for_test(String.t(), map()) :: term()
+  def retry_issue_fetch_for_test(issue_id, metadata) when is_binary(issue_id) and is_map(metadata) do
+    retry_issue_fetch(issue_id, metadata)
+  end
+
+  @doc false
   @spec preflight_blocker_classification_for_test(atom()) :: :permanent | :transient | :unclassified
   def preflight_blocker_classification_for_test(code) when is_atom(code) do
     preflight_blocker_classification(code)
@@ -931,7 +937,7 @@ defmodule SymphonyElixir.Orchestrator do
   @doc false
   @spec handle_claim_rejection_for_test(term(), Issue.t(), term()) :: term()
   def handle_claim_rejection_for_test(%State{} = state, %Issue{} = issue, attempt) do
-    handle_claim_rejection(state, issue, attempt, nil, :claim_timeout)
+    handle_claim_rejection(state, issue, attempt, nil, :claim_timeout, [])
   end
 
   defp reconcile_running_issue_states([], state, _active_states, _terminal_states), do: state
@@ -1470,7 +1476,12 @@ defmodule SymphonyElixir.Orchestrator do
   defp do_dispatch_issue(%State{} = state, issue, attempt, preferred_worker_host, opts \\ []) do
     recipient = self()
     claim_fun = Keyword.get(opts, :claim_fun, &ClaimService.claim/2)
-    dispatch_fun = Keyword.get(opts, :dispatch_fun, &spawn_issue_on_worker_host/6)
+
+    dispatch_fun =
+      Keyword.get(opts, :dispatch_fun) ||
+        fn state, issue, attempt, recipient, worker_host, distributed_claim ->
+          spawn_issue_on_worker_host(state, issue, attempt, recipient, worker_host, distributed_claim, opts)
+        end
 
     case select_worker_host(state, preferred_worker_host) do
       :no_worker_capacity ->
@@ -1484,64 +1495,82 @@ defmodule SymphonyElixir.Orchestrator do
 
           {:error, reason} ->
             Logger.warning("Skipping dispatch; database claim rejected for #{issue_context(issue)}: #{inspect(reason)}")
-            handle_claim_rejection(state, issue, attempt, worker_host, reason)
+            handle_claim_rejection(state, issue, attempt, worker_host, reason, opts)
         end
     end
   end
 
-  defp handle_claim_rejection(state, issue, attempt, worker_host, reason) when is_integer(attempt) do
+  defp handle_claim_rejection(state, issue, attempt, worker_host, reason, opts) when is_integer(attempt) do
     state
     |> release_issue_claim(issue.id)
-    |> schedule_issue_retry(issue.id, attempt + 1, %{
-      identifier: issue.identifier,
-      issue_url: issue.url,
-      error: "database claim rejected: #{inspect(reason)}",
-      worker_host: worker_host
-    })
+    |> schedule_issue_retry(
+      issue.id,
+      attempt + 1,
+      dispatch_failure_retry_metadata(issue, worker_host, "database claim rejected: #{inspect(reason)}", opts)
+    )
   end
 
-  defp handle_claim_rejection(state, issue, _attempt, _worker_host, _reason) do
+  defp handle_claim_rejection(state, issue, _attempt, _worker_host, _reason, _opts) do
     release_issue_claim(state, issue.id)
   end
 
-  defp spawn_issue_on_worker_host(%State{} = state, issue, attempt, recipient, worker_host, distributed_claim) do
-    case Task.Supervisor.start_child(SymphonyElixir.TaskSupervisor, fn ->
-           AgentRunner.run(issue, recipient,
-             attempt: attempt,
-             worker_host: worker_host,
-             distributed_claim: distributed_claim
-           )
-         end) do
+  defp spawn_issue_on_worker_host(%State{} = state, issue, attempt, recipient, worker_host, distributed_claim, opts) do
+    start_fun = Keyword.get(opts, :task_start_fun, &Task.Supervisor.start_child(SymphonyElixir.TaskSupervisor, &1))
+    bind_fun = Keyword.get(opts, :bind_worker_fun, &ClaimService.bind_worker/2)
+    terminate_fun = Keyword.get(opts, :terminate_task_fun, &terminate_task/1)
+    finalize_fun = Keyword.get(opts, :finalize_claim_fun, &finalize_distributed_claim/2)
+
+    task_fun = fn ->
+      AgentRunner.run(issue, recipient,
+        attempt: attempt,
+        worker_host: worker_host,
+        distributed_claim: distributed_claim
+      )
+    end
+
+    case start_fun.(task_fun) do
       {:ok, pid} ->
-        case ClaimService.bind_worker(issue.id, pid) do
+        case bind_fun.(issue.id, pid) do
           :ok ->
             track_spawned_issue(state, issue, attempt, worker_host, distributed_claim, pid)
 
           {:error, reason} ->
-            terminate_task(pid)
-            :ok = finalize_distributed_claim(issue.id, :release)
+            terminate_fun.(pid)
+            :ok = finalize_fun.(issue.id, :release)
             Logger.error("Unable to bind database claim to agent for #{issue_context(issue)}: #{inspect(reason)}")
 
-            schedule_issue_retry(state, issue.id, normalize_retry_attempt(attempt) + 1, %{
-              identifier: issue.identifier,
-              issue_url: issue.url,
-              error: "failed to bind database claim: #{inspect(reason)}",
-              worker_host: worker_host
-            })
+            schedule_issue_retry(
+              state,
+              issue.id,
+              normalize_retry_attempt(attempt) + 1,
+              dispatch_failure_retry_metadata(issue, worker_host, "failed to bind database claim: #{inspect(reason)}", opts)
+            )
         end
 
       {:error, reason} ->
-        :ok = finalize_distributed_claim(issue.id, :release)
+        :ok = finalize_fun.(issue.id, :release)
         Logger.error("Unable to spawn agent for #{issue_context(issue)}: #{inspect(reason)}")
         next_attempt = if is_integer(attempt), do: attempt + 1, else: nil
 
-        schedule_issue_retry(state, issue.id, next_attempt, %{
-          identifier: issue.identifier,
-          issue_url: issue.url,
-          error: "failed to spawn agent: #{inspect(reason)}",
-          worker_host: worker_host
-        })
+        schedule_issue_retry(
+          state,
+          issue.id,
+          next_attempt,
+          dispatch_failure_retry_metadata(issue, worker_host, "failed to spawn agent: #{inspect(reason)}", opts)
+        )
     end
+  end
+
+  defp dispatch_failure_retry_metadata(issue, worker_host, error, opts) do
+    retry_metadata = Keyword.get(opts, :retry_metadata, %{})
+
+    Map.merge(retry_metadata, %{
+      identifier: issue.identifier,
+      issue_url: issue.url,
+      error: error,
+      worker_host: worker_host,
+      project_profile: issue.project_profile || retry_metadata[:project_profile]
+    })
   end
 
   defp track_spawned_issue(state, issue, attempt, worker_host, distributed_claim, pid) do
@@ -1684,13 +1713,17 @@ defmodule SymphonyElixir.Orchestrator do
       {:error, reason} ->
         Logger.warning("Retry poll failed for issue_id=#{issue_id} issue_identifier=#{metadata[:identifier] || issue_id}: #{inspect(reason)}")
 
-        {:noreply,
-         schedule_issue_retry(
-           state,
-           issue_id,
-           attempt + 1,
-           Map.merge(metadata, %{error: "retry poll failed: #{inspect(reason)}"})
-         )}
+        if reason == :approved_project_profiles_removed do
+          {:noreply, transition_retry_release_id(state, issue_id, opts)}
+        else
+          {:noreply,
+           schedule_issue_retry(
+             state,
+             issue_id,
+             attempt + 1,
+             Map.merge(metadata, %{error: "retry poll failed: #{inspect(reason)}"})
+           )}
+        end
     end
   end
 
@@ -1702,11 +1735,18 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   defp retry_issue_fetch(issue_id, %{project_profile: %{key: key}}) do
-    with {:ok, profiles} <- current_project_profiles_result(),
-         {:ok, profile} <- ProjectProfiles.fetch(profiles, key) do
-      Tracker.fetch_issue_states_by_ids(profile, [issue_id])
-    else
-      _ -> {:error, :approved_project_profile_unavailable}
+    case current_project_profiles_result() do
+      {:ok, nil} ->
+        {:error, :approved_project_profiles_removed}
+
+      {:ok, profiles} ->
+        case ProjectProfiles.fetch(profiles, key) do
+          {:ok, profile} -> Tracker.fetch_issue_states_by_ids(profile, [issue_id])
+          :error -> {:error, :approved_project_profile_unavailable}
+        end
+
+      {:error, reason} ->
+        {:error, {:approved_project_profiles_read_failed, reason}}
     end
   end
 

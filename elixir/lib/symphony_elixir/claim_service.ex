@@ -313,17 +313,18 @@ defmodule SymphonyElixir.ClaimService do
 
   defp exclusive_route_result(
          {:ok, %Postgrex.Result{rows: [["exclusive", node_id, routing_revision]], num_rows: 1}},
-         node_id
+         current_node_id
        )
-       when is_integer(routing_revision) and routing_revision > 0,
-       do: {:ok, %{routing_revision: routing_revision}}
-
-  defp exclusive_route_result(
-         {:ok, %Postgrex.Result{rows: [["exclusive", _node_id, routing_revision]], num_rows: 1}},
-         _current_node_id
-       )
-       when is_integer(routing_revision) and routing_revision > 0,
-       do: {:ineligible, :wrong_node}
+       when is_integer(routing_revision) and routing_revision > 0 do
+    with {:ok, normalized_node_id} <- Ecto.UUID.cast(node_id),
+         {:ok, normalized_current_node_id} <- Ecto.UUID.cast(current_node_id) do
+      if normalized_node_id == normalized_current_node_id,
+        do: {:ok, %{routing_revision: routing_revision}},
+        else: {:ineligible, :wrong_node}
+    else
+      :error -> {:error, :routing_lookup_failed}
+    end
+  end
 
   defp exclusive_route_result(
          {:ok, %Postgrex.Result{rows: [[policy, _node_id, _routing_revision]], num_rows: 1}},

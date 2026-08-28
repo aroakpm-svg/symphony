@@ -618,6 +618,76 @@ defmodule SymphonyElixir.MultiProjectDispatchTest do
              )
   end
 
+  test "authorized retry failure schedulers preserve the approved profile context" do
+    for failure <- [:claim, :spawn, :bind] do
+      {:ok, events} = Agent.start_link(fn -> [] end)
+      candidate = %{issue("#{failure}-context", @central_profile, 1) | project_profile: @central_profile}
+      {state, token} = issue_retry_state(candidate, 1)
+
+      overrides =
+        [
+          project_profiles: @profiles,
+          retry_fetch_fun: fn _id, _metadata -> {:ok, [candidate]} end,
+          profile_refresh_fun: fn _ids -> {:ok, [candidate]} end,
+          dispatch_fun: nil,
+          claim_fun: fn _issue, _owner ->
+            if failure == :claim, do: {:error, :claim_timeout}, else: {:ok, %{claim_id: "claim", generation: 1}}
+          end,
+          task_start_fun: fn _fun -> if failure == :spawn, do: {:error, :spawn_failed}, else: {:ok, self()} end,
+          bind_worker_fun: fn _issue_id, _pid -> if failure == :bind, do: {:error, :bind_failed}, else: :ok end,
+          terminate_task_fun: fn _pid -> :ok end,
+          finalize_claim_fun: fn _issue_id, _action -> :ok end
+        ]
+        |> Enum.reject(fn {_key, value} -> is_nil(value) end)
+
+      opts =
+        dispatch_opts(fn _profile -> {:ok, []} end, %{candidate.id => candidate}, events, overrides)
+        |> Keyword.delete(:dispatch_fun)
+
+      result = Orchestrator.fire_issue_retry_for_test(state, candidate.id, token, opts)
+
+      assert %{project_profile: %{key: "central-brain"}, retry_token: next_token} =
+               result.retry_attempts[candidate.id]
+
+      retried =
+        Orchestrator.fire_issue_retry_for_test(result, candidate.id, next_token,
+          retry_fetch_fun: fn _id, metadata ->
+            assert %{project_profile: %{key: "central-brain"}} = metadata
+            {:error, :transport}
+          end,
+          claim_release_fun: fn _state, _id -> flunk("profile-scoped transport retry released ownership") end
+        )
+
+      assert %{attempt: 3, project_profile: %{key: "central-brain"}} = retried.retry_attempts[candidate.id]
+    end
+  end
+
+  test "removing multi-project mode releases a pending retry instead of renewing it" do
+    candidate = %{issue("profiles-removed", @central_profile, 1) | project_profile: @central_profile}
+    {state, token} = issue_retry_state(candidate, 1)
+    {:ok, events} = Agent.start_link(fn -> [] end)
+
+    write_workflow_file!(Workflow.workflow_file_path(), tracker_kind: "memory")
+    assert :ok = WorkflowStore.force_reload()
+
+    assert {:error, :approved_project_profiles_removed} =
+             Orchestrator.retry_issue_fetch_for_test(candidate.id, %{project_profile: @central_profile})
+
+    opts = [
+      retry_fetch_fun: fn _id, _metadata -> {:error, :approved_project_profiles_removed} end,
+      claim_release_fun: fn state_arg, issue_id ->
+        record(events, {:release, issue_id})
+        %{state_arg | claimed: MapSet.delete(state_arg.claimed, issue_id)}
+      end
+    ]
+
+    result = Orchestrator.fire_issue_retry_for_test(state, candidate.id, token, opts)
+
+    refute MapSet.member?(result.claimed, candidate.id)
+    refute Map.has_key?(result.retry_attempts, candidate.id)
+    assert {:release, candidate.id} in Agent.get(events, & &1)
+  end
+
   test "ineligible post-pop outcome releases ownership without rescheduling" do
     {:ok, events} = Agent.start_link(fn -> [] end)
 

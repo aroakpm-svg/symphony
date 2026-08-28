@@ -17,6 +17,16 @@ defmodule SymphonyElixir.ClaimServiceTest do
              exclusive_route("preferred-with-fallback", @current_node_id, 4)
   end
 
+  test "exclusive routing compares UUID node identities semantically and rejects invalid identities" do
+    assert {:ok, %{routing_revision: 7}} = exclusive_route("exclusive", String.upcase(@current_node_id), 7)
+
+    mixed_case = "00000000-0000-4000-8000-00000000000A"
+    assert {:ok, %{routing_revision: 8}} = exclusive_route_for_node("exclusive", mixed_case, 8, String.downcase(mixed_case))
+
+    assert {:error, :routing_lookup_failed} = exclusive_route_for_node("exclusive", @current_node_id, 9, "not-a-uuid")
+    assert {:error, :routing_lookup_failed} = exclusive_route_for_node("exclusive", "not-a-uuid", 9, @current_node_id)
+  end
+
   test "exclusive routing reads the assignment by issue id without exposing query errors" do
     parent = self()
 
@@ -264,6 +274,16 @@ defmodule SymphonyElixir.ClaimServiceTest do
     assert {:reply, result, ^state} =
              ClaimService.handle_call({:exclusive_route, issue}, self(), state)
 
+    result
+  end
+
+  defp exclusive_route_for_node(policy, target_node_id, routing_revision, current_node_id) do
+    query = fn _sql, _params ->
+      {:ok, %Postgrex.Result{rows: [[policy, target_node_id, routing_revision]], num_rows: 1}}
+    end
+
+    state = %ClaimService{connection: query, settings: %{node_id: current_node_id}}
+    assert {:reply, result, ^state} = ClaimService.handle_call({:exclusive_route, %Issue{id: "issue-1"}}, self(), state)
     result
   end
 
