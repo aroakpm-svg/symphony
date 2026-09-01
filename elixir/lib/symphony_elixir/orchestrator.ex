@@ -1271,12 +1271,7 @@ defmodule SymphonyElixir.Orchestrator do
       terminal_issue_state?(issue.state, terminal_states) ->
         Logger.info("Blocked issue moved to terminal state: #{issue_context(issue)} state=#{issue.state}; releasing block")
 
-        cleanup_issue_workspace(
-          issue.identifier,
-          blocked_issue_worker_host(state, issue.id),
-          blocked_issue_execution_context(state, issue.id),
-          blocked_issue_workspace_attestation(state, issue.id)
-        )
+        retire_blocked_execution_context(state, issue.id)
 
         release_issue_claim(state, issue.id)
 
@@ -2426,12 +2421,7 @@ defmodule SymphonyElixir.Orchestrator do
       terminal_issue_state?(issue.state, terminal_states) ->
         Logger.info("Issue state is terminal: issue_id=#{issue_id} issue_identifier=#{issue.identifier} state=#{issue.state}; removing associated workspace")
 
-        cleanup_issue_workspace(
-          issue.identifier,
-          metadata[:worker_host],
-          metadata[:execution_context],
-          metadata[:workspace_attestation]
-        )
+        retire_retry_execution_context(issue, metadata)
 
         {:noreply, transition_retry_release(state, issue, opts)}
 
@@ -2441,12 +2431,7 @@ defmodule SymphonyElixir.Orchestrator do
             "#{issue_context(issue)} project_id=#{inspect(issue.project_id)}"
         )
 
-        retire_execution_context(
-          metadata.execution_context.issue_identifier,
-          metadata[:worker_host],
-          metadata[:execution_context],
-          metadata[:workspace_attestation]
-        )
+        retire_retry_execution_context(issue, metadata)
 
         {:noreply, transition_retry_release(state, issue, opts)}
 
@@ -2473,6 +2458,27 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   defp retry_project_identity_changed?(_metadata, _issue), do: false
+
+  defp retire_retry_execution_context(
+         _issue,
+         %{execution_context: %ProjectExecutionContext{issue_identifier: identifier}} = metadata
+       ) do
+    retire_execution_context(
+      identifier,
+      metadata[:worker_host],
+      metadata[:execution_context],
+      metadata[:workspace_attestation]
+    )
+  end
+
+  defp retire_retry_execution_context(%Issue{identifier: identifier}, metadata) do
+    retire_execution_context(
+      identifier,
+      metadata[:worker_host],
+      metadata[:execution_context],
+      metadata[:workspace_attestation]
+    )
+  end
 
   defp cleanup_issue_workspace(
          identifier,
@@ -2527,24 +2533,6 @@ defmodule SymphonyElixir.Orchestrator do
          _workspace_attestation
        ),
        do: :ok
-
-  defp blocked_issue_worker_host(%State{} = state, issue_id) do
-    state.blocked
-    |> Map.get(issue_id, %{})
-    |> Map.get(:worker_host)
-  end
-
-  defp blocked_issue_execution_context(%State{} = state, issue_id) do
-    state.blocked
-    |> Map.get(issue_id, %{})
-    |> Map.get(:execution_context)
-  end
-
-  defp blocked_issue_workspace_attestation(%State{} = state, issue_id) do
-    state.blocked
-    |> Map.get(issue_id, %{})
-    |> Map.get(:workspace_attestation)
-  end
 
   defp run_terminal_workspace_cleanup do
     settings = Config.settings!()

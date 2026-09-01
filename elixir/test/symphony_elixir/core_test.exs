@@ -542,7 +542,14 @@ defmodule SymphonyElixir.CoreTest do
         retry_attempts: %{}
       }
 
-      terminal_issue = %{owned_issue | state: "Done", project_profile: nil, routing_revision: nil}
+      terminal_issue = %{
+        owned_issue
+        | identifier: "PM-286",
+          state: "Done",
+          project_profile: nil,
+          routing_revision: nil
+      }
+
       updated_state = Orchestrator.reconcile_issue_states_for_test([terminal_issue], state)
 
       refute Map.has_key?(updated_state.running, owned_issue.id)
@@ -660,7 +667,14 @@ defmodule SymphonyElixir.CoreTest do
         retry_attempts: %{}
       }
 
-      terminal_issue = %{owned_issue | state: "Done", project_profile: nil, routing_revision: nil}
+      terminal_issue = %{
+        owned_issue
+        | identifier: "PM-286",
+          state: "Done",
+          project_profile: nil,
+          routing_revision: nil
+      }
+
       updated_state = Orchestrator.reconcile_blocked_issue_states_for_test([terminal_issue], state)
 
       refute Map.has_key?(updated_state.blocked, owned_issue.id)
@@ -796,7 +810,14 @@ defmodule SymphonyElixir.CoreTest do
       File.mkdir_p!(legacy_workspace)
 
       state = %Orchestrator.State{claimed: MapSet.new([owned_issue.id]), retry_attempts: %{}}
-      terminal_issue = %{owned_issue | state: "Done", project_profile: nil, routing_revision: nil}
+
+      terminal_issue = %{
+        owned_issue
+        | identifier: "PM-286",
+          state: "Done",
+          project_profile: nil,
+          routing_revision: nil
+      }
 
       updated_state =
         Orchestrator.handle_retry_issue_lookup_for_test(terminal_issue, state, owned_issue.id, 1, %{
