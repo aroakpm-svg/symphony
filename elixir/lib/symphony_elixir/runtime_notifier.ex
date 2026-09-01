@@ -676,7 +676,7 @@ defmodule SymphonyElixir.RuntimeNotifier do
 
     case :os.type() do
       {:win32, _} -> windows_local_shell(command, runtime_root, timeout_ms, event_environment)
-      _unix -> unix_local_shell(command, event_environment)
+      _unix -> unix_local_shell(command, timeout_ms, event_environment)
     end
   end
 
@@ -715,18 +715,36 @@ defmodule SymphonyElixir.RuntimeNotifier do
     end
   end
 
-  defp unix_local_shell(command, event_environment) do
-    case System.find_executable("sh") do
-      nil ->
-        {:error, :notification_command_unavailable}
-
-      executable ->
-        wrapper =
-          ~s(event="$SYMPHONY_TASK6_EVENT_B64"; unset SYMPHONY_TASK6_EVENT_B64; printf '%s' "$event" | base64 -d | sh -lc "$1" >/dev/null 2>&1)
-
-        {:ok, executable, ["-c", wrapper, "symphony-notifier", command], event_environment, []}
+  defp unix_local_shell(command, timeout_ms, event_environment) do
+    with executable when is_binary(executable) <- System.find_executable("sh"),
+         timeout when is_binary(timeout) <- System.find_executable("timeout"),
+         base64 when is_binary(base64) <- System.find_executable("base64") do
+      wrapper = unix_command_wrapper(timeout, base64)
+      timeout_seconds = Float.to_string(timeout_ms / 1_000)
+      args = ["-c", wrapper, "symphony-notifier", command, timeout_seconds]
+      {:ok, executable, args, event_environment, []}
+    else
+      _unavailable -> {:error, :notification_command_unavailable}
     end
   end
+
+  defp unix_command_wrapper(timeout, base64) do
+    """
+    event="$SYMPHONY_TASK6_EVENT_B64"
+    unset SYMPHONY_TASK6_EVENT_B64
+    printf '%s' "$event" | #{shell_quote(base64)} -d | \
+      #{shell_quote(timeout)} --signal=TERM --kill-after=1s "$2" sh -lc "$1" >/dev/null 2>&1
+    status=$?
+    case "$status" in
+      0) exit 0 ;;
+      124|137) exit 124 ;;
+      125|126|127) exit 125 ;;
+      *) exit 123 ;;
+    esac
+    """
+  end
+
+  defp shell_quote(value), do: "'" <> String.replace(value, "'", "'\\''") <> "'"
 
   defp windows_command_wrapper(command, timeout_ms) do
     encoded_command = Base.encode64(command)
