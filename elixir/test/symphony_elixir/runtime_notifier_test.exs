@@ -374,6 +374,11 @@ defmodule SymphonyElixir.RuntimeNotifierTest do
     )
   end
 
+  @tag skip:
+         if(match?({:win32, _}, :os.type()),
+           do: false,
+           else: "POSIX public OTP cannot attest another same-UID writable handle"
+         )
   test "fails closed while a writable handle mutates the Task 5 receipt during consumption" do
     with_runtime_root(fn root ->
       epoch = "epoch-write-race"

@@ -1,6 +1,12 @@
 defmodule SymphonyElixir.SymphonyWatchdogTest do
   use ExUnit.Case
 
+  @moduletag skip:
+               if(match?({:win32, _}, :os.type()),
+                 do: false,
+                 else: "Windows watchdog requires Win32 handle and job-object capabilities"
+               )
+
   import SymphonyElixir.TestSupport, only: [create_directory_link!: 2]
 
   alias SymphonyElixir.RuntimeHealth
