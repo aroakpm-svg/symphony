@@ -2583,20 +2583,27 @@ defmodule SymphonyElixir.Workspace do
     paths
     |> Map.values()
     |> Enum.reduce_while(:ok, fn path, :ok ->
-      case File.lstat(path) do
-        {:ok, %File.Stat{type: :directory}} ->
-          case safe_private_directory_identity(path, namespace_path) do
-            {:ok, _identity} -> {:cont, :ok}
-            _failure -> {:halt, {:error, :unsafe_private_home_path}}
-          end
-
-        {:error, :enoent} ->
-          {:cont, :ok}
-
-        _unsafe ->
-          {:halt, {:error, :unsafe_private_home_path}}
+      case validate_private_home_cleanup_component(path, namespace_path) do
+        :ok -> {:cont, :ok}
+        {:error, _reason} = error -> {:halt, error}
       end
     end)
+  end
+
+  defp validate_private_home_cleanup_component(path, namespace_path) do
+    case File.lstat(path) do
+      {:ok, %File.Stat{type: :directory}} ->
+        case safe_private_directory_identity(path, namespace_path) do
+          {:ok, _identity} -> :ok
+          _failure -> {:error, :unsafe_private_home_path}
+        end
+
+      {:error, :enoent} ->
+        :ok
+
+      _unsafe ->
+        {:error, :unsafe_private_home_path}
+    end
   end
 
   defp run_context_cleanup_hook(
