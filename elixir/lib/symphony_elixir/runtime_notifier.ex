@@ -1119,21 +1119,7 @@ defmodule SymphonyElixir.RuntimeNotifier do
     |> Base.encode16(case: :lower)
   end
 
-  defp secret_bearing?(value) do
-    Regex.match?(~r/(?i)(authorization|bearer|credential|password|secret|api[_-]?key|token)\s*[:= ]/, value) or
-      Regex.match?(~r/(?i)(^|[_:\/-])(credential|password|secret|api[_-]?key|token)([_:\/-]|$)/, value) or
-      Regex.match?(~r/(?i)\bsk-(?:proj-)?[a-z0-9_-]{16,}\b/, value) or
-      Regex.match?(~r/(?i)\bgh[pousr]_[a-z0-9]{20,}\b/, value) or
-      Regex.match?(~r/(?i)\bgithub_pat_[a-z0-9_]{20,}\b/, value) or
-      Regex.match?(~r/\b(?:AKIA|ASIA|AIDA|AROA|AIPA|ANPA|ANVA)[A-Z0-9]{16}\b/, value) or
-      Regex.match?(~r/(?i)\bxox[baprs]-[a-z0-9-]{20,}\b/, value) or
-      Regex.match?(~r/\bAIza[0-9A-Za-z_-]{20,}\b/, value) or
-      Regex.match?(~r/(?i)\b[rs]k_(?:live|test)_[a-z0-9]{16,}\b/, value) or
-      Regex.match?(~r/(?i)\b(?:glpat-|npm_|pypi-|hf_)[a-z0-9_-]{20,}\b/, value) or
-      Regex.match?(~r/\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\b/, value) or
-      Regex.match?(~r/-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----/, value) or
-      Regex.match?(~r|(?i)://[^/@\s]+:[^/@\s]+@|, value)
-  end
+  defp secret_bearing?(value), do: SymphonyElixir.SecretSafety.contains_secret?(value)
 
   defp production_path?(path) do
     path

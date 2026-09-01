@@ -98,27 +98,28 @@ defmodule SymphonyElixir.Orchestrator do
   def init(opts) do
     identity_validator = identity_validator(opts)
 
-    with {:ok, _viewer_id} <- validate_startup_identity(identity_validator) do
-      report_health(opts, {:dependency, :linear, %{status: :connected}})
-      now_ms = System.monotonic_time(:millisecond)
-      config = Config.settings!()
+    case validate_startup_identity(identity_validator) do
+      {:ok, _viewer_id} ->
+        report_health(opts, {:dependency, :linear, %{status: :connected}})
+        now_ms = System.monotonic_time(:millisecond)
+        config = Config.settings!()
 
-      state = %State{
-        poll_interval_ms: config.polling.interval_ms,
-        max_concurrent_agents: config.agent.max_concurrent_agents,
-        next_poll_due_at_ms: now_ms,
-        poll_check_in_progress: false,
-        tick_timer_ref: nil,
-        tick_token: nil,
-        codex_totals: @empty_codex_totals,
-        codex_rate_limits: nil
-      }
+        state = %State{
+          poll_interval_ms: config.polling.interval_ms,
+          max_concurrent_agents: config.agent.max_concurrent_agents,
+          next_poll_due_at_ms: now_ms,
+          poll_check_in_progress: false,
+          tick_timer_ref: nil,
+          tick_token: nil,
+          codex_totals: @empty_codex_totals,
+          codex_rate_limits: nil
+        }
 
-      run_terminal_workspace_cleanup()
-      state = schedule_tick(state, 0)
+        run_terminal_workspace_cleanup()
+        state = schedule_tick(state, 0)
 
-      {:ok, state}
-    else
+        {:ok, state}
+
       {:error, reason} ->
         report_health(opts, {:dependency, :linear, %{status: :failed, failure_category: reason}})
         report_health(opts, {:stop, %{category: :startup_failure, failure_category: reason}})
@@ -1141,11 +1142,14 @@ defmodule SymphonyElixir.Orchestrator do
           [map()],
           [String.t()],
           (map(), [String.t()] -> term()),
-          (String.t() -> term()) | (String.t(), ProjectExecutionContext.t() -> term())
+          (String.t() -> term())
+          | (String.t(), ProjectExecutionContext.t() -> term())
+          | (String.t(), ProjectExecutionContext.t(), map() | nil -> term())
         ) :: :ok
   def terminal_cleanup_for_test(profiles, states, fetcher, cleanup_fun)
       when is_list(profiles) and is_function(fetcher, 2) and
-             (is_function(cleanup_fun, 1) or is_function(cleanup_fun, 2)) do
+             (is_function(cleanup_fun, 1) or is_function(cleanup_fun, 2) or
+                is_function(cleanup_fun, 3)) do
     cleanup_terminal_profiles(profiles, states, fetcher, cleanup_fun)
   end
 
@@ -2179,18 +2183,10 @@ defmodule SymphonyElixir.Orchestrator do
     worker_host = pick_retry_worker_host(previous_retry, metadata)
     workspace_path = pick_retry_workspace_path(previous_retry, metadata)
 
-    workspace_attestation =
-      Map.get(metadata, :workspace_attestation) ||
-        Map.get(previous_retry, :workspace_attestation)
-
-    project_profile = Map.get(metadata, :project_profile) || Map.get(previous_retry, :project_profile)
-
-    execution_context =
-      Map.get(metadata, :execution_context) || Map.get(previous_retry, :execution_context)
-
-    ownership =
-      Map.get(metadata, :ownership) || Map.get(previous_retry, :ownership) ||
-        if(MapSet.member?(state.claimed, issue_id), do: :retained_owner, else: :unowned_backoff)
+    workspace_attestation = retry_value(metadata, previous_retry, :workspace_attestation)
+    project_profile = retry_value(metadata, previous_retry, :project_profile)
+    execution_context = retry_value(metadata, previous_retry, :execution_context)
+    ownership = retry_ownership(state, issue_id, metadata, previous_retry)
 
     if is_reference(old_timer) do
       Process.cancel_timer(old_timer)
@@ -2221,6 +2217,18 @@ defmodule SymphonyElixir.Orchestrator do
             ownership: ownership
           })
     }
+  end
+
+  defp retry_value(metadata, previous_retry, key) do
+    Map.get(metadata, key) || Map.get(previous_retry, key)
+  end
+
+  defp retry_ownership(state, issue_id, metadata, previous_retry) do
+    retry_value(metadata, previous_retry, :ownership) || default_retry_ownership(state, issue_id)
+  end
+
+  defp default_retry_ownership(state, issue_id) do
+    if MapSet.member?(state.claimed, issue_id), do: :retained_owner, else: :unowned_backoff
   end
 
   defp pop_retry_attempt_state(%State{} = state, issue_id, retry_token) when is_reference(retry_token) do
@@ -2359,7 +2367,8 @@ defmodule SymphonyElixir.Orchestrator do
          workspace_attestation
        )
        when is_binary(identifier) do
-    Workspace.remove_issue_workspaces(identifier, worker_host, execution_context, workspace_attestation: workspace_attestation)
+    cleanup_options = [workspace_attestation: workspace_attestation]
+    Workspace.remove_issue_workspaces(identifier, worker_host, execution_context, cleanup_options)
   end
 
   defp cleanup_issue_workspace(
@@ -2397,8 +2406,13 @@ defmodule SymphonyElixir.Orchestrator do
           ProjectProfiles.list(settings.project_profiles),
           settings.tracker.terminal_states,
           &Tracker.fetch_issues_by_states/2,
-          fn identifier, execution_context ->
-            cleanup_issue_workspace(identifier, nil, execution_context)
+          fn identifier, execution_context, workspace_attestation ->
+            cleanup_issue_workspace(
+              identifier,
+              nil,
+              execution_context,
+              workspace_attestation
+            )
           end
         )
 
@@ -2410,37 +2424,63 @@ defmodule SymphonyElixir.Orchestrator do
   defp cleanup_terminal_profiles(profiles, terminal_states, fetcher, cleanup_fun) do
     profiles
     |> Enum.flat_map(&fetch_terminal_profile(&1, terminal_states, fetcher))
-    |> Enum.reduce({MapSet.new(), []}, fn
-      %Issue{identifier: identifier} = issue, {seen, cleanup_targets} when is_binary(identifier) ->
-        case terminal_cleanup_context(issue) do
-          {:ok, execution_context} ->
-            cleanup_identity = {execution_context.linear_project_id, identifier}
-
-            if MapSet.member?(seen, cleanup_identity) do
-              {seen, cleanup_targets}
-            else
-              {MapSet.put(seen, cleanup_identity), [{identifier, execution_context} | cleanup_targets]}
-            end
-
-          {:error, reason} ->
-            Logger.warning("Skipping startup terminal workspace cleanup issue_identifier=#{identifier}; invalid execution authority: #{inspect(reason)}")
-
-            {seen, cleanup_targets}
-        end
-
-      _issue, accumulator ->
-        accumulator
-    end)
+    |> Enum.reduce({MapSet.new(), []}, &collect_terminal_cleanup_target/2)
     |> elem(1)
     |> Enum.reverse()
     |> Enum.each(fn {identifier, execution_context} ->
-      safely_cleanup_terminal_workspace(
-        cleanup_fun,
-        identifier,
-        execution_context.profile_key,
-        execution_context
-      )
+      attest_and_cleanup_terminal_workspace(cleanup_fun, identifier, execution_context)
     end)
+  end
+
+  defp collect_terminal_cleanup_target(
+         %Issue{identifier: identifier} = issue,
+         {seen, cleanup_targets}
+       )
+       when is_binary(identifier) do
+    case terminal_cleanup_context(issue) do
+      {:ok, execution_context} ->
+        add_terminal_cleanup_target(identifier, execution_context, seen, cleanup_targets)
+
+      {:error, reason} ->
+        Logger.warning(
+          "Skipping startup terminal workspace cleanup issue_identifier=#{identifier}; " <>
+            "invalid execution authority: #{inspect(reason)}"
+        )
+
+        {seen, cleanup_targets}
+    end
+  end
+
+  defp collect_terminal_cleanup_target(_issue, accumulator), do: accumulator
+
+  defp add_terminal_cleanup_target(identifier, execution_context, seen, cleanup_targets) do
+    cleanup_identity = {execution_context.linear_project_id, identifier}
+
+    if MapSet.member?(seen, cleanup_identity) do
+      {seen, cleanup_targets}
+    else
+      {MapSet.put(seen, cleanup_identity), [{identifier, execution_context} | cleanup_targets]}
+    end
+  end
+
+  defp attest_and_cleanup_terminal_workspace(cleanup_fun, identifier, execution_context) do
+    case Workspace.attest_existing_issue_workspace(identifier, nil, execution_context) do
+      {:ok, workspace_attestation} ->
+        safely_cleanup_terminal_workspace(
+          cleanup_fun,
+          identifier,
+          execution_context.profile_key,
+          execution_context,
+          workspace_attestation
+        )
+
+      {:error, reason} ->
+        Logger.warning(
+          "Skipping startup terminal workspace cleanup " <>
+            "profile=#{execution_context.profile_key} " <>
+            "issue_identifier=#{identifier}; attestation failed: #{inspect(reason)}"
+        )
+    end
   end
 
   defp terminal_cleanup_context(%Issue{} = issue) do
@@ -2449,8 +2489,12 @@ defmodule SymphonyElixir.Orchestrator do
         {:ok, execution_context}
 
       {:error, :missing_routing_revision} ->
-        with {:ok, %{routing_revision: routing_revision}} <- ClaimService.exclusive_route(issue) do
-          ProjectExecutionContext.from_issue(%{issue | routing_revision: routing_revision})
+        case ClaimService.exclusive_route(issue) do
+          {:ok, %{routing_revision: routing_revision}} ->
+            ProjectExecutionContext.from_issue(%{issue | routing_revision: routing_revision})
+
+          error ->
+            error
         end
 
       {:error, _reason} = error ->
@@ -2473,11 +2517,19 @@ defmodule SymphonyElixir.Orchestrator do
         issues
 
       {:error, reason} ->
-        Logger.warning("Skipping startup terminal workspace cleanup profile=#{profile.key}; failed to fetch terminal issues: #{inspect(reason)}")
+        Logger.warning(
+          "Skipping startup terminal workspace cleanup profile=#{profile.key}; " <>
+            "failed to fetch terminal issues: #{inspect(reason)}"
+        )
+
         []
 
       other ->
-        Logger.warning("Skipping startup terminal workspace cleanup profile=#{profile.key}; invalid terminal issue result: #{inspect(other)}")
+        Logger.warning(
+          "Skipping startup terminal workspace cleanup profile=#{profile.key}; " <>
+            "invalid terminal issue result: #{inspect(other)}"
+        )
+
         []
     end
   end
@@ -2488,21 +2540,44 @@ defmodule SymphonyElixir.Orchestrator do
         issues
         |> Enum.each(fn
           %Issue{identifier: identifier} when is_binary(identifier) ->
-            safely_cleanup_terminal_workspace(cleanup_fun, identifier, profile_key, nil)
+            safely_cleanup_terminal_workspace(cleanup_fun, identifier, profile_key, nil, nil)
 
           _ ->
             :ok
         end)
 
       {:error, reason} ->
-        Logger.warning("Skipping startup terminal workspace cleanup profile=#{profile_key || "legacy"}; failed to fetch terminal issues: #{inspect(reason)}")
+        Logger.warning(
+          "Skipping startup terminal workspace cleanup profile=#{profile_key || "legacy"}; " <>
+            "failed to fetch terminal issues: #{inspect(reason)}"
+        )
     end
   end
 
-  defp safely_cleanup_terminal_workspace(cleanup_fun, identifier, profile_key, execution_context) do
-    case :erlang.fun_info(cleanup_fun, :arity) do
-      {:arity, 2} -> cleanup_fun.(identifier, execution_context)
-      {:arity, 1} -> cleanup_fun.(identifier)
+  defp safely_cleanup_terminal_workspace(
+         cleanup_fun,
+         identifier,
+         profile_key,
+         execution_context,
+         workspace_attestation
+       ) do
+    result =
+      case :erlang.fun_info(cleanup_fun, :arity) do
+        {:arity, 3} -> cleanup_fun.(identifier, execution_context, workspace_attestation)
+        {:arity, 2} -> cleanup_fun.(identifier, execution_context)
+        {:arity, 1} -> cleanup_fun.(identifier)
+      end
+
+    case result do
+      {:error, reason} ->
+        Logger.warning(
+          "Skipping failed terminal workspace cleanup " <>
+            "profile=#{profile_key || "legacy"} " <>
+            "issue_identifier=#{identifier}: #{inspect(reason)}"
+        )
+
+      _other ->
+        :ok
     end
   rescue
     exception ->

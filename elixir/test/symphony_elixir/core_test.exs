@@ -1187,6 +1187,63 @@ defmodule SymphonyElixir.CoreTest do
     refute_receive {:cleaned, _, _}
   end
 
+  test "startup terminal cleanup reacquires an attestation before removing a project workspace" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "aro286-startup-cleanup-#{System.os_time(:nanosecond)}-#{System.unique_integer([:positive, :monotonic])}"
+      )
+
+    profile = %{
+      key: "central-brain",
+      linear_project_id: "d0acfb71-f68c-4a9f-8a1a-477265d3c3ec",
+      repository: "aroakpm-svg/aroak-central-brain",
+      canonical_branch: "main",
+      workspace_namespace: "central-brain",
+      credential_ref: "github-central-brain",
+      environment: "local_non_production"
+    }
+
+    workspace = Path.join([test_root, profile.workspace_namespace, "ARO-286"])
+    File.mkdir_p!(workspace)
+    File.write!(Path.join(workspace, "marker.txt"), "remove me")
+    write_workflow_file!(Workflow.workflow_file_path(), workspace_root: test_root)
+
+    fetcher = fn ^profile, _states ->
+      {:ok,
+       [
+         %Issue{
+           id: "terminal-aro-286",
+           identifier: "ARO-286",
+           project_id: profile.linear_project_id,
+           repository: profile.repository,
+           routing_revision: 15,
+           project_profile: profile
+         }
+       ]}
+    end
+
+    cleanup_fun = fn identifier, context, attestation ->
+      assert is_map(attestation)
+
+      Workspace.remove_issue_workspaces(identifier, nil, context, workspace_attestation: attestation)
+    end
+
+    try do
+      assert :ok =
+               Orchestrator.terminal_cleanup_for_test(
+                 [profile],
+                 ["Done"],
+                 fetcher,
+                 cleanup_fun
+               )
+
+      refute File.exists?(workspace)
+    after
+      File.rm_rf(test_root)
+    end
+  end
+
   test "first abnormal worker exit waits before retrying" do
     issue_id = "issue-crash-initial"
     ref = make_ref()

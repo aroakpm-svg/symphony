@@ -2279,6 +2279,51 @@ defmodule SymphonyElixir.Workspace do
     remove_issue_workspaces(identifier, worker_host, execution_context, [])
   end
 
+  @spec attest_existing_issue_workspace(
+          term(),
+          worker_host(),
+          ProjectExecutionContext.t()
+        ) :: {:ok, map() | nil} | {:error, term()}
+  def attest_existing_issue_workspace(
+        identifier,
+        nil,
+        %ProjectExecutionContext{} = execution_context
+      )
+      when is_binary(identifier) do
+    safe_id = safe_identifier(identifier)
+
+    with :ok <- validate_execution_context(execution_context),
+         :ok <- validate_cleanup_execution_context(identifier, execution_context),
+         {:ok, workspace} <- workspace_path_for_issue(safe_id, nil, execution_context) do
+      attest_existing_local_workspace(workspace, execution_context)
+    end
+  end
+
+  def attest_existing_issue_workspace(_identifier, _worker_host, _execution_context),
+    do: {:error, :workspace_attestation_unavailable}
+
+  defp attest_existing_local_workspace(workspace, execution_context) do
+    cond do
+      File.dir?(workspace) ->
+        with {:ok, attestation} <- local_workspace_attestation(workspace),
+             :ok <-
+               validate_execution_workspace(
+                 workspace,
+                 nil,
+                 execution_context,
+                 attestation
+               ) do
+          {:ok, attestation}
+        end
+
+      File.exists?(workspace) ->
+        {:error, :workspace_attestation_unavailable}
+
+      true ->
+        {:ok, nil}
+    end
+  end
+
   @spec remove_issue_workspaces(
           term(),
           worker_host(),
