@@ -2568,15 +2568,19 @@ defmodule SymphonyElixir.Workspace do
 
   defp remove_existing_context_private_home(paths, execution_context) do
     with {:ok, homes} <- issue_private_home_paths(paths, execution_context) do
-      Enum.reduce_while(homes, :ok, fn home, :ok ->
-        candidate_paths = private_home_paths_for_home(paths, home)
-
-        case remove_attested_context_private_home(candidate_paths, execution_context) do
-          :ok -> {:cont, :ok}
-          {:error, _reason} = error -> {:halt, error}
-        end
-      end)
+      remove_context_private_homes(homes, paths, execution_context)
     end
+  end
+
+  defp remove_context_private_homes(homes, paths, execution_context) do
+    Enum.reduce_while(homes, :ok, fn home, :ok ->
+      candidate_paths = private_home_paths_for_home(paths, home)
+
+      case remove_attested_context_private_home(candidate_paths, execution_context) do
+        :ok -> {:cont, :ok}
+        {:error, _reason} = error -> {:halt, error}
+      end
+    end)
   end
 
   defp issue_private_home_paths(paths, execution_context) do
@@ -2605,9 +2609,8 @@ defmodule SymphonyElixir.Workspace do
         {:ok, []}
 
       {:ok, %File.Stat{type: :directory}} ->
-        with {:ok, _identity} <- safe_private_directory_identity(root, namespace_path),
-             {:ok, names} <- File.ls(root) do
-          {:ok, names}
+        with {:ok, _identity} <- safe_private_directory_identity(root, namespace_path) do
+          File.ls(root)
         end
 
       _unsafe ->
