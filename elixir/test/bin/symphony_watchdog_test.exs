@@ -129,6 +129,31 @@ defmodule SymphonyElixir.SymphonyWatchdogTest do
     end)
   end
 
+  test "notifier receives an allowlisted environment while the supervised child retains ambient credentials" do
+    with_fixture(fn fixture ->
+      notifier_environment_path = Path.join(fixture.control_root, "notifier-environment.txt")
+      secret = "watchdog-ambient-secret"
+      write_plan!(fixture.plan_path, [8])
+
+      notification_command =
+        "$event = [Console]::In.ReadToEnd() | ConvertFrom-Json; " <>
+          "$secretMissing = [string]::IsNullOrEmpty($env:LINEAR_API_KEY); " <>
+          "$pathPresent = -not [string]::IsNullOrEmpty($env:PATH); " <>
+          "[IO.File]::WriteAllText(#{ps_literal(notifier_environment_path)}, \"$secretMissing`:$pathPresent`:$($event.runtime_identity)\"); exit 0"
+
+      assert {"", 1} =
+               run_watchdog(fixture,
+                 restart_limit: 1,
+                 powershell: @windows_powershell,
+                 notification_command: notification_command,
+                 env: [{"LINEAR_API_KEY", secret}]
+               )
+
+      assert read_json_lines(fixture.child_log_path) |> length() == 1
+      assert File.read!(notifier_environment_path) == "True:True:symphony-watchdog-test"
+    end)
+  end
+
   test "a real RuntimeHealth child crash reaches the shared receipt and notification contract" do
     with_fixture(fn fixture ->
       child_script = Path.join(fixture.control_root, "runtime-health-crash.exs")
@@ -745,12 +770,14 @@ defmodule SymphonyElixir.SymphonyWatchdogTest do
       end)
 
     notification_command =
-      "& #{ps_literal(fixture.notification_script)} " <>
-        "-LogPath #{ps_literal(fixture.notification_log_path)} " <>
-        "-PlanPath #{ps_literal(fixture.notification_plan_path)} " <>
-        "-CanaryBase64 #{ps_literal(notifier_canary_base64)} " <>
-        "-DescendantMarker #{ps_literal(descendant_marker)} " <>
-        "-DelayMs #{notification_delay_ms}"
+      Keyword.get_lazy(opts, :notification_command, fn ->
+        "& #{ps_literal(fixture.notification_script)} " <>
+          "-LogPath #{ps_literal(fixture.notification_log_path)} " <>
+          "-PlanPath #{ps_literal(fixture.notification_plan_path)} " <>
+          "-CanaryBase64 #{ps_literal(notifier_canary_base64)} " <>
+          "-DescendantMarker #{ps_literal(descendant_marker)} " <>
+          "-DelayMs #{notification_delay_ms}"
+      end)
 
     runtime_root = Keyword.get(opts, :runtime_root, fixture.root)
 
@@ -799,7 +826,8 @@ defmodule SymphonyElixir.SymphonyWatchdogTest do
 
     System.cmd(pwsh, args,
       stderr_to_stdout: true,
-      cd: Keyword.get(opts, :cd, File.cwd!())
+      cd: Keyword.get(opts, :cd, File.cwd!()),
+      env: Keyword.get(opts, :env, [])
     )
   end
 

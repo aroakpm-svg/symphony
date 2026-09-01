@@ -527,7 +527,7 @@ function Write-ImmutableJson {
 }
 
 function Get-GateWrapper {
-  param([string] $EncodedCommand, [string] $Nonce)
+  param([string] $EncodedCommand, [string] $Nonce, [bool] $InheritEnvironment)
   $template = @'
 $ErrorActionPreference = 'Stop'
 if ([Console]::In.ReadLine() -ne '__NONCE__') { exit 125 }
@@ -539,6 +539,25 @@ $start.FileName = (Get-Process -Id $PID).Path
 $start.Arguments = "-NoLogo -NoProfile -NonInteractive -EncodedCommand $encoded"
 $start.UseShellExecute = $false; $start.CreateNoWindow = $true
 $start.RedirectStandardInput = $true; $start.RedirectStandardOutput = $true; $start.RedirectStandardError = $true
+if (-not [Convert]::ToBoolean('__INHERIT_ENVIRONMENT__')) {
+  $runtimeEnvironment = @{}
+  foreach ($key in @(
+    'SystemRoot', 'SYSTEMROOT', 'WINDIR', 'COMSPEC', 'PATH', 'PATHEXT', 'PSModulePath',
+    'PSExecutionPolicyPreference',
+    'TEMP', 'TMP', 'TMPDIR', 'USERPROFILE', 'HOMEDRIVE', 'HOMEPATH', 'APPDATA', 'LOCALAPPDATA',
+    'ProgramData', 'ProgramFiles', 'ProgramFiles(x86)', 'ProgramW6432',
+    'CommonProgramFiles', 'CommonProgramFiles(x86)', 'CommonProgramW6432',
+    'ALLUSERSPROFILE', 'PUBLIC', 'SystemDrive', 'DriverData',
+    'COMPUTERNAME', 'LOGONSERVER', 'USERDOMAIN', 'USERDOMAIN_ROAMINGPROFILE', 'USERNAME',
+    'OS', 'PROCESSOR_ARCHITECTURE', 'PROCESSOR_IDENTIFIER', 'PROCESSOR_LEVEL', 'PROCESSOR_REVISION',
+    'NUMBER_OF_PROCESSORS', 'LANG', 'LC_ALL', 'LC_CTYPE', 'TERM', 'TZ'
+  )) {
+    $value = [Environment]::GetEnvironmentVariable($key)
+    if (-not [string]::IsNullOrEmpty($value)) { $runtimeEnvironment[$key] = $value }
+  }
+  $start.EnvironmentVariables.Clear()
+  foreach ($key in $runtimeEnvironment.Keys) { $start.EnvironmentVariables[[string]$key] = [string]$runtimeEnvironment[$key] }
+}
 $process = [Diagnostics.Process]::new(); $process.StartInfo = $start
 try {
   if (-not $process.Start()) { exit 125 }
@@ -552,18 +571,24 @@ try {
 catch { exit 125 }
 finally { $process.Dispose() }
 '@
-  return $template.Replace('__COMMAND__', $EncodedCommand).Replace('__NONCE__', $Nonce)
+  return $template.Replace('__COMMAND__', $EncodedCommand).Replace('__NONCE__', $Nonce).Replace('__INHERIT_ENVIRONMENT__', $InheritEnvironment.ToString())
 }
 
 function Invoke-SuppressedCommand {
-  param([string] $Command, [AllowNull()][string] $InputLine, [hashtable] $Environment, [int] $TimeoutMs)
+  param(
+    [string] $Command,
+    [AllowNull()][string] $InputLine,
+    [hashtable] $Environment,
+    [int] $TimeoutMs,
+    [bool] $InheritEnvironment
+  )
 
   $enginePath = (Get-Process -Id $PID).Path
   $nonceBytes = New-Object byte[] 24
   $random = [Security.Cryptography.RandomNumberGenerator]::Create()
   try { $random.GetBytes($nonceBytes) } finally { $random.Dispose() }
   $nonce = [Convert]::ToBase64String($nonceBytes)
-  $gate = Get-GateWrapper ([Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($Command))) $nonce
+  $gate = Get-GateWrapper ([Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($Command))) $nonce $InheritEnvironment
   $encodedGate = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($gate))
   $start = [Diagnostics.ProcessStartInfo]::new()
   $start.FileName = $enginePath
@@ -667,7 +692,7 @@ function Invoke-RestartLimitNotification {
     runtime_epoch = $epoch
     receipt_path = (Join-Path $root $receiptName)
   }
-  $result = Invoke-SuppressedCommand $NotificationCommand ($event | ConvertTo-Json -Compress) @{} $NotificationTimeoutMs
+  $result = Invoke-SuppressedCommand $NotificationCommand ($event | ConvertTo-Json -Compress) @{} $NotificationTimeoutMs $false
   if (-not $result.termination_verified) { return $false }
   if ($result.timed_out -or $result.exit_code -ne 0) {
     $null = Remove-Claim $claimName $epoch $hash
@@ -740,7 +765,7 @@ try {
       SYMPHONY_RUNTIME_STATE_ROOT = $root
       SYMPHONY_RESTART_ATTEMPT = [string]$attempt
     }
-    $childResult = Invoke-SuppressedCommand $ChildCommand $null $environment 0
+    $childResult = Invoke-SuppressedCommand $ChildCommand $null $environment 0 $true
     Assert-PinnedRoot
     if (-not $childResult.termination_verified) { exit 2 }
     if (-not $childResult.timed_out -and $childResult.exit_code -eq 0) {
