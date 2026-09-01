@@ -1098,9 +1098,10 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   @doc false
-  @spec retry_issue_fetch_for_test(String.t(), map()) :: term()
-  def retry_issue_fetch_for_test(issue_id, metadata) when is_binary(issue_id) and is_map(metadata) do
-    retry_issue_fetch(issue_id, metadata)
+  @spec retry_issue_fetch_for_test(String.t(), map(), ([String.t()] -> term())) :: term()
+  def retry_issue_fetch_for_test(issue_id, metadata, fetch_fun \\ &Tracker.fetch_issue_states_by_ids/1)
+      when is_binary(issue_id) and is_map(metadata) and is_function(fetch_fun, 1) do
+    retry_issue_fetch_unfiltered(issue_id, metadata, fetch_fun)
   end
 
   @doc false
@@ -2394,14 +2395,20 @@ defmodule SymphonyElixir.Orchestrator do
     end
   end
 
-  defp retry_issue_fetch(issue_id, %{project_profile: %{key: key}}) do
+  defp retry_issue_fetch(issue_id, %{project_profile: %{key: _key}} = metadata) do
+    retry_issue_fetch_unfiltered(issue_id, metadata, &Tracker.fetch_issue_states_by_ids/1)
+  end
+
+  defp retry_issue_fetch(_issue_id, _metadata), do: Tracker.fetch_candidate_issues()
+
+  defp retry_issue_fetch_unfiltered(issue_id, %{project_profile: %{key: key}}, fetch_fun) do
     case current_project_profiles_result() do
       {:ok, nil} ->
         {:error, :approved_project_profiles_removed}
 
       {:ok, profiles} ->
         case approved_profile_result(profiles, key) do
-          {:ok, profile} -> Tracker.fetch_issue_states_by_ids(profile, [issue_id])
+          {:ok, _profile} -> fetch_fun.([issue_id])
           {:error, reason} -> {:error, reason}
         end
 
@@ -2410,7 +2417,7 @@ defmodule SymphonyElixir.Orchestrator do
     end
   end
 
-  defp retry_issue_fetch(_issue_id, _metadata), do: Tracker.fetch_candidate_issues()
+  defp retry_issue_fetch_unfiltered(issue_id, metadata, _fetch_fun), do: retry_issue_fetch(issue_id, metadata)
 
   defp approved_profile_result(nil, _key), do: {:error, :approved_project_profiles_removed}
 
@@ -2789,7 +2796,8 @@ defmodule SymphonyElixir.Orchestrator do
 
   defp handle_active_retry(state, issue, attempt, metadata, opts) do
     if is_map(metadata[:project_profile]) do
-      profile = issue.project_profile
+      profile = current_retry_project_profile(metadata) || metadata[:project_profile]
+      issue = %{issue | project_profile: profile}
 
       refresh_fun =
         Keyword.get(opts, :profile_refresh_fun, fn ids ->
@@ -2811,6 +2819,15 @@ defmodule SymphonyElixir.Orchestrator do
        )}
     else
       handle_legacy_active_retry(state, issue, attempt, metadata)
+    end
+  end
+
+  defp current_retry_project_profile(%{project_profile: %{key: key}}) do
+    with {:ok, profiles} <- current_project_profiles_result(),
+         {:ok, profile} <- approved_profile_result(profiles, key) do
+      profile
+    else
+      _ -> nil
     end
   end
 

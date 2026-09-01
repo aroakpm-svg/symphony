@@ -792,6 +792,50 @@ defmodule SymphonyElixir.CoreTest do
     end
   end
 
+  test "profiled retry refresh fetches by issue id without filtering on the stored project" do
+    {owned_issue, _execution_context} = execution_fixture("central-brain", "ARO-286", "retry-fetch", 24)
+    moved_issue = %{owned_issue | project_id: "708053e0-f42c-4e93-bec4-7abbb37e74af", project_profile: nil}
+
+    project_profiles = """
+    project_profiles:
+      version: 1
+      profiles:
+        - key: central-brain
+          linear_project_id: d0acfb71-f68c-4a9f-8a1a-477265d3c3ec
+          repository: aroakpm-svg/aroak-central-brain
+          canonical_branch: main
+          workspace_namespace: central-brain
+          credential_ref: github-central-brain
+          environment: local_non_production
+        - key: project-management
+          linear_project_id: 708053e0-f42c-4e93-bec4-7abbb37e74af
+          repository: aroakpm-svg/aroak-project-management
+          canonical_branch: main
+          workspace_namespace: project-management
+          credential_ref: github-project-management
+          environment: local_non_production
+    """
+
+    workflow = File.read!(Workflow.workflow_file_path())
+    File.write!(Workflow.workflow_file_path(), String.replace(workflow, "---\n", "---\n#{project_profiles}", global: false))
+    assert :ok = WorkflowStore.force_reload()
+
+    fetch_fun = fn issue_ids ->
+      send(self(), {:retry_fetch_by_ids, issue_ids})
+      {:ok, [moved_issue]}
+    end
+
+    assert {:ok, [^moved_issue]} =
+             Orchestrator.retry_issue_fetch_for_test(
+               owned_issue.id,
+               %{project_profile: owned_issue.project_profile},
+               fetch_fun
+             )
+
+    assert_receive {:retry_fetch_by_ids, [issue_id]}
+    assert issue_id == owned_issue.id
+  end
+
   test "terminal retry cleanup reacquires a missing attestation in the exact project context" do
     test_root =
       Path.join(System.tmp_dir!(), "symphony-retry-context-#{System.unique_integer([:positive])}")
