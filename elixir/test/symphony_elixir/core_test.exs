@@ -115,6 +115,10 @@ defmodule SymphonyElixir.CoreTest do
     assert Map.get(hooks, "after_create") =~ "SOURCE_REPO_URL"
     assert Map.get(hooks, "after_create") =~ "aroakpm-svg/aroak-central-brain.git"
     assert Map.get(hooks, "after_create") =~ "git clone"
+    assert Map.get(hooks, "after_create") =~ ~s(SYMPHONY_PROJECT_ISOLATED:-)
+
+    codex = Map.get(config, "codex", %{})
+    assert Map.get(codex, "command") =~ ~s(SYMPHONY_PROJECT_ISOLATED:-)
 
     assert String.trim(prompt) != ""
     assert prompt =~ "AROAK Central Brain Symphony Workflow"
@@ -1304,18 +1308,25 @@ defmodule SymphonyElixir.CoreTest do
 
   test "orchestrator forwards approved AgentRunner dependencies across the spawn boundary" do
     provider = fn _credential_ref -> {:ok, {"credential", %{}}} end
+    effect_ledger_ready? = fn -> false end
     start_fun = fn _task -> {:error, :not_started} end
 
     options =
       Orchestrator.agent_runner_options_for_test(
-        [credential_provider: provider, task_start_fun: start_fun],
+        [
+          credential_provider: provider,
+          effect_ledger_ready?: effect_ledger_ready?,
+          task_start_fun: start_fun
+        ],
         attempt: 1,
         worker_host: nil
       )
 
     assert options[:credential_provider] == provider
+    assert options[:effect_ledger_ready?] == effect_ledger_ready?
     assert options[:attempt] == 1
     refute Keyword.has_key?(options, :task_start_fun)
+    refute Keyword.has_key?(options, :effect_ledger_ready)
   end
 
   test "first abnormal worker exit waits before retrying" do

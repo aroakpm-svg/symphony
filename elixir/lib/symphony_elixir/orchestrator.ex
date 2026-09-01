@@ -55,7 +55,7 @@ defmodule SymphonyElixir.Orchestrator do
   @agent_runner_option_keys [
     :codex_session_starter,
     :credential_provider,
-    :effect_ledger_ready,
+    :effect_ledger_ready?,
     :issue_state_fetcher,
     :max_turns,
     :readiness_command_runner

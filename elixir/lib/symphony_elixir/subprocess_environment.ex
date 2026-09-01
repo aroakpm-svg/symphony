@@ -70,7 +70,10 @@ defmodule SymphonyElixir.SubprocessEnvironment do
   end
 
   defp project_environment(%ProjectExecutionContext{repository: repository}) do
-    %{"SOURCE_REPO_URL" => RepositorySource.url(repository)}
+    %{
+      "SOURCE_REPO_URL" => RepositorySource.url(repository),
+      "SYMPHONY_PROJECT_ISOLATED" => "1"
+    }
   end
 
   @spec private_home_paths(ProjectExecutionContext.t()) :: private_home_paths()
