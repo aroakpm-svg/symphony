@@ -108,6 +108,9 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
     assert configured.observability.notification_timeout_ms == 2_500
 
     invalid_configs = [
+      %{runtime_state_root: safe_root, notification_command: 42, notification_receiver: "on-call"},
+      %{runtime_state_root: safe_root, notification_command: "notify-local", notification_receiver: 42},
+      %{runtime_state_root: safe_root |> Path.split() |> hd()},
       %{runtime_state_root: "relative/runtime-state"},
       %{runtime_state_root: Path.join(safe_root, "Production-runtime")},
       %{runtime_state_root: Path.join(safe_root, "token=canary-value")},

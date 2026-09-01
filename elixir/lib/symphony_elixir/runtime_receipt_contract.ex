@@ -88,10 +88,6 @@ defmodule SymphonyElixir.RuntimeReceiptContract do
     else
       _invalid -> {:error, :invalid_timestamp}
     end
-  rescue
-    _exception -> {:error, :invalid_timestamp}
-  catch
-    _kind, _reason -> {:error, :invalid_timestamp}
   end
 
   def canonical_utc_timestamp(_value), do: {:error, :invalid_timestamp}
@@ -101,10 +97,6 @@ defmodule SymphonyElixir.RuntimeReceiptContract do
     byte_size(value) == @string_max_bytes.at and String.valid?(value) and
       Regex.match?(@canonical_utc_timestamp, value) and
       match?({:ok, %DateTime{}, 0}, DateTime.from_iso8601(value))
-  rescue
-    _exception -> false
-  catch
-    _kind, _reason -> false
   end
 
   def valid_utc_timestamp?(_value), do: false
@@ -145,7 +137,5 @@ defmodule SymphonyElixir.RuntimeReceiptContract do
     end
   rescue
     _exception -> {:error, :invalid_timestamp}
-  catch
-    _kind, _reason -> {:error, :invalid_timestamp}
   end
 end

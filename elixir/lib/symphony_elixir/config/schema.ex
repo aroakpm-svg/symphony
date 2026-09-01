@@ -479,15 +479,11 @@ defmodule SymphonyElixir.Config.Schema do
         not String.contains?(value, <<0>>) and not secret_bearing?(value)
     end
 
-    defp safe_command?(_value), do: false
-
     defp safe_receiver?(value) when is_binary(value) do
       byte_size(value) in 1..128 and String.valid?(value) and
         Regex.match?(~r/\A[A-Za-z0-9][A-Za-z0-9._:@+-]*\z/, value) and
         not secret_bearing?(value)
     end
-
-    defp safe_receiver?(_value), do: false
 
     defp secret_bearing?(value), do: SymphonyElixir.SecretSafety.contains_secret?(value)
 
@@ -711,8 +707,6 @@ defmodule SymphonyElixir.Config.Schema do
       :ok
     end
   end
-
-  defp validate_runtime_state_workspace_separation(_settings), do: :ok
 
   defp path_inside?(path, parent) do
     path = normalized_local_path(path)

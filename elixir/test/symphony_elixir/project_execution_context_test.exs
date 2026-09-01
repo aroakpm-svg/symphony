@@ -44,6 +44,23 @@ defmodule SymphonyElixir.ProjectExecutionContextTest do
              |> ProjectExecutionContext.from_issue()
   end
 
+  test "rejects malformed issue and profile identities" do
+    assert {:error, :invalid_project_profile} = ProjectExecutionContext.from_issue(%{})
+
+    for {attrs, reason} <- [
+          {[id: nil], :invalid_issue_id},
+          {[identifier: ""], :invalid_issue_identifier},
+          {[project_id: "not-a-uuid"], :invalid_project_id},
+          {[project_profile: "central-brain"], :invalid_project_profile},
+          {[project_profile: Map.put(@central_brain, :linear_project_id, "not-a-uuid")], :invalid_project_id}
+        ] do
+      assert {:error, ^reason} =
+               attrs
+               |> authorized_issue()
+               |> ProjectExecutionContext.from_issue()
+    end
+  end
+
   test "rejects an issue assigned to a different Linear project" do
     assert {:error, :project_id_mismatch} =
              authorized_issue(project_id: "708053e0-f42c-4e93-bec4-7abbb37e74af")
