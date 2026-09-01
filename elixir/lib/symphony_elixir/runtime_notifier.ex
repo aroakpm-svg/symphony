@@ -672,7 +672,12 @@ defmodule SymphonyElixir.RuntimeNotifier do
   end
 
   defp local_shell(command, payload, runtime_root, timeout_ms) do
-    event_environment = [{"SYMPHONY_TASK6_EVENT_B64", Base.encode64(payload)}]
+    event_environment =
+      SymphonyElixir.SubprocessEnvironment.isolated_runtime_environment(
+        %{"SYMPHONY_TASK6_EVENT_B64" => Base.encode64(payload)},
+        :os.type()
+      )
+      |> Map.to_list()
 
     case :os.type() do
       {:win32, _} -> windows_local_shell(command, runtime_root, timeout_ms, event_environment)
@@ -1048,8 +1053,9 @@ defmodule SymphonyElixir.RuntimeNotifier do
       :stderr_to_stdout,
       :hide,
       env:
-        Enum.map(environment, fn {key, value} ->
-          {String.to_charlist(key), String.to_charlist(value)}
+        Enum.map(environment, fn
+          {key, false} -> {String.to_charlist(key), false}
+          {key, value} -> {String.to_charlist(key), String.to_charlist(value)}
         end),
       args: Enum.map(args, &String.to_charlist/1)
     ]

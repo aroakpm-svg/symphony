@@ -37,37 +37,34 @@ defmodule SymphonyElixir.SubprocessEnvironment do
   def build(provider_environment, %ProjectExecutionContext{} = context)
       when is_map(provider_environment) do
     paths = private_home_paths(context)
-    runtime_key_set = MapSet.new(Enum.map(@runtime_keys, &String.upcase/1))
-
-    ambient_unsets =
-      System.get_env()
-      |> Enum.filter(fn {key, _value} -> valid_environment_key?(key) end)
-      |> Map.new(fn {key, value} ->
-        if MapSet.member?(runtime_key_set, String.upcase(key)),
-          do: {key, value},
-          else: {key, false}
-      end)
-
-    runtime_environment =
-      Map.new(@runtime_keys, fn key -> {key, System.get_env(key)} end)
-      |> Enum.reject(fn {_key, value} -> is_nil(value) end)
-      |> Map.new()
+    platform = :os.type()
+    ambient_environment = isolated_runtime_environment(%{}, platform)
 
     environment =
       merge_environment_layers(
         [
-          ambient_unsets,
-          runtime_environment,
+          ambient_environment,
           project_environment(context),
           credential_defaults(),
           approved_provider_environment(provider_environment),
           isolated_home_environment(paths)
         ],
-        :os.type()
+        platform
       )
 
     {:ok, environment}
   end
+
+  @doc false
+  @spec isolated_runtime_environment(map(), {:unix | :win32, atom()}) :: t()
+  def isolated_runtime_environment(overrides, platform) when is_map(overrides) do
+    isolate_environment(System.get_env(), runtime_environment(), overrides, platform)
+  end
+
+  @doc false
+  @spec isolate_environment_for_test(map(), map(), map(), {:unix | :win32, atom()}) :: t()
+  def isolate_environment_for_test(ambient, runtime, overrides, platform),
+    do: isolate_environment(ambient, runtime, overrides, platform)
 
   defp project_environment(%ProjectExecutionContext{repository: repository}) do
     %{
@@ -156,6 +153,29 @@ defmodule SymphonyElixir.SubprocessEnvironment do
   defp valid_environment_key?(key) do
     is_binary(key) and key != "" and not String.contains?(key, ["=", <<0>>])
   end
+
+  defp runtime_environment do
+    @runtime_keys
+    |> Map.new(fn key -> {key, System.get_env(key)} end)
+    |> Map.reject(fn {_key, value} -> is_nil(value) end)
+  end
+
+  @spec isolate_environment(map(), map(), map(), {:unix | :win32, atom()}) :: t()
+  defp isolate_environment(ambient, runtime, overrides, platform) do
+    ambient_isolation =
+      ambient
+      |> Enum.filter(fn {key, _value} -> valid_environment_key?(key) end)
+      |> Map.new(fn {key, value} ->
+        if runtime_key?(key, platform), do: {key, value}, else: {key, false}
+      end)
+
+    merge_environment_layers([ambient_isolation, runtime, overrides], platform)
+  end
+
+  @spec runtime_key?(String.t(), {:unix | :win32, atom()}) :: boolean()
+  defp runtime_key?(key, {:win32, _name}), do: String.upcase(key) in @runtime_keys
+
+  defp runtime_key?(key, {:unix, _name}), do: key in @runtime_keys
 
   defp isolated_home_environment(paths) do
     %{

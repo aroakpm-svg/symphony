@@ -439,6 +439,48 @@ defmodule SymphonyElixir.RuntimeNotifierTest do
     end)
   end
 
+  test "command ports clear ambient secrets and retain only runtime allowlist keys" do
+    with_runtime_root(fn root ->
+      previous_opener = Application.get_env(:symphony_elixir, :runtime_notifier_port_opener)
+      previous_secret = System.get_env("LINEAR_API_KEY")
+      owner = self()
+
+      on_exit(fn ->
+        if is_nil(previous_opener) do
+          Application.delete_env(:symphony_elixir, :runtime_notifier_port_opener)
+        else
+          Application.put_env(:symphony_elixir, :runtime_notifier_port_opener, previous_opener)
+        end
+
+        restore_env("LINEAR_API_KEY", previous_secret)
+      end)
+
+      System.put_env("LINEAR_API_KEY", "ambient-notifier-secret")
+
+      Application.put_env(
+        :symphony_elixir,
+        :runtime_notifier_port_opener,
+        fn _target, options ->
+          send(owner, {:port_options, options})
+          {:error, :injected}
+        end
+      )
+
+      assert {:error, :notification_delivery_ambiguous} =
+               RuntimeNotifier.notify_restart_limit(
+                 config(root, success_command(Path.join(root, "unexpected.json"))),
+                 event(root, "epoch-isolated-environment")
+               )
+
+      assert_receive {:port_options, options}
+      environment = options |> Keyword.fetch!(:env) |> Map.new()
+
+      assert environment[~c"LINEAR_API_KEY"] == false
+      assert is_list(environment[~c"PATH"])
+      assert is_list(environment[~c"SYMPHONY_TASK6_EVENT_B64"])
+    end)
+  end
+
   test "concurrent receiver and epoch calls reserve before the notification side effect" do
     with_runtime_root(fn root ->
       log_path = Path.join(root, "notification-calls.jsonl")

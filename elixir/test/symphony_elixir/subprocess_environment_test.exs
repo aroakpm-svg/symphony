@@ -118,6 +118,38 @@ defmodule SymphonyElixir.SubprocessEnvironmentTest do
     assert windows["gh_token"] == "later"
   end
 
+  test "runtime allowlisting is case-sensitive only on POSIX" do
+    ambient = %{"PATH" => "/trusted", "Path" => "ambient-path", "Source_Repo_Url" => "ambient-secret"}
+    runtime = %{"PATH" => "/trusted"}
+
+    unix =
+      SubprocessEnvironment.isolate_environment_for_test(
+        ambient,
+        runtime,
+        %{},
+        {:unix, :linux}
+      )
+
+    assert unix["PATH"] == "/trusted"
+    assert unix["Path"] == false
+    assert unix["Source_Repo_Url"] == false
+
+    windows =
+      SubprocessEnvironment.isolate_environment_for_test(
+        ambient,
+        runtime,
+        %{},
+        {:win32, :nt}
+      )
+
+    assert windows["PATH"] == "/trusted"
+    assert map_size(windows) == 2
+
+    assert Enum.any?(windows, fn {key, value} ->
+             String.downcase(key) == "source_repo_url" and value == "ambient-secret"
+           end)
+  end
+
   test "Git isolation uses each platform's null device" do
     assert SubprocessEnvironment.git_null_device_for_test({:unix, :linux}) == "/dev/null"
     assert SubprocessEnvironment.git_null_device_for_test({:win32, :nt}) == "NUL"
