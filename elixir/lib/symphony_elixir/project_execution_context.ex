@@ -122,9 +122,8 @@ defmodule SymphonyElixir.ProjectExecutionContext do
   end
 
   defp validate_issue_identity(%Issue{id: id, identifier: identifier}) do
-    with :ok <- validate_nonempty_string(id, :invalid_issue_id),
-         :ok <- validate_nonempty_string(identifier, :invalid_issue_identifier) do
-      :ok
+    with :ok <- validate_nonempty_string(id, :invalid_issue_id) do
+      validate_nonempty_string(identifier, :invalid_issue_identifier)
     end
   end
 
