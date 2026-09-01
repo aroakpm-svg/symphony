@@ -2012,6 +2012,29 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
     assert healthy_retry.claimed == failing_retry.claimed
   end
 
+  test "handled dispatch failure is reported as failed instead of succeeded" do
+    profile = health_test_profile()
+    profiles = %{version: 1, profiles: %{profile.key => profile}}
+    issue = health_test_issue(profile)
+    {:ok, health_events} = Agent.start_link(fn -> [] end)
+
+    opts =
+      issue
+      |> health_dispatch_opts(fn event -> Agent.update(health_events, &(&1 ++ [event])) end)
+      |> Keyword.put(:dispatch_fun, fn state, _issue, _attempt, _recipient, _host, _claim ->
+        {:error, state, :worker_spawn_failed}
+      end)
+
+    final_state = Orchestrator.multi_project_dispatch_for_test(health_test_state(), profiles, opts)
+
+    assert final_state.running == %{}
+
+    assert [
+             {:stage, :dispatch, %{status: :started}},
+             {:stage, :dispatch, %{status: :failed, failure_category: :worker_spawn_failed}}
+           ] = Enum.filter(Agent.get(health_events, & &1), &match?({:stage, :dispatch, _}, &1))
+  end
+
   defp wait_for_snapshot(pid, predicate, timeout_ms \\ 200) when is_function(predicate, 1) do
     deadline_ms = System.monotonic_time(:millisecond) + timeout_ms
     do_wait_for_snapshot(pid, predicate, deadline_ms)

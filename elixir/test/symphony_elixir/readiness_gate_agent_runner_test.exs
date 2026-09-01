@@ -336,16 +336,19 @@ defmodule SymphonyElixir.ReadinessGateAgentRunnerTest do
       hook_after_create: "git clone #{shell_escape(shell_path(fixture.remote))} . && printf '%s' \"$#{env_key}\" > #{shell_escape(after_create_marker)}",
       hook_before_run:
         "printf '%s' \"$#{env_key}\" > #{shell_escape(before_run_marker)} && " <>
-          "printf '%s|%s|%s|%s|%s|%s|%s' \"$GITHUB_TOKEN\" \"$LINEAR_API_KEY\" \"$NPM_TOKEN\" \"$NODE_AUTH_TOKEN\" \"$SSH_AUTH_SOCK\" \"$SSH_AGENT_PID\" \"$GIT_SSH_COMMAND\" > #{shell_escape(ambient_marker)} && " <>
+          "printf '%s|%s|%s|%s|%s|%s|%s|%s' \"$GITHUB_TOKEN\" \"$LINEAR_API_KEY\" \"$NPM_TOKEN\" \"$NODE_AUTH_TOKEN\" \"$SSH_AUTH_SOCK\" \"$SSH_AGENT_PID\" \"$GIT_SSH_COMMAND\" \"$OPENAI_API_KEY\" > #{shell_escape(ambient_marker)} && " <>
           "printf '%s' \"$HOME\" > #{shell_escape(home_marker)}",
       hook_after_run: "printf '%s' \"$#{env_key}\" > #{shell_escape(after_run_marker)}"
     )
+
+    codex_api_key = "codex-#{System.unique_integer([:positive, :monotonic])}"
 
     credential_provider = fn "github-central-brain" ->
       {:ok,
        {"github-central-brain",
         %{
-          env_key => env_value
+          env_key => env_value,
+          "OPENAI_API_KEY" => codex_api_key
         }}}
     end
 
@@ -369,7 +372,7 @@ defmodule SymphonyElixir.ReadinessGateAgentRunnerTest do
     assert File.read!(after_create_marker) == env_value
     assert File.read!(before_run_marker) == env_value
     assert File.read!(after_run_marker) == env_value
-    assert File.read!(ambient_marker) == "||||||"
+    assert File.read!(ambient_marker) == "|||||||"
     refute File.exists?(profile_marker)
 
     private_home = File.read!(home_marker)
@@ -383,6 +386,7 @@ defmodule SymphonyElixir.ReadinessGateAgentRunnerTest do
     assert capability
     refute Workspace.private_home_capability_active_for_test?(capability)
     assert runtime_opts[:env][env_key] == env_value
+    assert runtime_opts[:env]["OPENAI_API_KEY"] == codex_api_key
     assert runtime_opts[:env]["GITHUB_TOKEN"] == false
     assert runtime_opts[:env]["LINEAR_API_KEY"] == false
     assert runtime_opts[:env]["NPM_TOKEN"] == false

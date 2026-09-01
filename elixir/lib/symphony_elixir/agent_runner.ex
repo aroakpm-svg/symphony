@@ -40,7 +40,8 @@ defmodule SymphonyElixir.AgentRunner do
 
     with {:ok, execution_context} <- execution_context(issue, opts),
          {:ok, credential_env} <- credential_environment(execution_context, opts),
-         {:ok, process_env} <- subprocess_environment(credential_env, execution_context) do
+         project_env <- Map.drop(credential_env, ["OPENAI_API_KEY"]),
+         {:ok, process_env} <- subprocess_environment(project_env, execution_context) do
       run_with_execution_context(
         issue,
         codex_update_recipient,
@@ -48,7 +49,7 @@ defmodule SymphonyElixir.AgentRunner do
         worker_host,
         execution_context,
         process_env,
-        Map.values(credential_env)
+        credential_env
       )
     else
       {:error, reason} ->
@@ -69,12 +70,15 @@ defmodule SymphonyElixir.AgentRunner do
          worker_host,
          execution_context,
          process_env,
-         sensitive_env_values
+         credential_env
        ) do
+    codex_env = Map.take(credential_env, ["OPENAI_API_KEY"])
+
     runtime_opts =
       [
         env: process_env,
-        sensitive_env_values: sensitive_env_values,
+        sensitive_env_values: Map.values(credential_env),
+        codex_env: codex_env,
         execution_context: execution_context
       ]
       |> maybe_put_subprocess_home_paths(execution_context)
@@ -494,7 +498,10 @@ defmodule SymphonyElixir.AgentRunner do
          {:ok, session} <-
            session_starter.(
              workspace,
-             Keyword.merge(runtime_opts,
+             runtime_opts
+             |> Keyword.update!(:env, &Map.merge(&1, runtime_opts[:codex_env]))
+             |> Keyword.delete(:codex_env)
+             |> Keyword.merge(
                worker_host: worker_host,
                managed_session: managed_session,
                managed_issue_id: if(managed_session, do: issue.id)

@@ -1836,9 +1836,25 @@ defmodule SymphonyElixir.Orchestrator do
 
   defp dispatch_acquired_claim(dispatch_fun, state, issue, attempt, recipient, worker_host, claim, opts) do
     report_health(opts, {:stage, :dispatch, health_issue_metadata(issue, :started)})
-    result = dispatch_fun.(state, issue, attempt, recipient, worker_host, claim)
-    report_health(opts, {:stage, :dispatch, health_issue_metadata(issue, :succeeded)})
-    result
+
+    case dispatch_fun.(state, issue, attempt, recipient, worker_host, claim) do
+      {:ok, result} ->
+        report_health(opts, {:stage, :dispatch, health_issue_metadata(issue, :succeeded)})
+        result
+
+      {:error, result, failure_category} when is_atom(failure_category) ->
+        report_health(opts, {
+          :stage,
+          :dispatch,
+          health_issue_metadata(issue, :failed, failure_category)
+        })
+
+        result
+
+      result ->
+        report_health(opts, {:stage, :dispatch, health_issue_metadata(issue, :succeeded)})
+        result
+    end
   rescue
     exception ->
       report_health(opts, {:stage, :dispatch, health_issue_metadata(issue, :failed, :dispatch_exception)})
@@ -1929,14 +1945,15 @@ defmodule SymphonyElixir.Orchestrator do
         Logger.error("Unable to spawn agent for #{issue_context(issue)}: #{inspect(reason)}")
         next_attempt = if is_integer(attempt), do: attempt + 1, else: nil
 
-        transition_retry_unowned_backoff(
-          state,
-          issue,
-          next_attempt,
-          "failed to spawn agent: #{inspect(reason)}",
-          worker_host,
-          opts
-        )
+        {:error,
+         transition_retry_unowned_backoff(
+           state,
+           issue,
+           next_attempt,
+           "failed to spawn agent: #{inspect(reason)}",
+           worker_host,
+           opts
+         ), :worker_spawn_failed}
     end
   end
 
@@ -1950,8 +1967,8 @@ defmodule SymphonyElixir.Orchestrator do
     context = Map.put(context, :ref, Process.monitor(context.pid))
 
     case spawned_worker_startup_outcome(context) do
-      {:ok, state} -> state
-      {:error, reason} -> cleanup_spawned_worker_failure(context, reason)
+      {:ok, state} -> {:ok, state}
+      {:error, reason} -> {:error, cleanup_spawned_worker_failure(context, reason), :worker_startup_failed}
     end
   end
 

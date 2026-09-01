@@ -17,7 +17,8 @@ defmodule SymphonyElixir.ProjectCredentialProvider do
                                  "SSH_AUTH_SOCK",
                                  "SSH_AGENT_PID",
                                  "GIT_CONFIG_PARAMETERS",
-                                 "GIT_CONFIG_COUNT"
+                                 "GIT_CONFIG_COUNT",
+                                 "OPENAI_API_KEY"
                                ])
 
   @type environment :: %{optional(String.t()) => String.t()}
