@@ -1282,6 +1282,7 @@ defmodule SymphonyElixir.Orchestrator do
             "#{issue_context(issue)} project_id=#{inspect(issue.project_id)}"
         )
 
+        retire_blocked_execution_context(state, issue.id)
         release_issue_claim(state, issue.id)
 
       active_issue_state?(issue.state, active_states) ->
@@ -1410,7 +1411,7 @@ defmodule SymphonyElixir.Orchestrator do
         stop_running_task(pid, ref)
 
         if retire_execution_context?(termination_policy) do
-          cleanup_issue_workspace(
+          retire_execution_context(
             identifier,
             worker_host,
             execution_context,
@@ -1439,6 +1440,25 @@ defmodule SymphonyElixir.Orchestrator do
 
   defp retire_execution_context?(termination_policy),
     do: termination_policy in [:complete, :invalidate_context]
+
+  defp retire_blocked_execution_context(%State{} = state, issue_id) do
+    case Map.get(state.blocked, issue_id) do
+      %{identifier: identifier} = blocked_entry ->
+        retire_execution_context(
+          identifier,
+          Map.get(blocked_entry, :worker_host),
+          Map.get(blocked_entry, :execution_context),
+          Map.get(blocked_entry, :workspace_attestation)
+        )
+
+      _missing ->
+        :ok
+    end
+  end
+
+  defp retire_execution_context(identifier, worker_host, execution_context, workspace_attestation) do
+    cleanup_issue_workspace(identifier, worker_host, execution_context, workspace_attestation)
+  end
 
   defp reconcile_stalled_running_issues(%State{running: running} = state) when map_size(running) == 0,
     do: state
@@ -2407,6 +2427,21 @@ defmodule SymphonyElixir.Orchestrator do
 
         {:noreply, transition_retry_release(state, issue, opts)}
 
+      retry_project_identity_changed?(metadata, issue) ->
+        Logger.warning(
+          "Retry issue project identity changed; releasing claim: " <>
+            "#{issue_context(issue)} project_id=#{inspect(issue.project_id)}"
+        )
+
+        retire_execution_context(
+          metadata[:identifier] || issue.identifier,
+          metadata[:worker_host],
+          metadata[:execution_context],
+          metadata[:workspace_attestation]
+        )
+
+        {:noreply, transition_retry_release(state, issue, opts)}
+
       retry_candidate_issue?(issue, terminal_states) ->
         handle_active_retry(state, issue, attempt, metadata, opts)
 
@@ -2421,6 +2456,15 @@ defmodule SymphonyElixir.Orchestrator do
     Logger.debug("Issue no longer visible, removing claim issue_id=#{issue_id}")
     {:noreply, transition_retry_release_id(state, issue_id, opts)}
   end
+
+  defp retry_project_identity_changed?(
+         %{execution_context: %ProjectExecutionContext{linear_project_id: expected_project_id}},
+         %Issue{project_id: refreshed_project_id}
+       ) do
+    not project_ids_match?(expected_project_id, refreshed_project_id)
+  end
+
+  defp retry_project_identity_changed?(_metadata, _issue), do: false
 
   defp cleanup_issue_workspace(
          identifier,

@@ -667,8 +667,21 @@ defmodule SymphonyElixir.CoreTest do
     {owned_issue, execution_context} =
       execution_fixture("central-brain", "ARO-286", "blocked-project-move", 24)
 
+    old_workspace = Path.join([test_root, execution_context.workspace_namespace, owned_issue.identifier])
+    new_workspace = Path.join([test_root, "project-management", owned_issue.identifier])
+    legacy_workspace = Path.join(test_root, owned_issue.identifier)
+
     try do
       write_workflow_file!(Workflow.workflow_file_path(), workspace_root: test_root)
+
+      assert {:ok, %{path: prepared_workspace}} =
+               Workspace.prepare_for_issue(owned_issue, nil, execution_context)
+
+      assert String.downcase(Path.expand(prepared_workspace)) ==
+               String.downcase(Path.expand(old_workspace))
+
+      File.mkdir_p!(new_workspace)
+      File.mkdir_p!(legacy_workspace)
 
       state = %Orchestrator.State{
         blocked: %{
@@ -694,6 +707,56 @@ defmodule SymphonyElixir.CoreTest do
 
       refute Map.has_key?(updated_state.blocked, owned_issue.id)
       refute MapSet.member?(updated_state.claimed, owned_issue.id)
+      refute File.exists?(old_workspace)
+      assert File.dir?(new_workspace)
+      assert File.dir?(legacy_workspace)
+    after
+      File.rm_rf(test_root)
+    end
+  end
+
+  test "retry reconciliation retires the old execution context only on an authoritative project mismatch" do
+    test_root =
+      Path.join(System.tmp_dir!(), "symphony-retry-project-move-#{System.unique_integer([:positive])}")
+
+    {owned_issue, execution_context} =
+      execution_fixture("central-brain", "ARO-286", "retry-project-move", 25)
+
+    old_workspace = Path.join([test_root, execution_context.workspace_namespace, owned_issue.identifier])
+    new_workspace = Path.join([test_root, "project-management", owned_issue.identifier])
+
+    try do
+      write_workflow_file!(Workflow.workflow_file_path(), workspace_root: test_root)
+
+      assert {:ok, %{path: prepared_workspace}} =
+               Workspace.prepare_for_issue(owned_issue, nil, execution_context)
+
+      assert String.downcase(Path.expand(prepared_workspace)) ==
+               String.downcase(Path.expand(old_workspace))
+
+      File.mkdir_p!(new_workspace)
+
+      state = %Orchestrator.State{claimed: MapSet.new([owned_issue.id]), retry_attempts: %{}}
+
+      moved_issue = %{
+        owned_issue
+        | project_id: "708053e0-f42c-4e93-bec4-7abbb37e74af",
+          state: "In Progress",
+          project_profile: nil
+      }
+
+      updated_state =
+        Orchestrator.handle_retry_issue_lookup_for_test(moved_issue, state, owned_issue.id, 1, %{
+          identifier: owned_issue.identifier,
+          execution_context: execution_context,
+          workspace_attestation: nil,
+          worker_host: nil,
+          project_profile: owned_issue.project_profile
+        })
+
+      refute MapSet.member?(updated_state.claimed, owned_issue.id)
+      refute File.exists?(old_workspace)
+      assert File.dir?(new_workspace)
     after
       File.rm_rf(test_root)
     end
