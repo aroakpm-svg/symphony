@@ -1230,6 +1230,13 @@ defmodule SymphonyElixir.Orchestrator do
          %Issue{project_id: refreshed_project_id}
        )
        when is_binary(expected_project_id) and is_binary(refreshed_project_id) do
+    project_ids_match?(expected_project_id, refreshed_project_id)
+  end
+
+  defp running_project_identity_matches?(_existing_issue, _refreshed_issue), do: false
+
+  defp project_ids_match?(expected_project_id, refreshed_project_id)
+       when is_binary(expected_project_id) and is_binary(refreshed_project_id) do
     with {:ok, expected_uuid} <- Ecto.UUID.cast(expected_project_id),
          {:ok, refreshed_uuid} <- Ecto.UUID.cast(refreshed_project_id) do
       expected_uuid == refreshed_uuid
@@ -1238,7 +1245,7 @@ defmodule SymphonyElixir.Orchestrator do
     end
   end
 
-  defp running_project_identity_matches?(_existing_issue, _refreshed_issue), do: false
+  defp project_ids_match?(_expected_project_id, _refreshed_project_id), do: false
 
   defp reconcile_blocked_issue_states([], state, _active_states, _terminal_states), do: state
 
@@ -1269,6 +1276,14 @@ defmodule SymphonyElixir.Orchestrator do
         Logger.info("Blocked issue no longer routed to this worker: #{issue_context(issue)} assignee=#{inspect(issue.assignee_id)}; releasing block")
         release_issue_claim(state, issue.id)
 
+      !blocked_project_identity_matches?(state, issue) ->
+        Logger.warning(
+          "Blocked issue project identity changed; releasing claim: " <>
+            "#{issue_context(issue)} project_id=#{inspect(issue.project_id)}"
+        )
+
+        release_issue_claim(state, issue.id)
+
       active_issue_state?(issue.state, active_states) ->
         refresh_blocked_issue_state(state, issue)
 
@@ -1279,6 +1294,16 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   defp reconcile_blocked_issue_state(_issue, state, _active_states, _terminal_states), do: state
+
+  defp blocked_project_identity_matches?(%State{} = state, %Issue{} = issue) do
+    case Map.get(state.blocked, issue.id) do
+      %{execution_context: %ProjectExecutionContext{linear_project_id: expected_project_id}} ->
+        project_ids_match?(expected_project_id, issue.project_id)
+
+      _legacy_or_missing ->
+        true
+    end
+  end
 
   defp reconcile_missing_running_issue_ids(%State{} = state, requested_issue_ids, issues)
        when is_list(requested_issue_ids) and is_list(issues) do

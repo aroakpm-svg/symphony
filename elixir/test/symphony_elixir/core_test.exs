@@ -597,6 +597,45 @@ defmodule SymphonyElixir.CoreTest do
     end
   end
 
+  test "blocked reconciliation releases a claim when the issue moves to another project" do
+    test_root =
+      Path.join(System.tmp_dir!(), "symphony-blocked-project-move-#{System.unique_integer([:positive])}")
+
+    {owned_issue, execution_context} =
+      execution_fixture("central-brain", "ARO-286", "blocked-project-move", 24)
+
+    try do
+      write_workflow_file!(Workflow.workflow_file_path(), workspace_root: test_root)
+
+      state = %Orchestrator.State{
+        blocked: %{
+          owned_issue.id => %{
+            identifier: owned_issue.identifier,
+            issue: owned_issue,
+            execution_context: execution_context,
+            workspace_attestation: nil,
+            worker_host: nil
+          }
+        },
+        claimed: MapSet.new([owned_issue.id]),
+        retry_attempts: %{}
+      }
+
+      moved_issue = %{
+        owned_issue
+        | project_id: "708053e0-f42c-4e93-bec4-7abbb37e74af",
+          state: "In Progress"
+      }
+
+      updated_state = Orchestrator.reconcile_blocked_issue_states_for_test([moved_issue], state)
+
+      refute Map.has_key?(updated_state.blocked, owned_issue.id)
+      refute MapSet.member?(updated_state.claimed, owned_issue.id)
+    after
+      File.rm_rf(test_root)
+    end
+  end
+
   test "terminal retry cleanup reacquires a missing attestation in the exact project context" do
     test_root =
       Path.join(System.tmp_dir!(), "symphony-retry-context-#{System.unique_integer([:positive])}")
