@@ -10,6 +10,11 @@ defmodule SymphonyElixir.AgentRunner do
 
   @type worker_host :: String.t() | nil
 
+  defmodule TurnContext do
+    @moduledoc false
+    defstruct [:app_session, :workspace, :recipient, :opts, :issue_state_fetcher, :runtime_opts, :max_turns]
+  end
+
   @doc false
   @spec continue_with_issue_for_test(Issue.t(), ([String.t()] -> term())) ::
           {:continue, Issue.t()} | {:done, Issue.t()} | {:error, term()}
@@ -86,114 +91,131 @@ defmodule SymphonyElixir.AgentRunner do
     preparation_opts = Keyword.put(runtime_opts, :attest_preparation_errors, true)
 
     case Workspace.prepare_for_issue(issue, worker_host, execution_context, preparation_opts) do
-      {:ok,
-       %{
-         path: workspace,
-         readiness_state: readiness_state,
-         workspace_attestation: workspace_attestation,
-         private_home_capability: private_home_capability
-       } = preparation} ->
-        effect_opts =
-          runtime_opts
-          |> Keyword.put(:workspace_attestation, workspace_attestation)
-          |> Keyword.put(:private_home_capability, private_home_capability)
-
-        with_private_home_capability(private_home_capability, fn ->
-          send_worker_runtime_info(
-            codex_update_recipient,
-            issue,
-            worker_host,
-            workspace,
-            workspace_attestation
-          )
-
-          run_result =
-            try do
-              with :ok <- Workspace.preflight(workspace, issue, worker_host, effect_opts),
-                   {:ok, receipt} <-
-                     verify_readiness(
-                       workspace,
-                       issue,
-                       worker_host,
-                       readiness_state,
-                       opts,
-                       effect_opts
-                     ),
-                   :ok <-
-                     persist_readiness(
-                       preparation,
-                       issue,
-                       receipt,
-                       worker_host,
-                       opts,
-                       effect_opts
-                     ),
-                   :ok <-
-                     Workspace.run_before_run_hook(workspace, issue, worker_host, effect_opts) do
-                run_codex_turns(
-                  workspace,
-                  issue,
-                  codex_update_recipient,
-                  opts,
-                  worker_host,
-                  effect_opts
-                )
-              else
-                {:error, {:workspace_preflight_failed, _type, _command, _status, _output} = reason} ->
-                  {:deferred_workspace_preflight_failure, reason}
-
-                {:error, {:workspace_preflight_failed, _type, _command, _detail} = reason} ->
-                  {:deferred_workspace_preflight_failure, reason}
-
-                {:error, {:readiness_gate_failed, %ReadinessGate.Failure{}} = reason} ->
-                  {:deferred_workspace_preflight_failure, reason}
-
-                {:error, {:readiness_state_failed, _state_reason} = reason} ->
-                  {:deferred_workspace_preflight_failure, reason}
-
-                other ->
-                  other
-              end
-            after
-              Workspace.run_after_run_hook(workspace, issue, worker_host, effect_opts)
-            end
-
-          case run_result do
-            {:deferred_workspace_preflight_failure, reason} ->
-              handle_workspace_preflight_failure(codex_update_recipient, issue, worker_host, workspace, reason)
-
-            other ->
-              other
-          end
-        end)
+      {:ok, preparation} ->
+        run_prepared_issue(preparation, issue, codex_update_recipient, opts, worker_host, runtime_opts)
 
       {:error, reason} ->
-        case readiness_state_error_effect_opts(reason, runtime_opts) do
-          {:ok, workspace, effect_opts, readiness_reason} ->
-            with_private_home_capability(effect_opts[:private_home_capability], fn ->
-              send_worker_runtime_info(
-                codex_update_recipient,
-                issue,
-                worker_host,
-                workspace,
-                effect_opts[:workspace_attestation]
-              )
-
-              Workspace.run_after_run_hook(workspace, issue, worker_host, effect_opts)
-
-              handle_workspace_preflight_failure(
-                codex_update_recipient,
-                issue,
-                worker_host,
-                workspace,
-                {:readiness_state_failed, readiness_reason}
-              )
-            end)
-
-          :error ->
-            {:error, reason}
-        end
+        handle_preparation_error(reason, runtime_opts, issue, codex_update_recipient, worker_host)
     end
+  end
+
+  defp run_prepared_issue(preparation, issue, recipient, opts, worker_host, runtime_opts) do
+    %{
+      path: workspace,
+      readiness_state: _readiness_state,
+      workspace_attestation: workspace_attestation,
+      private_home_capability: private_home_capability
+    } = preparation
+
+    effect_opts =
+      runtime_opts
+      |> Keyword.put(:workspace_attestation, workspace_attestation)
+      |> Keyword.put(:private_home_capability, private_home_capability)
+
+    with_private_home_capability(private_home_capability, fn ->
+      send_worker_runtime_info(recipient, issue, worker_host, workspace, workspace_attestation)
+
+      run_prepared_attempt(preparation, issue, recipient, opts, worker_host, effect_opts)
+    end)
+  end
+
+  defp run_prepared_attempt(preparation, issue, recipient, opts, worker_host, effect_opts) do
+    workspace = preparation.path
+
+    result =
+      try do
+        execute_prepared_attempt(preparation, issue, recipient, opts, worker_host, effect_opts)
+      after
+        Workspace.run_after_run_hook(workspace, issue, worker_host, effect_opts)
+      end
+
+    case result do
+      {:deferred_workspace_preflight_failure, reason} ->
+        handle_workspace_preflight_failure(recipient, issue, worker_host, workspace, reason)
+
+      other ->
+        other
+    end
+  end
+
+  defp execute_prepared_attempt(preparation, issue, recipient, opts, worker_host, effect_opts) do
+    workspace = preparation.path
+
+    with :ok <- Workspace.preflight(workspace, issue, worker_host, effect_opts),
+         {:ok, receipt} <-
+           verify_readiness(
+             workspace,
+             issue,
+             worker_host,
+             preparation.readiness_state,
+             opts,
+             effect_opts
+           ),
+         :ok <- persist_readiness(preparation, issue, receipt, worker_host, opts, effect_opts),
+         :ok <- Workspace.run_before_run_hook(workspace, issue, worker_host, effect_opts) do
+      run_codex_turns(workspace, issue, recipient, opts, worker_host, effect_opts)
+    else
+      {:error, {:workspace_preflight_failed, _type, _command, _status, _output} = reason} ->
+        {:deferred_workspace_preflight_failure, reason}
+
+      {:error, {:workspace_preflight_failed, _type, _command, _detail} = reason} ->
+        {:deferred_workspace_preflight_failure, reason}
+
+      {:error, {:readiness_gate_failed, %ReadinessGate.Failure{}} = reason} ->
+        {:deferred_workspace_preflight_failure, reason}
+
+      {:error, {:readiness_state_failed, _state_reason} = reason} ->
+        {:deferred_workspace_preflight_failure, reason}
+
+      other ->
+        other
+    end
+  end
+
+  defp handle_preparation_error(reason, runtime_opts, issue, recipient, worker_host) do
+    case readiness_state_error_effect_opts(reason, runtime_opts) do
+      {:ok, workspace, effect_opts, readiness_reason} ->
+        handle_attested_preparation_error(
+          workspace,
+          effect_opts,
+          readiness_reason,
+          issue,
+          recipient,
+          worker_host
+        )
+
+      :error ->
+        {:error, reason}
+    end
+  end
+
+  defp handle_attested_preparation_error(
+         workspace,
+         effect_opts,
+         readiness_reason,
+         issue,
+         recipient,
+         worker_host
+       ) do
+    with_private_home_capability(effect_opts[:private_home_capability], fn ->
+      send_worker_runtime_info(
+        recipient,
+        issue,
+        worker_host,
+        workspace,
+        effect_opts[:workspace_attestation]
+      )
+
+      Workspace.run_after_run_hook(workspace, issue, worker_host, effect_opts)
+
+      handle_workspace_preflight_failure(
+        recipient,
+        issue,
+        worker_host,
+        workspace,
+        {:readiness_state_failed, readiness_reason}
+      )
+    end)
   end
 
   defp with_private_home_capability(private_home_capability, callback)
@@ -508,17 +530,17 @@ defmodule SymphonyElixir.AgentRunner do
              )
            ) do
       try do
-        do_run_codex_turns(
-          session,
-          workspace,
-          issue,
-          codex_update_recipient,
-          opts,
-          issue_state_fetcher,
-          runtime_opts,
-          1,
-          max_turns
-        )
+        context = %TurnContext{
+          app_session: session,
+          workspace: workspace,
+          recipient: codex_update_recipient,
+          opts: opts,
+          issue_state_fetcher: issue_state_fetcher,
+          runtime_opts: runtime_opts,
+          max_turns: max_turns
+        }
+
+        do_run_codex_turns(context, issue, 1)
       after
         AppServer.stop_session(session)
       end
@@ -531,44 +553,24 @@ defmodule SymphonyElixir.AgentRunner do
 
   defp managed_session_mode(_distributed_claim, _effect_ledger_ready?), do: {:ok, false}
 
-  defp do_run_codex_turns(
-         app_session,
-         workspace,
-         issue,
-         codex_update_recipient,
-         opts,
-         issue_state_fetcher,
-         runtime_opts,
-         turn_number,
-         max_turns
-       ) do
-    prompt = build_turn_prompt(issue, opts, turn_number, max_turns)
+  defp do_run_codex_turns(%TurnContext{} = context, issue, turn_number) do
+    prompt = build_turn_prompt(issue, context.opts, turn_number, context.max_turns)
 
     with {:ok, turn_session} <-
            AppServer.run_turn(
-             app_session,
+             context.app_session,
              prompt,
              issue,
-             on_message: codex_message_handler(codex_update_recipient, issue),
-             sensitive_env_values: Keyword.get(runtime_opts, :sensitive_env_values, [])
+             on_message: codex_message_handler(context.recipient, issue),
+             sensitive_env_values: Keyword.get(context.runtime_opts, :sensitive_env_values, [])
            ) do
-      Logger.info("Completed agent run for #{issue_context(issue)} session_id=#{turn_session[:session_id]} workspace=#{workspace} turn=#{turn_number}/#{max_turns}")
+      Logger.info("Completed agent run for #{issue_context(issue)} session_id=#{turn_session[:session_id]} workspace=#{context.workspace} turn=#{turn_number}/#{context.max_turns}")
 
-      case continue_with_issue?(issue, issue_state_fetcher) do
-        {:continue, refreshed_issue} when turn_number < max_turns ->
-          Logger.info("Continuing agent run for #{issue_context(refreshed_issue)} after normal turn completion turn=#{turn_number}/#{max_turns}")
+      case continue_with_issue?(issue, context.issue_state_fetcher) do
+        {:continue, refreshed_issue} when turn_number < context.max_turns ->
+          Logger.info("Continuing agent run for #{issue_context(refreshed_issue)} after normal turn completion turn=#{turn_number}/#{context.max_turns}")
 
-          do_run_codex_turns(
-            app_session,
-            workspace,
-            refreshed_issue,
-            codex_update_recipient,
-            opts,
-            issue_state_fetcher,
-            runtime_opts,
-            turn_number + 1,
-            max_turns
-          )
+          do_run_codex_turns(context, refreshed_issue, turn_number + 1)
 
         {:continue, refreshed_issue} ->
           Logger.info("Reached agent.max_turns for #{issue_context(refreshed_issue)} with issue still active; returning control to orchestrator")

@@ -140,7 +140,7 @@ defmodule SymphonyElixir.RuntimeHealthTest do
     now = ~U[2026-08-28 01:02:03Z]
 
     health =
-      start_supervised!({RuntimeHealth, name: nil, clock: fn -> now end, runtime_epoch: "test-epoch", receipt_root: context.receipt_root, workspace_root: context.workspace_root})
+      start_runtime_health(context, clock: fn -> now end, runtime_epoch: "test-epoch")
 
     metadata = %{
       profile_key: "central-brain",
@@ -232,7 +232,10 @@ defmodule SymphonyElixir.RuntimeHealthTest do
 
   test "rejects an invalid clock before every mutable health transition", context do
     health =
-      start_supervised!({RuntimeHealth, name: nil, clock: fn -> "invalid" end, runtime_epoch: "invalid-transition-clock", receipt_root: context.receipt_root, workspace_root: context.workspace_root})
+      start_runtime_health(context,
+        clock: fn -> "invalid" end,
+        runtime_epoch: "invalid-transition-clock"
+      )
 
     assert {:error, :invalid_clock} =
              RuntimeHealth.stage(health, :dispatch, %{status: :started})
@@ -299,7 +302,7 @@ defmodule SymphonyElixir.RuntimeHealthTest do
 
   test "truncates an oversized single grapheme by UTF-8 bytes before receipt publication", context do
     health =
-      start_supervised!({RuntimeHealth, name: nil, runtime_epoch: "oversize-receipt", receipt_root: context.receipt_root, workspace_root: context.workspace_root})
+      start_runtime_health(context, runtime_epoch: "oversize-receipt")
 
     oversized_single_grapheme = "a" <> String.duplicate("́", 9_000)
     expected_detail = "a" <> String.duplicate("́", 4_095)
@@ -319,7 +322,7 @@ defmodule SymphonyElixir.RuntimeHealthTest do
 
   test "normalizes stage and stop detail at the exact UTF-8 byte boundary", context do
     health =
-      start_supervised!({RuntimeHealth, name: nil, runtime_epoch: "detail-boundary", receipt_root: context.receipt_root, workspace_root: context.workspace_root})
+      start_runtime_health(context, runtime_epoch: "detail-boundary")
 
     max_detail = max_detail_with_zwj()
     oversized_detail = max_detail <> "🔥"
@@ -342,7 +345,7 @@ defmodule SymphonyElixir.RuntimeHealthTest do
     max_revision = 9_223_372_036_854_775_807
 
     health =
-      start_supervised!({RuntimeHealth, name: nil, runtime_epoch: "revision-boundary", receipt_root: context.receipt_root, workspace_root: context.workspace_root})
+      start_runtime_health(context, runtime_epoch: "revision-boundary")
 
     assert :ok =
              RuntimeHealth.stage(health, :routing, %{
@@ -370,7 +373,7 @@ defmodule SymphonyElixir.RuntimeHealthTest do
     epoch = String.duplicate("e", 128)
 
     health =
-      start_supervised!({RuntimeHealth, name: nil, runtime_epoch: epoch, receipt_root: context.receipt_root, workspace_root: context.workspace_root})
+      start_runtime_health(context, runtime_epoch: epoch)
 
     fields = maximum_stop_fields()
     assert :ok = RuntimeHealth.stop(health, fields)
@@ -395,7 +398,7 @@ defmodule SymphonyElixir.RuntimeHealthTest do
     end
 
     health =
-      start_supervised!({RuntimeHealth, name: nil, clock: clock, history_limit: 3, receipt_root: context.receipt_root, workspace_root: context.workspace_root})
+      start_runtime_health(context, clock: clock, history_limit: 3)
 
     initial = RuntimeHealth.snapshot(health)
     assert initial.last_successful_poll_at == :unknown
@@ -421,7 +424,7 @@ defmodule SymphonyElixir.RuntimeHealthTest do
 
   test "rejects unknown stages, fields, and credential-like values before truncation", context do
     health =
-      start_supervised!({RuntimeHealth, name: nil, clock: fn -> ~U[2026-08-28 03:00:00Z] end, receipt_root: context.receipt_root, workspace_root: context.workspace_root})
+      start_runtime_health(context, clock: fn -> ~U[2026-08-28 03:00:00Z] end)
 
     assert {:error, :unknown_stage} =
              RuntimeHealth.stage(health, :workspace_creation, %{status: :started})
@@ -489,7 +492,7 @@ defmodule SymphonyElixir.RuntimeHealthTest do
 
   test "validates every accepted field by key and rejects wrong scalar types", context do
     health =
-      start_supervised!({RuntimeHealth, name: nil, receipt_root: context.receipt_root, workspace_root: context.workspace_root})
+      start_runtime_health(context)
 
     invalid_stage_fields = [
       {%{status: "started"}, :status},
@@ -533,7 +536,7 @@ defmodule SymphonyElixir.RuntimeHealthTest do
     end
 
     health =
-      start_supervised!({RuntimeHealth, name: nil, clock: clock, runtime_epoch: "replay-epoch", receipt_root: context.receipt_root, workspace_root: context.workspace_root})
+      start_runtime_health(context, clock: clock, runtime_epoch: "replay-epoch")
 
     dependency = %{status: :failed, failure_category: :claim_timeout}
     assert :ok = RuntimeHealth.dependency(health, :claim_store, dependency)
@@ -572,10 +575,9 @@ defmodule SymphonyElixir.RuntimeHealthTest do
     resolver = fn path ->
       expanded = Path.expand(path)
 
-      cond do
-        expanded == runtime_state_path -> {:ok, escaped_path}
-        true -> PathSafety.canonicalize(expanded)
-      end
+      if expanded == runtime_state_path,
+        do: {:ok, escaped_path},
+        else: PathSafety.canonicalize(expanded)
     end
 
     assert {:error, {:unsafe_runtime_state_root, :outside_receipt_root}} =
@@ -649,7 +651,7 @@ defmodule SymphonyElixir.RuntimeHealthTest do
     end
 
     health =
-      start_supervised!({RuntimeHealth, name: nil, runtime_epoch: "replaced-epoch", path_resolver: resolver, receipt_root: context.receipt_root, workspace_root: context.workspace_root})
+      start_runtime_health(context, runtime_epoch: "replaced-epoch", path_resolver: resolver)
 
     Agent.update(resolver_mode, fn _mode -> :escaped end)
 
@@ -693,7 +695,12 @@ defmodule SymphonyElixir.RuntimeHealthTest do
 
     health =
       start_supervised!(
-        {RuntimeHealth, name: nil, runtime_epoch: "boundary-epoch", before_receipt_publish: before_receipt_publish, receipt_root: context.receipt_root, workspace_root: context.workspace_root}
+        {RuntimeHealth,
+         Keyword.merge(
+           [name: nil, receipt_root: context.receipt_root, workspace_root: context.workspace_root],
+           runtime_epoch: "boundary-epoch",
+           before_receipt_publish: before_receipt_publish
+         )}
       )
 
     result = RuntimeHealth.stop(health, %{category: :normal_shutdown})
@@ -975,5 +982,15 @@ defmodule SymphonyElixir.RuntimeHealthTest do
   defp max_detail_with_zwj do
     family = "👨‍👩‍👧‍👦"
     family <> String.duplicate("\\", 8_192 - byte_size(family))
+  end
+
+  defp start_runtime_health(context, opts \\ []) do
+    defaults = [
+      name: nil,
+      receipt_root: context.receipt_root,
+      workspace_root: context.workspace_root
+    ]
+
+    start_supervised!({RuntimeHealth, Keyword.merge(defaults, opts)})
   end
 end

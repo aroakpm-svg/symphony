@@ -336,7 +336,7 @@ defmodule SymphonyElixir.ReadinessGateAgentRunnerTest do
       hook_after_create: "git clone #{shell_escape(shell_path(fixture.remote))} . && printf '%s' \"$#{env_key}\" > #{shell_escape(after_create_marker)}",
       hook_before_run:
         "printf '%s' \"$#{env_key}\" > #{shell_escape(before_run_marker)} && " <>
-          "printf '%s|%s|%s|%s|%s|%s|%s|%s' \"$GITHUB_TOKEN\" \"$LINEAR_API_KEY\" \"$NPM_TOKEN\" \"$NODE_AUTH_TOKEN\" \"$SSH_AUTH_SOCK\" \"$SSH_AGENT_PID\" \"$GIT_SSH_COMMAND\" \"$OPENAI_API_KEY\" > #{shell_escape(ambient_marker)} && " <>
+          ~s/printf '%s|%s|%s|%s|%s|%s|%s|%s' "$GITHUB_TOKEN" "$LINEAR_API_KEY" "$NPM_TOKEN" "$NODE_AUTH_TOKEN" "$SSH_AUTH_SOCK" "$SSH_AGENT_PID" "$GIT_SSH_COMMAND" "$OPENAI_API_KEY" > #{shell_escape(ambient_marker)} && / <>
           "printf '%s' \"$HOME\" > #{shell_escape(home_marker)}",
       hook_after_run: "printf '%s' \"$#{env_key}\" > #{shell_escape(after_run_marker)}"
     )

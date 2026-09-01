@@ -1888,8 +1888,14 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
     receipt_root = Path.join(root, "receipts")
     File.mkdir_p!(workspace_root)
 
-    health =
-      start_supervised!({SymphonyElixir.RuntimeHealth, name: nil, runtime_epoch: "prep-stop-epoch", receipt_root: receipt_root, workspace_root: workspace_root})
+    health_opts = [
+      name: nil,
+      runtime_epoch: "prep-stop-epoch",
+      receipt_root: receipt_root,
+      workspace_root: workspace_root
+    ]
+
+    health = start_supervised!({SymphonyElixir.RuntimeHealth, health_opts})
 
     previous_server = Application.get_env(:symphony_elixir, :runtime_health_server)
     Application.put_env(:symphony_elixir, :runtime_health_server, health)

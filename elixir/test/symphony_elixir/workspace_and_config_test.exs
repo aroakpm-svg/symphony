@@ -3583,10 +3583,12 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
       {check_index, _} ->
         mutations
         |> Enum.map(fn mutation -> :binary.match(command, mutation) end)
-        |> then(fn matches ->
-          Enum.all?(matches, &(&1 != :nomatch)) and
-            Enum.all?(matches, fn {mutation_index, _} -> check_index < mutation_index end)
-        end)
+        |> then(&matches_follow_check?(&1, check_index))
     end
+  end
+
+  defp matches_follow_check?(matches, check_index) do
+    Enum.all?(matches, &(&1 != :nomatch)) and
+      Enum.all?(matches, fn {mutation_index, _} -> check_index < mutation_index end)
   end
 end

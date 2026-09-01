@@ -80,7 +80,8 @@ defmodule SymphonyElixir.DispatchCandidateTest do
   test "skips missing exclusive routing" do
     route_reader = fn %Issue{id: "issue-1"} -> {:ineligible, :missing_routing} end
 
-    assert {:skip, :missing_routing} = DispatchCandidate.authorize(valid_issue(), @profiles, route_reader: route_reader)
+    assert {:skip, :missing_routing} =
+             DispatchCandidate.authorize(valid_issue(), @profiles, route_reader: route_reader)
   end
 
   test "skips non-exclusive routing" do

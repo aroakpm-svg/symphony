@@ -186,17 +186,7 @@ defmodule SymphonyElixir.PrivateHome.WindowsCapability do
       encoded = [payload |> Map.put("id", correlation_id) |> Jason.encode_to_iodata!(), "\n"]
 
       if Port.command(port, encoded) do
-        case receive_response(port, correlation_id, timeout_ms) do
-          {:ok, _response} = ok ->
-            ok
-
-          {:error, :operation_failed} = error ->
-            error
-
-          {:error, :protocol_failed} ->
-            _retired = retire(capability)
-            {:error, :private_home_capability_failed}
-        end
+        handle_response(capability, receive_response(port, correlation_id, timeout_ms))
       else
         _retired = retire(capability)
         {:error, :private_home_capability_failed}
@@ -206,6 +196,14 @@ defmodule SymphonyElixir.PrivateHome.WindowsCapability do
     _error ->
       _retired = retire(capability)
       {:error, :private_home_capability_failed}
+  end
+
+  defp handle_response(_capability, {:ok, _response} = ok), do: ok
+  defp handle_response(_capability, {:error, :operation_failed} = error), do: error
+
+  defp handle_response(capability, {:error, :protocol_failed}) do
+    _retired = retire(capability)
+    {:error, :private_home_capability_failed}
   end
 
   defp retired?(%__MODULE__{state: state}), do: :atomics.get(state, 1) == 1

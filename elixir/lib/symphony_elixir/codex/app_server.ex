@@ -619,17 +619,16 @@ defmodule SymphonyElixir.Codex.AppServer do
           |> sanitize_term(redaction_values)
           |> Jason.encode!()
 
-        handle_turn_method(
-          port,
-          on_message,
-          payload,
-          sanitized_payload_string,
-          method,
-          timeout_ms,
-          tool_executor,
-          auto_approve_requests,
-          redaction_values
-        )
+        turn_context = %{
+          port: port,
+          on_message: on_message,
+          timeout_ms: timeout_ms,
+          tool_executor: tool_executor,
+          auto_approve_requests: auto_approve_requests,
+          redaction_values: redaction_values
+        }
+
+        handle_turn_method(turn_context, payload, sanitized_payload_string, method)
 
       {:ok, payload} ->
         payload = sanitize_term(payload, redaction_values)
@@ -695,32 +694,22 @@ defmodule SymphonyElixir.Codex.AppServer do
     )
   end
 
-  defp handle_turn_method(
-         port,
-         on_message,
-         payload,
-         payload_string,
-         method,
-         timeout_ms,
-         tool_executor,
-         auto_approve_requests,
-         redaction_values
-       ) do
-    metadata = metadata_from_message(port, payload)
+  defp handle_turn_method(context, payload, payload_string, method) do
+    metadata = metadata_from_message(context.port, payload)
 
     case maybe_handle_approval_request(
-           port,
+           context.port,
            method,
            payload,
            payload_string,
-           on_message,
+           context.on_message,
            metadata,
-           tool_executor,
-           auto_approve_requests
+           context.tool_executor,
+           context.auto_approve_requests
          ) do
       :input_required ->
         emit_message(
-          on_message,
+          context.on_message,
           :turn_input_required,
           %{payload: payload, raw: payload_string},
           metadata
@@ -730,18 +719,18 @@ defmodule SymphonyElixir.Codex.AppServer do
 
       :approved ->
         receive_loop(
-          port,
-          on_message,
-          timeout_ms,
+          context.port,
+          context.on_message,
+          context.timeout_ms,
           "",
-          tool_executor,
-          auto_approve_requests,
-          redaction_values
+          context.tool_executor,
+          context.auto_approve_requests,
+          context.redaction_values
         )
 
       :approval_required ->
         emit_message(
-          on_message,
+          context.on_message,
           :approval_required,
           %{payload: payload, raw: payload_string},
           metadata
@@ -752,7 +741,7 @@ defmodule SymphonyElixir.Codex.AppServer do
       :unhandled ->
         if needs_input?(method, payload) do
           emit_message(
-            on_message,
+            context.on_message,
             :turn_input_required,
             %{payload: payload, raw: payload_string},
             metadata
@@ -761,7 +750,7 @@ defmodule SymphonyElixir.Codex.AppServer do
           {:error, {:turn_input_required, payload}}
         else
           emit_message(
-            on_message,
+            context.on_message,
             :notification,
             %{
               payload: payload,
@@ -770,16 +759,16 @@ defmodule SymphonyElixir.Codex.AppServer do
             metadata
           )
 
-          Logger.debug("Codex notification: #{inspect(sanitize_string(method, redaction_values))}")
+          Logger.debug("Codex notification: #{inspect(sanitize_string(method, context.redaction_values))}")
 
           receive_loop(
-            port,
-            on_message,
-            timeout_ms,
+            context.port,
+            context.on_message,
+            context.timeout_ms,
             "",
-            tool_executor,
-            auto_approve_requests,
-            redaction_values
+            context.tool_executor,
+            context.auto_approve_requests,
+            context.redaction_values
           )
         end
     end

@@ -129,6 +129,20 @@ defmodule SymphonyElixir.Workspace do
             }
   end
 
+  defmodule PrivateHomeOperation do
+    @moduledoc false
+    defstruct [
+      :workspace,
+      :execution_context,
+      :workspace_attestation,
+      :namespace_attestation,
+      :namespace_path,
+      :canonical_root,
+      :root_identity,
+      :opts
+    ]
+  end
+
   @type worker_host :: String.t() | nil
   @type preparation :: %{
           path: Path.t(),
@@ -376,31 +390,34 @@ defmodule SymphonyElixir.Workspace do
   defp prepare_readiness_state(workspace, issue_context, false, worker_host) do
     case read_readiness_state(workspace, worker_host) do
       {:ok, :missing} ->
-        if context_aware?(issue_context) do
-          {:error, :workspace_context_missing}
-        else
-          state = new_readiness_state(workspace, issue_context, :legacy)
-
-          case write_readiness_state(workspace, state, worker_host) do
-            :ok -> {:ok, state}
-            {:error, _reason} = error -> error
-          end
-        end
+        prepare_missing_readiness_state(workspace, issue_context, worker_host)
 
       {:ok, %ReadinessState{} = state} ->
-        case reconcile_readiness_identity(state, workspace, issue_context) do
-          {:ok, ^state} ->
-            {:ok, state}
-
-          {:ok, enriched_state} ->
-            persist_enriched_readiness_state(workspace, enriched_state, worker_host)
-
-          {:error, _reason} = error ->
-            error
-        end
+        reconcile_persisted_readiness_state(state, workspace, issue_context, worker_host)
 
       {:error, _reason} = error ->
         error
+    end
+  end
+
+  defp prepare_missing_readiness_state(workspace, issue_context, worker_host) do
+    if context_aware?(issue_context) do
+      {:error, :workspace_context_missing}
+    else
+      state = new_readiness_state(workspace, issue_context, :legacy)
+
+      case write_readiness_state(workspace, state, worker_host) do
+        :ok -> {:ok, state}
+        {:error, _reason} = error -> error
+      end
+    end
+  end
+
+  defp reconcile_persisted_readiness_state(state, workspace, issue_context, worker_host) do
+    case reconcile_readiness_identity(state, workspace, issue_context) do
+      {:ok, ^state} -> {:ok, state}
+      {:ok, enriched_state} -> persist_enriched_readiness_state(workspace, enriched_state, worker_host)
+      {:error, _reason} = error -> error
     end
   end
 
@@ -493,28 +510,32 @@ defmodule SymphonyElixir.Workspace do
         {:error, :workspace_context_missing}
 
       context_aware?(issue_context) ->
-        case validate_readiness_identity(state, workspace, issue_context) do
-          :ok -> {:ok, state}
-          {:error, _reason} = error -> error
-        end
+        validated_readiness_state(state, workspace, issue_context)
 
       true ->
-        case validate_readiness_identity(state, workspace, issue_context) do
-          :ok ->
-            {:ok, state}
+        validated_or_enriched_readiness_state(state, workspace, issue_context)
+    end
+  end
 
-          {:error, _reason} = identity_error ->
-            if readiness_identity_enrichable?(state, workspace, issue_context) do
-              {:ok,
-               %{
-                 state
-                 | issue_id: issue_context.issue_id,
-                   issue_branch: issue_context.issue_branch
-               }}
-            else
-              identity_error
-            end
-        end
+  defp validated_readiness_state(state, workspace, issue_context) do
+    case validate_readiness_identity(state, workspace, issue_context) do
+      :ok -> {:ok, state}
+      {:error, _reason} = error -> error
+    end
+  end
+
+  defp validated_or_enriched_readiness_state(state, workspace, issue_context) do
+    case validate_readiness_identity(state, workspace, issue_context) do
+      :ok -> {:ok, state}
+      {:error, _reason} = error -> maybe_enrich_readiness_state(error, state, workspace, issue_context)
+    end
+  end
+
+  defp maybe_enrich_readiness_state(error, state, workspace, issue_context) do
+    if readiness_identity_enrichable?(state, workspace, issue_context) do
+      {:ok, %{state | issue_id: issue_context.issue_id, issue_branch: issue_context.issue_branch}}
+    else
+      error
     end
   end
 
@@ -719,66 +740,36 @@ defmodule SymphonyElixir.Workspace do
       {:ok,
        %{
          "version" => @readiness_state_version,
-         "provenance" => provenance,
-         "phase" => phase,
-         "issue_id" => issue_id,
-         "issue_identifier" => issue_identifier,
-         "issue_branch" => issue_branch,
-         "profile_key" => profile_key,
-         "linear_project_id" => linear_project_id,
-         "repository" => repository,
-         "canonical_branch" => canonical_branch,
-         "workspace_namespace" => workspace_namespace,
-         "credential_ref" => credential_ref,
-         "workspace_path" => workspace_path,
-         "verified_head_sha" => verified_head_sha
+         "provenance" => _,
+         "phase" => _,
+         "issue_id" => _,
+         "issue_identifier" => _,
+         "issue_branch" => _,
+         "profile_key" => _,
+         "linear_project_id" => _,
+         "repository" => _,
+         "canonical_branch" => _,
+         "workspace_namespace" => _,
+         "credential_ref" => _,
+         "workspace_path" => _,
+         "verified_head_sha" => _
        } = decoded}
       when map_size(decoded) == 14 ->
-        build_readiness_state(
-          workspace,
-          provenance,
-          phase,
-          issue_id,
-          issue_identifier,
-          issue_branch,
-          profile_key,
-          linear_project_id,
-          repository,
-          canonical_branch,
-          workspace_namespace,
-          credential_ref,
-          workspace_path,
-          verified_head_sha
-        )
+        build_readiness_state(workspace, decoded)
 
       {:ok,
        %{
          "version" => @readiness_state_version,
-         "provenance" => provenance,
-         "phase" => phase,
-         "issue_id" => issue_id,
-         "issue_identifier" => issue_identifier,
-         "issue_branch" => issue_branch,
-         "workspace_path" => workspace_path,
-         "verified_head_sha" => verified_head_sha
+         "provenance" => _,
+         "phase" => _,
+         "issue_id" => _,
+         "issue_identifier" => _,
+         "issue_branch" => _,
+         "workspace_path" => _,
+         "verified_head_sha" => _
        } = decoded}
       when map_size(decoded) == 8 ->
-        build_readiness_state(
-          workspace,
-          provenance,
-          phase,
-          issue_id,
-          issue_identifier,
-          issue_branch,
-          nil,
-          nil,
-          nil,
-          nil,
-          nil,
-          nil,
-          workspace_path,
-          verified_head_sha
-        )
+        build_readiness_state(workspace, decoded)
 
       {:ok, _decoded} ->
         {:error, {:workspace_readiness_state_invalid, workspace, "readiness state JSON has an unsupported schema"}}
@@ -788,28 +779,35 @@ defmodule SymphonyElixir.Workspace do
     end
   end
 
-  defp build_readiness_state(
-         workspace,
-         provenance,
-         phase,
-         issue_id,
-         issue_identifier,
-         issue_branch,
-         profile_key,
-         linear_project_id,
-         repository,
-         canonical_branch,
-         workspace_namespace,
-         credential_ref,
-         workspace_path,
-         verified_head_sha
-       ) do
+  defp build_readiness_state(workspace, decoded) do
+    provenance = decoded["provenance"]
+    phase = decoded["phase"]
+    issue_id = decoded["issue_id"]
+    issue_identifier = decoded["issue_identifier"]
+    issue_branch = decoded["issue_branch"]
+    profile_key = decoded["profile_key"]
+    linear_project_id = decoded["linear_project_id"]
+    repository = decoded["repository"]
+    canonical_branch = decoded["canonical_branch"]
+    workspace_namespace = decoded["workspace_namespace"]
+    credential_ref = decoded["credential_ref"]
+    workspace_path = decoded["workspace_path"]
+    verified_head_sha = decoded["verified_head_sha"]
+
     with {:ok, provenance_atom} <- parse_readiness_provenance(provenance),
          {:ok, phase_atom} <- parse_readiness_phase(phase, verified_head_sha),
          true <- is_nil(issue_id) or is_binary(issue_id),
          true <- is_binary(issue_identifier) and issue_identifier != "",
          true <- is_nil(issue_branch) or is_binary(issue_branch),
-         true <- valid_readiness_context?(profile_key, linear_project_id, repository, canonical_branch, workspace_namespace, credential_ref),
+         true <-
+           valid_readiness_context?(
+             profile_key,
+             linear_project_id,
+             repository,
+             canonical_branch,
+             workspace_namespace,
+             credential_ref
+           ),
          true <- is_binary(workspace_path) and workspace_path != "" do
       {:ok,
        %ReadinessState{
@@ -964,34 +962,40 @@ defmodule SymphonyElixir.Workspace do
          workspace_attestation,
          opts
        ) do
-    try do
-      case Keyword.fetch(opts, :subprocess_home_paths) do
-        {:ok, paths} ->
-          with :ok <- validate_private_home_contract(paths, execution_context, opts) do
-            case create_context_private_home(
-                   workspace,
-                   execution_context,
-                   workspace_attestation,
-                   paths,
-                   opts
-                 ) do
-              {:ok, %PrivateHomeCapability{} = capability} -> {:ok, capability}
-              {:error, :private_home_rollback_failed} -> {:error, :subprocess_home_rollback_failed}
-              _failure -> {:error, :subprocess_home_unavailable}
-            end
-          end
+    case Keyword.fetch(opts, :subprocess_home_paths) do
+      {:ok, paths} ->
+        case validate_private_home_contract(paths, execution_context, opts) do
+          :ok ->
+            prepare_validated_context_private_home(
+              workspace,
+              execution_context,
+              workspace_attestation,
+              paths,
+              opts
+            )
 
-        :error ->
-          if private_home_environment_present?(opts) do
+          {:error, _reason} ->
             {:error, :subprocess_home_unavailable}
-          else
-            {:ok, nil}
-          end
-      end
-    rescue
-      _error -> {:error, :subprocess_home_unavailable}
-    catch
-      _kind, _reason -> {:error, :subprocess_home_unavailable}
+        end
+
+      :error ->
+        if private_home_environment_present?(opts) do
+          {:error, :subprocess_home_unavailable}
+        else
+          {:ok, nil}
+        end
+    end
+  rescue
+    _error -> {:error, :subprocess_home_unavailable}
+  catch
+    _kind, _reason -> {:error, :subprocess_home_unavailable}
+  end
+
+  defp prepare_validated_context_private_home(workspace, execution_context, attestation, paths, opts) do
+    case create_context_private_home(workspace, execution_context, attestation, paths, opts) do
+      {:ok, %PrivateHomeCapability{} = capability} -> {:ok, capability}
+      {:error, :private_home_rollback_failed} -> {:error, :subprocess_home_rollback_failed}
+      _failure -> {:error, :subprocess_home_unavailable}
     end
   end
 
@@ -1053,19 +1057,18 @@ defmodule SymphonyElixir.Workspace do
          :ok <- validate_private_component_locations(component_paths, namespace_path),
          {:ok, existing_identities} <-
            preflight_private_home_components(component_paths, namespace_path),
+         operation = %PrivateHomeOperation{
+           workspace: workspace,
+           execution_context: execution_context,
+           workspace_attestation: workspace_attestation,
+           namespace_attestation: namespace_attestation,
+           namespace_path: namespace_path,
+           canonical_root: canonical_root,
+           root_identity: root_identity,
+           opts: opts
+         },
          {:ok, %PrivateHomeCapability{} = capability} <-
-           create_private_home_components(
-             component_paths,
-             existing_identities,
-             workspace,
-             execution_context,
-             workspace_attestation,
-             namespace_attestation,
-             namespace_path,
-             canonical_root,
-             root_identity,
-             opts
-           ) do
+           create_private_home_components(operation, component_paths, existing_identities) do
       {:ok, capability}
     else
       {:error, :private_home_rollback_failed} = error -> error
@@ -1100,81 +1103,42 @@ defmodule SymphonyElixir.Workspace do
 
   defp preflight_private_home_components(component_paths, namespace_path) do
     Enum.reduce_while(component_paths, {:ok, %{}}, fn path, {:ok, identities} ->
-      case File.lstat(path) do
-        {:error, :enoent} ->
-          {:cont, {:ok, identities}}
-
-        {:ok, _stat} ->
-          with {:ok, identity} <- safe_private_directory_identity(path, namespace_path),
-               :ok <- validate_existing_private_permissions(path) do
-            {:cont, {:ok, Map.put(identities, path, identity)}}
-          else
-            {:error, _reason} = error -> {:halt, error}
-          end
-
-        {:error, _reason} ->
-          {:halt, {:error, :unsafe_private_home_path}}
-      end
+      preflight_private_home_component(path, identities, namespace_path)
     end)
   end
 
-  defp create_private_home_components(
-         component_paths,
-         existing_identities,
-         workspace,
-         execution_context,
-         workspace_attestation,
-         namespace_attestation,
-         namespace_path,
-         canonical_root,
-         root_identity,
-         opts
-       ) do
-    case :os.type() do
-      {:win32, _name} ->
-        create_windows_private_home_components(
-          component_paths,
-          existing_identities,
-          workspace,
-          execution_context,
-          workspace_attestation,
-          namespace_attestation,
-          namespace_path,
-          canonical_root,
-          root_identity,
-          opts
-        )
-
-      {:unix, _name} ->
-        create_posix_private_home_components(
-          component_paths,
-          existing_identities,
-          workspace,
-          execution_context,
-          workspace_attestation,
-          namespace_attestation,
-          namespace_path,
-          opts
-        )
+  defp preflight_private_home_component(path, identities, namespace_path) do
+    case File.lstat(path) do
+      {:error, :enoent} -> {:cont, {:ok, identities}}
+      {:ok, _stat} -> preflight_existing_private_home_component(path, identities, namespace_path)
+      {:error, _reason} -> {:halt, {:error, :unsafe_private_home_path}}
     end
   end
 
-  defp create_windows_private_home_components(
-         component_paths,
-         existing_identities,
-         workspace,
-         execution_context,
-         workspace_attestation,
-         namespace_attestation,
-         namespace_path,
-         canonical_root,
-         root_identity,
-         opts
-       ) do
+  defp preflight_existing_private_home_component(path, identities, namespace_path) do
+    with {:ok, identity} <- safe_private_directory_identity(path, namespace_path),
+         :ok <- validate_existing_private_permissions(path) do
+      {:cont, {:ok, Map.put(identities, path, identity)}}
+    else
+      {:error, _reason} = error -> {:halt, error}
+    end
+  end
+
+  defp create_private_home_components(operation, component_paths, existing_identities) do
+    case :os.type() do
+      {:win32, _name} ->
+        create_windows_private_home_components(operation, component_paths, existing_identities)
+
+      {:unix, _name} ->
+        create_posix_private_home_components(operation, component_paths, existing_identities)
+    end
+  end
+
+  defp create_windows_private_home_components(operation, component_paths, existing_identities) do
     anchors = [
-      {canonical_root, windows_identity(root_identity)},
-      {namespace_path, windows_identity(namespace_attestation.identity)},
-      {workspace, windows_identity(workspace_attestation.identity)}
+      {operation.canonical_root, windows_identity(operation.root_identity)},
+      {operation.namespace_path, windows_identity(operation.namespace_attestation.identity)},
+      {operation.workspace, windows_identity(operation.workspace_attestation.identity)}
     ]
 
     components =
@@ -1182,78 +1146,65 @@ defmodule SymphonyElixir.Workspace do
         {path, existing_identities |> Map.get(path) |> windows_identity()}
       end)
 
-    case WindowsCapability.open(anchors, components, fail_commit: Keyword.get(opts, :private_home_commit_failure, false)) do
+    case WindowsCapability.open(
+           anchors,
+           components,
+           fail_commit: Keyword.get(operation.opts, :private_home_commit_failure, false)
+         ) do
       {:ok, capability} ->
-        result =
-          ensure_windows_private_home_components(
-            capability,
-            component_paths,
-            existing_identities,
-            workspace,
-            execution_context,
-            workspace_attestation,
-            namespace_attestation,
-            namespace_path,
-            opts
-          )
-
-        case result do
-          {:ok, identities} ->
-            with :ok <-
-                   validate_private_home_state(
-                     workspace,
-                     execution_context,
-                     workspace_attestation,
-                     namespace_attestation,
-                     namespace_path,
-                     identities
-                   ) do
-              {:ok,
-               %PrivateHomeCapability{
-                 platform: :windows,
-                 guard: capability,
-                 lifecycle: private_home_lifecycle(),
-                 workspace: workspace,
-                 execution_context: execution_context,
-                 workspace_attestation: workspace_attestation,
-                 namespace_attestation: namespace_attestation,
-                 namespace_path: namespace_path,
-                 identities: identities,
-                 created: :helper
-               }}
-            else
-              _failure ->
-                rollback_windows_private_home(capability)
-            end
-
-          {:error, _reason} ->
-            rollback_windows_private_home(capability)
-        end
+        finish_windows_private_home_creation(operation, capability, component_paths, existing_identities)
 
       {:error, _reason} = error ->
         error
     end
   end
 
+  defp finish_windows_private_home_creation(operation, capability, component_paths, identities) do
+    case ensure_windows_private_home_components(operation, capability, component_paths, identities) do
+      {:ok, updated_identities} ->
+        finish_validated_windows_private_home(operation, capability, updated_identities)
+
+      {:error, _reason} ->
+        rollback_windows_private_home(capability)
+    end
+  end
+
+  defp finish_validated_windows_private_home(operation, capability, identities) do
+    case validate_private_home_state(operation, identities) do
+      :ok -> {:ok, windows_private_home_capability(operation, capability, identities)}
+      _failure -> rollback_windows_private_home(capability)
+    end
+  end
+
+  defp windows_private_home_capability(operation, capability, identities) do
+    %PrivateHomeCapability{
+      platform: :windows,
+      guard: capability,
+      lifecycle: private_home_lifecycle(),
+      workspace: operation.workspace,
+      execution_context: operation.execution_context,
+      workspace_attestation: operation.workspace_attestation,
+      namespace_attestation: operation.namespace_attestation,
+      namespace_path: operation.namespace_path,
+      identities: identities,
+      created: :helper
+    }
+  end
+
   defp ensure_windows_private_home_components(
+         operation,
          capability,
          component_paths,
-         existing_identities,
-         workspace,
-         execution_context,
-         workspace_attestation,
-         namespace_attestation,
-         namespace_path,
-         opts
+         existing_identities
        ) do
     Enum.reduce_while(component_paths, {:ok, existing_identities}, fn path, {:ok, identities} ->
       state =
         validate_private_home_state(
-          workspace,
-          execution_context,
-          workspace_attestation,
-          namespace_attestation,
-          namespace_path,
+          operation.workspace,
+          operation.execution_context,
+          operation.workspace_attestation,
+          operation.namespace_attestation,
+          operation.namespace_path,
           identities
         )
 
@@ -1265,40 +1216,28 @@ defmodule SymphonyElixir.Workspace do
           {:cont, {:ok, identities}}
 
         true ->
-          with :ok <- invoke_private_home_creation_seam(path, opts),
-               :ok <-
-                 validate_private_home_state(
-                   workspace,
-                   execution_context,
-                   workspace_attestation,
-                   namespace_attestation,
-                   namespace_path,
-                   identities
-                 ),
-               {:ok, file_id} <-
-                 WindowsCapability.ensure_component(
-                   capability,
-                   path,
-                   permission_failure_injected?(path, opts)
-                 ),
-               identity = %{type: :directory, windows_file_id: file_id},
-               updated_identities = Map.put(identities, path, identity),
-               :ok <- invoke_private_home_post_creation_seam(path, opts),
-               :ok <-
-                 validate_private_home_state(
-                   workspace,
-                   execution_context,
-                   workspace_attestation,
-                   namespace_attestation,
-                   namespace_path,
-                   updated_identities
-                 ) do
-            {:cont, {:ok, updated_identities}}
-          else
-            _failure -> {:halt, {:error, :private_home_create_failed}}
-          end
+          ensure_windows_private_home_component(operation, capability, path, identities)
       end
     end)
+  end
+
+  defp ensure_windows_private_home_component(operation, capability, path, identities) do
+    with :ok <- invoke_private_home_creation_seam(path, operation.opts),
+         :ok <- validate_private_home_state(operation, identities),
+         {:ok, file_id} <-
+           WindowsCapability.ensure_component(
+             capability,
+             path,
+             permission_failure_injected?(path, operation.opts)
+           ),
+         updated_identities =
+           Map.put(identities, path, %{type: :directory, windows_file_id: file_id}),
+         :ok <- invoke_private_home_post_creation_seam(path, operation.opts),
+         :ok <- validate_private_home_state(operation, updated_identities) do
+      {:cont, {:ok, updated_identities}}
+    else
+      _failure -> {:halt, {:error, :private_home_create_failed}}
+    end
   end
 
   defp rollback_windows_private_home(capability) do
@@ -1322,14 +1261,12 @@ defmodule SymphonyElixir.Workspace do
          guard: guard,
          lifecycle: lifecycle
        }) do
-    try do
-      case WindowsCapability.rollback(guard) do
-        :ok -> :ok
-        {:error, :private_home_capability_failed} -> {:error, :subprocess_home_rollback_failed}
-      end
-    after
-      :atomics.put(lifecycle, 1, 1)
+    case WindowsCapability.rollback(guard) do
+      :ok -> :ok
+      {:error, :private_home_capability_failed} -> {:error, :subprocess_home_rollback_failed}
     end
+  after
+    :atomics.put(lifecycle, 1, 1)
   end
 
   defp rollback_private_home_capability(%PrivateHomeCapability{
@@ -1338,28 +1275,17 @@ defmodule SymphonyElixir.Workspace do
          created: created,
          namespace_path: namespace_path
        }) do
-    try do
-      case rollback_posix_private_home(created, namespace_path) do
-        :ok -> :ok
-        {:error, :private_home_rollback_failed} -> {:error, :subprocess_home_rollback_failed}
-      end
-    after
-      :atomics.put(lifecycle, 1, 1)
+    case rollback_posix_private_home(created, namespace_path) do
+      :ok -> :ok
+      {:error, :private_home_rollback_failed} -> {:error, :subprocess_home_rollback_failed}
     end
+  after
+    :atomics.put(lifecycle, 1, 1)
   end
 
   defp private_home_lifecycle, do: :atomics.new(1, signed: false)
 
-  defp create_posix_private_home_components(
-         component_paths,
-         existing_identities,
-         workspace,
-         execution_context,
-         workspace_attestation,
-         namespace_attestation,
-         namespace_path,
-         opts
-       ) do
+  defp create_posix_private_home_components(operation, component_paths, existing_identities) do
     result =
       Enum.reduce_while(
         component_paths,
@@ -1367,11 +1293,11 @@ defmodule SymphonyElixir.Workspace do
         fn path, {:ok, identities, created} ->
           state =
             validate_private_home_state(
-              workspace,
-              execution_context,
-              workspace_attestation,
-              namespace_attestation,
-              namespace_path,
+              operation.workspace,
+              operation.execution_context,
+              operation.workspace_attestation,
+              operation.namespace_attestation,
+              operation.namespace_path,
               identities
             )
 
@@ -1383,17 +1309,7 @@ defmodule SymphonyElixir.Workspace do
               {:cont, {:ok, identities, created}}
 
             true ->
-              create_posix_private_home_component(
-                path,
-                identities,
-                created,
-                workspace,
-                execution_context,
-                workspace_attestation,
-                namespace_attestation,
-                namespace_path,
-                opts
-              )
+              create_posix_private_home_component(operation, path, identities, created)
           end
         end
       )
@@ -1405,17 +1321,17 @@ defmodule SymphonyElixir.Workspace do
            platform: :posix,
            guard: nil,
            lifecycle: private_home_lifecycle(),
-           workspace: workspace,
-           execution_context: execution_context,
-           workspace_attestation: workspace_attestation,
-           namespace_attestation: namespace_attestation,
-           namespace_path: namespace_path,
+           workspace: operation.workspace,
+           execution_context: operation.execution_context,
+           workspace_attestation: operation.workspace_attestation,
+           namespace_attestation: operation.namespace_attestation,
+           namespace_path: operation.namespace_path,
            identities: identities,
            created: created
          }}
 
       {:error, failure_reason, created} ->
-        rollback_result = rollback_posix_private_home(created, namespace_path)
+        rollback_result = rollback_posix_private_home(created, operation.namespace_path)
 
         if failure_reason == :private_home_rollback_failed or rollback_result != :ok do
           {:error, :private_home_rollback_failed}
@@ -1425,57 +1341,48 @@ defmodule SymphonyElixir.Workspace do
     end
   end
 
-  defp create_posix_private_home_component(
-         path,
-         identities,
-         created,
-         workspace,
-         execution_context,
-         workspace_attestation,
-         namespace_attestation,
-         namespace_path,
-         opts
-       ) do
-    with :ok <- invoke_private_home_creation_seam(path, opts),
+  defp create_posix_private_home_component(operation, path, identities, created) do
+    with :ok <- invoke_private_home_creation_seam(path, operation.opts),
          :ok <-
            validate_private_home_state(
-             workspace,
-             execution_context,
-             workspace_attestation,
-             namespace_attestation,
-             namespace_path,
+             operation.workspace,
+             operation.execution_context,
+             operation.workspace_attestation,
+             operation.namespace_attestation,
+             operation.namespace_path,
              identities
            ) do
       case posix_mkdir_and_track(
              path,
              created,
              &File.mkdir/1,
-             &safe_private_directory_identity(&1, namespace_path)
+             &safe_private_directory_identity(&1, operation.namespace_path)
            ) do
         {:ok, identity, updated_created} ->
-          with false <- permission_failure_injected?(path, opts),
-               :ok <- File.chmod(path, 0o700),
-               :ok <- validate_existing_private_permissions(path),
-               updated_identities = Map.put(identities, path, identity),
-               :ok <- invoke_private_home_post_creation_seam(path, opts),
-               :ok <-
-                 validate_private_home_state(
-                   workspace,
-                   execution_context,
-                   workspace_attestation,
-                   namespace_attestation,
-                   namespace_path,
-                   updated_identities
-                 ) do
-            {:cont, {:ok, updated_identities, updated_created}}
-          else
-            _failure ->
-              {:halt, {:error, :private_home_create_failed, updated_created}}
-          end
+          finish_posix_private_home_component(
+            operation,
+            path,
+            identity,
+            identities,
+            updated_created
+          )
 
         {:error, reason, unchanged_created} ->
           {:halt, {:error, reason, unchanged_created}}
       end
+    else
+      _failure -> {:halt, {:error, :private_home_create_failed, created}}
+    end
+  end
+
+  defp finish_posix_private_home_component(operation, path, identity, identities, created) do
+    with false <- permission_failure_injected?(path, operation.opts),
+         :ok <- File.chmod(path, 0o700),
+         :ok <- validate_existing_private_permissions(path),
+         updated_identities = Map.put(identities, path, identity),
+         :ok <- invoke_private_home_post_creation_seam(path, operation.opts),
+         :ok <- validate_private_home_state(operation, updated_identities) do
+      {:cont, {:ok, updated_identities, created}}
     else
       _failure -> {:halt, {:error, :private_home_create_failed, created}}
     end
@@ -1575,47 +1482,43 @@ defmodule SymphonyElixir.Workspace do
     do: Keyword.get(opts, :private_home_permission_failure) == path
 
   defp invoke_private_home_creation_seam(path, opts) do
-    try do
-      case Keyword.get(opts, :private_home_before_create) do
-        nil ->
-          :ok
+    case Keyword.get(opts, :private_home_before_create) do
+      nil ->
+        :ok
 
-        callback when is_function(callback, 1) ->
-          case callback.(path) do
-            :ok -> :ok
-            _other -> {:error, :private_home_create_failed}
-          end
+      callback when is_function(callback, 1) ->
+        case callback.(path) do
+          :ok -> :ok
+          _other -> {:error, :private_home_create_failed}
+        end
 
-        _invalid ->
-          {:error, :private_home_create_failed}
-      end
-    rescue
-      _error -> {:error, :private_home_create_failed}
-    catch
-      _kind, _reason -> {:error, :private_home_create_failed}
+      _invalid ->
+        {:error, :private_home_create_failed}
     end
+  rescue
+    _error -> {:error, :private_home_create_failed}
+  catch
+    _kind, _reason -> {:error, :private_home_create_failed}
   end
 
   defp invoke_private_home_post_creation_seam(path, opts) do
-    try do
-      case Keyword.get(opts, :private_home_after_create) do
-        nil ->
-          :ok
+    case Keyword.get(opts, :private_home_after_create) do
+      nil ->
+        :ok
 
-        callback when is_function(callback, 1) ->
-          case callback.(path) do
-            :ok -> :ok
-            _other -> {:error, :private_home_create_failed}
-          end
+      callback when is_function(callback, 1) ->
+        case callback.(path) do
+          :ok -> :ok
+          _other -> {:error, :private_home_create_failed}
+        end
 
-        _invalid ->
-          {:error, :private_home_create_failed}
-      end
-    rescue
-      _error -> {:error, :private_home_create_failed}
-    catch
-      _kind, _reason -> {:error, :private_home_create_failed}
+      _invalid ->
+        {:error, :private_home_create_failed}
     end
+  rescue
+    _error -> {:error, :private_home_create_failed}
+  catch
+    _kind, _reason -> {:error, :private_home_create_failed}
   end
 
   @spec finalize_private_home_capability(PrivateHomeCapability.t() | nil) ::
@@ -1629,16 +1532,14 @@ defmodule SymphonyElixir.Workspace do
           lifecycle: lifecycle
         } = capability
       ) do
-    try do
-      with :ok <- validate_platform_private_home_capability(:windows, capability),
-           :ok <- WindowsCapability.commit(guard) do
-        :ok
-      else
-        _failure -> {:error, :subprocess_home_finalize_failed}
-      end
-    after
-      :atomics.put(lifecycle, 1, 1)
+    with :ok <- validate_platform_private_home_capability(:windows, capability),
+         :ok <- WindowsCapability.commit(guard) do
+      :ok
+    else
+      _failure -> {:error, :subprocess_home_finalize_failed}
     end
+  after
+    :atomics.put(lifecycle, 1, 1)
   end
 
   def finalize_private_home_capability(%PrivateHomeCapability{
@@ -1651,21 +1552,19 @@ defmodule SymphonyElixir.Workspace do
         namespace_path: namespace_path,
         identities: identities
       }) do
-    try do
-      case validate_private_home_state(
-             workspace,
-             execution_context,
-             workspace_attestation,
-             namespace_attestation,
-             namespace_path,
-             identities
-           ) do
-        :ok -> :ok
-        {:error, _reason} -> {:error, :subprocess_home_finalize_failed}
-      end
-    after
-      :atomics.put(lifecycle, 1, 1)
+    case validate_private_home_state(
+           workspace,
+           execution_context,
+           workspace_attestation,
+           namespace_attestation,
+           namespace_path,
+           identities
+         ) do
+      :ok -> :ok
+      {:error, _reason} -> {:error, :subprocess_home_finalize_failed}
     end
+  after
+    :atomics.put(lifecycle, 1, 1)
   end
 
   @spec validate_private_home_effect(
@@ -1772,17 +1671,17 @@ defmodule SymphonyElixir.Workspace do
            identities: identities
          }
        ) do
-    with :ok <-
-           validate_private_home_state(
-             workspace,
-             execution_context,
-             workspace_attestation,
-             namespace_attestation,
-             namespace_path,
-             identities
-           ),
-         :ok <- WindowsCapability.verify(guard) do
-      :ok
+    validate_private_home_state(
+      workspace,
+      execution_context,
+      workspace_attestation,
+      namespace_attestation,
+      namespace_path,
+      identities
+    )
+    |> case do
+      :ok -> WindowsCapability.verify(guard)
+      {:error, _reason} = error -> error
     end
   end
 
@@ -1831,25 +1730,31 @@ defmodule SymphonyElixir.Workspace do
          namespace_path,
          identities
        ) do
-    with :ok <-
-           validate_execution_workspace(
-             workspace,
-             nil,
-             execution_context,
-             workspace_attestation
-           ),
-         :ok <- validate_workspace_attestation(namespace_path, nil, namespace_attestation) do
-      with :ok <-
-             Enum.reduce_while(identities, :ok, fn {path, expected_identity}, :ok ->
-               case safe_private_directory_identity(path, namespace_path) do
-                 {:ok, ^expected_identity} -> {:cont, :ok}
-                 _changed_or_unsafe -> {:halt, {:error, :private_home_identity_changed}}
-               end
-             end),
-           :ok <- validate_private_permissions(identities) do
-        :ok
-      end
+    with :ok <- validate_execution_workspace(workspace, nil, execution_context, workspace_attestation),
+         :ok <- validate_workspace_attestation(namespace_path, nil, namespace_attestation),
+         :ok <- validate_private_home_identities(identities, namespace_path) do
+      validate_private_permissions(identities)
     end
+  end
+
+  defp validate_private_home_state(%PrivateHomeOperation{} = operation, identities) do
+    validate_private_home_state(
+      operation.workspace,
+      operation.execution_context,
+      operation.workspace_attestation,
+      operation.namespace_attestation,
+      operation.namespace_path,
+      identities
+    )
+  end
+
+  defp validate_private_home_identities(identities, namespace_path) do
+    Enum.reduce_while(identities, :ok, fn {path, expected_identity}, :ok ->
+      case safe_private_directory_identity(path, namespace_path) do
+        {:ok, ^expected_identity} -> {:cont, :ok}
+        _changed_or_unsafe -> {:halt, {:error, :private_home_identity_changed}}
+      end
+    end)
   end
 
   defp safe_private_directory_identity(path, namespace_path) do
@@ -1937,12 +1842,14 @@ defmodule SymphonyElixir.Workspace do
         :ok
 
       {:unix, _name} ->
-        Enum.reduce_while(Map.keys(identities), :ok, fn path, :ok ->
-          case validate_existing_private_permissions(path) do
-            :ok -> {:cont, :ok}
-            {:error, _reason} = error -> {:halt, error}
-          end
-        end)
+        Enum.reduce_while(Map.keys(identities), :ok, &validate_private_permission/2)
+    end
+  end
+
+  defp validate_private_permission(path, :ok) do
+    case validate_existing_private_permissions(path) do
+      :ok -> {:cont, :ok}
+      {:error, _reason} = error -> {:halt, error}
     end
   end
 
@@ -2128,14 +2035,14 @@ defmodule SymphonyElixir.Workspace do
 
     case run_remote_command(worker_host, script, Config.settings!().hooks.timeout_ms) do
       {:ok, {output, 0}} ->
-        with {:ok, physical_workspace, created?, %{kind: :remote} = attestation} <-
-               parse_remote_workspace_output(output) do
-          {:ok, physical_workspace, created?,
-           Map.merge(attestation, %{
-             lexical_path: workspace,
-             physical_path: physical_workspace
-           })}
-        else
+        case parse_remote_workspace_output(output) do
+          {:ok, physical_workspace, created?, %{kind: :remote} = attestation} ->
+            {:ok, physical_workspace, created?,
+             Map.merge(attestation, %{
+               lexical_path: workspace,
+               physical_path: physical_workspace
+             })}
+
           {:ok, _physical_workspace, _created?, nil} ->
             {:error, {:workspace_prepare_failed, :missing_workspace_identity, output}}
 
@@ -2627,42 +2534,33 @@ defmodule SymphonyElixir.Workspace do
          {:ok, identities} <-
            preflight_private_home_components(component_paths, namespace_path),
          true <- map_size(identities) == length(component_paths) do
-      open_platform_private_home_guard(
-        component_paths,
-        identities,
-        workspace,
-        execution_context,
-        workspace_attestation,
-        namespace_attestation,
-        namespace_path,
-        canonical_root,
-        root_identity
-      )
+      operation = %PrivateHomeOperation{
+        workspace: workspace,
+        execution_context: execution_context,
+        workspace_attestation: workspace_attestation,
+        namespace_attestation: namespace_attestation,
+        namespace_path: namespace_path,
+        canonical_root: canonical_root,
+        root_identity: root_identity,
+        opts: opts
+      }
+
+      open_platform_private_home_guard(operation, component_paths, identities)
     else
       _failure -> {:error, :subprocess_home_unavailable}
     end
   end
 
-  defp open_platform_private_home_guard(
-         component_paths,
-         identities,
-         workspace,
-         execution_context,
-         workspace_attestation,
-         namespace_attestation,
-         namespace_path,
-         canonical_root,
-         root_identity
-       ) do
+  defp open_platform_private_home_guard(operation, component_paths, identities) do
     case :os.type() do
       {:unix, _name} ->
-        {:ok, {:posix, identities, workspace, execution_context, workspace_attestation, namespace_attestation, namespace_path}}
+        {:ok, {:posix, operation, identities}}
 
       {:win32, _name} ->
         anchors = [
-          {canonical_root, windows_identity(root_identity)},
-          {namespace_path, windows_identity(namespace_attestation.identity)},
-          {workspace, windows_identity(workspace_attestation.identity)}
+          {operation.canonical_root, windows_identity(operation.root_identity)},
+          {operation.namespace_path, windows_identity(operation.namespace_attestation.identity)},
+          {operation.workspace, windows_identity(operation.workspace_attestation.identity)}
         ]
 
         components =
@@ -2679,22 +2577,13 @@ defmodule SymphonyElixir.Workspace do
 
   defp finish_existing_private_home_guard(
          {:windows, capability},
-         hook_result,
+         _hook_result,
          workspace,
          execution_context,
          workspace_attestation
        ) do
     validation_result =
-      with :ok <- hook_result,
-           :ok <-
-             validate_execution_workspace(
-               workspace,
-               nil,
-               execution_context,
-               workspace_attestation
-             ) do
-        :ok
-      end
+      validate_execution_workspace(workspace, nil, execution_context, workspace_attestation)
 
     case validation_result do
       :ok ->
@@ -2712,7 +2601,7 @@ defmodule SymphonyElixir.Workspace do
   end
 
   defp finish_existing_private_home_guard(
-         {:posix, identities, workspace, execution_context, workspace_attestation, namespace_attestation, namespace_path},
+         {:posix, operation, identities},
          hook_result,
          _workspace,
          _execution_context,
@@ -2721,11 +2610,11 @@ defmodule SymphonyElixir.Workspace do
     with :ok <- hook_result,
          :ok <-
            validate_private_home_state(
-             workspace,
-             execution_context,
-             workspace_attestation,
-             namespace_attestation,
-             namespace_path,
+             operation.workspace,
+             operation.execution_context,
+             operation.workspace_attestation,
+             operation.namespace_attestation,
+             operation.namespace_path,
              identities
            ) do
       :ok
@@ -2740,9 +2629,11 @@ defmodule SymphonyElixir.Workspace do
        when is_binary(identity) and identity != "" do
     remote_workspace_identity_script() <>
       "\nexpected_workspace_identity=#{shell_escape(identity)}\n" <>
-      "if [ ! -d \"$workspace\" ] || [ -L \"$workspace\" ]; then exit 1; fi\n" <>
-      "if ! current_workspace_identity=\"$(read_workspace_identity \"$workspace\")\"; then exit 1; fi\n" <>
-      "if [ \"$current_workspace_identity\" != \"$expected_workspace_identity\" ]; then exit 1; fi"
+      ~S<if [ ! -d "$workspace" ] || [ -L "$workspace" ]; then exit 1; fi
+> <>
+      ~S<if ! current_workspace_identity="$(read_workspace_identity "$workspace")"; then exit 1; fi
+> <>
+      ~S<if [ "$current_workspace_identity" != "$expected_workspace_identity" ]; then exit 1; fi>
   end
 
   defp remote_cleanup_attestation_guard(_invalid), do: "exit 1"
@@ -2776,20 +2667,8 @@ defmodule SymphonyElixir.Workspace do
              Keyword.get(opts, :workspace_attestation)
            ) do
       case hooks.before_run do
-        nil ->
-          :ok
-
-        command ->
-          with :ok <-
-                 validate_private_home_effect(
-                   workspace,
-                   worker_host,
-                   execution_context,
-                   Keyword.get(opts, :workspace_attestation),
-                   opts
-                 ) do
-            run_hook(command, workspace, issue_context, "before_run", worker_host, opts)
-          end
+        nil -> :ok
+        command -> run_guarded_hook(command, workspace, issue_context, "before_run", worker_host, opts)
       end
     end
   end
@@ -2882,21 +2761,8 @@ defmodule SymphonyElixir.Workspace do
              Keyword.get(opts, :workspace_attestation)
            ) do
       case hooks.after_run do
-        nil ->
-          :ok
-
-        command ->
-          with :ok <-
-                 validate_private_home_effect(
-                   workspace,
-                   worker_host,
-                   execution_context,
-                   Keyword.get(opts, :workspace_attestation),
-                   opts
-                 ) do
-            run_hook(command, workspace, issue_context, "after_run", worker_host, opts)
-          end
-          |> ignore_hook_failure()
+        nil -> :ok
+        command -> run_guarded_hook(command, workspace, issue_context, "after_run", worker_host, opts)
       end
     end
     |> ignore_hook_failure()
@@ -2943,24 +2809,25 @@ defmodule SymphonyElixir.Workspace do
     case created? do
       true ->
         case hooks.after_create do
-          nil ->
-            :ok
-
-          command ->
-            with :ok <-
-                   validate_private_home_effect(
-                     workspace,
-                     worker_host,
-                     Keyword.get(opts, :execution_context),
-                     Keyword.get(opts, :workspace_attestation),
-                     opts
-                   ) do
-              run_hook(command, workspace, issue_context, "after_create", worker_host, opts)
-            end
+          nil -> :ok
+          command -> run_guarded_hook(command, workspace, issue_context, "after_create", worker_host, opts)
         end
 
       false ->
         :ok
+    end
+  end
+
+  defp run_guarded_hook(command, workspace, issue_context, hook_name, worker_host, opts) do
+    with :ok <-
+           validate_private_home_effect(
+             workspace,
+             worker_host,
+             Keyword.get(opts, :execution_context),
+             Keyword.get(opts, :workspace_attestation),
+             opts
+           ) do
+      run_hook(command, workspace, issue_context, hook_name, worker_host, opts)
     end
   end
 
@@ -3586,8 +3453,10 @@ defmodule SymphonyElixir.Workspace do
        when is_binary(identity) and identity != "" do
     remote_workspace_identity_script() <>
       "\nexpected_workspace_identity=#{shell_escape(identity)}\n" <>
-      "if ! current_workspace_identity=\"$(read_workspace_identity \"$workspace\")\"; then exit 1; fi\n" <>
-      "if [ \"$current_workspace_identity\" != \"$expected_workspace_identity\" ]; then exit 1; fi\n"
+      ~S<if ! current_workspace_identity="$(read_workspace_identity "$workspace")"; then exit 1; fi
+> <>
+      ~S<if [ "$current_workspace_identity" != "$expected_workspace_identity" ]; then exit 1; fi
+>
   end
 
   defp remote_workspace_attestation_guard(_invalid), do: "exit 1\n"
@@ -3903,7 +3772,8 @@ defmodule SymphonyElixir.Workspace do
     if workspace == lexical_path or workspace == physical_path do
       :ok
     else
-      {:error, {:workspace_issue_identity_changed, %{kind: :remote, path: workspace, error: :unattested_workspace_path}, expected}}
+      current = %{kind: :remote, path: workspace, error: :unattested_workspace_path}
+      {:error, {:workspace_issue_identity_changed, current, expected}}
     end
   end
 
@@ -4000,42 +3870,55 @@ defmodule SymphonyElixir.Workspace do
            Config.settings!().workspace.root
            |> Path.join(namespace)
            |> PathSafety.canonicalize() do
-      namespace_prefix = canonical_namespace <> "/"
-      root_prefix = canonical_root <> "/"
       expected_namespace = Path.join(canonical_root, namespace)
       expected_workspace = Path.join(expected_namespace, safe_identifier(issue_identifier))
 
-      cond do
-        production_workspace_root?(Config.settings!().workspace.root) ->
-          {:error, {:workspace_production_root, Config.settings!().workspace.root}}
-
-        canonical_namespace == canonical_root ->
-          {:error, {:workspace_namespace_equals_root, canonical_namespace, canonical_root}}
-
-        not String.starts_with?(canonical_namespace <> "/", root_prefix) ->
-          {:error, {:workspace_namespace_outside_root, canonical_namespace, canonical_root}}
-
-        canonical_namespace != expected_namespace ->
-          {:error, {:workspace_namespace_identity_mismatch, canonical_namespace, expected_namespace}}
-
-        canonical_workspace == canonical_namespace ->
-          {:error, {:workspace_equals_namespace, canonical_workspace, canonical_namespace}}
-
-        Path.expand(expanded_workspace) != expected_workspace ->
-          {:error, {:workspace_issue_identity_mismatch, Path.expand(expanded_workspace), expected_workspace}}
-
-        issue_leaf_link?(expected_workspace) ->
-          {:error, {:workspace_issue_identity_mismatch, canonical_workspace, expected_workspace}}
-
-        canonical_workspace != expected_workspace ->
-          {:error, {:workspace_issue_identity_mismatch, canonical_workspace, expected_workspace}}
-
-        String.starts_with?(canonical_workspace <> "/", namespace_prefix) ->
-          :ok
-
-        true ->
-          {:error, {:workspace_outside_namespace, canonical_workspace, canonical_namespace}}
+      with :ok <- validate_namespace_root(canonical_namespace, canonical_root, expected_namespace) do
+        validate_issue_workspace(
+          expanded_workspace,
+          canonical_workspace,
+          canonical_namespace,
+          expected_workspace
+        )
       end
+    end
+  end
+
+  defp validate_namespace_root(canonical_namespace, canonical_root, expected_namespace) do
+    cond do
+      production_workspace_root?(Config.settings!().workspace.root) ->
+        {:error, {:workspace_production_root, Config.settings!().workspace.root}}
+
+      canonical_namespace == canonical_root ->
+        {:error, {:workspace_namespace_equals_root, canonical_namespace, canonical_root}}
+
+      not String.starts_with?(canonical_namespace <> "/", canonical_root <> "/") ->
+        {:error, {:workspace_namespace_outside_root, canonical_namespace, canonical_root}}
+
+      canonical_namespace != expected_namespace ->
+        {:error, {:workspace_namespace_identity_mismatch, canonical_namespace, expected_namespace}}
+
+      true ->
+        :ok
+    end
+  end
+
+  defp validate_issue_workspace(expanded, canonical, namespace, expected) do
+    cond do
+      canonical == namespace ->
+        {:error, {:workspace_equals_namespace, canonical, namespace}}
+
+      Path.expand(expanded) != expected ->
+        {:error, {:workspace_issue_identity_mismatch, Path.expand(expanded), expected}}
+
+      issue_leaf_link?(expected) or canonical != expected ->
+        {:error, {:workspace_issue_identity_mismatch, canonical, expected}}
+
+      String.starts_with?(canonical <> "/", namespace <> "/") ->
+        :ok
+
+      true ->
+        {:error, {:workspace_outside_namespace, canonical, namespace}}
     end
   end
 
@@ -4109,22 +3992,7 @@ defmodule SymphonyElixir.Workspace do
     lines = String.split(IO.iodata_to_binary(output), "\n", trim: true)
 
     payload =
-      Enum.find_value(lines, fn line ->
-        case String.split(line, "\t", parts: 4) do
-          [@remote_workspace_marker, created, path, identity]
-          when created in ["0", "1"] and path != "" and identity != "" ->
-            {created == "1", path, %{kind: :remote, identity: identity}}
-
-          [@remote_workspace_marker, created, path] when created in ["0", "1"] and path != "" ->
-            {created == "1", path, nil}
-
-          [@remote_workspace_marker, detail] when detail in ["unsafe-namespace", "unsafe-workspace"] ->
-            {:unsafe, detail}
-
-          _ ->
-            nil
-        end
-      end)
+      Enum.find_value(lines, &parse_remote_workspace_line/1)
 
     case payload do
       {created?, workspace, attestation} when is_boolean(created?) and is_binary(workspace) ->
@@ -4135,6 +4003,23 @@ defmodule SymphonyElixir.Workspace do
 
       _ ->
         {:error, {:workspace_prepare_failed, :invalid_output, output}}
+    end
+  end
+
+  defp parse_remote_workspace_line(line) do
+    case String.split(line, "\t", parts: 4) do
+      [@remote_workspace_marker, created, path, identity]
+      when created in ["0", "1"] and path != "" and identity != "" ->
+        {created == "1", path, %{kind: :remote, identity: identity}}
+
+      [@remote_workspace_marker, created, path] when created in ["0", "1"] and path != "" ->
+        {created == "1", path, nil}
+
+      [@remote_workspace_marker, detail] when detail in ["unsafe-namespace", "unsafe-workspace"] ->
+        {:unsafe, detail}
+
+      _ ->
+        nil
     end
   end
 
