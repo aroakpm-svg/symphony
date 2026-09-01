@@ -10,14 +10,14 @@ defmodule SymphonyElixir.SSHTest do
                command_runner: command_runner(self())
              )
 
-    assert_received {:ssh_command, _executable, ["-T", "-p", "2200", "root@[::1]", "bash -lc 'printf ok'"], [stderr_to_stdout: true]}
+    assert_received {:ssh_command, _executable, ["-T", "-p", "2200", "root@[::1]", "sh -c 'printf ok'"], [stderr_to_stdout: true]}
   end
 
   test "run/3 leaves unbracketed IPv6-style targets unchanged" do
     assert {:ok, {"", 0}} =
              SSH.run("::1:2200", "printf ok", command_runner: command_runner(self()))
 
-    assert_received {:ssh_command, _executable, ["-T", "::1:2200", "bash -lc 'printf ok'"], []}
+    assert_received {:ssh_command, _executable, ["-T", "::1:2200", "sh -c 'printf ok'"], []}
   end
 
   test "run/3 passes host:port targets through ssh -p" do
@@ -33,14 +33,14 @@ defmodule SymphonyElixir.SSHTest do
     assert {:ok, {"", 0}} =
              SSH.run("localhost:2222", "echo ready", command_runner: command_runner(self()))
 
-    assert_received {:ssh_command, _executable, ["-F", ^config_path, "-T", "-p", "2222", "localhost", "bash -lc 'echo ready'"], []}
+    assert_received {:ssh_command, _executable, ["-F", ^config_path, "-T", "-p", "2222", "localhost", "sh -c 'echo ready'"], []}
   end
 
   test "run/3 keeps the user prefix when parsing user@host:port targets" do
     assert {:ok, {"", 0}} =
              SSH.run("root@127.0.0.1:2200", "printf ok", command_runner: command_runner(self()))
 
-    assert_received {:ssh_command, _executable, ["-T", "-p", "2200", "root@127.0.0.1", "bash -lc 'printf ok'"], []}
+    assert_received {:ssh_command, _executable, ["-T", "-p", "2200", "root@127.0.0.1", "sh -c 'printf ok'"], []}
   end
 
   test "run/3 returns an error when ssh is unavailable" do
@@ -133,7 +133,7 @@ defmodule SymphonyElixir.SSHTest do
              SSH.start_port("localhost", "printf ok", port_opener: port_opener(self(), fake_port))
 
     assert_received {:ssh_port, {:spawn_executable, _executable}, opts}
-    assert opts[:args] == Enum.map(["-T", "localhost", "bash -lc 'printf ok'"], &String.to_charlist/1)
+    assert opts[:args] == Enum.map(["-T", "localhost", "sh -c 'printf ok'"], &String.to_charlist/1)
     refute Keyword.has_key?(opts, :line)
   end
 
@@ -150,7 +150,7 @@ defmodule SymphonyElixir.SSHTest do
     assert opts[:line] == 256
 
     assert opts[:args] ==
-             Enum.map(["-T", "-p", "2222", "localhost", "bash -lc 'printf ok'"], &String.to_charlist/1)
+             Enum.map(["-T", "-p", "2222", "localhost", "sh -c 'printf ok'"], &String.to_charlist/1)
   end
 
   test "run/3 uses the configured default command runner" do
@@ -165,7 +165,7 @@ defmodule SymphonyElixir.SSHTest do
     end)
 
     assert {:ok, {"", 0}} = SSH.run("localhost", "printf ok")
-    assert_received {:ssh_command, "test-ssh", ["-T", "localhost", "bash -lc 'printf ok'"], []}
+    assert_received {:ssh_command, "test-ssh", ["-T", "localhost", "sh -c 'printf ok'"], []}
   end
 
   test "start_port/3 uses the configured default port opener" do
@@ -180,7 +180,7 @@ defmodule SymphonyElixir.SSHTest do
 
   test "remote_shell_command/1 escapes embedded single quotes" do
     assert SSH.remote_shell_command("printf 'hello'") ==
-             "bash -lc 'printf '\"'\"'hello'\"'\"''"
+             "sh -c 'printf '\"'\"'hello'\"'\"''"
   end
 
   defp command_runner(test_pid) do

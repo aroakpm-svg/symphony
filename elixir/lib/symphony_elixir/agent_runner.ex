@@ -5,7 +5,8 @@ defmodule SymphonyElixir.AgentRunner do
 
   require Logger
   alias SymphonyElixir.{ClaimService, Codex.AppServer, Config, Linear.Issue}
-  alias SymphonyElixir.{PromptBuilder, ReadinessGate, Tracker, Workspace}
+  alias SymphonyElixir.{ProjectCredentialProvider, ProjectExecutionContext}
+  alias SymphonyElixir.{PromptBuilder, ReadinessGate, SubprocessEnvironment, Tracker, Workspace}
 
   @type worker_host :: String.t() | nil
 
@@ -37,72 +38,222 @@ defmodule SymphonyElixir.AgentRunner do
   defp run_on_worker_host(issue, codex_update_recipient, opts, worker_host) do
     Logger.info("Starting worker attempt for #{issue_context(issue)} worker_host=#{worker_host_for_log(worker_host)}")
 
-    case Workspace.prepare_for_issue(issue, worker_host) do
-      {:ok, %{path: workspace, readiness_state: readiness_state} = preparation} ->
-        send_worker_runtime_info(codex_update_recipient, issue, worker_host, workspace)
+    with {:ok, execution_context} <- execution_context(issue, opts),
+         {:ok, credential_env} <- credential_environment(execution_context, opts),
+         {:ok, process_env} <- subprocess_environment(credential_env, execution_context) do
+      run_with_execution_context(
+        issue,
+        codex_update_recipient,
+        opts,
+        worker_host,
+        execution_context,
+        process_env,
+        Map.values(credential_env)
+      )
+    else
+      {:error, reason} ->
+        handle_workspace_preflight_failure(
+          codex_update_recipient,
+          issue,
+          worker_host,
+          nil,
+          {:project_credential_unavailable, reason}
+        )
+    end
+  end
 
-        run_result =
-          try do
-            with :ok <- Workspace.preflight(workspace, issue, worker_host),
-                 {:ok, receipt} <-
-                   verify_readiness(workspace, issue, worker_host, readiness_state, opts),
-                 :ok <-
-                   persist_readiness(
-                     preparation,
-                     issue,
-                     receipt,
-                     worker_host,
-                     opts
-                   ),
-                 :ok <- Workspace.run_before_run_hook(workspace, issue, worker_host) do
-              run_codex_turns(workspace, issue, codex_update_recipient, opts, worker_host)
-            else
-              {:error, {:workspace_preflight_failed, _type, _command, _status, _output} = reason} ->
-                {:deferred_workspace_preflight_failure, reason}
+  defp run_with_execution_context(
+         issue,
+         codex_update_recipient,
+         opts,
+         worker_host,
+         execution_context,
+         process_env,
+         sensitive_env_values
+       ) do
+    runtime_opts =
+      [
+        env: process_env,
+        sensitive_env_values: sensitive_env_values,
+        execution_context: execution_context
+      ]
+      |> maybe_put_subprocess_home_paths(execution_context)
 
-              {:error, {:workspace_preflight_failed, _type, _command, _detail} = reason} ->
-                {:deferred_workspace_preflight_failure, reason}
+    preparation_opts = Keyword.put(runtime_opts, :attest_preparation_errors, true)
 
-              {:error, {:readiness_gate_failed, %ReadinessGate.Failure{}} = reason} ->
-                {:deferred_workspace_preflight_failure, reason}
+    case Workspace.prepare_for_issue(issue, worker_host, execution_context, preparation_opts) do
+      {:ok,
+       %{
+         path: workspace,
+         readiness_state: readiness_state,
+         workspace_attestation: workspace_attestation,
+         private_home_capability: private_home_capability
+       } = preparation} ->
+        effect_opts =
+          runtime_opts
+          |> Keyword.put(:workspace_attestation, workspace_attestation)
+          |> Keyword.put(:private_home_capability, private_home_capability)
 
-              {:error, {:readiness_state_failed, _state_reason} = reason} ->
-                {:deferred_workspace_preflight_failure, reason}
+        with_private_home_capability(private_home_capability, fn ->
+          send_worker_runtime_info(
+            codex_update_recipient,
+            issue,
+            worker_host,
+            workspace,
+            workspace_attestation
+          )
 
-              other ->
-                other
+          run_result =
+            try do
+              with :ok <- Workspace.preflight(workspace, issue, worker_host, effect_opts),
+                   {:ok, receipt} <-
+                     verify_readiness(
+                       workspace,
+                       issue,
+                       worker_host,
+                       readiness_state,
+                       opts,
+                       effect_opts
+                     ),
+                   :ok <-
+                     persist_readiness(
+                       preparation,
+                       issue,
+                       receipt,
+                       worker_host,
+                       opts,
+                       effect_opts
+                     ),
+                   :ok <-
+                     Workspace.run_before_run_hook(workspace, issue, worker_host, effect_opts) do
+                run_codex_turns(
+                  workspace,
+                  issue,
+                  codex_update_recipient,
+                  opts,
+                  worker_host,
+                  effect_opts
+                )
+              else
+                {:error, {:workspace_preflight_failed, _type, _command, _status, _output} = reason} ->
+                  {:deferred_workspace_preflight_failure, reason}
+
+                {:error, {:workspace_preflight_failed, _type, _command, _detail} = reason} ->
+                  {:deferred_workspace_preflight_failure, reason}
+
+                {:error, {:readiness_gate_failed, %ReadinessGate.Failure{}} = reason} ->
+                  {:deferred_workspace_preflight_failure, reason}
+
+                {:error, {:readiness_state_failed, _state_reason} = reason} ->
+                  {:deferred_workspace_preflight_failure, reason}
+
+                other ->
+                  other
+              end
+            after
+              Workspace.run_after_run_hook(workspace, issue, worker_host, effect_opts)
             end
-          after
-            Workspace.run_after_run_hook(workspace, issue, worker_host)
+
+          case run_result do
+            {:deferred_workspace_preflight_failure, reason} ->
+              handle_workspace_preflight_failure(codex_update_recipient, issue, worker_host, workspace, reason)
+
+            other ->
+              other
           end
-
-        case run_result do
-          {:deferred_workspace_preflight_failure, reason} ->
-            handle_workspace_preflight_failure(codex_update_recipient, issue, worker_host, workspace, reason)
-
-          other ->
-            other
-        end
+        end)
 
       {:error, reason} ->
-        case readiness_state_error_workspace(reason) do
-          {:ok, workspace} ->
-            send_worker_runtime_info(codex_update_recipient, issue, worker_host, workspace)
+        case readiness_state_error_effect_opts(reason, runtime_opts) do
+          {:ok, workspace, effect_opts, readiness_reason} ->
+            with_private_home_capability(effect_opts[:private_home_capability], fn ->
+              send_worker_runtime_info(
+                codex_update_recipient,
+                issue,
+                worker_host,
+                workspace,
+                effect_opts[:workspace_attestation]
+              )
 
-            Workspace.run_after_run_hook(workspace, issue, worker_host)
+              Workspace.run_after_run_hook(workspace, issue, worker_host, effect_opts)
 
-            handle_workspace_preflight_failure(
-              codex_update_recipient,
-              issue,
-              worker_host,
-              workspace,
-              {:readiness_state_failed, reason}
-            )
+              handle_workspace_preflight_failure(
+                codex_update_recipient,
+                issue,
+                worker_host,
+                workspace,
+                {:readiness_state_failed, readiness_reason}
+              )
+            end)
 
           :error ->
             {:error, reason}
         end
     end
+  end
+
+  defp with_private_home_capability(private_home_capability, callback)
+       when is_function(callback, 0) do
+    finalization_state = :atomics.new(1, signed: false)
+
+    result =
+      try do
+        callback.()
+      after
+        finalization_code =
+          case Workspace.finalize_private_home_capability(private_home_capability) do
+            :ok -> 1
+            {:error, :subprocess_home_finalize_failed} -> 2
+          end
+
+        :atomics.put(finalization_state, 1, finalization_code)
+      end
+
+    case :atomics.get(finalization_state, 1) do
+      1 -> result
+      2 -> {:error, :subprocess_home_finalize_failed}
+    end
+  end
+
+  defp execution_context(%Issue{project_profile: nil}, opts) do
+    case Keyword.get(opts, :execution_context) do
+      nil -> {:ok, nil}
+      _context -> {:error, :execution_context_mismatch}
+    end
+  end
+
+  defp execution_context(%Issue{} = issue, opts) do
+    with {:ok, expected} <- ProjectExecutionContext.from_issue(issue) do
+      case Keyword.fetch(opts, :execution_context) do
+        {:ok, ^expected} -> {:ok, expected}
+        {:ok, _other} -> {:error, :execution_context_mismatch}
+        :error -> {:ok, expected}
+      end
+    end
+  end
+
+  defp credential_environment(nil, _opts), do: {:ok, %{}}
+
+  defp credential_environment(%ProjectExecutionContext{} = context, opts) do
+    ProjectCredentialProvider.resolve(context,
+      credential_provider: Keyword.get(opts, :credential_provider)
+    )
+  end
+
+  defp subprocess_environment(environment, nil), do: {:ok, environment}
+
+  defp subprocess_environment(environment, %ProjectExecutionContext{} = execution_context) do
+    SubprocessEnvironment.build(environment, execution_context)
+  end
+
+  defp maybe_put_subprocess_home_paths(opts, nil), do: opts
+
+  defp maybe_put_subprocess_home_paths(opts, %ProjectExecutionContext{} = execution_context) do
+    Keyword.put(
+      opts,
+      :subprocess_home_paths,
+      SubprocessEnvironment.private_home_paths(execution_context)
+    )
   end
 
   defp codex_message_handler(recipient, issue) do
@@ -119,21 +270,35 @@ defmodule SymphonyElixir.AgentRunner do
 
   defp send_codex_update(_recipient, _issue, _message), do: :ok
 
-  defp send_worker_runtime_info(recipient, %Issue{id: issue_id}, worker_host, workspace)
+  defp send_worker_runtime_info(
+         recipient,
+         %Issue{id: issue_id},
+         worker_host,
+         workspace,
+         workspace_attestation
+       )
        when is_binary(issue_id) and is_pid(recipient) and is_binary(workspace) do
     send(
       recipient,
       {:worker_runtime_info, issue_id,
        %{
          worker_host: worker_host,
-         workspace_path: workspace
+         workspace_path: workspace,
+         workspace_attestation: workspace_attestation
        }}
     )
 
     :ok
   end
 
-  defp send_worker_runtime_info(_recipient, _issue, _worker_host, _workspace), do: :ok
+  defp send_worker_runtime_info(
+         _recipient,
+         _issue,
+         _worker_host,
+         _workspace,
+         _workspace_attestation
+       ),
+       do: :ok
 
   defp handle_workspace_preflight_failure(recipient, issue, worker_host, workspace, reason) do
     case send_hard_blocker(recipient, issue, worker_host, workspace, reason) do
@@ -143,7 +308,7 @@ defmodule SymphonyElixir.AgentRunner do
   end
 
   defp send_hard_blocker(recipient, %Issue{id: issue_id}, worker_host, workspace, reason)
-       when is_binary(issue_id) and is_pid(recipient) do
+       when is_binary(issue_id) and is_pid(recipient) and (is_binary(workspace) or is_nil(workspace)) do
     send(
       recipient,
       {:agent_hard_blocker, issue_id,
@@ -177,10 +342,47 @@ defmodule SymphonyElixir.AgentRunner do
     "workspace readiness state failed detail=#{inline_text(inspect(reason))} action=Preserve the workspace and repair or recreate its durable readiness state before retrying."
   end
 
-  defp verify_readiness(workspace, issue, worker_host, readiness_state, opts) do
+  defp hard_blocker_message({:project_credential_unavailable, reason}) do
+    "project credential unavailable reason=#{safe_credential_reason(reason)}"
+  end
+
+  defp safe_credential_reason(reason)
+       when reason in [
+              :credential_provider_unconfigured,
+              :credential_not_found,
+              :credential_ambiguous,
+              :credential_reference_mismatch,
+              :invalid_credential_environment,
+              :credential_provider_failed,
+              :missing_project_profile,
+              :invalid_project_profile,
+              :invalid_issue_id,
+              :invalid_issue_identifier,
+              :invalid_project_id,
+              :project_id_mismatch,
+              :repository_mismatch,
+              :invalid_workspace_namespace,
+              :invalid_canonical_branch,
+              :invalid_credential_ref,
+              :environment_not_allowed,
+              :missing_routing_revision
+            ],
+       do: reason
+
+  defp safe_credential_reason(_reason), do: :credential_provider_failed
+
+  defp verify_readiness(workspace, issue, worker_host, readiness_state, opts, runtime_opts) do
     readiness_opts =
-      [workspace_readiness_state: readiness_state, worker_host: worker_host]
-      |> maybe_put_readiness_command_runner(Keyword.get(opts, :readiness_command_runner))
+      [
+        workspace_readiness_state: readiness_state,
+        worker_host: worker_host,
+        execution_context: runtime_opts[:execution_context]
+      ]
+      |> maybe_put_readiness_command_runner(
+        Keyword.get(opts, :readiness_command_runner),
+        runtime_opts
+      )
+      |> maybe_put_default_readiness_runner(workspace, worker_host, runtime_opts)
 
     case ReadinessGate.check(workspace, issue, readiness_opts) do
       {:ok, receipt} ->
@@ -195,11 +397,12 @@ defmodule SymphonyElixir.AgentRunner do
     end
   end
 
-  defp persist_readiness(preparation, issue, receipt, worker_host, opts) do
+  defp persist_readiness(preparation, issue, receipt, worker_host, opts, runtime_opts) do
     persistence_opts =
       case Keyword.get(opts, :readiness_command_runner) do
         runner when is_function(runner, 1) -> [command_runner: runner]
-        _runner -> []
+        runner when is_function(runner, 2) -> [command_runner: fn args -> runner.(args, runtime_opts) end]
+        _runner -> runtime_opts
       end
 
     case Workspace.mark_readiness_ready(
@@ -229,28 +432,86 @@ defmodule SymphonyElixir.AgentRunner do
 
   defp readiness_state_error_workspace(_reason), do: :error
 
-  defp maybe_put_readiness_command_runner(opts, runner) when is_function(runner, 1) do
+  @doc false
+  @spec readiness_state_error_effect_opts_for_test(term(), keyword()) ::
+          {:ok, Path.t(), keyword(), term()} | :error
+  def readiness_state_error_effect_opts_for_test(reason, runtime_opts),
+    do: readiness_state_error_effect_opts(reason, runtime_opts)
+
+  defp readiness_state_error_effect_opts(
+         {:attested_preparation_error, reason, workspace, workspace_attestation, private_home_capability},
+         runtime_opts
+       )
+       when is_binary(workspace) and is_map(workspace_attestation) and is_list(runtime_opts) do
+    case readiness_state_error_workspace(reason) do
+      {:ok, ^workspace} ->
+        effect_opts =
+          runtime_opts
+          |> Keyword.put(:workspace_attestation, workspace_attestation)
+          |> Keyword.put(:private_home_capability, private_home_capability)
+
+        {:ok, workspace, effect_opts, reason}
+
+      _mismatch ->
+        :error
+    end
+  end
+
+  defp readiness_state_error_effect_opts(reason, runtime_opts) when is_list(runtime_opts) do
+    case readiness_state_error_workspace(reason) do
+      {:ok, workspace} -> {:ok, workspace, runtime_opts, reason}
+      :error -> :error
+    end
+  end
+
+  defp maybe_put_readiness_command_runner(opts, runner, _runtime_opts)
+       when is_function(runner, 1) do
     Keyword.put(opts, :command_runner, runner)
   end
 
-  defp maybe_put_readiness_command_runner(opts, _runner), do: opts
+  defp maybe_put_readiness_command_runner(opts, runner, runtime_opts)
+       when is_function(runner, 2) do
+    Keyword.put(opts, :command_runner, fn args -> runner.(args, runtime_opts) end)
+  end
 
-  defp run_codex_turns(workspace, issue, codex_update_recipient, opts, worker_host) do
+  defp maybe_put_readiness_command_runner(opts, _runner, _runtime_opts), do: opts
+
+  defp maybe_put_default_readiness_runner(opts, workspace, worker_host, runtime_opts) do
+    Keyword.put_new(opts, :command_runner, fn args ->
+      Workspace.run_git_command(workspace, args, worker_host, runtime_opts)
+    end)
+  end
+
+  defp run_codex_turns(workspace, issue, codex_update_recipient, opts, worker_host, runtime_opts) do
     max_turns = Keyword.get(opts, :max_turns, Config.settings!().agent.max_turns)
     issue_state_fetcher = Keyword.get(opts, :issue_state_fetcher, &Tracker.fetch_issue_states_by_ids/1)
 
     distributed_claim = Keyword.get(opts, :distributed_claim)
     effect_ledger_ready? = Keyword.get(opts, :effect_ledger_ready?, &ClaimService.effect_ledger_ready?/0)
+    session_starter = Keyword.get(opts, :codex_session_starter, &AppServer.start_session/2)
 
     with {:ok, managed_session} <- managed_session_mode(distributed_claim, effect_ledger_ready?),
          {:ok, session} <-
-           AppServer.start_session(workspace,
-             worker_host: worker_host,
-             managed_session: managed_session,
-             managed_issue_id: if(managed_session, do: issue.id)
+           session_starter.(
+             workspace,
+             Keyword.merge(runtime_opts,
+               worker_host: worker_host,
+               managed_session: managed_session,
+               managed_issue_id: if(managed_session, do: issue.id)
+             )
            ) do
       try do
-        do_run_codex_turns(session, workspace, issue, codex_update_recipient, opts, issue_state_fetcher, 1, max_turns)
+        do_run_codex_turns(
+          session,
+          workspace,
+          issue,
+          codex_update_recipient,
+          opts,
+          issue_state_fetcher,
+          runtime_opts,
+          1,
+          max_turns
+        )
       after
         AppServer.stop_session(session)
       end
@@ -263,7 +524,17 @@ defmodule SymphonyElixir.AgentRunner do
 
   defp managed_session_mode(_distributed_claim, _effect_ledger_ready?), do: {:ok, false}
 
-  defp do_run_codex_turns(app_session, workspace, issue, codex_update_recipient, opts, issue_state_fetcher, turn_number, max_turns) do
+  defp do_run_codex_turns(
+         app_session,
+         workspace,
+         issue,
+         codex_update_recipient,
+         opts,
+         issue_state_fetcher,
+         runtime_opts,
+         turn_number,
+         max_turns
+       ) do
     prompt = build_turn_prompt(issue, opts, turn_number, max_turns)
 
     with {:ok, turn_session} <-
@@ -271,7 +542,8 @@ defmodule SymphonyElixir.AgentRunner do
              app_session,
              prompt,
              issue,
-             on_message: codex_message_handler(codex_update_recipient, issue)
+             on_message: codex_message_handler(codex_update_recipient, issue),
+             sensitive_env_values: Keyword.get(runtime_opts, :sensitive_env_values, [])
            ) do
       Logger.info("Completed agent run for #{issue_context(issue)} session_id=#{turn_session[:session_id]} workspace=#{workspace} turn=#{turn_number}/#{max_turns}")
 
@@ -286,6 +558,7 @@ defmodule SymphonyElixir.AgentRunner do
             codex_update_recipient,
             opts,
             issue_state_fetcher,
+            runtime_opts,
             turn_number + 1,
             max_turns
           )

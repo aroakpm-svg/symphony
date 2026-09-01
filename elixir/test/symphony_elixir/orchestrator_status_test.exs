@@ -41,7 +41,13 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
 
   test "initial claim rejection queues finalization and clears the local claim" do
     issue = %Issue{id: "late-claim", identifier: "ARO-LATE", title: "Late claim"}
-    {:ok, state} = Orchestrator.init(name: Module.concat(__MODULE__, :LateClaimOrchestrator))
+
+    {:ok, state} =
+      Orchestrator.init(
+        name: Module.concat(__MODULE__, :LateClaimOrchestrator),
+        identity_validator: fn -> {:ok, %{viewer_id: "test-viewer"}} end
+      )
+
     state = %{state | claimed: MapSet.put(state.claimed, issue.id)}
 
     final_state = Orchestrator.handle_claim_rejection_for_test(state, issue, nil)
@@ -1871,6 +1877,141 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
     refute rendered =~ "Timestamp:"
   end
 
+  test "application prep_stop records the final receipt while RuntimeHealth is alive" do
+    root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-prep-stop-#{System.unique_integer([:positive])}"
+      )
+
+    workspace_root = Path.join(root, "workspaces")
+    receipt_root = Path.join(root, "receipts")
+    File.mkdir_p!(workspace_root)
+
+    health =
+      start_supervised!({SymphonyElixir.RuntimeHealth, name: nil, runtime_epoch: "prep-stop-epoch", receipt_root: receipt_root, workspace_root: workspace_root})
+
+    previous_server = Application.get_env(:symphony_elixir, :runtime_health_server)
+    Application.put_env(:symphony_elixir, :runtime_health_server, health)
+
+    on_exit(fn ->
+      if is_nil(previous_server),
+        do: Application.delete_env(:symphony_elixir, :runtime_health_server),
+        else: Application.put_env(:symphony_elixir, :runtime_health_server, previous_server)
+
+      File.rm_rf(root)
+    end)
+
+    assert :application_state == SymphonyElixir.Application.prep_stop(:application_state)
+    assert Process.alive?(health)
+
+    snapshot = SymphonyElixir.RuntimeHealth.snapshot(health)
+    assert snapshot.final_stop.category == :normal_shutdown
+    assert snapshot.final_stop.runtime_epoch == "prep-stop-epoch"
+    assert File.regular?(snapshot.final_stop.receipt_path)
+  end
+
+  test "multi-project dispatch emits one start and outcome for every health boundary" do
+    profile = health_test_profile()
+    profiles = %{version: 1, profiles: %{profile.key => profile}}
+    issue = health_test_issue(profile)
+    {:ok, health_events} = Agent.start_link(fn -> [] end)
+
+    health_fun = fn event -> Agent.update(health_events, &(&1 ++ [event])) end
+
+    final_state =
+      Orchestrator.multi_project_dispatch_for_test(
+        health_test_state(),
+        profiles,
+        health_dispatch_opts(issue, health_fun)
+      )
+
+    assert Map.has_key?(final_state.running, issue.id)
+
+    events = Agent.get(health_events, & &1)
+
+    for stage <- [
+          :candidate_fetch,
+          :issue_refresh,
+          :routing,
+          :profile_resolution,
+          :preflight,
+          :claim,
+          :dispatch
+        ] do
+      stage_events = Enum.filter(events, &match?({:stage, ^stage, _metadata}, &1))
+      assert [{:stage, ^stage, %{status: :started}}, {:stage, ^stage, %{status: :succeeded}}] = stage_events
+    end
+
+    issue_events =
+      Enum.filter(events, fn
+        {:stage, :candidate_fetch, _metadata} -> false
+        {:stage, _stage, _metadata} -> true
+        _other -> false
+      end)
+
+    assert Enum.all?(issue_events, fn {:stage, _stage, metadata} ->
+             metadata.profile_key == profile.key and metadata.issue_id == issue.id and
+               metadata.issue_identifier == issue.identifier
+           end)
+  end
+
+  test "health reporting failure cannot change claim or dispatch authorization" do
+    profile = health_test_profile()
+    profiles = %{version: 1, profiles: %{profile.key => profile}}
+    issue = health_test_issue(profile)
+
+    healthy =
+      Orchestrator.multi_project_dispatch_for_test(
+        health_test_state(),
+        profiles,
+        health_dispatch_opts(issue, fn _event -> :ok end)
+      )
+
+    failing =
+      Orchestrator.multi_project_dispatch_for_test(
+        health_test_state(),
+        profiles,
+        health_dispatch_opts(issue, fn _event -> raise "health unavailable" end)
+      )
+
+    assert Map.keys(healthy.running) == [issue.id]
+    assert Map.keys(failing.running) == [issue.id]
+    assert healthy.claimed == failing.claimed
+    assert healthy.retry_attempts == failing.retry_attempts
+    assert healthy.profile_retry_attempts == failing.profile_retry_attempts
+
+    uncertain_opts = fn health_fun ->
+      issue
+      |> health_dispatch_opts(health_fun)
+      |> Keyword.put(:route_reader, fn _issue -> {:error, :claim_store_unavailable} end)
+      |> Keyword.put(:timer_fun, fn _message, _delay -> make_ref() end)
+    end
+
+    healthy_retry =
+      Orchestrator.multi_project_dispatch_for_test(
+        health_test_state(),
+        profiles,
+        uncertain_opts.(fn _event -> :ok end)
+      )
+
+    failing_retry =
+      Orchestrator.multi_project_dispatch_for_test(
+        health_test_state(),
+        profiles,
+        uncertain_opts.(fn _event -> raise "health unavailable" end)
+      )
+
+    assert %{attempt: 1, reason: :routing_unavailable} =
+             healthy_retry.profile_retry_attempts[profile.key]
+
+    assert %{attempt: 1, reason: :routing_unavailable} =
+             failing_retry.profile_retry_attempts[profile.key]
+
+    assert healthy_retry.running == failing_retry.running
+    assert healthy_retry.claimed == failing_retry.claimed
+  end
+
   defp wait_for_snapshot(pid, predicate, timeout_ms \\ 200) when is_function(predicate, 1) do
     deadline_ms = System.monotonic_time(:millisecond) + timeout_ms
     do_wait_for_snapshot(pid, predicate, deadline_ms)
@@ -1919,5 +2060,64 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
       {next_tokens, [{timestamp, next_tokens} | acc]}
     end)
     |> elem(1)
+  end
+
+  defp health_test_profile do
+    %{
+      key: "health-profile",
+      linear_project_id: "d0acfb71-f68c-4a9f-8a1a-477265d3c3ec",
+      repository: "aroakpm-svg/aroak-central-brain",
+      canonical_branch: "main",
+      workspace_namespace: "health-profile",
+      credential_ref: "github-health-profile",
+      environment: "local_non_production"
+    }
+  end
+
+  defp health_test_issue(profile) do
+    %Issue{
+      id: "health-issue",
+      identifier: "ARO-HEALTH",
+      title: "Runtime health",
+      state: "In Progress",
+      labels: ["symphony-worker"],
+      assigned_to_worker: true,
+      project_id: profile.linear_project_id,
+      project_slug: profile.key,
+      project_profile: nil,
+      repository: nil,
+      blocked_by: [],
+      created_at: ~U[2026-08-28 00:00:00Z]
+    }
+  end
+
+  defp health_test_state do
+    %Orchestrator.State{
+      max_concurrent_agents: 1,
+      codex_totals: %{input_tokens: 0, output_tokens: 0, total_tokens: 0, seconds_running: 0}
+    }
+  end
+
+  defp health_dispatch_opts(issue, health_fun) do
+    [
+      fetcher: fn _profile -> {:ok, [issue]} end,
+      refresh_fun: fn [issue_id] when issue_id == issue.id -> {:ok, [issue]} end,
+      route_reader: fn _issue -> {:ok, %{routing_revision: 7}} end,
+      preflight_fun: fn profile -> {:ok, %{repository: profile.repository}} end,
+      claim_fun: fn _issue, _owner -> {:ok, %{claim_id: "health-claim", generation: 1}} end,
+      dispatch_fun: fn state, dispatched, _attempt, _recipient, _worker_host, _claim ->
+        entry = %{
+          issue: dispatched,
+          identifier: dispatched.identifier,
+          pid: self(),
+          ref: make_ref(),
+          started_at: DateTime.utc_now()
+        }
+
+        %{state | running: Map.put(state.running, dispatched.id, entry)}
+      end,
+      health_fun: health_fun,
+      poll_timeout: 25
+    ]
   end
 end

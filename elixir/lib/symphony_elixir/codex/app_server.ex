@@ -4,7 +4,7 @@ defmodule SymphonyElixir.Codex.AppServer do
   """
 
   require Logger
-  alias SymphonyElixir.{Codex.DynamicTool, Config, PathSafety, SSH}
+  alias SymphonyElixir.{Codex.DynamicTool, Config, PathSafety, SSH, Workspace}
 
   @initialize_id 1
   @thread_start_id 2
@@ -41,15 +41,29 @@ defmodule SymphonyElixir.Codex.AppServer do
   @spec start_session(Path.t(), keyword()) :: {:ok, session()} | {:error, term()}
   def start_session(workspace, opts \\ []) do
     worker_host = Keyword.get(opts, :worker_host)
+    redaction_values = redaction_values(opts)
 
-    with {:ok, expanded_workspace} <- validate_workspace_cwd(workspace, worker_host),
-         {:ok, port} <- start_port(expanded_workspace, worker_host) do
+    with {:ok, expanded_workspace} <-
+           validate_workspace_cwd(
+             workspace,
+             worker_host,
+             Keyword.get(opts, :execution_context),
+             Keyword.get(opts, :workspace_attestation)
+           ),
+         {:ok, port_environment} <- port_environment(opts),
+         {:ok, port} <- start_port(expanded_workspace, worker_host, port_environment, opts) do
       metadata = port_metadata(port, worker_host)
 
       with {:ok, session_policies} <- session_policies(expanded_workspace, worker_host),
            managed_session = Keyword.get(opts, :managed_session, false),
            {:ok, thread_id} <-
-             do_start_session(port, expanded_workspace, session_policies, managed_session) do
+             do_start_session(
+               port,
+               expanded_workspace,
+               session_policies,
+               managed_session,
+               redaction_values
+             ) do
         {:ok,
          %{
            port: port,
@@ -67,7 +81,7 @@ defmodule SymphonyElixir.Codex.AppServer do
       else
         {:error, reason} ->
           stop_port(port)
-          {:error, reason}
+          {:error, sanitize_term(reason, redaction_values)}
       end
     end
   end
@@ -87,7 +101,12 @@ defmodule SymphonyElixir.Codex.AppServer do
         issue,
         opts \\ []
       ) do
-    on_message = Keyword.get(opts, :on_message, &default_on_message/1)
+    redaction_values = redaction_values(opts)
+
+    on_message =
+      opts
+      |> Keyword.get(:on_message, &default_on_message/1)
+      |> sanitized_message_handler(redaction_values)
 
     tool_executor =
       Keyword.get(opts, :tool_executor, fn tool, arguments ->
@@ -97,7 +116,16 @@ defmodule SymphonyElixir.Codex.AppServer do
         )
       end)
 
-    case start_turn(port, thread_id, prompt, issue, workspace, approval_policy, turn_sandbox_policy) do
+    case start_turn(
+           port,
+           thread_id,
+           prompt,
+           issue,
+           workspace,
+           approval_policy,
+           turn_sandbox_policy,
+           redaction_values
+         ) do
       {:ok, turn_id} ->
         session_id = "#{thread_id}-#{turn_id}"
         Logger.info("Codex session started for #{issue_context(issue)} session_id=#{session_id}")
@@ -113,7 +141,13 @@ defmodule SymphonyElixir.Codex.AppServer do
           metadata
         )
 
-        case await_turn_completion(port, on_message, tool_executor, auto_approve_requests) do
+        case await_turn_completion(
+               port,
+               on_message,
+               tool_executor,
+               auto_approve_requests,
+               redaction_values
+             ) do
           {:ok, result} ->
             Logger.info("Codex session completed for #{issue_context(issue)} session_id=#{session_id}")
 
@@ -126,6 +160,7 @@ defmodule SymphonyElixir.Codex.AppServer do
              }}
 
           {:error, reason} ->
+            reason = sanitize_term(reason, redaction_values)
             Logger.warning("Codex session ended with error for #{issue_context(issue)} session_id=#{session_id}: #{inspect(reason)}")
 
             emit_message(
@@ -142,6 +177,7 @@ defmodule SymphonyElixir.Codex.AppServer do
         end
 
       {:error, reason} ->
+        reason = sanitize_term(reason, redaction_values)
         Logger.error("Codex session failed for #{issue_context(issue)}: #{inspect(reason)}")
         emit_message(on_message, :startup_failed, %{reason: reason}, metadata)
         {:error, reason}
@@ -151,6 +187,38 @@ defmodule SymphonyElixir.Codex.AppServer do
   @spec stop_session(session()) :: :ok
   def stop_session(%{port: port}) when is_port(port) do
     stop_port(port)
+  end
+
+  defp validate_workspace_cwd(workspace, worker_host, nil, nil) do
+    validate_workspace_cwd(workspace, worker_host)
+  end
+
+  defp validate_workspace_cwd(
+         workspace,
+         worker_host,
+         execution_context,
+         workspace_attestation
+       )
+       when is_binary(workspace) do
+    with :ok <-
+           Workspace.validate_execution_workspace(
+             workspace,
+             worker_host,
+             execution_context,
+             workspace_attestation
+           ),
+         {:ok, validated_workspace} <- validate_workspace_cwd(workspace, worker_host) do
+      {:ok, validated_workspace}
+    else
+      {:error, {:workspace_issue_identity_mismatch, actual, expected}} ->
+        {:error, {:invalid_workspace_cwd, :execution_context_mismatch, actual, expected}}
+
+      {:error, {:workspace_issue_identity_changed, actual, expected}} ->
+        {:error, {:invalid_workspace_cwd, :workspace_identity_changed, actual, expected}}
+
+      {:error, reason} ->
+        {:error, {:invalid_workspace_cwd, :execution_context_invalid, reason}}
+    end
   end
 
   defp validate_workspace_cwd(workspace, nil) when is_binary(workspace) do
@@ -195,40 +263,113 @@ defmodule SymphonyElixir.Codex.AppServer do
     end
   end
 
-  defp start_port(workspace, nil) do
-    executable = System.find_executable("bash")
+  defp start_port(workspace, nil, port_environment, opts) do
+    executable = System.find_executable("sh")
 
     if is_nil(executable) do
-      {:error, :bash_not_found}
+      {:error, :shell_not_found}
     else
-      port =
-        Port.open(
-          {:spawn_executable, String.to_charlist(executable)},
-          [
-            :binary,
-            :exit_status,
-            :stderr_to_stdout,
-            args: [~c"-lc", String.to_charlist(Config.settings!().codex.command)],
-            cd: String.to_charlist(workspace),
-            line: @port_line_bytes
-          ]
-        )
+      port_opener = Keyword.get(opts, :port_opener, &Port.open/2)
 
-      {:ok, port}
+      port_opts =
+        [
+          :binary,
+          :exit_status,
+          :stderr_to_stdout,
+          args: [~c"-c", String.to_charlist(Config.settings!().codex.command)],
+          cd: String.to_charlist(workspace),
+          line: @port_line_bytes
+        ]
+        |> maybe_put_port_environment(port_environment)
+
+      with {:ok, _revalidated_workspace} <-
+             validate_workspace_cwd(
+               workspace,
+               nil,
+               Keyword.get(opts, :execution_context),
+               Keyword.get(opts, :workspace_attestation)
+             ),
+           :ok <-
+             Workspace.validate_private_home_effect(
+               workspace,
+               nil,
+               Keyword.get(opts, :execution_context),
+               Keyword.get(opts, :workspace_attestation),
+               opts
+             ) do
+        port =
+          port_opener.(
+            {:spawn_executable, String.to_charlist(executable)},
+            port_opts
+          )
+
+        {:ok, port}
+      end
     end
   end
 
-  defp start_port(workspace, worker_host) when is_binary(worker_host) do
-    remote_command = remote_launch_command(workspace)
+  defp start_port(workspace, worker_host, [], opts) when is_binary(worker_host) do
+    remote_command =
+      remote_launch_command(
+        workspace,
+        Keyword.get(opts, :execution_context),
+        Keyword.get(opts, :workspace_attestation)
+      )
+
     SSH.start_port(worker_host, remote_command, line: @port_line_bytes)
   end
 
-  defp remote_launch_command(workspace) when is_binary(workspace) do
-    [
-      "cd #{shell_escape(workspace)}",
+  defp start_port(_workspace, worker_host, _port_environment, _opts)
+       when is_binary(worker_host),
+       do: {:error, :remote_subprocess_environment_unsupported}
+
+  defp port_environment(opts) do
+    case Keyword.get(opts, :env, %{}) do
+      environment when is_map(environment) ->
+        environment
+        |> Enum.reduce_while({:ok, []}, &accumulate_port_environment/2)
+        |> case do
+          {:ok, entries} -> {:ok, Enum.reverse(entries)}
+          {:error, _reason} = error -> error
+        end
+
+      _environment ->
+        {:error, :invalid_subprocess_environment}
+    end
+  end
+
+  defp accumulate_port_environment(entry, {:ok, entries}) do
+    case port_environment_entry(entry) do
+      {:ok, converted_entry} -> {:cont, {:ok, [converted_entry | entries]}}
+      :error -> {:halt, {:error, :invalid_subprocess_environment}}
+    end
+  end
+
+  defp port_environment_entry({key, value})
+       when is_binary(key) and key != "" and is_binary(value) do
+    if String.contains?(key, ["=", <<0>>]) or String.contains?(value, <<0>>),
+      do: :error,
+      else: {:ok, {String.to_charlist(key), String.to_charlist(value)}}
+  end
+
+  defp port_environment_entry({key, false}) when is_binary(key) and key != "" do
+    if String.contains?(key, ["=", <<0>>]),
+      do: :error,
+      else: {:ok, {String.to_charlist(key), false}}
+  end
+
+  defp port_environment_entry(_entry), do: :error
+
+  defp maybe_put_port_environment(port_opts, []), do: port_opts
+
+  defp maybe_put_port_environment(port_opts, port_environment) do
+    Keyword.put(port_opts, :env, port_environment)
+  end
+
+  defp remote_launch_command(workspace, execution_context, workspace_attestation)
+       when is_binary(workspace) do
+    Workspace.remote_execution_guard(workspace, execution_context, workspace_attestation) <>
       "exec #{Config.settings!().codex.command}"
-    ]
-    |> Enum.join(" && ")
   end
 
   defp port_metadata(port, worker_host) when is_port(port) do
@@ -247,7 +388,7 @@ defmodule SymphonyElixir.Codex.AppServer do
     end
   end
 
-  defp send_initialize(port) do
+  defp send_initialize(port, redaction_values) do
     payload = %{
       "method" => "initialize",
       "id" => @initialize_id,
@@ -265,7 +406,7 @@ defmodule SymphonyElixir.Codex.AppServer do
 
     send_message(port, payload)
 
-    with {:ok, _} <- await_response(port, @initialize_id) do
+    with {:ok, _} <- await_response(port, @initialize_id, redaction_values) do
       send_message(port, %{"method" => "initialized", "params" => %{}})
       :ok
     end
@@ -279,9 +420,9 @@ defmodule SymphonyElixir.Codex.AppServer do
     Config.codex_runtime_settings(workspace, remote: true)
   end
 
-  defp do_start_session(port, workspace, session_policies, managed_session) do
-    case send_initialize(port) do
-      :ok -> start_thread(port, workspace, session_policies, managed_session)
+  defp do_start_session(port, workspace, session_policies, managed_session, redaction_values) do
+    case send_initialize(port, redaction_values) do
+      :ok -> start_thread(port, workspace, session_policies, managed_session, redaction_values)
       {:error, reason} -> {:error, reason}
     end
   end
@@ -290,7 +431,8 @@ defmodule SymphonyElixir.Codex.AppServer do
          port,
          workspace,
          %{approval_policy: approval_policy, thread_sandbox: thread_sandbox},
-         managed_session
+         managed_session,
+         redaction_values
        ) do
     send_message(port, %{
       "method" => "thread/start",
@@ -303,10 +445,10 @@ defmodule SymphonyElixir.Codex.AppServer do
       }
     })
 
-    case await_response(port, @thread_start_id) do
+    case await_response(port, @thread_start_id, redaction_values) do
       {:ok, %{"thread" => thread_payload}} ->
         case thread_payload do
-          %{"id" => thread_id} -> {:ok, thread_id}
+          %{"id" => thread_id} -> {:ok, sanitize_string(thread_id, redaction_values)}
           _ -> {:error, {:invalid_thread_payload, thread_payload}}
         end
 
@@ -315,7 +457,16 @@ defmodule SymphonyElixir.Codex.AppServer do
     end
   end
 
-  defp start_turn(port, thread_id, prompt, issue, workspace, approval_policy, turn_sandbox_policy) do
+  defp start_turn(
+         port,
+         thread_id,
+         prompt,
+         issue,
+         workspace,
+         approval_policy,
+         turn_sandbox_policy,
+         redaction_values
+       ) do
     send_message(port, %{
       "method" => "turn/start",
       "id" => @turn_start_id,
@@ -334,28 +485,55 @@ defmodule SymphonyElixir.Codex.AppServer do
       }
     })
 
-    case await_response(port, @turn_start_id) do
-      {:ok, %{"turn" => %{"id" => turn_id}}} -> {:ok, turn_id}
-      other -> other
+    case await_response(port, @turn_start_id, redaction_values) do
+      {:ok, %{"turn" => %{"id" => turn_id}}} ->
+        {:ok, sanitize_string(turn_id, redaction_values)}
+
+      other ->
+        other
     end
   end
 
-  defp await_turn_completion(port, on_message, tool_executor, auto_approve_requests) do
+  defp await_turn_completion(
+         port,
+         on_message,
+         tool_executor,
+         auto_approve_requests,
+         redaction_values
+       ) do
     receive_loop(
       port,
       on_message,
       Config.settings!().codex.turn_timeout_ms,
       "",
       tool_executor,
-      auto_approve_requests
+      auto_approve_requests,
+      redaction_values
     )
   end
 
-  defp receive_loop(port, on_message, timeout_ms, pending_line, tool_executor, auto_approve_requests) do
+  defp receive_loop(
+         port,
+         on_message,
+         timeout_ms,
+         pending_line,
+         tool_executor,
+         auto_approve_requests,
+         redaction_values
+       ) do
     receive do
       {^port, {:data, {:eol, chunk}}} ->
         complete_line = pending_line <> to_string(chunk)
-        handle_incoming(port, on_message, complete_line, timeout_ms, tool_executor, auto_approve_requests)
+
+        handle_incoming(
+          port,
+          on_message,
+          complete_line,
+          timeout_ms,
+          tool_executor,
+          auto_approve_requests,
+          redaction_values
+        )
 
       {^port, {:data, {:noeol, chunk}}} ->
         receive_loop(
@@ -364,7 +542,8 @@ defmodule SymphonyElixir.Codex.AppServer do
           timeout_ms,
           pending_line <> to_string(chunk),
           tool_executor,
-          auto_approve_requests
+          auto_approve_requests,
+          redaction_values
         )
 
       {^port, {:exit_status, status}} ->
@@ -375,15 +554,28 @@ defmodule SymphonyElixir.Codex.AppServer do
     end
   end
 
-  defp handle_incoming(port, on_message, data, timeout_ms, tool_executor, auto_approve_requests) do
+  defp handle_incoming(
+         port,
+         on_message,
+         data,
+         timeout_ms,
+         tool_executor,
+         auto_approve_requests,
+         redaction_values
+       ) do
     payload_string = to_string(data)
 
     case Jason.decode(payload_string) do
       {:ok, %{"method" => "turn/completed"} = payload} ->
+        payload = sanitize_term(payload, redaction_values)
+        payload_string = Jason.encode!(payload)
         emit_turn_event(on_message, :turn_completed, payload, payload_string, port, payload)
         {:ok, :turn_completed}
 
       {:ok, %{"method" => "turn/failed", "params" => _} = payload} ->
+        payload = sanitize_term(payload, redaction_values)
+        payload_string = Jason.encode!(payload)
+
         emit_turn_event(
           on_message,
           :turn_failed,
@@ -396,6 +588,9 @@ defmodule SymphonyElixir.Codex.AppServer do
         {:error, {:turn_failed, Map.get(payload, "params")}}
 
       {:ok, %{"method" => "turn/cancelled", "params" => _} = payload} ->
+        payload = sanitize_term(payload, redaction_values)
+        payload_string = Jason.encode!(payload)
+
         emit_turn_event(
           on_message,
           :turn_cancelled,
@@ -409,18 +604,27 @@ defmodule SymphonyElixir.Codex.AppServer do
 
       {:ok, %{"method" => method} = payload}
       when is_binary(method) ->
+        sanitized_payload_string =
+          payload
+          |> sanitize_term(redaction_values)
+          |> Jason.encode!()
+
         handle_turn_method(
           port,
           on_message,
           payload,
-          payload_string,
+          sanitized_payload_string,
           method,
           timeout_ms,
           tool_executor,
-          auto_approve_requests
+          auto_approve_requests,
+          redaction_values
         )
 
       {:ok, payload} ->
+        payload = sanitize_term(payload, redaction_values)
+        payload_string = Jason.encode!(payload)
+
         emit_message(
           on_message,
           :other_message,
@@ -431,10 +635,18 @@ defmodule SymphonyElixir.Codex.AppServer do
           metadata_from_message(port, payload)
         )
 
-        receive_loop(port, on_message, timeout_ms, "", tool_executor, auto_approve_requests)
+        receive_loop(
+          port,
+          on_message,
+          timeout_ms,
+          "",
+          tool_executor,
+          auto_approve_requests,
+          redaction_values
+        )
 
       {:error, _reason} ->
-        log_non_json_stream_line(payload_string, "turn stream")
+        log_non_json_stream_line(payload_string, "turn stream", redaction_values)
 
         if protocol_message_candidate?(payload_string) do
           emit_message(
@@ -448,7 +660,15 @@ defmodule SymphonyElixir.Codex.AppServer do
           )
         end
 
-        receive_loop(port, on_message, timeout_ms, "", tool_executor, auto_approve_requests)
+        receive_loop(
+          port,
+          on_message,
+          timeout_ms,
+          "",
+          tool_executor,
+          auto_approve_requests,
+          redaction_values
+        )
     end
   end
 
@@ -473,7 +693,8 @@ defmodule SymphonyElixir.Codex.AppServer do
          method,
          timeout_ms,
          tool_executor,
-         auto_approve_requests
+         auto_approve_requests,
+         redaction_values
        ) do
     metadata = metadata_from_message(port, payload)
 
@@ -498,7 +719,15 @@ defmodule SymphonyElixir.Codex.AppServer do
         {:error, {:turn_input_required, payload}}
 
       :approved ->
-        receive_loop(port, on_message, timeout_ms, "", tool_executor, auto_approve_requests)
+        receive_loop(
+          port,
+          on_message,
+          timeout_ms,
+          "",
+          tool_executor,
+          auto_approve_requests,
+          redaction_values
+        )
 
       :approval_required ->
         emit_message(
@@ -531,8 +760,17 @@ defmodule SymphonyElixir.Codex.AppServer do
             metadata
           )
 
-          Logger.debug("Codex notification: #{inspect(method)}")
-          receive_loop(port, on_message, timeout_ms, "", tool_executor, auto_approve_requests)
+          Logger.debug("Codex notification: #{inspect(sanitize_string(method, redaction_values))}")
+
+          receive_loop(
+            port,
+            on_message,
+            timeout_ms,
+            "",
+            tool_executor,
+            auto_approve_requests,
+            redaction_values
+          )
         end
     end
   end
@@ -933,18 +1171,30 @@ defmodule SymphonyElixir.Codex.AppServer do
     String.starts_with?(normalized_label, "approve") or String.starts_with?(normalized_label, "allow")
   end
 
-  defp await_response(port, request_id) do
-    with_timeout_response(port, request_id, Config.settings!().codex.read_timeout_ms, "")
+  defp await_response(port, request_id, redaction_values) do
+    with_timeout_response(
+      port,
+      request_id,
+      Config.settings!().codex.read_timeout_ms,
+      "",
+      redaction_values
+    )
   end
 
-  defp with_timeout_response(port, request_id, timeout_ms, pending_line) do
+  defp with_timeout_response(port, request_id, timeout_ms, pending_line, redaction_values) do
     receive do
       {^port, {:data, {:eol, chunk}}} ->
         complete_line = pending_line <> to_string(chunk)
-        handle_response(port, request_id, complete_line, timeout_ms)
+        handle_response(port, request_id, complete_line, timeout_ms, redaction_values)
 
       {^port, {:data, {:noeol, chunk}}} ->
-        with_timeout_response(port, request_id, timeout_ms, pending_line <> to_string(chunk))
+        with_timeout_response(
+          port,
+          request_id,
+          timeout_ms,
+          pending_line <> to_string(chunk),
+          redaction_values
+        )
 
       {^port, {:exit_status, status}} ->
         {:error, {:port_exit, status}}
@@ -954,7 +1204,7 @@ defmodule SymphonyElixir.Codex.AppServer do
     end
   end
 
-  defp handle_response(port, request_id, data, timeout_ms) do
+  defp handle_response(port, request_id, data, timeout_ms, redaction_values) do
     payload = to_string(data)
 
     case Jason.decode(payload) do
@@ -968,19 +1218,20 @@ defmodule SymphonyElixir.Codex.AppServer do
         {:error, {:response_error, response_payload}}
 
       {:ok, %{} = other} ->
-        Logger.debug("Ignoring message while waiting for response: #{inspect(other)}")
-        with_timeout_response(port, request_id, timeout_ms, "")
+        Logger.debug("Ignoring message while waiting for response: #{inspect(sanitize_term(other, redaction_values))}")
+        with_timeout_response(port, request_id, timeout_ms, "", redaction_values)
 
       {:error, _} ->
-        log_non_json_stream_line(payload, "response stream")
-        with_timeout_response(port, request_id, timeout_ms, "")
+        log_non_json_stream_line(payload, "response stream", redaction_values)
+        with_timeout_response(port, request_id, timeout_ms, "", redaction_values)
     end
   end
 
-  defp log_non_json_stream_line(data, stream_label) do
+  defp log_non_json_stream_line(data, stream_label, redaction_values) do
     text =
       data
       |> to_string()
+      |> sanitize_string(redaction_values)
       |> String.trim()
       |> String.slice(0, @max_stream_log_bytes)
 
@@ -998,6 +1249,52 @@ defmodule SymphonyElixir.Codex.AppServer do
     |> to_string()
     |> String.trim_leading()
     |> String.starts_with?("{")
+  end
+
+  defp redaction_values(opts) do
+    opts
+    |> Keyword.get_lazy(:sensitive_env_values, fn ->
+      case Keyword.get(opts, :env, %{}) do
+        environment when is_map(environment) -> Map.values(environment)
+        _environment -> []
+      end
+    end)
+    |> Enum.filter(&(is_binary(&1) and &1 != ""))
+    |> Enum.uniq()
+    |> Enum.sort_by(&byte_size/1, :desc)
+  end
+
+  defp sanitize_string(value, redaction_values) when is_binary(value) do
+    Enum.reduce(redaction_values, value, fn sensitive_value, sanitized ->
+      String.replace(sanitized, sensitive_value, "[redacted]")
+    end)
+  end
+
+  defp sanitize_term(value, redaction_values) when is_binary(value),
+    do: sanitize_string(value, redaction_values)
+
+  defp sanitize_term(value, redaction_values) when is_list(value),
+    do: Enum.map(value, &sanitize_term(&1, redaction_values))
+
+  defp sanitize_term(value, redaction_values) when is_tuple(value) do
+    value
+    |> Tuple.to_list()
+    |> Enum.map(&sanitize_term(&1, redaction_values))
+    |> List.to_tuple()
+  end
+
+  defp sanitize_term(value, _redaction_values) when is_struct(value), do: value
+
+  defp sanitize_term(value, redaction_values) when is_map(value) do
+    Map.new(value, fn {key, nested_value} ->
+      {sanitize_term(key, redaction_values), sanitize_term(nested_value, redaction_values)}
+    end)
+  end
+
+  defp sanitize_term(value, _redaction_values), do: value
+
+  defp sanitized_message_handler(on_message, redaction_values) do
+    fn message -> on_message.(sanitize_term(message, redaction_values)) end
   end
 
   defp issue_context(%{id: issue_id, identifier: identifier}) do
@@ -1040,10 +1337,6 @@ defmodule SymphonyElixir.Codex.AppServer do
   end
 
   defp maybe_set_usage(metadata, _payload), do: metadata
-
-  defp shell_escape(value) when is_binary(value) do
-    "'" <> String.replace(value, "'", "'\"'\"'") <> "'"
-  end
 
   defp default_on_message(_message), do: :ok
 

@@ -29,6 +29,12 @@ defmodule SymphonyElixir.ReadinessGateTest do
       issue_id: issue.id,
       issue_identifier: issue.identifier,
       issue_branch: issue.branch_name,
+      profile_key: "central-brain",
+      linear_project_id: "d0acfb71-f68c-4a9f-8a1a-477265d3c3ec",
+      repository: "aroakpm-svg/aroak-central-brain",
+      canonical_branch: "main",
+      workspace_namespace: "central-brain",
+      credential_ref: "github-central-brain",
       workspace_path: "/unused",
       verified_head_sha: nil
     }
@@ -426,6 +432,12 @@ defmodule SymphonyElixir.ReadinessGateTest do
       issue_id: issue.id,
       issue_identifier: issue.identifier,
       issue_branch: issue.branch_name,
+      profile_key: "central-brain",
+      linear_project_id: "d0acfb71-f68c-4a9f-8a1a-477265d3c3ec",
+      repository: "aroakpm-svg/aroak-central-brain",
+      canonical_branch: "main",
+      workspace_namespace: "central-brain",
+      credential_ref: "github-central-brain",
       workspace_path: fixture.workspace,
       verified_head_sha: nil
     }
@@ -1054,6 +1066,12 @@ defmodule SymphonyElixir.ReadinessGateTest do
       issue_id: issue.id,
       issue_identifier: issue.identifier,
       issue_branch: issue.branch_name,
+      profile_key: "central-brain",
+      linear_project_id: "d0acfb71-f68c-4a9f-8a1a-477265d3c3ec",
+      repository: "aroakpm-svg/aroak-central-brain",
+      canonical_branch: "main",
+      workspace_namespace: "central-brain",
+      credential_ref: "github-central-brain",
       workspace_path: fixture.workspace,
       verified_head_sha: verified_sha
     }

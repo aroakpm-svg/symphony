@@ -58,8 +58,35 @@ orchestrator polls every enabled approved profile independently and dispatches o
 whose unique approved profile, exclusive current-node route, and repository preflight all pass.
 One project's polling failure neither substitutes another project's identity nor stops healthy
 projects from progressing. Without `project_profiles`, the existing single-project tracker path is
-preserved. Credential resolution and per-project workspace isolation remain out of scope here and
-remain ARO-286 work.
+preserved.
+
+#### Project workspace and runtime isolation
+
+For an authorized multi-project issue, Symphony carries one validated project execution context
+through workspace preparation, readiness, hooks, Git, and Codex startup. The same issue identifier
+is isolated by its approved namespace, for example:
+
+```text
+<workspace.root>/central-brain/ARO-286
+<workspace.root>/project-management/ARO-286
+```
+
+The approved profiles contain only the opaque references `github-central-brain` and
+`github-project-management`; they never contain credential material. The built-in default
+credential provider deliberately fails closed with `credential_provider_unconfigured` until an
+ARO-195/ARO-196-approved host adapter is injected. Resolved values are limited to the selected
+worker's immediate subprocess environment and are excluded from commands, workspace state,
+runtime health, logs, and notifications.
+
+Startup performs the real read-only Linear `viewer { id }` request before cleanup or polling. The
+runtime then exposes typed, secret-safe stage/dependency health and an immutable final-stop receipt.
+On Windows, the optional local watchdog can bound restart attempts and invoke one explicitly
+configured local notification command per receiver and epoch. Both the command and receiver are
+operator-provided, must be secret-free, and are disabled when both are omitted. These controls
+accept only `local_non_production` project profiles and absolute non-Production runtime paths; they
+do not deploy, contact an external notification service by default, or authorize Production use.
+See the [Elixir operating contract](elixir/README.md#project-workspace-credentials-and-runtime-observability)
+and [ARO-286 acceptance map](elixir/docs/aro_286_acceptance.md).
 
 #### Distributed claim safety
 

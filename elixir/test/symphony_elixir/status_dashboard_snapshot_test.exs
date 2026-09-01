@@ -18,6 +18,44 @@ defmodule SymphonyElixir.StatusDashboardSnapshotTest do
     Snapshot.assert_dashboard_snapshot!("idle", render_snapshot(snapshot_data, 0.0))
   end
 
+  test "runtime health renders explicit unknown evidence and observed dependency state" do
+    unknown =
+      {:ok,
+       %{
+         running: [],
+         retrying: [],
+         codex_totals: %{input_tokens: 0, output_tokens: 0, total_tokens: 0, seconds_running: 0},
+         rate_limits: nil,
+         health: %{
+           last_successful_poll_at: :unknown,
+           dependencies: %{
+             linear: %{status: :unknown, failure_category: nil},
+             claim_store: %{status: :unknown, failure_category: nil}
+           },
+           final_stop: :unknown
+         }
+       }}
+
+    rendered_unknown = render_snapshot(unknown, 0.0)
+    assert rendered_unknown =~ "Health: poll=unknown linear=unknown claim_store=unknown stop=unknown"
+
+    observed =
+      put_in(unknown, [Access.elem(1), :health], %{
+        last_successful_poll_at: "2026-08-28T01:02:03Z",
+        dependencies: %{
+          linear: %{status: :connected, failure_category: nil},
+          claim_store: %{status: :failed, failure_category: :claim_timeout}
+        },
+        final_stop: %{category: :normal_shutdown}
+      })
+
+    rendered_observed = render_snapshot(observed, 0.0)
+    assert rendered_observed =~ "poll=2026-08-28T01:02:03Z"
+    assert rendered_observed =~ "linear=connected"
+    assert rendered_observed =~ "claim_store=failed(claim_timeout)"
+    assert rendered_observed =~ "stop=normal_shutdown"
+  end
+
   test "snapshot fixture: idle dashboard with observability url" do
     previous_port_override = Application.get_env(:symphony_elixir, :server_port_override)
 

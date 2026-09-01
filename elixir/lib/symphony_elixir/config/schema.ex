@@ -393,19 +393,126 @@ defmodule SymphonyElixir.Config.Schema do
     use Ecto.Schema
     import Ecto.Changeset
 
+    @default_runtime_state_root :filename.basedir(:user_data, "symphony_elixir")
+                                |> to_string()
+                                |> then(&Path.join([&1, "health", "runtime-state"]))
+                                |> Path.expand()
     @primary_key false
+
+    @type t :: %__MODULE__{}
+
     embedded_schema do
       field(:dashboard_enabled, :boolean, default: true)
       field(:refresh_ms, :integer, default: 1_000)
       field(:render_interval_ms, :integer, default: 16)
+      field(:runtime_state_root, :string, default: @default_runtime_state_root)
+      field(:notification_command, :string)
+      field(:notification_receiver, :string)
+      field(:restart_limit, :integer, default: 3)
+      field(:notification_timeout_ms, :integer, default: 5_000)
     end
 
     @spec changeset(%__MODULE__{}, map()) :: Ecto.Changeset.t()
     def changeset(schema, attrs) do
       schema
-      |> cast(attrs, [:dashboard_enabled, :refresh_ms, :render_interval_ms], empty_values: [])
+      |> cast(
+        attrs,
+        [
+          :dashboard_enabled,
+          :refresh_ms,
+          :render_interval_ms,
+          :runtime_state_root,
+          :notification_command,
+          :notification_receiver,
+          :restart_limit,
+          :notification_timeout_ms
+        ],
+        empty_values: []
+      )
+      |> validate_required([:runtime_state_root])
       |> validate_number(:refresh_ms, greater_than: 0)
       |> validate_number(:render_interval_ms, greater_than: 0)
+      |> validate_number(:restart_limit, greater_than: 0)
+      |> validate_number(:notification_timeout_ms, greater_than: 0)
+      |> validate_runtime_state_root()
+      |> validate_notification_config()
+    end
+
+    defp validate_runtime_state_root(changeset) do
+      validate_change(changeset, :runtime_state_root, fn :runtime_state_root, root ->
+        valid? =
+          is_binary(root) and String.trim(root) == root and Path.type(root) == :absolute and
+            not filesystem_root?(root) and not production_path?(root) and not secret_bearing?(root)
+
+        if valid?, do: [], else: [runtime_state_root: "must be an absolute non-Production path"]
+      end)
+    end
+
+    defp validate_notification_config(changeset) do
+      command = get_field(changeset, :notification_command)
+      receiver = get_field(changeset, :notification_receiver)
+
+      if is_nil(command) and is_nil(receiver) do
+        changeset
+      else
+        changeset
+        |> validate_required([:notification_command, :notification_receiver])
+        |> validate_change(:notification_command, fn :notification_command, value ->
+          if safe_command?(value),
+            do: [],
+            else: [notification_command: "must be a nonblank secret-free local command"]
+        end)
+        |> validate_change(:notification_receiver, fn :notification_receiver, value ->
+          if safe_receiver?(value),
+            do: [],
+            else: [notification_receiver: "must be an opaque secret-free receiver identifier"]
+        end)
+      end
+    end
+
+    defp safe_command?(value) when is_binary(value) do
+      byte_size(value) in 1..4_096 and String.valid?(value) and String.trim(value) != "" and
+        not String.contains?(value, <<0>>) and not secret_bearing?(value)
+    end
+
+    defp safe_command?(_value), do: false
+
+    defp safe_receiver?(value) when is_binary(value) do
+      byte_size(value) in 1..128 and String.valid?(value) and
+        Regex.match?(~r/\A[A-Za-z0-9][A-Za-z0-9._:@+-]*\z/, value) and
+        not secret_bearing?(value)
+    end
+
+    defp safe_receiver?(_value), do: false
+
+    defp secret_bearing?(value) do
+      Regex.match?(~r/(?i)(authorization|bearer|credential|password|secret|api[_-]?key|token)\s*[:= ]/, value) or
+        Regex.match?(~r/(?i)(^|[_:\/-])(credential|password|secret|api[_-]?key|token)([_:\/-]|$)/, value) or
+        Regex.match?(~r/(?i)\bsk-(?:proj-)?[a-z0-9_-]{16,}\b/, value) or
+        Regex.match?(~r/(?i)\bgh[pousr]_[a-z0-9]{20,}\b/, value) or
+        Regex.match?(~r/(?i)\bgithub_pat_[a-z0-9_]{20,}\b/, value) or
+        Regex.match?(~r/\b(?:AKIA|ASIA|AIDA|AROA|AIPA|ANPA|ANVA)[A-Z0-9]{16}\b/, value) or
+        Regex.match?(~r/(?i)\bxox[baprs]-[a-z0-9-]{20,}\b/, value) or
+        Regex.match?(~r/\bAIza[0-9A-Za-z_-]{20,}\b/, value) or
+        Regex.match?(~r/(?i)\b[rs]k_(?:live|test)_[a-z0-9]{16,}\b/, value) or
+        Regex.match?(~r/(?i)\b(?:glpat-|npm_|pypi-|hf_)[a-z0-9_-]{20,}\b/, value) or
+        Regex.match?(~r/\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\b/, value) or
+        Regex.match?(~r/-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----/, value) or
+        Regex.match?(~r|(?i)://[^/@\s]+:[^/@\s]+@|, value)
+    end
+
+    defp production_path?(path) do
+      path
+      |> Path.expand()
+      |> String.split(~r{[\\/]}, trim: true)
+      |> Enum.any?(&(String.downcase(&1) |> String.contains?("production")))
+    end
+
+    defp filesystem_root?(path) do
+      case path |> Path.expand() |> Path.split() do
+        [_root] -> true
+        _parts -> false
+      end
     end
   end
 
@@ -454,9 +561,11 @@ defmodule SymphonyElixir.Config.Schema do
       |> apply_action(:validate)
       |> case do
         {:ok, settings} ->
-          settings
-          |> finalize_settings()
-          |> validate_resolved_claim_settings()
+          settings = finalize_settings(settings)
+
+          with :ok <- validate_runtime_state_workspace_separation(settings) do
+            validate_resolved_claim_settings(settings)
+          end
 
         {:error, changeset} ->
           {:error, {:invalid_workflow_config, format_errors(changeset)}}
@@ -589,6 +698,39 @@ defmodule SymphonyElixir.Config.Schema do
         message = Enum.map_join(fields, ", ", &"claim.#{&1} can't be blank")
         {:error, {:invalid_workflow_config, message}}
     end
+  end
+
+  defp validate_runtime_state_workspace_separation(%{
+         workspace: %{root: workspace_root},
+         observability: %{runtime_state_root: runtime_state_root}
+       })
+       when is_binary(workspace_root) and is_binary(runtime_state_root) do
+    if Path.type(runtime_state_root) == :absolute do
+      with {:ok, canonical_workspace_root} <- PathSafety.canonicalize(Path.expand(workspace_root)),
+           {:ok, canonical_runtime_state_root} <- PathSafety.canonicalize(runtime_state_root),
+           false <- path_inside?(canonical_runtime_state_root, canonical_workspace_root),
+           false <- path_inside?(canonical_workspace_root, canonical_runtime_state_root) do
+        :ok
+      else
+        _invalid ->
+          {:error, {:invalid_workflow_config, "observability.runtime_state_root must stay outside workspace.root"}}
+      end
+    else
+      :ok
+    end
+  end
+
+  defp validate_runtime_state_workspace_separation(_settings), do: :ok
+
+  defp path_inside?(path, parent) do
+    path = normalized_local_path(path)
+    parent = parent |> normalized_local_path() |> String.trim_trailing("/")
+    path == parent or String.starts_with?(path, parent <> "/")
+  end
+
+  defp normalized_local_path(path) do
+    normalized = path |> Path.expand() |> String.replace("\\", "/")
+    if match?({:win32, _}, :os.type()), do: String.downcase(normalized), else: normalized
   end
 
   defp normalize_keys(value) when is_map(value) do

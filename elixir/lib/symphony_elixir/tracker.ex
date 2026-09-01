@@ -3,7 +3,7 @@ defmodule SymphonyElixir.Tracker do
   Adapter boundary for issue tracker reads and writes.
   """
 
-  alias SymphonyElixir.Config
+  alias SymphonyElixir.{Config, Linear.Client, ProjectProfiles}
 
   @callback fetch_candidate_issues() :: {:ok, [term()]} | {:error, term()}
   @callback fetch_candidate_issues(map()) :: {:ok, [term()]} | {:error, term()}
@@ -76,11 +76,36 @@ defmodule SymphonyElixir.Tracker do
     adapter().review_history(issue_id)
   end
 
+  @spec validate_identity() :: {:ok, %{viewer_id: String.t()}} | {:error, atom()}
+  def validate_identity do
+    settings = Config.settings!()
+
+    case settings.tracker.kind do
+      "memory" -> {:ok, %{viewer_id: "memory"}}
+      _ -> validate_linear_identity(linear_client_module(), settings.project_profiles)
+    end
+  end
+
+  defp validate_linear_identity(client, %{profiles: profiles} = project_profiles)
+       when map_size(profiles) > 0 do
+    project_ids = ProjectProfiles.list(project_profiles) |> Enum.map(& &1.linear_project_id)
+
+    if function_exported?(client, :validate_identity, 1),
+      do: client.validate_identity(project_ids: project_ids),
+      else: {:error, :linear_response_invalid}
+  end
+
+  defp validate_linear_identity(client, _project_profiles), do: client.validate_identity()
+
   @spec adapter() :: module()
   def adapter do
     case Config.settings!().tracker.kind do
       "memory" -> SymphonyElixir.Tracker.Memory
       _ -> SymphonyElixir.Linear.Adapter
     end
+  end
+
+  defp linear_client_module do
+    Application.get_env(:symphony_elixir, :linear_client_module, Client)
   end
 end

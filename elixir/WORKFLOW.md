@@ -13,7 +13,8 @@ tracker:
     - "Duplicate"
 # Optional versioned mapping; keeping this example commented preserves legacy single-project polling.
 # Enabling the complete set activates approved multi-project polling and exclusive-only dispatch.
-# Credential resolution and per-project workspace isolation remain ARO-286 scope.
+# ARO-286 consumes these opaque references and namespaces. The default credential provider still
+# fails closed until an ARO-195/ARO-196-approved host adapter is injected.
 # project_profiles:
 #   version: 1
 #   profiles:
@@ -33,6 +34,15 @@ tracker:
 #       environment: "local_non_production"
 workspace:
   root: "C:/Users/aroak/Desktop/codex/symphony-workspaces"
+# Optional local restart notification. Omitting both command and receiver disables it; partial
+# configuration is invalid. These operator-provided values must be secret-free, and the runtime
+# state root must remain absolute, non-Production, and outside workspace.root.
+# observability:
+#   runtime_state_root: "C:/Users/aroak/AppData/Local/symphony/health/runtime-state"
+#   notification_command: "pwsh -NoLogo -NoProfile -File C:/symphony/notify-restart-limit.ps1"
+#   notification_receiver: "on-call:platform"
+#   restart_limit: 3
+#   notification_timeout_ms: 5000
 hooks:
   after_create: |
     ENV_FILE="C:/Users/aroak/Desktop/codex/symphony/elixir/.env.local"

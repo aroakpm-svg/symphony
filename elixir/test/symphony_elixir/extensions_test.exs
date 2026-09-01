@@ -461,7 +461,17 @@ defmodule SymphonyElixir.ExtensionsTest do
                "total_tokens" => 12,
                "seconds_running" => 42.5
              },
-             "rate_limits" => %{"primary" => %{"remaining" => 11}}
+             "rate_limits" => %{"primary" => %{"remaining" => 11}},
+             "health" => %{
+               "last_successful_poll_at" => "unknown",
+               "dependencies" => %{
+                 "linear" => %{"status" => "unknown", "failure_category" => nil},
+                 "claim_store" => %{"status" => "unknown", "failure_category" => nil}
+               },
+               "stages" => [],
+               "final_stop" => "unknown",
+               "history" => []
+             }
            }
 
     conn = get(build_conn(), "/api/v1/MT-HTTP")

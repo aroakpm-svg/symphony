@@ -319,7 +319,8 @@ defmodule SymphonyElixir.StatusDashboard do
              blocked: blocked,
              codex_totals: codex_totals,
              rate_limits: Map.get(snapshot, :rate_limits),
-             polling: Map.get(snapshot, :polling)
+             polling: Map.get(snapshot, :polling),
+             health: Map.get(snapshot, :health, unknown_health())
            }},
           update_token_samples(token_samples, now_ms, total_tokens)
         }
@@ -338,6 +339,7 @@ defmodule SymphonyElixir.StatusDashboard do
         rate_limits = Map.get(snapshot, :rate_limits)
         project_link_lines = format_project_link_lines()
         project_refresh_line = format_project_refresh_line(Map.get(snapshot, :polling))
+        health_line = format_health_line(Map.get(snapshot, :health, unknown_health()))
         codex_input_tokens = Map.get(codex_totals, :input_tokens, 0)
         codex_output_tokens = Map.get(codex_totals, :output_tokens, 0)
         codex_total_tokens = Map.get(codex_totals, :total_tokens, 0)
@@ -368,6 +370,7 @@ defmodule SymphonyElixir.StatusDashboard do
              colorize(" | ", @ansi_gray) <>
              colorize("total #{format_count(codex_total_tokens)}", @ansi_yellow),
            colorize("│ Rate Limits: ", @ansi_bold) <> format_rate_limits(rate_limits),
+           health_line,
            project_link_lines,
            project_refresh_line,
            colorize("├─ Running", @ansi_bold),
@@ -433,6 +436,44 @@ defmodule SymphonyElixir.StatusDashboard do
 
   defp format_project_refresh_line(_) do
     colorize("│ Next refresh: ", @ansi_bold) <> colorize("n/a", @ansi_gray)
+  end
+
+  defp format_health_line(health) when is_map(health) do
+    dependencies = Map.get(health, :dependencies, %{})
+
+    "│ Health: poll=#{health_value(Map.get(health, :last_successful_poll_at))}" <>
+      " linear=#{dependency_health(Map.get(dependencies, :linear))}" <>
+      " claim_store=#{dependency_health(Map.get(dependencies, :claim_store))}" <>
+      " stop=#{stop_health(Map.get(health, :final_stop))}"
+  end
+
+  defp format_health_line(_health), do: format_health_line(unknown_health())
+
+  defp dependency_health(%{status: status, failure_category: failure_category})
+       when status not in [nil, :unknown] and not is_nil(failure_category),
+       do: "#{health_value(status)}(#{health_value(failure_category)})"
+
+  defp dependency_health(%{status: status}), do: health_value(status)
+  defp dependency_health(_evidence), do: "unknown"
+
+  defp stop_health(%{category: category}), do: health_value(category)
+  defp stop_health(_stop), do: "unknown"
+
+  defp health_value(nil), do: "unknown"
+  defp health_value(:unknown), do: "unknown"
+  defp health_value(value) when is_atom(value), do: Atom.to_string(value)
+  defp health_value(value) when is_binary(value), do: value
+  defp health_value(_value), do: "unknown"
+
+  defp unknown_health do
+    %{
+      last_successful_poll_at: :unknown,
+      dependencies: %{
+        linear: %{status: :unknown, failure_category: nil},
+        claim_store: %{status: :unknown, failure_category: nil}
+      },
+      final_stop: :unknown
+    }
   end
 
   defp linear_project_url(project_slug), do: "https://linear.app/project/#{project_slug}/issues"
@@ -571,7 +612,8 @@ defmodule SymphonyElixir.StatusDashboard do
              blocked: Map.get(snapshot, :blocked, []),
              codex_totals: codex_totals,
              rate_limits: Map.get(snapshot, :rate_limits),
-             polling: Map.get(snapshot, :polling)
+             polling: Map.get(snapshot, :polling),
+             health: Map.get(snapshot, :health, unknown_health())
            }}
 
         _ ->
