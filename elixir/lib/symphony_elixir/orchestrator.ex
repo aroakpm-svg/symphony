@@ -1842,11 +1842,11 @@ defmodule SymphonyElixir.Orchestrator do
         report_health(opts, {:stage, :dispatch, health_issue_metadata(issue, :succeeded)})
         result
 
-      {:error, result, failure_category} when is_atom(failure_category) ->
+      {:error, result} ->
         report_health(opts, {
           :stage,
           :dispatch,
-          health_issue_metadata(issue, :failed, failure_category)
+          health_issue_metadata(issue, :failed, :dispatch_failure)
         })
 
         result
@@ -1953,7 +1953,7 @@ defmodule SymphonyElixir.Orchestrator do
            "failed to spawn agent: #{inspect(reason)}",
            worker_host,
            opts
-         ), :worker_spawn_failed}
+         )}
     end
   end
 
@@ -1968,7 +1968,7 @@ defmodule SymphonyElixir.Orchestrator do
 
     case spawned_worker_startup_outcome(context) do
       {:ok, state} -> {:ok, state}
-      {:error, reason} -> {:error, cleanup_spawned_worker_failure(context, reason), :worker_startup_failed}
+      {:error, reason} -> {:error, cleanup_spawned_worker_failure(context, reason)}
     end
   end
 

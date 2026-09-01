@@ -2022,7 +2022,7 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
       issue
       |> health_dispatch_opts(fn event -> Agent.update(health_events, &(&1 ++ [event])) end)
       |> Keyword.put(:dispatch_fun, fn state, _issue, _attempt, _recipient, _host, _claim ->
-        {:error, state, :worker_spawn_failed}
+        {:error, state}
       end)
 
     final_state = Orchestrator.multi_project_dispatch_for_test(health_test_state(), profiles, opts)
@@ -2031,7 +2031,7 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
 
     assert [
              {:stage, :dispatch, %{status: :started}},
-             {:stage, :dispatch, %{status: :failed, failure_category: :worker_spawn_failed}}
+             {:stage, :dispatch, %{status: :failed, failure_category: :dispatch_failure}}
            ] = Enum.filter(Agent.get(health_events, & &1), &match?({:stage, :dispatch, _}, &1))
   end
 
