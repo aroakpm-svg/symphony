@@ -614,7 +614,8 @@ defmodule SymphonyElixir.CoreTest do
         owned_issue
         | project_id: "708053e0-f42c-4e93-bec4-7abbb37e74af",
           state: "In Progress",
-          project_profile: nil
+          project_profile: nil,
+          assigned_to_worker: false
       }
 
       updated_state = Orchestrator.reconcile_issue_states_for_test([moved_issue], state)
@@ -726,7 +727,8 @@ defmodule SymphonyElixir.CoreTest do
       moved_issue = %{
         owned_issue
         | project_id: "708053e0-f42c-4e93-bec4-7abbb37e74af",
-          state: "In Progress"
+          state: "In Progress",
+          assigned_to_worker: false
       }
 
       updated_state = Orchestrator.reconcile_blocked_issue_states_for_test([moved_issue], state)

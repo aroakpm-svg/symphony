@@ -1191,6 +1191,10 @@ defmodule SymphonyElixir.Orchestrator do
 
         terminate_running_issue(state, issue.id, :complete)
 
+      running_project_identity_changed?(state, issue) ->
+        Logger.warning("Running issue project identity changed; releasing claim: #{issue_context(issue)} project_id=#{inspect(issue.project_id)}")
+        terminate_running_issue(state, issue.id, :invalidate_context)
+
       !issue_routable?(issue) ->
         Logger.info("Issue no longer routed to this worker: #{issue_context(issue)} assignee=#{inspect(issue.assignee_id)}; stopping active agent")
 
@@ -1207,6 +1211,16 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   defp reconcile_issue_state(_issue, state, _active_states, _terminal_states), do: state
+
+  defp running_project_identity_changed?(%State{} = state, %Issue{} = issue) do
+    case Map.get(state.running, issue.id) do
+      %{execution_context: %ProjectExecutionContext{}} = running_entry ->
+        not running_project_identity_matches?(running_entry, issue)
+
+      _legacy_or_missing ->
+        false
+    end
+  end
 
   defp reconcile_active_running_issue(state, issue) do
     case Map.get(state.running, issue.id) do
@@ -1275,10 +1289,6 @@ defmodule SymphonyElixir.Orchestrator do
 
         release_issue_claim(state, issue.id)
 
-      !issue_routable?(issue) ->
-        Logger.info("Blocked issue no longer routed to this worker: #{issue_context(issue)} assignee=#{inspect(issue.assignee_id)}; releasing block")
-        release_issue_claim(state, issue.id)
-
       !blocked_project_identity_matches?(state, issue) ->
         Logger.warning(
           "Blocked issue project identity changed; releasing claim: " <>
@@ -1286,6 +1296,10 @@ defmodule SymphonyElixir.Orchestrator do
         )
 
         retire_blocked_execution_context(state, issue.id)
+        release_issue_claim(state, issue.id)
+
+      !issue_routable?(issue) ->
+        Logger.info("Blocked issue no longer routed to this worker: #{issue_context(issue)} assignee=#{inspect(issue.assignee_id)}; releasing block")
         release_issue_claim(state, issue.id)
 
       active_issue_state?(issue.state, active_states) ->
