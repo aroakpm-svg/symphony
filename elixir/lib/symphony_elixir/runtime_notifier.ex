@@ -716,10 +716,11 @@ defmodule SymphonyElixir.RuntimeNotifier do
   end
 
   defp unix_local_shell(command, timeout_ms, event_environment) do
-    with executable when is_binary(executable) <- System.find_executable("sh"),
+    with shell when is_tuple(shell) <- unix_command_shell(),
+         executable when is_binary(executable) <- System.find_executable("sh"),
          timeout when is_binary(timeout) <- System.find_executable("timeout"),
          base64 when is_binary(base64) <- System.find_executable("base64") do
-      wrapper = unix_command_wrapper(timeout, base64)
+      wrapper = unix_command_wrapper(timeout, base64, shell)
       timeout_seconds = Float.to_string(timeout_ms / 1_000)
       args = ["-c", wrapper, "symphony-notifier", command, timeout_seconds]
       {:ok, executable, args, event_environment, []}
@@ -728,12 +729,27 @@ defmodule SymphonyElixir.RuntimeNotifier do
     end
   end
 
-  defp unix_command_wrapper(timeout, base64) do
+  defp unix_command_shell do
+    case System.find_executable("pwsh") do
+      nil ->
+        case System.find_executable("sh") do
+          nil -> nil
+          shell -> {:sh, shell}
+        end
+
+      powershell ->
+        {:powershell, powershell}
+    end
+  end
+
+  defp unix_command_wrapper(timeout, base64, shell) do
+    shell_command = unix_shell_command(shell)
+
     """
     event="$SYMPHONY_TASK6_EVENT_B64"
     unset SYMPHONY_TASK6_EVENT_B64
     printf '%s' "$event" | #{shell_quote(base64)} -d | \
-      #{shell_quote(timeout)} --signal=TERM --kill-after=1s "$2" sh -lc "$1" >/dev/null 2>&1
+      #{shell_quote(timeout)} --signal=TERM --kill-after=1s "$2" #{shell_command} >/dev/null 2>&1
     status=$?
     case "$status" in
       0) exit 0 ;;
@@ -743,6 +759,12 @@ defmodule SymphonyElixir.RuntimeNotifier do
     esac
     """
   end
+
+  defp unix_shell_command({:powershell, executable}) do
+    "#{shell_quote(executable)} -NoLogo -NoProfile -NonInteractive -Command \"$1\""
+  end
+
+  defp unix_shell_command({:sh, executable}), do: "#{shell_quote(executable)} -lc \"$1\""
 
   defp shell_quote(value), do: "'" <> String.replace(value, "'", "'\\''") <> "'"
 
