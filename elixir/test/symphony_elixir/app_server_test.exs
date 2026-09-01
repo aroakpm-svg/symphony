@@ -173,7 +173,17 @@ defmodule SymphonyElixir.AppServerTest do
       end)
       """)
 
-      port_opener = fn _spawn_target, port_opts ->
+      port_opener = fn {:spawn_executable, shell}, port_opts ->
+        {expected_shells, expected_flag} =
+          if match?({:win32, _}, :os.type()),
+            do: {["sh", "sh.exe"], "-c"},
+            else: {["bash"], "-lc"}
+
+        assert Path.basename(to_string(shell)) in expected_shells
+
+        assert port_opts[:args] ==
+                 Enum.map([expected_flag, "fake-codex app-server"], &String.to_charlist/1)
+
         process_opts =
           port_opts
           |> Enum.reject(&match?({:args, _args}, &1))
@@ -1883,7 +1893,7 @@ defmodule SymphonyElixir.AppServerTest do
       lines = String.split(trace, "\n", trim: true)
 
       assert argv_line = Enum.find(lines, &String.starts_with?(&1, "ARGV:"))
-      assert argv_line =~ "-T -p 2200 worker-01 sh -c"
+      assert argv_line =~ "-T -p 2200 worker-01 bash -lc"
       assert trace =~ "cd "
       assert trace =~ remote_workspace
       assert trace =~ "exec "

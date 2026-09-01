@@ -270,7 +270,8 @@ defmodule SymphonyElixir.Codex.AppServer do
   end
 
   defp start_port(workspace, nil, port_environment, opts) do
-    executable = System.find_executable("sh")
+    {shell_name, shell_flag} = local_shell_contract(:os.type())
+    executable = System.find_executable(shell_name)
 
     if is_nil(executable) do
       {:error, :shell_not_found}
@@ -282,7 +283,7 @@ defmodule SymphonyElixir.Codex.AppServer do
           :binary,
           :exit_status,
           :stderr_to_stdout,
-          args: [~c"-c", String.to_charlist(Config.settings!().codex.command)],
+          args: [String.to_charlist(shell_flag), String.to_charlist(Config.settings!().codex.command)],
           cd: String.to_charlist(workspace),
           line: @port_line_bytes
         ]
@@ -328,6 +329,9 @@ defmodule SymphonyElixir.Codex.AppServer do
   defp start_port(_workspace, worker_host, _port_environment, _opts)
        when is_binary(worker_host),
        do: {:error, :remote_subprocess_environment_unsupported}
+
+  defp local_shell_contract({:win32, _name}), do: {"sh", "-c"}
+  defp local_shell_contract({:unix, _name}), do: {"bash", "-lc"}
 
   defp port_environment(opts) do
     case Keyword.get(opts, :env, %{}) do

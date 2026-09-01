@@ -1956,8 +1956,8 @@ defmodule SymphonyElixir.CoreTest do
       end
 
       trace = File.read!(trace_file)
-      assert trace =~ "worker-a sh -c"
-      refute trace =~ "worker-b sh -c"
+      assert trace =~ "worker-a bash -lc"
+      refute trace =~ "worker-b bash -lc"
     after
       File.rm_rf(test_root)
     end
