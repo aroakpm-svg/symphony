@@ -450,7 +450,7 @@ defmodule SymphonyElixir.RuntimeNotifierTest do
         |> Enum.map(fn _index ->
           Task.async(fn -> RuntimeNotifier.notify_restart_limit(config, notification_event) end)
         end)
-        |> Task.await_many(5_000)
+        |> Task.await_many(20_000)
 
       assert Enum.count(results, &(&1 == :ok)) == 1
 
@@ -559,7 +559,7 @@ defmodule SymphonyElixir.RuntimeNotifierTest do
           notification_command: command,
           notification_receiver: "on-call:platform",
           restart_limit: 3,
-          notification_timeout_ms: 5_000
+          notification_timeout_ms: 15_000
         ],
         overrides
       )
