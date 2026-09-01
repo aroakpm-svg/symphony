@@ -457,17 +457,21 @@ defmodule SymphonyElixir.Config.Schema do
       else
         changeset
         |> validate_required([:notification_command, :notification_receiver])
-        |> validate_change(:notification_command, fn :notification_command, value ->
-          if safe_command?(value),
-            do: [],
-            else: [notification_command: "must be a nonblank secret-free local command"]
-        end)
-        |> validate_change(:notification_receiver, fn :notification_receiver, value ->
-          if safe_receiver?(value),
-            do: [],
-            else: [notification_receiver: "must be an opaque secret-free receiver identifier"]
-        end)
+        |> validate_change(:notification_command, &validate_notification_command/2)
+        |> validate_change(:notification_receiver, &validate_notification_receiver/2)
       end
+    end
+
+    defp validate_notification_command(:notification_command, value) do
+      if safe_command?(value),
+        do: [],
+        else: [notification_command: "must be a nonblank secret-free local command"]
+    end
+
+    defp validate_notification_receiver(:notification_receiver, value) do
+      if safe_receiver?(value),
+        do: [],
+        else: [notification_receiver: "must be an opaque secret-free receiver identifier"]
     end
 
     defp safe_command?(value) when is_binary(value) do
@@ -545,18 +549,20 @@ defmodule SymphonyElixir.Config.Schema do
       |> drop_nil_values()
       |> changeset()
       |> apply_action(:validate)
-      |> case do
-        {:ok, settings} ->
-          settings = finalize_settings(settings)
-
-          with :ok <- validate_runtime_state_workspace_separation(settings) do
-            validate_resolved_claim_settings(settings)
-          end
-
-        {:error, changeset} ->
-          {:error, {:invalid_workflow_config, format_errors(changeset)}}
-      end
+      |> validate_parsed_settings()
     end
+  end
+
+  defp validate_parsed_settings({:ok, settings}) do
+    settings = finalize_settings(settings)
+
+    with :ok <- validate_runtime_state_workspace_separation(settings) do
+      validate_resolved_claim_settings(settings)
+    end
+  end
+
+  defp validate_parsed_settings({:error, changeset}) do
+    {:error, {:invalid_workflow_config, format_errors(changeset)}}
   end
 
   @spec resolve_turn_sandbox_policy(%__MODULE__{}, Path.t() | nil) :: map()

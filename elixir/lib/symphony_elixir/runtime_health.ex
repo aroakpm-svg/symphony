@@ -248,18 +248,7 @@ defmodule SymphonyElixir.RuntimeHealth do
          {:ok, fields} <- validate_fields(fields, @stage_schema, [:status]) do
       event = fields |> Map.put(:type, :stage) |> Map.put(:stage, stage)
       key = {stage, fields[:profile_key], fields[:issue_id]}
-
-      case Map.get(state.stages, key) do
-        existing when is_map(existing) ->
-          if Map.delete(existing, :at) == event do
-            {:reply, :ok, state}
-          else
-            record_stage_reply(state, key, event)
-          end
-
-        _missing ->
-          record_stage_reply(state, key, event)
-      end
+      stage_reply(state, key, event, Map.get(state.stages, key))
     else
       {:error, reason} -> {:reply, {:error, reason}, state}
     end
@@ -270,24 +259,7 @@ defmodule SymphonyElixir.RuntimeHealth do
          {:ok, fields} <- validate_fields(fields, @dependency_schema, [:status]) do
       evidence = %{status: fields.status, failure_category: Map.get(fields, :failure_category)}
 
-      if Map.get(state.dependencies, dependency) == evidence do
-        {:reply, :ok, state}
-      else
-        event = Map.merge(evidence, %{type: :dependency, dependency: dependency})
-
-        case timestamp(state) do
-          {:ok, at} ->
-            state = %{
-              state
-              | dependencies: Map.put(state.dependencies, dependency, evidence)
-            }
-
-            {:reply, :ok, append_history_at(state, event, at)}
-
-          {:error, reason} ->
-            {:reply, {:error, reason}, state}
-        end
-      end
+      dependency_reply(state, dependency, evidence)
     else
       {:error, reason} -> {:reply, {:error, reason}, state}
     end
@@ -306,29 +278,8 @@ defmodule SymphonyElixir.RuntimeHealth do
   end
 
   def handle_call({:stop, fields}, _from, state) do
-    with {:ok, fields} <- validate_fields(fields, @stop_schema, [:category]) do
-      if is_nil(state.final_stop) do
-        case timestamp(state) do
-          {:ok, at} ->
-            final_stop = Map.put(fields, :at, at)
-
-            case write_stop_receipt(state, final_stop) do
-              {:ok, final_stop, receipt_writer} ->
-                event = Map.merge(final_stop, %{type: :stop, status: :stopped})
-                state = %{state | final_stop: final_stop, receipt_writer: receipt_writer}
-                {:reply, :ok, append_history_at(state, event, at)}
-
-              {:error, reason, receipt_writer} ->
-                {:reply, {:error, reason}, %{state | receipt_writer: receipt_writer}}
-            end
-
-          {:error, reason} ->
-            {:reply, {:error, reason}, state}
-        end
-      else
-        {:reply, :ok, state}
-      end
-    else
+    case validate_fields(fields, @stop_schema, [:category]) do
+      {:ok, fields} -> stop_reply(state, fields)
       {:error, reason} -> {:reply, {:error, reason}, state}
     end
   end
@@ -351,6 +302,56 @@ defmodule SymphonyElixir.RuntimeHealth do
        restart_attempt: state.restart_attempt,
        history: state.history
      }, state}
+  end
+
+  defp stage_reply(state, key, event, existing)
+       when is_map(existing) and map_size(existing) == map_size(event) + 1 do
+    if Map.delete(existing, :at) == event,
+      do: {:reply, :ok, state},
+      else: record_stage_reply(state, key, event)
+  end
+
+  defp stage_reply(state, key, event, _missing), do: record_stage_reply(state, key, event)
+
+  defp dependency_reply(state, dependency, evidence) do
+    if Map.get(state.dependencies, dependency) == evidence,
+      do: {:reply, :ok, state},
+      else: record_dependency_reply(state, dependency, evidence)
+  end
+
+  defp record_dependency_reply(state, dependency, evidence) do
+    event = Map.merge(evidence, %{type: :dependency, dependency: dependency})
+
+    case timestamp(state) do
+      {:ok, at} ->
+        state = %{state | dependencies: Map.put(state.dependencies, dependency, evidence)}
+        {:reply, :ok, append_history_at(state, event, at)}
+
+      {:error, reason} ->
+        {:reply, {:error, reason}, state}
+    end
+  end
+
+  defp stop_reply(%{final_stop: final_stop} = state, _fields) when not is_nil(final_stop),
+    do: {:reply, :ok, state}
+
+  defp stop_reply(state, fields) do
+    case timestamp(state) do
+      {:ok, at} -> write_stop_reply(state, Map.put(fields, :at, at), at)
+      {:error, reason} -> {:reply, {:error, reason}, state}
+    end
+  end
+
+  defp write_stop_reply(state, final_stop, at) do
+    case write_stop_receipt(state, final_stop) do
+      {:ok, final_stop, receipt_writer} ->
+        event = Map.merge(final_stop, %{type: :stop, status: :stopped})
+        state = %{state | final_stop: final_stop, receipt_writer: receipt_writer}
+        {:reply, :ok, append_history_at(state, event, at)}
+
+      {:error, reason, receipt_writer} ->
+        {:reply, {:error, reason}, %{state | receipt_writer: receipt_writer}}
+    end
   end
 
   defp runtime_paths(opts, path_resolver) when is_function(path_resolver, 1) do
@@ -556,18 +557,7 @@ defmodule SymphonyElixir.RuntimeHealth do
   defp validate_fields(fields, schema, required_keys) when is_map(fields) do
     case Enum.find(Map.keys(fields), &(!Map.has_key?(schema, &1))) do
       nil ->
-        case Enum.find(required_keys, &(!Map.has_key?(fields, &1))) do
-          nil ->
-            Enum.reduce_while(fields, {:ok, %{}}, fn {key, value}, {:ok, validated} ->
-              case validate_field(key, value, Map.fetch!(schema, key)) do
-                {:ok, safe_value} -> {:cont, {:ok, Map.put(validated, key, safe_value)}}
-                {:error, reason} -> {:halt, {:error, reason}}
-              end
-            end)
-
-          key ->
-            {:error, {:invalid_field, key}}
-        end
+        validate_required_fields(fields, schema, required_keys)
 
       key ->
         {:error, {:unknown_field, key}}
@@ -575,6 +565,22 @@ defmodule SymphonyElixir.RuntimeHealth do
   end
 
   defp validate_fields(_fields, _schema, _required_keys), do: {:error, :invalid_field_value}
+
+  defp validate_required_fields(fields, schema, required_keys) do
+    case Enum.find(required_keys, &(!Map.has_key?(fields, &1))) do
+      nil -> validate_field_values(fields, schema)
+      key -> {:error, {:invalid_field, key}}
+    end
+  end
+
+  defp validate_field_values(fields, schema) do
+    Enum.reduce_while(fields, {:ok, %{}}, fn {key, value}, {:ok, validated} ->
+      case validate_field(key, value, Map.fetch!(schema, key)) do
+        {:ok, safe_value} -> {:cont, {:ok, Map.put(validated, key, safe_value)}}
+        {:error, reason} -> {:halt, {:error, reason}}
+      end
+    end)
+  end
 
   defp validate_field(key, value, type) when is_binary(value) do
     if secret_bearing?(value) do
@@ -833,25 +839,14 @@ defmodule SymphonyElixir.RuntimeHealth do
 
       case initialize_receipt_writer(writer, publish_delay_ms) do
         {:ok, attestation, initialized_writer} ->
-          case attest_receipt_writer(
-                 initialized_writer,
-                 attestation,
-                 paths,
-                 path_resolver,
-                 runtime_state_dir
-               ) do
-            :ok ->
-              {:ok,
-               %{
-                 initialized_writer
-                 | attested: true,
-                   guard_path: Path.join(runtime_state_dir, guard_name)
-               }}
-
-            {:error, _reason} ->
-              _retired_writer = retire_receipt_writer(initialized_writer, :graceful)
-              {:error, {:receipt_writer_unavailable, :capability_attestation_failed}}
-          end
+          finish_receipt_writer_attestation(
+            initialized_writer,
+            attestation,
+            paths,
+            path_resolver,
+            runtime_state_dir,
+            guard_name
+          )
 
         {:error, reason, failed_writer} ->
           _retired_writer = retire_receipt_writer(failed_writer, :force)
@@ -859,6 +854,24 @@ defmodule SymphonyElixir.RuntimeHealth do
       end
     else
       {:error, reason} -> {:error, {:receipt_writer_unavailable, reason}}
+    end
+  end
+
+  defp finish_receipt_writer_attestation(
+         writer,
+         attestation,
+         paths,
+         path_resolver,
+         runtime_state_dir,
+         guard_name
+       ) do
+    case attest_receipt_writer(writer, attestation, paths, path_resolver, runtime_state_dir) do
+      :ok ->
+        {:ok, %{writer | attested: true, guard_path: Path.join(runtime_state_dir, guard_name)}}
+
+      {:error, _reason} ->
+        _retired_writer = retire_receipt_writer(writer, :graceful)
+        {:error, {:receipt_writer_unavailable, :capability_attestation_failed}}
     end
   end
 
@@ -942,18 +955,25 @@ defmodule SymphonyElixir.RuntimeHealth do
       Path.join([otp_root, "erts-#{erts_version}", "bin", executable_name])
     ]
 
-    with {:ok, canonical_root} <- resolve_path(resolver, otp_root) do
-      Enum.find_value(candidates, {:error, :erl_not_found}, fn candidate ->
-        with true <- File.regular?(candidate),
-             {:ok, canonical_candidate} <- resolve_path(resolver, candidate),
-             true <- strictly_inside?(canonical_candidate, canonical_root) do
-          {:ok, candidate}
-        else
-          _invalid -> false
-        end
-      end)
-    else
+    case resolve_path(resolver, otp_root) do
+      {:ok, canonical_root} -> find_receipt_writer(candidates, resolver, canonical_root)
       _error -> {:error, :erl_not_found}
+    end
+  end
+
+  defp find_receipt_writer(candidates, resolver, canonical_root) do
+    Enum.find_value(candidates, {:error, :erl_not_found}, fn candidate ->
+      valid_receipt_writer(candidate, resolver, canonical_root)
+    end)
+  end
+
+  defp valid_receipt_writer(candidate, resolver, canonical_root) do
+    with true <- File.regular?(candidate),
+         {:ok, canonical_candidate} <- resolve_path(resolver, candidate),
+         true <- strictly_inside?(canonical_candidate, canonical_root) do
+      {:ok, candidate}
+    else
+      _invalid -> false
     end
   end
 

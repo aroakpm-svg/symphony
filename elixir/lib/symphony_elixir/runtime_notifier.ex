@@ -86,19 +86,29 @@ defmodule SymphonyElixir.RuntimeNotifier do
          notification_timeout_ms: timeout_ms
        }) do
     cond do
-      not is_binary(command) or String.trim(command) == "" or not is_binary(receiver) or
-          String.trim(receiver) == "" ->
+      not notification_configured?(command, receiver) ->
         {:error, :notification_not_configured}
 
-      not safe_command?(command) or not safe_receiver?(receiver) or
-        not is_integer(restart_limit) or restart_limit <= 0 or not is_integer(timeout_ms) or
-          timeout_ms <= 0 ->
+      not valid_notification_config?(command, receiver, restart_limit, timeout_ms) ->
         {:error, :invalid_notification_config}
 
       true ->
         validate_runtime_root(root)
     end
   end
+
+  defp notification_configured?(command, receiver) do
+    nonblank_string?(command) and nonblank_string?(receiver)
+  end
+
+  defp nonblank_string?(value), do: is_binary(value) and String.trim(value) != ""
+
+  defp valid_notification_config?(command, receiver, restart_limit, timeout_ms) do
+    safe_command?(command) and safe_receiver?(receiver) and positive_integer?(restart_limit) and
+      positive_integer?(timeout_ms)
+  end
+
+  defp positive_integer?(value), do: is_integer(value) and value > 0
 
   defp validate_runtime_root(root) when is_binary(root) do
     with true <- Path.type(root) == :absolute,
@@ -607,9 +617,9 @@ defmodule SymphonyElixir.RuntimeNotifier do
   end
 
   defp finish_delivery({:ok, :terminated}, paths, receiver_hash, runtime_epoch) do
-    with :ok <- write_delivery_receipt(paths.delivery, receiver_hash, runtime_epoch),
-         :ok <- remove_claim(paths.claim) do
-      :ok
+    case write_delivery_receipt(paths.delivery, receiver_hash, runtime_epoch) do
+      :ok -> remove_claim(paths.claim)
+      {:error, _reason} = error -> error
     end
   end
 
@@ -635,67 +645,86 @@ defmodule SymphonyElixir.RuntimeNotifier do
   end
 
   defp run_notification_command(command, payload, timeout_ms, runtime_root) do
-    try do
-      case local_shell(command, payload, runtime_root, timeout_ms) do
-        {:ok, executable, args, environment, cleanup_paths} ->
-          try do
-            with {:ok, port} <- open_command_port(executable, args, environment) do
-              await_command(port, System.monotonic_time(:millisecond) + timeout_ms + 5_000)
-            else
-              _unavailable -> {:error, :notification_command_unavailable}
-            end
-          after
-            Enum.each(cleanup_paths, &File.rm/1)
-          end
+    run_notification_command_result(command, payload, timeout_ms, runtime_root)
+  rescue
+    _exception -> {:error, :notification_command_unavailable}
+  catch
+    _kind, _reason -> {:error, :notification_command_unavailable}
+  end
 
-        _unavailable ->
-          {:error, :notification_command_unavailable}
-      end
-    rescue
-      _exception -> {:error, :notification_command_unavailable}
-    catch
-      _kind, _reason -> {:error, :notification_command_unavailable}
+  defp run_notification_command_result(command, payload, timeout_ms, runtime_root) do
+    case local_shell(command, payload, runtime_root, timeout_ms) do
+      {:ok, executable, args, environment, cleanup_paths} ->
+        run_notification_port(executable, args, environment, cleanup_paths, timeout_ms)
+
+      _unavailable ->
+        {:error, :notification_command_unavailable}
     end
+  end
+
+  defp run_notification_port(executable, args, environment, cleanup_paths, timeout_ms) do
+    case open_command_port(executable, args, environment) do
+      {:ok, port} -> await_command(port, System.monotonic_time(:millisecond) + timeout_ms + 5_000)
+      _unavailable -> {:error, :notification_command_unavailable}
+    end
+  after
+    Enum.each(cleanup_paths, &File.rm/1)
   end
 
   defp local_shell(command, payload, runtime_root, timeout_ms) do
     event_environment = [{"SYMPHONY_TASK6_EVENT_B64", Base.encode64(payload)}]
 
-    if match?({:win32, _}, :os.type()) do
-      powershell = System.find_executable("pwsh") || System.find_executable("powershell.exe")
+    case :os.type() do
+      {:win32, _} -> windows_local_shell(command, runtime_root, timeout_ms, event_environment)
+      _unix -> unix_local_shell(command, event_environment)
+    end
+  end
 
-      case powershell do
-        nil ->
-          {:error, :notification_command_unavailable}
+  defp windows_local_shell(command, runtime_root, timeout_ms, event_environment) do
+    powershell = System.find_executable("pwsh") || System.find_executable("powershell.exe")
 
-        powershell ->
-          wrapper = windows_command_wrapper(command, timeout_ms)
-
-          wrapper_path =
-            Path.join(
-              runtime_root,
-              ".restart-limit-runner-#{System.unique_integer([:positive, :monotonic])}.ps1"
-            )
-
-          case write_temporary_receipt(wrapper_path, wrapper) do
-            :ok ->
-              {:ok, powershell, ["-NoLogo", "-NoProfile", "-NonInteractive", "-File", wrapper_path], event_environment, [wrapper_path]}
-
-            {:error, _reason} ->
-              {:error, :notification_command_unavailable}
-          end
-      end
+    if powershell do
+      write_windows_shell_wrapper(powershell, command, runtime_root, timeout_ms, event_environment)
     else
-      case System.find_executable("sh") do
-        nil ->
-          {:error, :notification_command_unavailable}
+      {:error, :notification_command_unavailable}
+    end
+  end
 
-        executable ->
-          wrapper =
-            ~s(event="$SYMPHONY_TASK6_EVENT_B64"; unset SYMPHONY_TASK6_EVENT_B64; printf '%s' "$event" | base64 -d | sh -lc "$1" >/dev/null 2>&1)
+  defp write_windows_shell_wrapper(
+         powershell,
+         command,
+         runtime_root,
+         timeout_ms,
+         event_environment
+       ) do
+    wrapper = windows_command_wrapper(command, timeout_ms)
 
-          {:ok, executable, ["-c", wrapper, "symphony-notifier", command], event_environment, []}
-      end
+    wrapper_path =
+      Path.join(
+        runtime_root,
+        ".restart-limit-runner-#{System.unique_integer([:positive, :monotonic])}.ps1"
+      )
+
+    case write_temporary_receipt(wrapper_path, wrapper) do
+      :ok ->
+        args = ["-NoLogo", "-NoProfile", "-NonInteractive", "-File", wrapper_path]
+        {:ok, powershell, args, event_environment, [wrapper_path]}
+
+      {:error, _reason} ->
+        {:error, :notification_command_unavailable}
+    end
+  end
+
+  defp unix_local_shell(command, event_environment) do
+    case System.find_executable("sh") do
+      nil ->
+        {:error, :notification_command_unavailable}
+
+      executable ->
+        wrapper =
+          ~s(event="$SYMPHONY_TASK6_EVENT_B64"; unset SYMPHONY_TASK6_EVENT_B64; printf '%s' "$event" | base64 -d | sh -lc "$1" >/dev/null 2>&1)
+
+        {:ok, executable, ["-c", wrapper, "symphony-notifier", command], event_environment, []}
     end
   end
 
@@ -1085,18 +1114,18 @@ defmodule SymphonyElixir.RuntimeNotifier do
   defp write_temporary_receipt(path, receipt) do
     case File.open(path, [:write, :binary, :exclusive]) do
       {:ok, file} ->
-        try do
-          with :ok <- IO.binwrite(file, receipt),
-               :ok <- :file.sync(file) do
-            :ok
-          end
-        after
-          File.close(file)
-        end
+        write_and_sync_receipt(file, receipt)
 
       {:error, reason} ->
         {:error, reason}
     end
+  end
+
+  defp write_and_sync_receipt(file, receipt) do
+    :ok = IO.binwrite(file, receipt)
+    :file.sync(file)
+  after
+    File.close(file)
   end
 
   defp safe_command?(value) do
