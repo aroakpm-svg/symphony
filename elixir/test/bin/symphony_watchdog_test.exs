@@ -12,7 +12,7 @@ defmodule SymphonyElixir.SymphonyWatchdogTest do
   alias SymphonyElixir.RuntimeHealth
 
   @watchdog Path.expand("../../bin/symphony-watchdog.ps1", __DIR__)
-  @pwsh System.find_executable("pwsh")
+  @pwsh if(match?({:win32, _}, :os.type()), do: System.find_executable("pwsh"), else: nil)
   @windows_powershell System.find_executable("powershell.exe")
 
   @tag skip: if(is_nil(@pwsh), do: "pwsh unavailable", else: false)
