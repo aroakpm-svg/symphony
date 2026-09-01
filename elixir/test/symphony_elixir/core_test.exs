@@ -563,9 +563,13 @@ defmodule SymphonyElixir.CoreTest do
     old_workspace = Path.join([test_root, execution_context.workspace_namespace, owned_issue.identifier])
     new_workspace = Path.join([test_root, "project-management", owned_issue.identifier])
     legacy_workspace = Path.join(test_root, owned_issue.identifier)
+    readiness_sidecar = Workspace.readiness_state_path(old_workspace)
 
     try do
       write_workflow_file!(Workflow.workflow_file_path(), workspace_root: test_root)
+      private_paths = SymphonyElixir.SubprocessEnvironment.private_home_paths(execution_context)
+      previous_home = Path.join(private_paths.root, "#{owned_issue.identifier}-r23")
+      sibling_home = Path.join(private_paths.root, "#{owned_issue.identifier}0-r23")
 
       assert {:ok, %{path: prepared_workspace, workspace_attestation: workspace_attestation}} =
                Workspace.prepare_for_issue(owned_issue, nil, execution_context)
@@ -575,6 +579,9 @@ defmodule SymphonyElixir.CoreTest do
 
       File.mkdir_p!(new_workspace)
       File.mkdir_p!(legacy_workspace)
+      File.mkdir_p!(private_paths.codex)
+      File.mkdir_p!(Path.join(previous_home, "codex"))
+      File.mkdir_p!(sibling_home)
 
       agent_pid = spawn(fn -> receive do: (:stop -> :ok) end)
 
@@ -584,7 +591,7 @@ defmodule SymphonyElixir.CoreTest do
             pid: agent_pid,
             ref: nil,
             identifier: owned_issue.identifier,
-            issue: owned_issue,
+            issue: %{owned_issue | project_profile: nil},
             execution_context: execution_context,
             workspace_attestation: workspace_attestation,
             worker_host: nil,
@@ -609,6 +616,10 @@ defmodule SymphonyElixir.CoreTest do
       refute MapSet.member?(updated_state.claimed, owned_issue.id)
       refute Process.alive?(agent_pid)
       refute File.exists?(old_workspace)
+      refute File.exists?(readiness_sidecar)
+      refute File.exists?(private_paths.home)
+      refute File.exists?(previous_home)
+      assert File.dir?(sibling_home)
       assert File.dir?(new_workspace)
       assert File.dir?(legacy_workspace)
     after
@@ -669,6 +680,7 @@ defmodule SymphonyElixir.CoreTest do
 
     old_workspace = Path.join([test_root, execution_context.workspace_namespace, owned_issue.identifier])
     new_workspace = Path.join([test_root, "project-management", owned_issue.identifier])
+    readiness_sidecar = Workspace.readiness_state_path(old_workspace)
     legacy_workspace = Path.join(test_root, owned_issue.identifier)
 
     try do
@@ -708,6 +720,7 @@ defmodule SymphonyElixir.CoreTest do
       refute Map.has_key?(updated_state.blocked, owned_issue.id)
       refute MapSet.member?(updated_state.claimed, owned_issue.id)
       refute File.exists?(old_workspace)
+      refute File.exists?(readiness_sidecar)
       assert File.dir?(new_workspace)
       assert File.dir?(legacy_workspace)
     after
@@ -740,14 +753,15 @@ defmodule SymphonyElixir.CoreTest do
 
       moved_issue = %{
         owned_issue
-        | project_id: "708053e0-f42c-4e93-bec4-7abbb37e74af",
+        | identifier: "PM-286",
+          project_id: "708053e0-f42c-4e93-bec4-7abbb37e74af",
           state: "In Progress",
           project_profile: nil
       }
 
       updated_state =
         Orchestrator.handle_retry_issue_lookup_for_test(moved_issue, state, owned_issue.id, 1, %{
-          identifier: owned_issue.identifier,
+          identifier: nil,
           execution_context: execution_context,
           workspace_attestation: nil,
           worker_host: nil,

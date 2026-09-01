@@ -1210,8 +1210,8 @@ defmodule SymphonyElixir.Orchestrator do
 
   defp reconcile_active_running_issue(state, issue) do
     case Map.get(state.running, issue.id) do
-      %{issue: existing_issue} ->
-        if running_project_identity_matches?(existing_issue, issue) do
+      %{issue: _existing_issue} = running_entry ->
+        if running_project_identity_matches?(running_entry, issue) do
           refresh_running_issue_state(state, issue)
         else
           Logger.warning("Running issue project identity changed; releasing claim: #{issue_context(issue)} project_id=#{inspect(issue.project_id)}")
@@ -1223,17 +1223,25 @@ defmodule SymphonyElixir.Orchestrator do
     end
   end
 
-  defp running_project_identity_matches?(%Issue{project_profile: nil}, _refreshed_issue), do: true
+  defp running_project_identity_matches?(
+         %{execution_context: %ProjectExecutionContext{linear_project_id: expected_project_id}},
+         %Issue{project_id: refreshed_project_id}
+       ) do
+    project_ids_match?(expected_project_id, refreshed_project_id)
+  end
+
+  defp running_project_identity_matches?(%{issue: %Issue{project_profile: nil}}, _refreshed_issue),
+    do: true
 
   defp running_project_identity_matches?(
-         %Issue{project_profile: %{linear_project_id: expected_project_id}},
+         %{issue: %Issue{project_profile: %{linear_project_id: expected_project_id}}},
          %Issue{project_id: refreshed_project_id}
        )
        when is_binary(expected_project_id) and is_binary(refreshed_project_id) do
     project_ids_match?(expected_project_id, refreshed_project_id)
   end
 
-  defp running_project_identity_matches?(_existing_issue, _refreshed_issue), do: false
+  defp running_project_identity_matches?(_running_entry, _refreshed_issue), do: false
 
   defp project_ids_match?(expected_project_id, refreshed_project_id)
        when is_binary(expected_project_id) and is_binary(refreshed_project_id) do
@@ -2434,7 +2442,7 @@ defmodule SymphonyElixir.Orchestrator do
         )
 
         retire_execution_context(
-          metadata[:identifier] || issue.identifier,
+          metadata.execution_context.issue_identifier,
           metadata[:worker_host],
           metadata[:execution_context],
           metadata[:workspace_attestation]
