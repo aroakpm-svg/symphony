@@ -21,6 +21,7 @@ defmodule SymphonyElixir.Codex.AppServer do
           thread_sandbox: String.t(),
           turn_sandbox_policy: map(),
           thread_id: String.t(),
+          protocol_thread_id: (-> String.t()),
           workspace: Path.t(),
           worker_host: String.t() | nil,
           managed_session: boolean(),
@@ -56,7 +57,7 @@ defmodule SymphonyElixir.Codex.AppServer do
 
       with {:ok, session_policies} <- session_policies(expanded_workspace, worker_host),
            managed_session = Keyword.get(opts, :managed_session, false),
-           {:ok, thread_id} <-
+           {:ok, protocol_thread_id} <-
              do_start_session(
                port,
                expanded_workspace,
@@ -72,7 +73,8 @@ defmodule SymphonyElixir.Codex.AppServer do
            auto_approve_requests: session_policies.approval_policy == "never",
            thread_sandbox: session_policies.thread_sandbox,
            turn_sandbox_policy: session_policies.turn_sandbox_policy,
-           thread_id: thread_id,
+           thread_id: sanitize_string(protocol_thread_id, redaction_values),
+           protocol_thread_id: fn -> protocol_thread_id end,
            workspace: expanded_workspace,
            worker_host: worker_host,
            managed_session: managed_session,
@@ -94,7 +96,7 @@ defmodule SymphonyElixir.Codex.AppServer do
           approval_policy: approval_policy,
           auto_approve_requests: auto_approve_requests,
           turn_sandbox_policy: turn_sandbox_policy,
-          thread_id: thread_id,
+          protocol_thread_id: protocol_thread_id,
           workspace: workspace
         } = session,
         prompt,
@@ -116,9 +118,11 @@ defmodule SymphonyElixir.Codex.AppServer do
         )
       end)
 
+    raw_thread_id = protocol_thread_id.()
+
     case start_turn(
            port,
-           thread_id,
+           raw_thread_id,
            prompt,
            issue,
            workspace,
@@ -126,8 +130,10 @@ defmodule SymphonyElixir.Codex.AppServer do
            turn_sandbox_policy,
            redaction_values
          ) do
-      {:ok, turn_id} ->
-        session_id = "#{thread_id}-#{turn_id}"
+      {:ok, raw_turn_id} ->
+        thread_id = sanitize_string(raw_thread_id, redaction_values)
+        turn_id = sanitize_string(raw_turn_id, redaction_values)
+        session_id = sanitize_string("#{raw_thread_id}-#{raw_turn_id}", redaction_values)
         Logger.info("Codex session started for #{issue_context(issue)} session_id=#{session_id}")
 
         emit_message(
@@ -448,7 +454,7 @@ defmodule SymphonyElixir.Codex.AppServer do
     case await_response(port, @thread_start_id, redaction_values) do
       {:ok, %{"thread" => thread_payload}} ->
         case thread_payload do
-          %{"id" => thread_id} -> {:ok, sanitize_string(thread_id, redaction_values)}
+          %{"id" => thread_id} -> {:ok, thread_id}
           _ -> {:error, {:invalid_thread_payload, thread_payload}}
         end
 
@@ -487,7 +493,7 @@ defmodule SymphonyElixir.Codex.AppServer do
 
     case await_response(port, @turn_start_id, redaction_values) do
       {:ok, %{"turn" => %{"id" => turn_id}}} ->
-        {:ok, sanitize_string(turn_id, redaction_values)}
+        {:ok, turn_id}
 
       other ->
         other

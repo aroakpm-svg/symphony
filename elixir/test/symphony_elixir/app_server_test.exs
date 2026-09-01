@@ -1931,6 +1931,67 @@ defmodule SymphonyElixir.AppServerTest do
     end
   end
 
+  test "short redaction values never mutate protocol thread identifiers" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-raw-thread-id-#{System.unique_integer([:positive])}"
+      )
+
+    try do
+      workspace = Path.join(test_root, "workspace")
+      protocol_script = Path.join(test_root, "protocol.exs")
+      turn_request_path = Path.join(test_root, "turn-request.json")
+      elixir = System.find_executable("elixir")
+      File.mkdir_p!(workspace)
+
+      File.write!(protocol_script, """
+      IO.gets("")
+      IO.puts(~s({"id":1,"result":{}}))
+      IO.gets("")
+      IO.gets("")
+      IO.puts(~s({"id":2,"result":{"thread":{"id":"thread-101"}}}))
+      turn_request = IO.gets("")
+      File.write!(#{inspect(turn_request_path)}, turn_request)
+      IO.puts(~s({"id":3,"result":{"turn":{"id":"turn-202"}}}))
+      IO.puts(~s({"method":"turn/completed","params":{"status":"completed"}}))
+      """)
+
+      port_opener = fn _spawn_target, port_opts ->
+        process_opts =
+          port_opts
+          |> Enum.reject(&match?({:args, _args}, &1))
+          |> Keyword.put(:args, [String.to_charlist(protocol_script)])
+
+        Port.open({:spawn_executable, String.to_charlist(elixir)}, process_opts)
+      end
+
+      write_workflow_file!(Workflow.workflow_file_path(),
+        workspace_root: test_root,
+        codex_command: "fake-codex app-server"
+      )
+
+      issue = %Issue{
+        id: "issue-raw-thread-id",
+        identifier: "ARO-286-RAW-ID",
+        title: "Preserve raw protocol IDs",
+        state: "In Progress",
+        labels: []
+      }
+
+      assert {:ok, result} =
+               AppServer.run(workspace, "Run", issue,
+                 sensitive_env_values: ["1"],
+                 port_opener: port_opener
+               )
+
+      assert Jason.decode!(File.read!(turn_request_path))["params"]["threadId"] == "thread-101"
+      assert result.thread_id == "thread-[redacted]0[redacted]"
+    after
+      File.rm_rf(test_root)
+    end
+  end
+
   defp project_execution_context(identifier) do
     %ProjectExecutionContext{
       issue_id: "issue-#{identifier}",
