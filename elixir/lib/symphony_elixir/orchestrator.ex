@@ -1189,12 +1189,12 @@ defmodule SymphonyElixir.Orchestrator do
       terminal_issue_state?(issue.state, terminal_states) ->
         Logger.info("Issue moved to terminal state: #{issue_context(issue)} state=#{issue.state}; stopping active agent")
 
-        terminate_running_issue(state, issue.id, true)
+        terminate_running_issue(state, issue.id, :complete)
 
       !issue_routable?(issue) ->
         Logger.info("Issue no longer routed to this worker: #{issue_context(issue)} assignee=#{inspect(issue.assignee_id)}; stopping active agent")
 
-        terminate_running_issue(state, issue.id, false)
+        terminate_running_issue(state, issue.id, :retain_context)
 
       active_issue_state?(issue.state, active_states) ->
         reconcile_active_running_issue(state, issue)
@@ -1202,7 +1202,7 @@ defmodule SymphonyElixir.Orchestrator do
       true ->
         Logger.info("Issue moved to non-active state: #{issue_context(issue)} state=#{issue.state}; stopping active agent")
 
-        terminate_running_issue(state, issue.id, false)
+        terminate_running_issue(state, issue.id, :retain_context)
     end
   end
 
@@ -1215,7 +1215,7 @@ defmodule SymphonyElixir.Orchestrator do
           refresh_running_issue_state(state, issue)
         else
           Logger.warning("Running issue project identity changed; releasing claim: #{issue_context(issue)} project_id=#{inspect(issue.project_id)}")
-          terminate_running_issue(state, issue.id, false)
+          terminate_running_issue(state, issue.id, :invalidate_context)
         end
 
       _missing ->
@@ -1320,7 +1320,7 @@ defmodule SymphonyElixir.Orchestrator do
         state_acc
       else
         log_missing_running_issue(state_acc, issue_id)
-        terminate_running_issue(state_acc, issue_id, false)
+        terminate_running_issue(state_acc, issue_id, :retain_context)
       end
     end)
   end
@@ -1395,7 +1395,8 @@ defmodule SymphonyElixir.Orchestrator do
     end
   end
 
-  defp terminate_running_issue(%State{} = state, issue_id, cleanup_workspace) do
+  defp terminate_running_issue(%State{} = state, issue_id, termination_policy)
+       when termination_policy in [:complete, :invalidate_context, :retain_context] do
     case Map.get(state.running, issue_id) do
       nil ->
         release_issue_claim(state, issue_id)
@@ -1408,7 +1409,7 @@ defmodule SymphonyElixir.Orchestrator do
 
         stop_running_task(pid, ref)
 
-        if cleanup_workspace do
+        if retire_execution_context?(termination_policy) do
           cleanup_issue_workspace(
             identifier,
             worker_host,
@@ -1417,7 +1418,7 @@ defmodule SymphonyElixir.Orchestrator do
           )
         end
 
-        if cleanup_workspace do
+        if termination_policy == :complete do
           finalize_distributed_claim(issue_id, :complete)
         else
           finalize_distributed_claim(issue_id, :release)
@@ -1435,6 +1436,9 @@ defmodule SymphonyElixir.Orchestrator do
         release_issue_claim(state, issue_id)
     end
   end
+
+  defp retire_execution_context?(termination_policy),
+    do: termination_policy in [:complete, :invalidate_context]
 
   defp reconcile_stalled_running_issues(%State{running: running} = state) when map_size(running) == 0,
     do: state
@@ -1482,7 +1486,7 @@ defmodule SymphonyElixir.Orchestrator do
         next_attempt = next_retry_attempt_from_running(running_entry)
 
         state
-        |> terminate_running_issue(issue_id, false)
+        |> terminate_running_issue(issue_id, :retain_context)
         |> schedule_issue_retry(
           issue_id,
           next_attempt,

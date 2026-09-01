@@ -553,6 +553,69 @@ defmodule SymphonyElixir.CoreTest do
     end
   end
 
+  test "running reconciliation retires the old execution context when the project changes" do
+    test_root =
+      Path.join(System.tmp_dir!(), "symphony-running-project-move-#{System.unique_integer([:positive])}")
+
+    {owned_issue, execution_context} =
+      execution_fixture("central-brain", "ARO-286", "running-project-move", 24)
+
+    old_workspace = Path.join([test_root, execution_context.workspace_namespace, owned_issue.identifier])
+    new_workspace = Path.join([test_root, "project-management", owned_issue.identifier])
+    legacy_workspace = Path.join(test_root, owned_issue.identifier)
+
+    try do
+      write_workflow_file!(Workflow.workflow_file_path(), workspace_root: test_root)
+
+      assert {:ok, %{path: prepared_workspace, workspace_attestation: workspace_attestation}} =
+               Workspace.prepare_for_issue(owned_issue, nil, execution_context)
+
+      assert String.downcase(Path.expand(prepared_workspace)) ==
+               String.downcase(Path.expand(old_workspace))
+
+      File.mkdir_p!(new_workspace)
+      File.mkdir_p!(legacy_workspace)
+
+      agent_pid = spawn(fn -> receive do: (:stop -> :ok) end)
+
+      state = %Orchestrator.State{
+        running: %{
+          owned_issue.id => %{
+            pid: agent_pid,
+            ref: nil,
+            identifier: owned_issue.identifier,
+            issue: owned_issue,
+            execution_context: execution_context,
+            workspace_attestation: workspace_attestation,
+            worker_host: nil,
+            started_at: DateTime.utc_now()
+          }
+        },
+        claimed: MapSet.new([owned_issue.id]),
+        codex_totals: %{input_tokens: 0, output_tokens: 0, total_tokens: 0, seconds_running: 0},
+        retry_attempts: %{}
+      }
+
+      moved_issue = %{
+        owned_issue
+        | project_id: "708053e0-f42c-4e93-bec4-7abbb37e74af",
+          state: "In Progress",
+          project_profile: nil
+      }
+
+      updated_state = Orchestrator.reconcile_issue_states_for_test([moved_issue], state)
+
+      refute Map.has_key?(updated_state.running, owned_issue.id)
+      refute MapSet.member?(updated_state.claimed, owned_issue.id)
+      refute Process.alive?(agent_pid)
+      refute File.exists?(old_workspace)
+      assert File.dir?(new_workspace)
+      assert File.dir?(legacy_workspace)
+    after
+      File.rm_rf(test_root)
+    end
+  end
+
   test "terminal blocked cleanup retains the exact project execution context" do
     test_root =
       Path.join(System.tmp_dir!(), "symphony-blocked-context-#{System.unique_integer([:positive])}")
