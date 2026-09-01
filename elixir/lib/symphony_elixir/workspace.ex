@@ -2169,7 +2169,8 @@ defmodule SymphonyElixir.Workspace do
                workspace_attestation
              ),
            {:ok, removed} <- File.rm_rf(workspace),
-           :ok <- remove_local_readiness_state(state_path) do
+           :ok <- remove_local_readiness_state(state_path),
+           :ok <- remove_context_private_home(execution_context, opts) do
         {:ok, removed}
       else
         {:error, _file, _reason} = error -> error
@@ -2292,20 +2293,35 @@ defmodule SymphonyElixir.Workspace do
       |> Enum.join("\n")
 
     case run_remote_command(worker_host, script, Config.settings!().hooks.timeout_ms) do
-      {:ok, {output, 0}} -> parse_existing_remote_attestation(output, marker, workspace)
-      {:ok, {_output, _status}} -> {:error, :workspace_attestation_unavailable}
-      {:error, _reason} -> {:error, :workspace_attestation_unavailable}
+      {:ok, {output, 0}} ->
+        parse_existing_remote_attestation(
+          output,
+          marker,
+          workspace,
+          execution_context.workspace_namespace
+        )
+
+      {:ok, {_output, _status}} ->
+        {:error, :workspace_attestation_unavailable}
+
+      {:error, _reason} ->
+        {:error, :workspace_attestation_unavailable}
     end
   end
 
-  defp parse_existing_remote_attestation(output, marker, workspace) do
+  defp parse_existing_remote_attestation(output, marker, workspace, namespace) do
     output
     |> IO.iodata_to_binary()
     |> String.split("\n", trim: true)
     |> Enum.find_value({:error, :workspace_attestation_unavailable}, fn line ->
       case String.split(line, "\t", parts: 3) do
         [^marker, "missing"] ->
-          {:ok, nil}
+          {:ok,
+           %{
+             kind: :remote_absent,
+             lexical_path: workspace,
+             workspace_namespace: namespace
+           }}
 
         [^marker, physical_path, identity] when physical_path != "" and identity != "" ->
           {:ok,
@@ -2405,7 +2421,7 @@ defmodule SymphonyElixir.Workspace do
          nil,
          execution_context,
          %{kind: :local_absent} = workspace_attestation,
-         _opts
+         opts
        ) do
     state_path = readiness_state_path(workspace)
 
@@ -2416,7 +2432,8 @@ defmodule SymphonyElixir.Workspace do
              execution_context,
              workspace_attestation
            ),
-         :ok <- remove_local_readiness_state(state_path) do
+         :ok <- remove_local_readiness_state(state_path),
+         :ok <- remove_context_private_home(execution_context, opts) do
       {:ok, []}
     else
       {:error, _file, _reason} = error -> error
@@ -2484,9 +2501,9 @@ defmodule SymphonyElixir.Workspace do
         "  if [ \"$workspace_physical\" != \"$expected_workspace\" ]; then exit 1; fi",
         "fi",
         remote_cleanup_attestation_guard(workspace_attestation),
-        context_remote_before_remove_hook(before_remove_hook),
+        context_remote_before_remove_hook(before_remove_hook, workspace_attestation),
         remote_cleanup_attestation_guard(workspace_attestation),
-        "rm -rf \"$workspace\"",
+        remote_workspace_remove_command(workspace_attestation),
         "rm -f \"$readiness_state\""
       ]
       |> Enum.join("\n")
@@ -2524,6 +2541,62 @@ defmodule SymphonyElixir.Workspace do
        execution_context: execution_context,
        workspace_attestation: workspace_attestation
      ]}
+  end
+
+  defp remove_context_private_home(%ProjectExecutionContext{} = execution_context, opts) do
+    with {:ok, paths} <- Keyword.fetch(opts, :subprocess_home_paths),
+         :ok <- validate_private_home_contract(paths, execution_context, opts) do
+      remove_existing_context_private_home(paths, execution_context)
+    else
+      _failure -> {:error, :subprocess_home_unavailable}
+    end
+  end
+
+  defp remove_existing_context_private_home(paths, execution_context) do
+    case File.lstat(paths.home) do
+      {:error, :enoent} -> :ok
+      {:ok, %File.Stat{type: :directory}} -> remove_attested_context_private_home(paths, execution_context)
+      _unsafe -> {:error, :subprocess_home_unavailable}
+    end
+  end
+
+  defp remove_attested_context_private_home(paths, execution_context) do
+    namespace_path =
+      Path.join(Path.expand(Config.settings!().workspace.root), execution_context.workspace_namespace)
+
+    with true <- local_paths_equal?(Path.dirname(paths.root), namespace_path),
+         :ok <- validate_private_home_cleanup_components(paths, namespace_path),
+         {:ok, namespace_attestation} <- local_workspace_attestation(namespace_path),
+         {:ok, root_attestation} <- local_workspace_attestation(paths.root),
+         {:ok, home_attestation} <- local_workspace_attestation(paths.home),
+         :ok <- validate_workspace_attestation(namespace_path, nil, namespace_attestation),
+         :ok <- validate_workspace_attestation(paths.root, nil, root_attestation),
+         :ok <- validate_workspace_attestation(paths.home, nil, home_attestation),
+         {:ok, _removed} <- File.rm_rf(paths.home) do
+      :ok
+    else
+      _failure -> {:error, :subprocess_home_unavailable}
+    end
+  end
+
+  defp validate_private_home_cleanup_components(paths, namespace_path) do
+    paths
+    |> Map.values()
+    |> Enum.reduce_while(:ok, fn path, :ok ->
+      case File.lstat(path) do
+        {:ok, %File.Stat{type: :directory}} ->
+          case safe_private_directory_identity(path, namespace_path) do
+            {:ok, _identity} -> {:cont, :ok}
+            _failure -> {:halt, {:error, :unsafe_private_home_path}}
+          end
+
+        {:error, :enoent} ->
+          {:cont, :ok}
+
+        _unsafe ->
+          {:halt, {:error, :unsafe_private_home_path}}
+      end
+    end)
   end
 
   defp run_context_cleanup_hook(
@@ -2688,13 +2761,27 @@ defmodule SymphonyElixir.Workspace do
       ~S<if [ "$current_workspace_identity" != "$expected_workspace_identity" ]; then exit 1; fi>
   end
 
+  defp remote_cleanup_attestation_guard(%{
+         kind: :remote_absent,
+         workspace_namespace: namespace
+       }) do
+    "expected_attested_namespace=#{shell_escape(namespace)}\n" <>
+      ~S<if [ "$workspace_namespace" != "$expected_attested_namespace" ]; then exit 1; fi
+if [ -e "$workspace" ] || [ -L "$workspace" ]; then exit 1; fi>
+  end
+
   defp remote_cleanup_attestation_guard(_invalid), do: "exit 1"
 
-  defp context_remote_before_remove_hook(nil), do: ""
+  defp context_remote_before_remove_hook(_command, %{kind: :remote_absent}), do: ""
 
-  defp context_remote_before_remove_hook(command) when is_binary(command) do
+  defp context_remote_before_remove_hook(nil, _attestation), do: ""
+
+  defp context_remote_before_remove_hook(command, _attestation) when is_binary(command) do
     "if [ -d \"$workspace\" ]; then (cd \"$workspace\" && #{command}) || true; fi"
   end
+
+  defp remote_workspace_remove_command(%{kind: :remote_absent}), do: ""
+  defp remote_workspace_remove_command(_attestation), do: "rm -rf \"$workspace\""
 
   @spec run_before_run_hook(Path.t(), map() | String.t() | nil, worker_host()) ::
           :ok | {:error, term()}
@@ -3832,6 +3919,24 @@ defmodule SymphonyElixir.Workspace do
     if current == expected do
       :ok
     else
+      {:error, {:workspace_issue_identity_changed, current, expected}}
+    end
+  end
+
+  defp validate_workspace_attestation(
+         workspace,
+         worker_host,
+         %{
+           kind: :remote_absent,
+           lexical_path: lexical_path,
+           workspace_namespace: namespace
+         } = expected
+       )
+       when is_binary(worker_host) and is_binary(lexical_path) and is_binary(namespace) do
+    if workspace == lexical_path do
+      :ok
+    else
+      current = %{kind: :remote_absent, path: workspace, error: :unattested_workspace_path}
       {:error, {:workspace_issue_identity_changed, current, expected}}
     end
   end

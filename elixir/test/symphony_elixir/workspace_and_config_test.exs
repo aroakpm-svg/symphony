@@ -1389,15 +1389,65 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
                Workspace.prepare_for_issue("ARO-286", nil, context)
 
       refute File.exists?(paths.root)
+      File.mkdir_p!(paths.codex)
+      File.write!(Path.join(paths.codex, "session.json"), "private state")
 
       assert :ok =
                Workspace.remove_issue_workspaces("ARO-286", nil, context, workspace_attestation: attestation)
 
       refute File.exists?(workspace)
-      refute File.exists?(paths.root)
+      refute File.exists?(paths.home)
+      refute File.exists?(Path.join(paths.codex, "session.json"))
     after
       File.rm_rf(test_root)
     end
+  end
+
+  test "remote absence attestation authorizes sidecar-only cleanup" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "aro286-remote-absence-cleanup-#{System.unique_integer([:positive, :monotonic])}"
+      )
+
+    on_exit(fn -> File.rm_rf(test_root) end)
+    context = project_context("central-brain", "ARO-286")
+    parent = self()
+    previous_runner = Application.get_env(:symphony_elixir, :ssh_command_runner)
+
+    on_exit(fn ->
+      if previous_runner,
+        do: Application.put_env(:symphony_elixir, :ssh_command_runner, previous_runner),
+        else: Application.delete_env(:symphony_elixir, :ssh_command_runner)
+    end)
+
+    Application.put_env(:symphony_elixir, :ssh_command_runner, fn _executable, args, _opts ->
+      command = List.last(args)
+
+      if command =~ "SYMPHONY_EXISTING_WORKSPACE" do
+        {"SYMPHONY_EXISTING_WORKSPACE\tmissing\n", 0}
+      else
+        send(parent, {:remote_absence_cleanup, command})
+        {"", 0}
+      end
+    end)
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      workspace_root: test_root,
+      worker_ssh_hosts: ["worker-01"],
+      hook_before_remove: "echo unsafe"
+    )
+
+    assert {:ok, %{kind: :remote_absent} = attestation} =
+             Workspace.attest_existing_issue_workspace("ARO-286", "worker-01", context)
+
+    assert :ok =
+             Workspace.remove_issue_workspaces("ARO-286", "worker-01", context, workspace_attestation: attestation)
+
+    assert_receive {:remote_absence_cleanup, command}
+    assert command =~ "rm -f \"$readiness_state\""
+    refute command =~ "rm -rf \"$workspace\""
+    refute command =~ "echo unsafe"
   end
 
   test "project workspace rejects an in-root namespace alias without touching its target" do
