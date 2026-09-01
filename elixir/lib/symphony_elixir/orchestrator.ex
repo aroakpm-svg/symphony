@@ -2435,7 +2435,7 @@ defmodule SymphonyElixir.Orchestrator do
          workspace_attestation
        )
        when is_binary(identifier) do
-    cleanup_options = [workspace_attestation: workspace_attestation]
+    cleanup_options = [workspace_attestation: workspace_attestation, exact_worker_host: true]
     Workspace.remove_issue_workspaces(identifier, worker_host, execution_context, cleanup_options)
   end
 
@@ -2539,10 +2539,7 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   defp cleanup_worker_hosts do
-    case Config.settings!().worker.ssh_hosts do
-      [] -> [nil]
-      worker_hosts -> worker_hosts
-    end
+    [nil | Config.settings!().worker.ssh_hosts]
   end
 
   defp attest_and_cleanup_terminal_worker(

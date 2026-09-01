@@ -2347,21 +2347,26 @@ defmodule SymphonyElixir.Workspace do
   def remove_issue_workspaces(identifier, worker_host, execution_context, opts)
       when is_list(opts) do
     workspace_attestation = Keyword.get(opts, :workspace_attestation)
+    exact_worker_host? = Keyword.get(opts, :exact_worker_host, false)
 
     cond do
       is_binary(identifier) and is_binary(worker_host) ->
         remove_issue_workspace(identifier, worker_host, execution_context, workspace_attestation)
 
       is_binary(identifier) and is_nil(worker_host) ->
-        case Config.settings!().worker.ssh_hosts do
-          [] ->
-            remove_issue_workspace(identifier, nil, execution_context, workspace_attestation)
+        if exact_worker_host? do
+          remove_issue_workspace(identifier, nil, execution_context, workspace_attestation)
+        else
+          case Config.settings!().worker.ssh_hosts do
+            [] ->
+              remove_issue_workspace(identifier, nil, execution_context, workspace_attestation)
 
-          worker_hosts ->
-            Enum.each(
-              worker_hosts,
-              &remove_issue_workspace(identifier, &1, execution_context, workspace_attestation)
-            )
+            worker_hosts ->
+              Enum.each(
+                worker_hosts,
+                &remove_issue_workspace(identifier, &1, execution_context, workspace_attestation)
+              )
+          end
         end
 
       true ->

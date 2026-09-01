@@ -510,7 +510,10 @@ defmodule SymphonyElixir.CoreTest do
     legacy_workspace = Path.join(test_root, owned_issue.identifier)
 
     try do
-      write_workflow_file!(Workflow.workflow_file_path(), workspace_root: test_root)
+      write_workflow_file!(Workflow.workflow_file_path(),
+        workspace_root: test_root,
+        worker_ssh_hosts: ["worker-enabled-after-local-start"]
+      )
 
       assert {:ok, %{path: prepared_workspace, workspace_attestation: workspace_attestation}} =
                Workspace.prepare_for_issue(owned_issue, nil, execution_context)
