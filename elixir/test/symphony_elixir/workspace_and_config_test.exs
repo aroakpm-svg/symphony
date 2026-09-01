@@ -1391,13 +1391,23 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
       refute File.exists?(paths.root)
       File.mkdir_p!(paths.codex)
       File.write!(Path.join(paths.codex, "session.json"), "private state")
+      previous_home = Path.join(paths.root, "ARO-286-r1")
+      File.mkdir_p!(Path.join(previous_home, "codex"))
+      File.write!(Path.join([previous_home, "codex", "previous-session.json"]), "old private state")
+      sibling_home = Path.join(paths.root, "ARO-2860-r1")
+      invalid_revision_home = Path.join(paths.root, "ARO-286-rbackup")
+      File.mkdir_p!(sibling_home)
+      File.mkdir_p!(invalid_revision_home)
 
       assert :ok =
                Workspace.remove_issue_workspaces("ARO-286", nil, context, workspace_attestation: attestation)
 
       refute File.exists?(workspace)
       refute File.exists?(paths.home)
+      refute File.exists?(previous_home)
       refute File.exists?(Path.join(paths.codex, "session.json"))
+      assert File.dir?(sibling_home)
+      assert File.dir?(invalid_revision_home)
     after
       File.rm_rf(test_root)
     end

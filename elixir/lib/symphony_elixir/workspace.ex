@@ -2567,11 +2567,85 @@ defmodule SymphonyElixir.Workspace do
   end
 
   defp remove_existing_context_private_home(paths, execution_context) do
-    case File.lstat(paths.home) do
-      {:error, :enoent} -> :ok
-      {:ok, %File.Stat{type: :directory}} -> remove_attested_context_private_home(paths, execution_context)
-      _unsafe -> {:error, :subprocess_home_unavailable}
+    with {:ok, homes} <- issue_private_home_paths(paths, execution_context) do
+      Enum.reduce_while(homes, :ok, fn home, :ok ->
+        candidate_paths = private_home_paths_for_home(paths, home)
+
+        case remove_attested_context_private_home(candidate_paths, execution_context) do
+          :ok -> {:cont, :ok}
+          {:error, _reason} = error -> {:halt, error}
+        end
+      end)
     end
+  end
+
+  defp issue_private_home_paths(paths, execution_context) do
+    namespace_path =
+      Path.join(Path.expand(Config.settings!().workspace.root), execution_context.workspace_namespace)
+
+    with true <- local_paths_equal?(Path.dirname(paths.root), namespace_path),
+         {:ok, names} <- list_private_home_root(paths.root, namespace_path),
+         {:ok, issue_leaf} <- private_home_issue_leaf(paths.home, execution_context.routing_revision) do
+      prefix = issue_leaf <> "-r"
+
+      homes =
+        names
+        |> Enum.filter(&private_home_revision_name?(&1, prefix))
+        |> Enum.map(&Path.join(paths.root, &1))
+
+      {:ok, homes}
+    else
+      _failure -> {:error, :subprocess_home_unavailable}
+    end
+  end
+
+  defp list_private_home_root(root, namespace_path) do
+    case File.lstat(root) do
+      {:error, :enoent} ->
+        {:ok, []}
+
+      {:ok, %File.Stat{type: :directory}} ->
+        with {:ok, _identity} <- safe_private_directory_identity(root, namespace_path),
+             {:ok, names} <- File.ls(root) do
+          {:ok, names}
+        end
+
+      _unsafe ->
+        {:error, :unsafe_private_home_path}
+    end
+  end
+
+  defp private_home_issue_leaf(home, routing_revision) do
+    suffix = "-r#{routing_revision}"
+    name = Path.basename(home)
+
+    if String.ends_with?(name, suffix) do
+      {:ok, String.replace_suffix(name, suffix, "")}
+    else
+      {:error, :invalid_private_home_path}
+    end
+  end
+
+  defp private_home_revision_name?(name, prefix) do
+    if String.starts_with?(name, prefix) do
+      name
+      |> String.replace_prefix(prefix, "")
+      |> String.match?(~r/^\d+$/)
+    else
+      false
+    end
+  end
+
+  defp private_home_paths_for_home(paths, home) do
+    %{
+      paths
+      | home: home,
+        gh: Path.join(home, "gh"),
+        xdg_config: Path.join(home, "xdg-config"),
+        xdg_cache: Path.join(home, "xdg-cache"),
+        xdg_data: Path.join(home, "xdg-data"),
+        codex: Path.join(home, "codex")
+    }
   end
 
   defp remove_attested_context_private_home(paths, execution_context) do
