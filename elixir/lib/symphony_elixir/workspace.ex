@@ -2354,26 +2354,35 @@ defmodule SymphonyElixir.Workspace do
         remove_issue_workspace(identifier, worker_host, execution_context, workspace_attestation)
 
       is_binary(identifier) and is_nil(worker_host) ->
-        if exact_worker_host? do
-          remove_issue_workspace(identifier, nil, execution_context, workspace_attestation)
-        else
-          case Config.settings!().worker.ssh_hosts do
-            [] ->
-              remove_issue_workspace(identifier, nil, execution_context, workspace_attestation)
-
-            worker_hosts ->
-              Enum.each(
-                worker_hosts,
-                &remove_issue_workspace(identifier, &1, execution_context, workspace_attestation)
-              )
-          end
-        end
+        remove_nil_host_issue_workspaces(
+          identifier,
+          execution_context,
+          workspace_attestation,
+          exact_worker_host?
+        )
 
       true ->
         :ok
     end
 
     :ok
+  end
+
+  defp remove_nil_host_issue_workspaces(identifier, execution_context, attestation, true) do
+    remove_issue_workspace(identifier, nil, execution_context, attestation)
+  end
+
+  defp remove_nil_host_issue_workspaces(identifier, execution_context, attestation, false) do
+    case Config.settings!().worker.ssh_hosts do
+      [] ->
+        remove_issue_workspace(identifier, nil, execution_context, attestation)
+
+      worker_hosts ->
+        Enum.each(
+          worker_hosts,
+          &remove_issue_workspace(identifier, &1, execution_context, attestation)
+        )
+    end
   end
 
   defp remove_issue_workspace(
