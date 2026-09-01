@@ -185,12 +185,8 @@ defmodule SymphonyElixir.PrivateHome.WindowsCapability do
       correlation_id = correlation_id()
       encoded = [payload |> Map.put("id", correlation_id) |> Jason.encode_to_iodata!(), "\n"]
 
-      if Port.command(port, encoded) do
-        handle_response(capability, receive_response(port, correlation_id, timeout_ms))
-      else
-        _retired = retire(capability)
-        {:error, :private_home_capability_failed}
-      end
+      Port.command(port, encoded)
+      handle_response(capability, receive_response(port, correlation_id, timeout_ms))
     end
   rescue
     _error ->
