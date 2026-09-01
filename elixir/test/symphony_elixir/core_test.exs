@@ -1244,6 +1244,64 @@ defmodule SymphonyElixir.CoreTest do
     end
   end
 
+  test "startup terminal cleanup reacquires an attestation on every remote worker" do
+    profile = %{
+      key: "central-brain",
+      linear_project_id: "d0acfb71-f68c-4a9f-8a1a-477265d3c3ec",
+      repository: "aroakpm-svg/aroak-central-brain",
+      canonical_branch: "main",
+      workspace_namespace: "central-brain",
+      credential_ref: "github-central-brain",
+      environment: "local_non_production"
+    }
+
+    parent = self()
+    previous_runner = Application.get_env(:symphony_elixir, :ssh_command_runner)
+
+    on_exit(fn ->
+      if previous_runner,
+        do: Application.put_env(:symphony_elixir, :ssh_command_runner, previous_runner),
+        else: Application.delete_env(:symphony_elixir, :ssh_command_runner)
+    end)
+
+    Application.put_env(:symphony_elixir, :ssh_command_runner, fn _executable, args, _opts ->
+      worker_host = Enum.at(args, -2)
+      command = List.last(args)
+      assert command =~ "SYMPHONY_EXISTING_WORKSPACE"
+      physical_path = "/remote/#{worker_host}/central-brain/ARO-286"
+      {"SYMPHONY_EXISTING_WORKSPACE\t#{physical_path}\t1:286\n", 0}
+    end)
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      workspace_root: "~/.symphony-remote-workspaces",
+      worker_ssh_hosts: ["worker-a", "worker-b"]
+    )
+
+    fetcher = fn ^profile, _states ->
+      {:ok,
+       [
+         %Issue{
+           id: "terminal-remote-aro-286",
+           identifier: "ARO-286",
+           project_id: profile.linear_project_id,
+           repository: profile.repository,
+           routing_revision: 16,
+           project_profile: profile
+         }
+       ]}
+    end
+
+    cleanup_fun = fn identifier, worker_host, context, attestation ->
+      send(parent, {:remote_cleanup, identifier, worker_host, context.profile_key, attestation})
+    end
+
+    assert :ok = Orchestrator.terminal_cleanup_for_test([profile], ["Done"], fetcher, cleanup_fun)
+
+    for worker_host <- ["worker-a", "worker-b"] do
+      assert_receive {:remote_cleanup, "ARO-286", ^worker_host, "central-brain", %{kind: :remote, identity: "1:286"}}
+    end
+  end
+
   test "first abnormal worker exit waits before retrying" do
     issue_id = "issue-crash-initial"
     ref = make_ref()

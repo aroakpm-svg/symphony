@@ -59,6 +59,9 @@ defmodule SymphonyElixir.SubprocessEnvironmentTest do
     assert environment["ENV"] == false
     assert environment["PATH"] == System.get_env("PATH")
 
+    assert environment["SOURCE_REPO_URL"] ==
+             "https://github.com/aroakpm-svg/aroak-central-brain.git"
+
     private_home = environment["HOME"]
     assert is_binary(private_home)
     assert private_home != System.user_home!()

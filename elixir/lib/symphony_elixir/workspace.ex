@@ -11,6 +11,7 @@ defmodule SymphonyElixir.Workspace do
     PathSafety,
     PrivateHome.WindowsCapability,
     ProjectExecutionContext,
+    RepositorySource,
     SSH,
     SubprocessEnvironment
   }
@@ -2299,6 +2300,21 @@ defmodule SymphonyElixir.Workspace do
     end
   end
 
+  def attest_existing_issue_workspace(
+        identifier,
+        worker_host,
+        %ProjectExecutionContext{} = execution_context
+      )
+      when is_binary(identifier) and is_binary(worker_host) do
+    safe_id = safe_identifier(identifier)
+
+    with :ok <- validate_execution_context(execution_context),
+         :ok <- validate_cleanup_execution_context(identifier, execution_context),
+         {:ok, workspace} <- workspace_path_for_issue(safe_id, worker_host, execution_context) do
+      attest_existing_remote_workspace(workspace, worker_host, execution_context)
+    end
+  end
+
   def attest_existing_issue_workspace(_identifier, _worker_host, _execution_context),
     do: {:error, :workspace_attestation_unavailable}
 
@@ -2322,6 +2338,53 @@ defmodule SymphonyElixir.Workspace do
       true ->
         {:ok, nil}
     end
+  end
+
+  defp attest_existing_remote_workspace(workspace, worker_host, execution_context) do
+    marker = "SYMPHONY_EXISTING_WORKSPACE"
+
+    script =
+      [
+        "set -eu",
+        remote_shell_assign("workspace", workspace),
+        "if [ ! -e \"$workspace\" ]; then printf '%s\\t%s\\n' '#{marker}' 'missing'; exit 0; fi",
+        remote_execution_guard(workspace, execution_context),
+        remote_workspace_identity_script(),
+        "workspace_physical=\"$(pwd -P)\"",
+        "workspace_identity=\"$(read_workspace_identity \"$workspace\")\"",
+        "printf '%s\\t%s\\t%s\\n' '#{marker}' \"$workspace_physical\" \"$workspace_identity\""
+      ]
+      |> Enum.join("\n")
+
+    case run_remote_command(worker_host, script, Config.settings!().hooks.timeout_ms) do
+      {:ok, {output, 0}} -> parse_existing_remote_attestation(output, marker, workspace)
+      {:ok, {_output, _status}} -> {:error, :workspace_attestation_unavailable}
+      {:error, _reason} -> {:error, :workspace_attestation_unavailable}
+    end
+  end
+
+  defp parse_existing_remote_attestation(output, marker, workspace) do
+    output
+    |> IO.iodata_to_binary()
+    |> String.split("\n", trim: true)
+    |> Enum.find_value({:error, :workspace_attestation_unavailable}, fn line ->
+      case String.split(line, "\t", parts: 3) do
+        [^marker, "missing"] ->
+          {:ok, nil}
+
+        [^marker, physical_path, identity] when physical_path != "" and identity != "" ->
+          {:ok,
+           %{
+             kind: :remote,
+             lexical_path: workspace,
+             physical_path: physical_path,
+             identity: identity
+           }}
+
+        _other ->
+          nil
+      end
+    end)
   end
 
   @spec remove_issue_workspaces(
@@ -3078,7 +3141,7 @@ defmodule SymphonyElixir.Workspace do
           Keyword.get(opts, :workspace_attestation)
         ),
         "git rev-parse --is-inside-work-tree >/dev/null",
-        remote_expected_repo_script(),
+        remote_expected_repo_script(opts),
         "git status --short >/dev/null",
         "git fetch origin --prune >/dev/null"
       ]
@@ -3112,7 +3175,7 @@ defmodule SymphonyElixir.Workspace do
   end
 
   defp maybe_validate_origin_remote(workspace, opts) do
-    case expected_source_repo_url() do
+    case expected_source_repo_url(opts) do
       nil ->
         run_git_preflight_command(
           workspace,
@@ -3572,8 +3635,8 @@ defmodule SymphonyElixir.Workspace do
     |> maybe_add_git_ssh_command(command)
   end
 
-  defp remote_expected_repo_script do
-    case expected_source_repo_url() do
+  defp remote_expected_repo_script(opts) do
+    case expected_source_repo_url(opts) do
       nil ->
         "git config --get remote.origin.url >/dev/null"
 
@@ -3624,13 +3687,23 @@ defmodule SymphonyElixir.Workspace do
 
   @doc false
   @spec remote_expected_repo_script_for_test() :: String.t()
-  def remote_expected_repo_script_for_test, do: remote_expected_repo_script()
+  def remote_expected_repo_script_for_test, do: remote_expected_repo_script([])
 
   @doc false
   @spec sanitize_hook_output_for_test(iodata(), non_neg_integer()) :: String.t()
   def sanitize_hook_output_for_test(output, max_bytes), do: sanitize_hook_output_for_log(output, max_bytes)
 
-  defp expected_source_repo_url do
+  defp expected_source_repo_url(opts) do
+    case Keyword.get(opts, :execution_context) do
+      %ProjectExecutionContext{repository: repository} ->
+        RepositorySource.url(repository)
+
+      _legacy ->
+        ambient_source_repo_url()
+    end
+  end
+
+  defp ambient_source_repo_url do
     case System.get_env("SOURCE_REPO_URL") do
       value when is_binary(value) ->
         trimmed = String.trim(value)

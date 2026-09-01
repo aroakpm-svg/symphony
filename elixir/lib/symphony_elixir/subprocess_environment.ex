@@ -3,7 +3,7 @@ defmodule SymphonyElixir.SubprocessEnvironment do
   Builds a context-scoped, deny-by-default environment for hooks, Git, and Codex.
   """
 
-  alias SymphonyElixir.{Config, ProjectExecutionContext}
+  alias SymphonyElixir.{Config, ProjectExecutionContext, RepositorySource}
 
   @runtime_keys ~w(
     PATH PATHEXT SystemRoot SYSTEMROOT WINDIR COMSPEC
@@ -58,6 +58,7 @@ defmodule SymphonyElixir.SubprocessEnvironment do
         [
           ambient_unsets,
           runtime_environment,
+          project_environment(context),
           credential_defaults(),
           approved_provider_environment(provider_environment),
           isolated_home_environment(paths)
@@ -66,6 +67,10 @@ defmodule SymphonyElixir.SubprocessEnvironment do
       )
 
     {:ok, environment}
+  end
+
+  defp project_environment(%ProjectExecutionContext{repository: repository}) do
+    %{"SOURCE_REPO_URL" => RepositorySource.url(repository)}
   end
 
   @spec private_home_paths(ProjectExecutionContext.t()) :: private_home_paths()

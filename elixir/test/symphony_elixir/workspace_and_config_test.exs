@@ -1456,6 +1456,7 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
       assert {_, 0} = System.cmd("git", ["-C", template_repo, "config", "user.email", "test@example.com"])
       assert {_, 0} = System.cmd("git", ["-C", template_repo, "add", "README.md"])
       assert {_, 0} = System.cmd("git", ["-C", template_repo, "commit", "-m", "initial"])
+      context = %{context | repository: shell_path(template_repo)}
 
       write_workflow_file!(Workflow.workflow_file_path(),
         workspace_root: workspace_root,

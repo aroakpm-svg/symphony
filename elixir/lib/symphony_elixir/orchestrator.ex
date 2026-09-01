@@ -1145,11 +1145,12 @@ defmodule SymphonyElixir.Orchestrator do
           (String.t() -> term())
           | (String.t(), ProjectExecutionContext.t() -> term())
           | (String.t(), ProjectExecutionContext.t(), map() | nil -> term())
+          | (String.t(), String.t() | nil, ProjectExecutionContext.t(), map() | nil -> term())
         ) :: :ok
   def terminal_cleanup_for_test(profiles, states, fetcher, cleanup_fun)
       when is_list(profiles) and is_function(fetcher, 2) and
              (is_function(cleanup_fun, 1) or is_function(cleanup_fun, 2) or
-                is_function(cleanup_fun, 3)) do
+                is_function(cleanup_fun, 3) or is_function(cleanup_fun, 4)) do
     cleanup_terminal_profiles(profiles, states, fetcher, cleanup_fun)
   end
 
@@ -2406,10 +2407,10 @@ defmodule SymphonyElixir.Orchestrator do
           ProjectProfiles.list(settings.project_profiles),
           settings.tracker.terminal_states,
           &Tracker.fetch_issues_by_states/2,
-          fn identifier, execution_context, workspace_attestation ->
+          fn identifier, worker_host, execution_context, workspace_attestation ->
             cleanup_issue_workspace(
               identifier,
-              nil,
+              worker_host,
               execution_context,
               workspace_attestation
             )
@@ -2464,11 +2465,31 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   defp attest_and_cleanup_terminal_workspace(cleanup_fun, identifier, execution_context) do
-    case Workspace.attest_existing_issue_workspace(identifier, nil, execution_context) do
+    cleanup_worker_hosts()
+    |> Enum.each(fn worker_host ->
+      attest_and_cleanup_terminal_worker(cleanup_fun, identifier, worker_host, execution_context)
+    end)
+  end
+
+  defp cleanup_worker_hosts do
+    case Config.settings!().worker.ssh_hosts do
+      [] -> [nil]
+      worker_hosts -> worker_hosts
+    end
+  end
+
+  defp attest_and_cleanup_terminal_worker(
+         cleanup_fun,
+         identifier,
+         worker_host,
+         execution_context
+       ) do
+    case Workspace.attest_existing_issue_workspace(identifier, worker_host, execution_context) do
       {:ok, workspace_attestation} ->
         safely_cleanup_terminal_workspace(
           cleanup_fun,
           identifier,
+          worker_host,
           execution_context.profile_key,
           execution_context,
           workspace_attestation
@@ -2478,6 +2499,7 @@ defmodule SymphonyElixir.Orchestrator do
         Logger.warning(
           "Skipping startup terminal workspace cleanup " <>
             "profile=#{execution_context.profile_key} " <>
+            "worker_host=#{worker_host || "local"} " <>
             "issue_identifier=#{identifier}; attestation failed: #{inspect(reason)}"
         )
     end
@@ -2540,7 +2562,7 @@ defmodule SymphonyElixir.Orchestrator do
         issues
         |> Enum.each(fn
           %Issue{identifier: identifier} when is_binary(identifier) ->
-            safely_cleanup_terminal_workspace(cleanup_fun, identifier, profile_key, nil, nil)
+            safely_cleanup_terminal_workspace(cleanup_fun, identifier, nil, profile_key, nil, nil)
 
           _ ->
             :ok
@@ -2557,16 +2579,19 @@ defmodule SymphonyElixir.Orchestrator do
   defp safely_cleanup_terminal_workspace(
          cleanup_fun,
          identifier,
+         worker_host,
          profile_key,
          execution_context,
          workspace_attestation
        ) do
     result =
-      case :erlang.fun_info(cleanup_fun, :arity) do
-        {:arity, 3} -> cleanup_fun.(identifier, execution_context, workspace_attestation)
-        {:arity, 2} -> cleanup_fun.(identifier, execution_context)
-        {:arity, 1} -> cleanup_fun.(identifier)
-      end
+      invoke_terminal_cleanup(
+        cleanup_fun,
+        identifier,
+        worker_host,
+        execution_context,
+        workspace_attestation
+      )
 
     case result do
       {:error, reason} ->
@@ -2587,6 +2612,28 @@ defmodule SymphonyElixir.Orchestrator do
     kind, reason ->
       Logger.warning("Skipping failed terminal workspace cleanup profile=#{profile_key || "legacy"} issue_identifier=#{identifier}: #{inspect({kind, reason})}")
       :ok
+  end
+
+  defp invoke_terminal_cleanup(
+         cleanup_fun,
+         identifier,
+         worker_host,
+         execution_context,
+         workspace_attestation
+       ) do
+    case :erlang.fun_info(cleanup_fun, :arity) do
+      {:arity, 4} ->
+        cleanup_fun.(identifier, worker_host, execution_context, workspace_attestation)
+
+      {:arity, 3} ->
+        cleanup_fun.(identifier, execution_context, workspace_attestation)
+
+      {:arity, 2} ->
+        cleanup_fun.(identifier, execution_context)
+
+      {:arity, 1} ->
+        cleanup_fun.(identifier)
+    end
   end
 
   defp notify_dashboard do
