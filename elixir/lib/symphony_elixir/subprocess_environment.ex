@@ -112,10 +112,10 @@ defmodule SymphonyElixir.SubprocessEnvironment do
       "SSH_AGENT_PID" => false,
       "GCM_INTERACTIVE" => "Never",
       "GIT_CONFIG_COUNT" => "0",
-      "GIT_CONFIG_GLOBAL" => git_null_device(),
+      "GIT_CONFIG_GLOBAL" => git_null_device(:os.type()),
       "GIT_CONFIG_NOSYSTEM" => "1",
       "GIT_CONFIG_PARAMETERS" => "'credential.helper='",
-      "GIT_CONFIG_SYSTEM" => git_null_device(),
+      "GIT_CONFIG_SYSTEM" => git_null_device(:os.type()),
       "GIT_TERMINAL_PROMPT" => "0"
     }
   end
@@ -173,7 +173,10 @@ defmodule SymphonyElixir.SubprocessEnvironment do
     String.replace(value, ~r/[^a-zA-Z0-9._-]/, "_")
   end
 
-  defp git_null_device do
-    if match?({:win32, _}, :os.type()), do: "NUL", else: "/dev/null"
-  end
+  @doc false
+  @spec git_null_device_for_test({:unix | :win32, atom()}) :: String.t()
+  def git_null_device_for_test(platform), do: git_null_device(platform)
+
+  defp git_null_device({:win32, _name}), do: "NUL"
+  defp git_null_device({:unix, _name}), do: "/dev/null"
 end

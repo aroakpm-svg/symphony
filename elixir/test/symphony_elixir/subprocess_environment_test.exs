@@ -103,6 +103,11 @@ defmodule SymphonyElixir.SubprocessEnvironmentTest do
     assert windows["gh_token"] == "later"
   end
 
+  test "Git isolation uses each platform's null device" do
+    assert SubprocessEnvironment.git_null_device_for_test({:unix, :linux}) == "/dev/null"
+    assert SubprocessEnvironment.git_null_device_for_test({:win32, :nt}) == "NUL"
+  end
+
   test "Windows spawned child receives one canonical private and provider key despite mixed-case ambient names" do
     if match?({:win32, _name}, :os.type()) do
       root =
