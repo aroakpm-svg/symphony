@@ -44,9 +44,24 @@ defmodule SymphonyElixir.SubprocessEnvironmentTest do
     }
 
     assert {:ok, environment} =
-             SubprocessEnvironment.build(%{"GH_TOKEN" => "approved-token"}, context)
+             SubprocessEnvironment.build(
+               %{
+                 "GH_TOKEN" => "approved-token",
+                 "GIT_CONFIG_KEY_0" => "credential.helper",
+                 "home" => "provider-home",
+                 "gh_token" => "wrong-case-token",
+                 42 => "non-string-key",
+                 "GIT_CONFIG_VALUE_0" => 42
+               },
+               context
+             )
 
     assert environment["GH_TOKEN"] == "approved-token"
+    assert environment["GIT_CONFIG_KEY_0"] == "credential.helper"
+    refute Map.has_key?(environment, "home")
+    refute Map.has_key?(environment, "gh_token")
+    refute Map.has_key?(environment, 42)
+    refute Map.has_key?(environment, "GIT_CONFIG_VALUE_0")
     assert environment["GITHUB_TOKEN"] == false
     assert environment["LINEAR_API_KEY"] == false
     assert environment["NPM_TOKEN"] == false
