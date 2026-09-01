@@ -594,7 +594,7 @@ defmodule SymphonyElixir.CoreTest do
     end
   end
 
-  test "terminal retry cleanup retains the exact project execution context" do
+  test "terminal retry cleanup reacquires a missing attestation in the exact project context" do
     test_root =
       Path.join(System.tmp_dir!(), "symphony-retry-context-#{System.unique_integer([:positive])}")
 
@@ -605,7 +605,7 @@ defmodule SymphonyElixir.CoreTest do
     try do
       write_workflow_file!(Workflow.workflow_file_path(), workspace_root: test_root)
 
-      assert {:ok, %{path: prepared_workspace, workspace_attestation: workspace_attestation}} =
+      assert {:ok, %{path: prepared_workspace}} =
                Workspace.prepare_for_issue(owned_issue, nil, execution_context)
 
       assert String.downcase(Path.expand(prepared_workspace)) ==
@@ -620,7 +620,7 @@ defmodule SymphonyElixir.CoreTest do
         Orchestrator.handle_retry_issue_lookup_for_test(terminal_issue, state, owned_issue.id, 1, %{
           identifier: owned_issue.identifier,
           execution_context: execution_context,
-          workspace_attestation: workspace_attestation,
+          workspace_attestation: nil,
           worker_host: nil
         })
 

@@ -2403,6 +2403,34 @@ defmodule SymphonyElixir.Orchestrator do
   defp cleanup_issue_workspace(
          identifier,
          worker_host,
+         %ProjectExecutionContext{} = execution_context,
+         nil
+       )
+       when is_binary(identifier) do
+    case Workspace.attest_existing_issue_workspace(identifier, worker_host, execution_context) do
+      {:ok, workspace_attestation} ->
+        cleanup_issue_workspace(
+          identifier,
+          worker_host,
+          execution_context,
+          workspace_attestation
+        )
+
+      {:error, reason} ->
+        Logger.warning(
+          "Skipping terminal workspace cleanup " <>
+            "profile=#{execution_context.profile_key} " <>
+            "worker_host=#{worker_host || "local"} " <>
+            "issue_identifier=#{identifier}; attestation failed: #{inspect(reason)}"
+        )
+
+        :ok
+    end
+  end
+
+  defp cleanup_issue_workspace(
+         identifier,
+         worker_host,
          execution_context,
          workspace_attestation
        )
