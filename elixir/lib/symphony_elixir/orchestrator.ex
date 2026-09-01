@@ -52,6 +52,14 @@ defmodule SymphonyElixir.Orchestrator do
     total_tokens: 0,
     seconds_running: 0
   }
+  @agent_runner_option_keys [
+    :codex_session_starter,
+    :credential_provider,
+    :effect_ledger_ready,
+    :issue_state_fetcher,
+    :max_turns,
+    :readiness_command_runner
+  ]
 
   defmodule State do
     @moduledoc """
@@ -1155,6 +1163,11 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   @doc false
+  @spec agent_runner_options_for_test(keyword(), keyword()) :: keyword()
+  def agent_runner_options_for_test(opts, authority) when is_list(opts) and is_list(authority),
+    do: agent_runner_options(opts, authority)
+
+  @doc false
   @spec handle_claim_rejection_for_test(term(), Issue.t(), term()) :: term()
   def handle_claim_rejection_for_test(%State{} = state, %Issue{} = issue, attempt) do
     handle_claim_rejection(state, issue, attempt, nil, :claim_timeout, [])
@@ -1883,13 +1896,16 @@ defmodule SymphonyElixir.Orchestrator do
           )
         end
 
-    task_fun = fn ->
-      AgentRunner.run(issue, recipient,
+    runner_options =
+      agent_runner_options(opts,
         attempt: attempt,
         worker_host: worker_host,
         distributed_claim: distributed_claim,
         execution_context: execution_context
       )
+
+    task_fun = fn ->
+      AgentRunner.run(issue, recipient, runner_options)
     end
 
     case start_fun.(task_fun) do
@@ -1922,6 +1938,12 @@ defmodule SymphonyElixir.Orchestrator do
           opts
         )
     end
+  end
+
+  defp agent_runner_options(opts, authority) do
+    opts
+    |> Keyword.take(@agent_runner_option_keys)
+    |> Keyword.merge(authority)
   end
 
   defp complete_spawned_worker_startup(context) do

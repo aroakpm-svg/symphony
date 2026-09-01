@@ -1302,6 +1302,22 @@ defmodule SymphonyElixir.CoreTest do
     end
   end
 
+  test "orchestrator forwards approved AgentRunner dependencies across the spawn boundary" do
+    provider = fn _credential_ref -> {:ok, {"credential", %{}}} end
+    start_fun = fn _task -> {:error, :not_started} end
+
+    options =
+      Orchestrator.agent_runner_options_for_test(
+        [credential_provider: provider, task_start_fun: start_fun],
+        attempt: 1,
+        worker_host: nil
+      )
+
+    assert options[:credential_provider] == provider
+    assert options[:attempt] == 1
+    refute Keyword.has_key?(options, :task_start_fun)
+  end
+
   test "first abnormal worker exit waits before retrying" do
     issue_id = "issue-crash-initial"
     ref = make_ref()
