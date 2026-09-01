@@ -2243,7 +2243,26 @@ defmodule SymphonyElixir.Workspace do
         {:error, :workspace_attestation_unavailable}
 
       true ->
-        {:ok, nil}
+        local_workspace_absence_attestation(workspace, execution_context)
+    end
+  end
+
+  defp local_workspace_absence_attestation(
+         workspace,
+         %ProjectExecutionContext{workspace_namespace: namespace}
+       ) do
+    namespace_path = Path.join(Path.expand(Config.settings!().workspace.root), namespace)
+
+    with {:error, :enoent} <- File.lstat(workspace),
+         {:ok, namespace_attestation} <- local_workspace_attestation(namespace_path) do
+      {:ok,
+       %{
+         kind: :local_absent,
+         path: Path.expand(workspace),
+         namespace_attestation: namespace_attestation
+       }}
+    else
+      _failure -> {:error, :workspace_attestation_unavailable}
     end
   end
 
@@ -2371,6 +2390,30 @@ defmodule SymphonyElixir.Workspace do
     do: {:error, :workspace_attestation_required}
 
   defp remove_issue_workspace_path(workspace, nil, nil, nil, _opts), do: remove(workspace, nil)
+
+  defp remove_issue_workspace_path(
+         workspace,
+         nil,
+         execution_context,
+         %{kind: :local_absent} = workspace_attestation,
+         _opts
+       ) do
+    state_path = readiness_state_path(workspace)
+
+    with :ok <-
+           validate_execution_workspace(
+             workspace,
+             nil,
+             execution_context,
+             workspace_attestation
+           ),
+         :ok <- remove_local_readiness_state(state_path) do
+      {:ok, []}
+    else
+      {:error, _file, _reason} = error -> error
+      {:error, reason} -> {:error, reason, ""}
+    end
+  end
 
   defp remove_issue_workspace_path(
          workspace,
@@ -3735,6 +3778,37 @@ defmodule SymphonyElixir.Workspace do
   end
 
   defp validate_workspace_attestation(_workspace, _worker_host, nil), do: :ok
+
+  defp validate_workspace_attestation(
+         workspace,
+         nil,
+         %{
+           kind: :local_absent,
+           path: expected_path,
+           namespace_attestation: %{kind: :local} = namespace_attestation
+         } = expected
+       )
+       when is_binary(expected_path) do
+    current =
+      with true <- local_paths_equal?(Path.expand(workspace), expected_path),
+           {:error, :enoent} <- File.lstat(workspace),
+           :ok <-
+             validate_workspace_attestation(
+               namespace_attestation.path,
+               nil,
+               namespace_attestation
+             ) do
+        expected
+      else
+        failure -> %{kind: :local_absent, path: Path.expand(workspace), error: failure}
+      end
+
+    if current == expected do
+      :ok
+    else
+      {:error, {:workspace_issue_identity_changed, current, expected}}
+    end
+  end
 
   defp validate_workspace_attestation(
          workspace,

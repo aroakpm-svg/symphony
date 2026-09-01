@@ -1268,6 +1268,75 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
     end
   end
 
+  test "context cleanup removes an orphaned readiness sidecar with a namespace-bound absence attestation" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "aro286-cleanup-orphaned-readiness-#{System.os_time(:nanosecond)}-#{System.unique_integer([:positive, :monotonic])}"
+      )
+
+    workspace_root = Path.join(test_root, "workspaces")
+    workspace = Path.join([workspace_root, "central-brain", "ARO-286"])
+    state_path = Workspace.readiness_state_path(workspace)
+    hook_marker = Path.join(test_root, "cleanup-hook.txt")
+    context = project_context("central-brain", "ARO-286")
+
+    try do
+      File.mkdir_p!(Path.dirname(workspace))
+      File.write!(state_path, "orphaned readiness state")
+
+      write_workflow_file!(Workflow.workflow_file_path(),
+        workspace_root: workspace_root,
+        hook_before_remove: "echo unsafe > '#{shell_path(hook_marker)}'"
+      )
+
+      assert {:ok, %{kind: :local_absent} = attestation} =
+               Workspace.attest_existing_issue_workspace("ARO-286", nil, context)
+
+      assert :ok =
+               Workspace.remove_issue_workspaces("ARO-286", nil, context, workspace_attestation: attestation)
+
+      refute File.exists?(state_path)
+      refute File.exists?(workspace)
+      refute File.exists?(hook_marker)
+    after
+      File.rm_rf(test_root)
+    end
+  end
+
+  test "an absence attestation cannot remove state after the workspace leaf appears" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "aro286-cleanup-stale-absence-#{System.os_time(:nanosecond)}-#{System.unique_integer([:positive, :monotonic])}"
+      )
+
+    workspace_root = Path.join(test_root, "workspaces")
+    workspace = Path.join([workspace_root, "central-brain", "ARO-286"])
+    state_path = Workspace.readiness_state_path(workspace)
+    context = project_context("central-brain", "ARO-286")
+
+    try do
+      File.mkdir_p!(Path.dirname(workspace))
+      File.write!(state_path, "preserve")
+      write_workflow_file!(Workflow.workflow_file_path(), workspace_root: workspace_root)
+
+      assert {:ok, %{kind: :local_absent} = attestation} =
+               Workspace.attest_existing_issue_workspace("ARO-286", nil, context)
+
+      File.mkdir_p!(workspace)
+      File.write!(Path.join(workspace, "preserve.txt"), "preserve")
+
+      assert :ok =
+               Workspace.remove_issue_workspaces("ARO-286", nil, context, workspace_attestation: attestation)
+
+      assert File.read!(state_path) == "preserve"
+      assert File.read!(Path.join(workspace, "preserve.txt")) == "preserve"
+    after
+      File.rm_rf(test_root)
+    end
+  end
+
   test "attested context cleanup never creates a missing private home for a credential-bearing hook" do
     test_root =
       Path.join(
