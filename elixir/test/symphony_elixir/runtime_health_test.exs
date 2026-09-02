@@ -203,7 +203,14 @@ defmodule SymphonyElixir.RuntimeHealthTest do
   test "orchestrator reports health events to the configured runtime health server", context do
     server = Module.concat(__MODULE__, :ConfiguredRuntimeHealth)
 
-    start_supervised!({RuntimeHealth, name: server, runtime_epoch: "configured-server", receipt_root: context.receipt_root, workspace_root: context.workspace_root})
+    health_opts = [
+      name: server,
+      runtime_epoch: "configured-server",
+      receipt_root: context.receipt_root,
+      workspace_root: context.workspace_root
+    ]
+
+    start_supervised!({RuntimeHealth, health_opts})
 
     previous_server = Elixir.Application.get_env(:symphony_elixir, :runtime_health_server)
     Elixir.Application.put_env(:symphony_elixir, :runtime_health_server, server)
@@ -216,8 +223,8 @@ defmodule SymphonyElixir.RuntimeHealthTest do
       end
     end)
 
-    assert :ok =
-             Orchestrator.report_runtime_health_for_test({:stage, :candidate_fetch, %{status: :succeeded, profile_key: "central-brain"}})
+    event = {:stage, :candidate_fetch, %{status: :succeeded, profile_key: "central-brain"}}
+    assert :ok = Orchestrator.report_runtime_health_for_test(event)
 
     assert [%{stage: :candidate_fetch, status: :succeeded}] = RuntimeHealth.snapshot(server).stages
   end
