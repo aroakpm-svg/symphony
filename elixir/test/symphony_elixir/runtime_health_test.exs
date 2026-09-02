@@ -1,7 +1,7 @@
 defmodule SymphonyElixir.RuntimeHealthTest do
   use ExUnit.Case, async: false
 
-  alias SymphonyElixir.{Application, PathSafety, RuntimeHealth}
+  alias SymphonyElixir.{Application, Orchestrator, PathSafety, RuntimeHealth}
 
   @stages [
     :candidate_fetch,
@@ -198,6 +198,28 @@ defmodule SymphonyElixir.RuntimeHealthTest do
     assert receipt["receipt_path"] == receipt_path
     refute receipt |> inspect() |> String.contains?("credential")
     assert Path.wildcard(Path.join(Path.dirname(receipt_path), ".stop-*.tmp")) == []
+  end
+
+  test "orchestrator reports health events to the configured runtime health server", context do
+    server = Module.concat(__MODULE__, :ConfiguredRuntimeHealth)
+
+    start_supervised!({RuntimeHealth, name: server, runtime_epoch: "configured-server", receipt_root: context.receipt_root, workspace_root: context.workspace_root})
+
+    previous_server = Elixir.Application.get_env(:symphony_elixir, :runtime_health_server)
+    Elixir.Application.put_env(:symphony_elixir, :runtime_health_server, server)
+
+    on_exit(fn ->
+      if is_nil(previous_server) do
+        Elixir.Application.delete_env(:symphony_elixir, :runtime_health_server)
+      else
+        Elixir.Application.put_env(:symphony_elixir, :runtime_health_server, previous_server)
+      end
+    end)
+
+    assert :ok =
+             Orchestrator.report_runtime_health_for_test({:stage, :candidate_fetch, %{status: :succeeded, profile_key: "central-brain"}})
+
+    assert [%{stage: :candidate_fetch, status: :succeeded}] = RuntimeHealth.snapshot(server).stages
   end
 
   test "rejects invalid unknown and oversized clock output before accepting a stop", context do

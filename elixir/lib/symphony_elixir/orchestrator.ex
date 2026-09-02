@@ -1105,6 +1105,10 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   @doc false
+  @spec report_runtime_health_for_test(term()) :: :ok
+  def report_runtime_health_for_test(event), do: report_runtime_health(event)
+
+  @doc false
   @spec approved_profile_result_for_test(term(), String.t()) :: {:ok, map()} | {:error, atom()}
   def approved_profile_result_for_test(profiles, key) when is_binary(key), do: approved_profile_result(profiles, key)
 
@@ -3112,14 +3116,18 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   defp report_runtime_health({:stage, stage, metadata}),
-    do: RuntimeHealth.stage(RuntimeHealth, stage, metadata)
+    do: RuntimeHealth.stage(runtime_health_server(), stage, metadata)
 
   defp report_runtime_health({:dependency, dependency, metadata}),
-    do: RuntimeHealth.dependency(RuntimeHealth, dependency, metadata)
+    do: RuntimeHealth.dependency(runtime_health_server(), dependency, metadata)
 
-  defp report_runtime_health(:poll_succeeded), do: RuntimeHealth.poll_succeeded(RuntimeHealth)
+  defp report_runtime_health(:poll_succeeded), do: RuntimeHealth.poll_succeeded(runtime_health_server())
 
-  defp report_runtime_health({:stop, metadata}), do: RuntimeHealth.stop(RuntimeHealth, metadata)
+  defp report_runtime_health({:stop, metadata}), do: RuntimeHealth.stop(runtime_health_server(), metadata)
+
+  defp runtime_health_server do
+    Application.get_env(:symphony_elixir, :runtime_health_server, RuntimeHealth)
+  end
 
   defp available_slots(%State{} = state) do
     max(
