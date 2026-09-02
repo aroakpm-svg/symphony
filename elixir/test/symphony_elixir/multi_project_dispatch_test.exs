@@ -678,13 +678,35 @@ defmodule SymphonyElixir.MultiProjectDispatchTest do
   end
 
   test "claim loss retires a pending retry so its stale token cannot fetch or reschedule" do
-    candidate = %{issue("lost-pending", @central_profile, 1) | project_profile: @central_profile}
+    candidate = %{
+      issue("lost-pending", @central_profile, 1)
+      | project_profile: @central_profile,
+        repository: @central_profile.repository,
+        routing_revision: 1
+    }
+
+    assert {:ok, execution_context} = SymphonyElixir.ProjectExecutionContext.from_issue(candidate)
+
+    assert {:ok, %{path: workspace_path, workspace_attestation: workspace_attestation}} =
+             Workspace.prepare_for_issue(candidate, nil, execution_context)
+
     {state, token} = issue_retry_state(candidate, 1)
+
+    state =
+      put_in(
+        state.retry_attempts[candidate.id],
+        Map.merge(state.retry_attempts[candidate.id], %{
+          execution_context: execution_context,
+          workspace_attestation: workspace_attestation,
+          worker_host: nil
+        })
+      )
 
     retired = Orchestrator.retire_lost_claim_for_test(state, candidate.id)
 
     refute MapSet.member?(retired.claimed, candidate.id)
     refute Map.has_key?(retired.retry_attempts, candidate.id)
+    refute File.exists?(workspace_path)
 
     assert retired ==
              Orchestrator.fire_issue_retry_for_test(retired, candidate.id, token,
