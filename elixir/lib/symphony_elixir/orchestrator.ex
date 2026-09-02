@@ -10,6 +10,7 @@ defmodule SymphonyElixir.Orchestrator do
   alias SymphonyElixir.{
     AgentRunner,
     ClaimService,
+    CodexExecutionInputs,
     Config,
     DispatchCandidate,
     MultiProjectPoll,
@@ -273,6 +274,7 @@ defmodule SymphonyElixir.Orchestrator do
           running_entry
           |> maybe_put_runtime_value(:worker_host, Map.get(blocker_info, :worker_host))
           |> maybe_put_runtime_value(:workspace_path, Map.get(blocker_info, :workspace_path))
+          |> maybe_put_runtime_value(:blocker_kind, Map.get(blocker_info, :kind))
 
         Logger.warning("Agent reported hard blocker for issue_id=#{issue_id} issue_identifier=#{running_entry.identifier}: #{error}")
 
@@ -1311,6 +1313,10 @@ defmodule SymphonyElixir.Orchestrator do
         Logger.info("Blocked issue no longer routed to this worker: #{issue_context(issue)} assignee=#{inspect(issue.assignee_id)}; releasing block")
         release_issue_claim(state, issue.id)
 
+      blocked_condition_resolved?(state, issue) ->
+        Logger.info("Blocked issue condition resolved: #{issue_context(issue)}; releasing block for redispatch")
+        release_issue_claim(state, issue.id)
+
       active_issue_state?(issue.state, active_states) ->
         refresh_blocked_issue_state(state, issue)
 
@@ -1329,6 +1335,16 @@ defmodule SymphonyElixir.Orchestrator do
 
       _legacy_or_missing ->
         true
+    end
+  end
+
+  defp blocked_condition_resolved?(%State{} = state, %Issue{} = issue) do
+    case Map.get(state.blocked, issue.id) do
+      %{blocker_kind: {:codex_model_label_conflict, _labels}} ->
+        match?({:ok, _environment}, CodexExecutionInputs.resolve(issue, Config.settings!().codex))
+
+      _permanent_or_missing ->
+        false
     end
   end
 
@@ -1669,6 +1685,7 @@ defmodule SymphonyElixir.Orchestrator do
       workspace_path: Map.get(running_entry, :workspace_path),
       workspace_attestation: Map.get(running_entry, :workspace_attestation),
       execution_context: Map.get(running_entry, :execution_context),
+      blocker_kind: Map.get(running_entry, :blocker_kind),
       session_id: running_entry_session_id(running_entry),
       error: error,
       blocked_at: DateTime.utc_now(),

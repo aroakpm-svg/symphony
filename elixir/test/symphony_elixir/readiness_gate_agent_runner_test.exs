@@ -457,6 +457,22 @@ defmodule SymphonyElixir.ReadinessGateAgentRunnerTest do
     refute File.exists?(codex_marker)
   end
 
+  test "multiple model labels report a typed recoverable blocker before credentials or effects" do
+    fixture = git_fixture!()
+    on_exit(fn -> File.rm_rf(fixture.root) end)
+
+    issue = %{
+      profiled_issue("ARO-286-MODEL", "codex/aro-286-model", fixture.remote)
+      | labels: ["model:gpt-5.4", "model:gpt-5.5"]
+    }
+
+    assert :ok = AgentRunner.run(issue, self())
+
+    assert_receive {:agent_hard_blocker, "issue-ARO-286-MODEL", blocker}
+    assert blocker.kind == {:codex_model_label_conflict, ["model:gpt-5.4", "model:gpt-5.5"]}
+    refute File.exists?(Path.join([fixture.workspace_root, "central-brain", "ARO-286-MODEL"]))
+  end
+
   test "stale branch in a fresh workspace hard-blocks before before_run and AppServer" do
     fixture = git_fixture!()
     on_exit(fn -> File.rm_rf(fixture.root) end)

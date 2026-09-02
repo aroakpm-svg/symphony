@@ -1123,6 +1123,83 @@ defmodule SymphonyElixir.CoreTest do
     refute MapSet.member?(updated_state.claimed, issue_id)
   end
 
+  test "reconcile releases a model-label conflict after the labels are corrected" do
+    issue_id = "blocked-model-conflict-corrected"
+    agent_pid = spawn(fn -> Process.sleep(:infinity) end)
+
+    state = %Orchestrator.State{
+      running: %{
+        issue_id => %{
+          pid: agent_pid,
+          ref: nil,
+          identifier: "MT-564-MODEL",
+          issue: %Issue{id: issue_id, identifier: "MT-564-MODEL", state: "In Progress"},
+          worker_host: nil,
+          started_at: DateTime.utc_now()
+        }
+      },
+      claimed: MapSet.new([issue_id]),
+      codex_totals: %{input_tokens: 0, output_tokens: 0, total_tokens: 0, seconds_running: 0},
+      retry_attempts: %{}
+    }
+
+    {:noreply, blocked_state} =
+      Orchestrator.handle_info(
+        {:agent_hard_blocker, issue_id,
+         %{
+           error: "multiple model labels",
+           kind: {:codex_model_label_conflict, ["model:gpt-5.4", "model:gpt-5.5"]}
+         }},
+        state
+      )
+
+    assert blocked_state.blocked[issue_id].blocker_kind ==
+             {:codex_model_label_conflict, ["model:gpt-5.4", "model:gpt-5.5"]}
+
+    corrected_issue = %Issue{
+      id: issue_id,
+      identifier: "MT-564-MODEL",
+      title: "Corrected model routing",
+      state: "In Progress",
+      labels: ["model:gpt-5.5"]
+    }
+
+    updated_state = Orchestrator.reconcile_blocked_issue_states_for_test([corrected_issue], blocked_state)
+
+    refute Map.has_key?(updated_state.blocked, issue_id)
+    refute MapSet.member?(updated_state.claimed, issue_id)
+  end
+
+  test "reconcile retains a model-label conflict while it remains ambiguous" do
+    issue_id = "blocked-model-conflict-unchanged"
+
+    state = %Orchestrator.State{
+      blocked: %{
+        issue_id => %{
+          identifier: "MT-564-MODEL-STILL",
+          error: "multiple model labels",
+          blocker_kind: {:codex_model_label_conflict, ["model:gpt-5.4", "model:gpt-5.5"]},
+          worker_host: nil
+        }
+      },
+      claimed: MapSet.new([issue_id]),
+      retry_attempts: %{}
+    }
+
+    ambiguous_issue = %Issue{
+      id: issue_id,
+      identifier: "MT-564-MODEL-STILL",
+      title: "Still ambiguous model routing",
+      state: "In Progress",
+      labels: ["model:gpt-5.4", "model:gpt-5.5"]
+    }
+
+    updated_state = Orchestrator.reconcile_blocked_issue_states_for_test([ambiguous_issue], state)
+
+    assert Map.has_key?(updated_state.blocked, issue_id)
+    assert MapSet.member?(updated_state.claimed, issue_id)
+  end
+
   test "retry releases its claim when a required label is removed" do
     write_workflow_file!(Workflow.workflow_file_path(), tracker_required_labels: ["symphony"])
 

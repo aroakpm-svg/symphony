@@ -58,6 +58,15 @@ defmodule SymphonyElixir.AgentRunner do
         credential_env
       )
     else
+      {:error, {:multiple_codex_model_labels, labels}} ->
+        handle_workspace_preflight_failure(
+          codex_update_recipient,
+          issue,
+          worker_host,
+          nil,
+          {:codex_model_label_conflict, labels}
+        )
+
       {:error, reason} ->
         handle_workspace_preflight_failure(
           codex_update_recipient,
@@ -343,14 +352,16 @@ defmodule SymphonyElixir.AgentRunner do
 
   defp send_hard_blocker(recipient, %Issue{id: issue_id}, worker_host, workspace, reason)
        when is_binary(issue_id) and is_pid(recipient) and (is_binary(workspace) or is_nil(workspace)) do
+    blocker_info = %{
+      worker_host: worker_host,
+      workspace_path: workspace,
+      error: hard_blocker_message(reason),
+      kind: hard_blocker_kind(reason)
+    }
+
     send(
       recipient,
-      {:agent_hard_blocker, issue_id,
-       %{
-         worker_host: worker_host,
-         workspace_path: workspace,
-         error: hard_blocker_message(reason)
-       }}
+      {:agent_hard_blocker, issue_id, blocker_info}
     )
 
     :ok
@@ -379,6 +390,15 @@ defmodule SymphonyElixir.AgentRunner do
   defp hard_blocker_message({:project_credential_unavailable, reason}) do
     "project credential unavailable reason=#{safe_credential_reason(reason)}"
   end
+
+  defp hard_blocker_message({:codex_model_label_conflict, labels}) do
+    "Codex model routing is ambiguous; keep at most one supported model label: #{Enum.join(labels, ", ")}"
+  end
+
+  defp hard_blocker_kind({:codex_model_label_conflict, labels}),
+    do: {:codex_model_label_conflict, labels}
+
+  defp hard_blocker_kind(_reason), do: nil
 
   defp safe_credential_reason(reason)
        when reason in [
