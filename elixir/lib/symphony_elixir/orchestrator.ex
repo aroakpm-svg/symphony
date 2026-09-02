@@ -2375,6 +2375,7 @@ defmodule SymphonyElixir.Orchestrator do
         Logger.warning("Retry poll failed for issue_id=#{issue_id} issue_identifier=#{metadata[:identifier] || issue_id}: #{inspect(reason)}")
 
         if reason == :approved_project_profiles_removed do
+          retire_retry_execution_context(nil, metadata)
           {:noreply, transition_retry_release_id(state, issue_id, opts)}
         else
           {:noreply,

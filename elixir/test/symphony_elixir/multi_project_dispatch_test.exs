@@ -1155,8 +1155,30 @@ defmodule SymphonyElixir.MultiProjectDispatchTest do
   end
 
   test "removing multi-project mode releases a pending retry instead of renewing it" do
-    candidate = %{issue("profiles-removed", @central_profile, 1) | project_profile: @central_profile}
+    candidate = %{
+      issue("profiles-removed", @central_profile, 1)
+      | project_profile: @central_profile,
+        repository: @central_profile.repository,
+        routing_revision: 1
+    }
+
+    assert {:ok, execution_context} = SymphonyElixir.ProjectExecutionContext.from_issue(candidate)
+
+    assert {:ok, %{path: workspace_path, workspace_attestation: workspace_attestation}} =
+             Workspace.prepare_for_issue(candidate, nil, execution_context)
+
     {state, token} = issue_retry_state(candidate, 1)
+
+    state =
+      put_in(
+        state.retry_attempts[candidate.id],
+        Map.merge(state.retry_attempts[candidate.id], %{
+          execution_context: execution_context,
+          workspace_attestation: workspace_attestation,
+          worker_host: nil
+        })
+      )
+
     {:ok, events} = Agent.start_link(fn -> [] end)
 
     write_workflow_file!(Workflow.workflow_file_path(), tracker_kind: "memory")
@@ -1183,6 +1205,7 @@ defmodule SymphonyElixir.MultiProjectDispatchTest do
 
     refute MapSet.member?(result.claimed, candidate.id)
     refute Map.has_key?(result.retry_attempts, candidate.id)
+    refute File.exists?(workspace_path)
     assert {:release, candidate.id} in Agent.get(events, & &1)
   end
 
