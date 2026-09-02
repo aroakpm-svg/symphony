@@ -339,6 +339,8 @@ Top-level keys:
 - `hooks`
 - `agent`
 - `codex`
+- `project_profiles` (implementation extension)
+- `observability` (implementation extension)
 - `review_convergence` (implementation extension)
 
 Unknown keys SHOULD be ignored for forward compatibility.
@@ -511,6 +513,32 @@ Note:
   changing the core schema above.
 - Extensions SHOULD document their field schema, defaults, validation rules, and whether changes
   apply dynamically or require restart.
+
+#### 5.3.9 Project execution and restart observability (implementation extension)
+
+When `project_profiles` is present, the complete approved profile set MUST bind each authorized
+issue to one immutable execution context containing the issue and Linear project identities,
+repository, canonical branch, workspace namespace, opaque credential reference, non-Production
+environment, and routing revision. The only accepted environment for this extension is
+`local_non_production`. The Central-Brain and Project-Management namespaces are `central-brain` and
+`project-management`; their opaque credential references are `github-central-brain` and
+`github-project-management`. Credential references MUST NOT contain credential material.
+
+`observability` MAY contain `runtime_state_root`, `notification_command`,
+`notification_receiver`, `restart_limit`, and `notification_timeout_ms`. The runtime-state root
+MUST be an absolute non-Production path outside `workspace.root`. Restart limit and timeout MUST be
+positive. Notification is disabled only when both command and receiver are absent; partial
+configuration MUST fail validation. Both values are operator-provided and MUST be nonblank and
+secret-free. Neither field grants deployment, Production, external-resource, or customer-message
+authority.
+
+The default multi-project credential provider MUST fail closed when no approved host adapter is
+configured. It MUST NOT fall back to ambient GitHub tokens, credential helpers, another profile,
+or repository state. A successful provider result MUST be scoped to the selected worker's immediate
+subprocess environment and MUST NOT be retained in commands, application state, workspace state,
+health, errors, logs, or notifications. ARO-195 owns the approved machine credential inventory and
+automation identity; ARO-196 owns the canonical GitHub credential-source resolver and authority
+preflight. This extension defines only their consuming boundary.
 
 #### 5.3.1 `tracker` (object)
 
@@ -1060,6 +1088,17 @@ Per-issue workspace path:
 
 - `<workspace.root>/<sanitized_issue_identifier>`
 
+For an authorized multi-project issue, the path is instead:
+
+- `<workspace.root>/<workspace_namespace>/<sanitized_issue_identifier>`
+
+The durable readiness record MUST exactly bind the profile key, Linear project identity,
+repository, canonical branch, namespace, opaque credential reference, and workspace path. A legacy
+single-project workspace MUST NOT be silently enriched into a multi-project workspace. Drift,
+collision, a path escape, or a Production-like root MUST fail closed before hooks or Codex launch.
+Cleanup MUST compute only the same context-derived issue path and MUST NOT enumerate or delete the
+workspace or namespace root.
+
 Workspace persistence:
 
 - Workspaces are reused across runs for the same issue.
@@ -1443,6 +1482,11 @@ Linear-specific requirements for `tracker.kind == "linear"`:
 - Pagination REQUIRED for candidate issues
 - Page size default: `50`
 - Network timeout: `30000 ms`
+- Before terminal cleanup or the first polling timer, startup MUST perform the real read-only
+  `query SymphonyLinearViewer { viewer { id } }` request through the configured Linear client.
+  Missing credentials, HTTP 401/403, GraphQL authentication/authorization errors, missing viewer
+  identity, malformed responses, and transport failure MUST stop startup using bounded safe codes.
+  Headers, API keys, bodies, and raw GraphQL errors MUST NOT be logged by this gate.
 
 Important:
 
@@ -1588,6 +1632,28 @@ implementation-defined.
 
 If present, it SHOULD draw from orchestrator state/metrics only and MUST NOT be REQUIRED for
 correctness.
+
+For the project-execution extension, the runtime-health snapshot MUST expose bounded,
+secret-safe `last_successful_poll_at`, `linear` and `claim_store` dependency state, typed stage
+records, `final_stop`, and bounded history. The fixed stages are `candidate_fetch`, `issue_refresh`,
+`routing`, `profile_resolution`, `preflight`, `claim`, and `dispatch`. Final stop categories are
+`normal_shutdown`, `startup_failure`, `unexpected_exit`, and `restart_limit`. Unknown evidence MUST
+remain `unknown`; health reporting failure MUST NOT authorize, retain, release, or retry a claim
+differently.
+
+The final stop MUST be published atomically as one immutable, bounded
+`stop-<runtime_epoch>.json` receipt beneath a dedicated runtime-state directory outside all project
+workspaces. The receipt and status surfaces MUST reject unknown fields, credential references,
+credential-like values, invalid scalar types, and unsafe paths.
+
+At a Windows restart limit, an optional local notifier MAY send one bounded JSON object on stdin
+containing only `runtime_identity`, `receiver`, `attempt_count`, `stop_category`, `timestamp`,
+`runtime_epoch`, and `receipt_path`. Output MUST be discarded. Only verified zero exit records
+delivery; timeout, non-zero exit, malformed or unstable receipts, ambiguous claims, and unsafe or
+unrepresentable legacy `receiver_hash-epoch` paths MUST suppress the command or delivery and fail
+closed. A valid representable legacy delivery suppresses a duplicate and a valid legacy orphan
+claim remains ambiguous. Only a representable legacy path whose entry is genuinely absent may be
+treated as absent. New receipts use a bounded SHA-256 key derived from receiver hash plus epoch.
 
 ### 13.5 Session Metrics and Token Accounting
 
@@ -1923,6 +1989,14 @@ RECOMMENDED additional hardening for ports:
 - Support `$VAR` indirection in workflow config.
 - Do not log API tokens or secret env values.
 - Validate presence of secrets without printing them.
+- Treat project `credential_ref` values as opaque identifiers, never credentials.
+- Keep resolved project credential values in the selected immediate subprocess environment only.
+- Sanitize command output before truncation and exclude raw headers, bodies, environment dumps,
+  notification output, and credential material from health, receipts, errors, and status surfaces.
+- Operator-provided notification commands and receiver identifiers MUST NOT contain secrets.
+- Project execution and runtime-notification extensions are restricted to local non-Production
+  paths and MUST NOT create external resources, deploy, mutate shared databases, or contact
+  Production.
 
 ### 15.4 Hook Script Safety
 
@@ -2359,6 +2433,23 @@ network access, or external service permissions are unavailable.
 - A skipped real-integration test SHOULD be reported as skipped, not silently treated as passed.
 - If a real-integration profile is explicitly enabled in CI or release validation, failures SHOULD
   fail that job.
+
+### 17.9 Project Execution Isolation Extension
+
+- Both approved profiles produce distinct `<namespace>/<issue>` workspaces for the same issue
+  identifier, and cleanup targets only the selected path.
+- Project, repository, branch/head, workspace path, namespace, and credential-reference drift fail
+  closed before hooks or Codex.
+- The default credential provider fails closed; injected providers cannot cross profile boundaries
+  or leak results outside the immediate subprocess environment.
+- Startup performs and classifies the real read-only Linear viewer request before cleanup/polling.
+- All seven runtime-health stages, both dependencies, last poll, final stop, bounded history,
+  unknown evidence, and secret rejection are covered.
+- Elixir and both `pwsh` and `powershell.exe` cover receiver/epoch idempotency, Task 5 receipt
+  consumption, output suppression, and unrepresentable legacy-path failure.
+- Live non-Production end-to-end acceptance belongs to ARO-285; deterministic ARO-286 extension
+  tests do not claim a live credential, tracker, notification-provider, deployment, or Production
+  result.
 
 ## 18. Implementation Checklist (Definition of Done)
 

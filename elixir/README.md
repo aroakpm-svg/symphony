@@ -398,8 +398,8 @@ settings.project_profiles
 Each result is either `{:ok, receipt}` or `{:blocked, reason}` with one minimal human next step.
 Preflight is a necessary dispatch gate, but success is readiness evidence rather than authorization:
 it does not independently enable polling, dispatch, credentials, deployment authority, or automatic
-pickup permission. Credential resolution and per-project workspace isolation remain out of scope
-here and remain ARO-286 work.
+pickup permission. The selected profile is consumed by the ARO-286 execution context described
+below; preflight still does not resolve credentials by itself.
 
 ## Approved multi-project profile contract
 
@@ -428,12 +428,130 @@ evidence and does not stop another profile's candidates. Unknown, duplicated, ch
 wrong-node, non-exclusive, or repository-mismatched candidates fail closed and iteration continues.
 When `project_profiles` is absent, Symphony retains the legacy single-project tracker path.
 
-This contract selects an approved repository but does not resolve or install credentials, create
-per-project workspace namespaces, clone repositories, grant deployment authority, or operate in
-Production. Credential and workspace isolation remain ARO-286 scope.
+This contract selects an approved repository but does not install credentials, clone repositories,
+grant deployment authority, or operate in Production. ARO-286 consumes the selected profile for
+workspace and subprocess isolation; ARO-195/ARO-196 still own the approved host credential source.
 
 See the commented example in [`WORKFLOW.md`](WORKFLOW.md). Remove the comment
 markers only when intentionally configuring the exact approved set.
+
+## Project workspace, credentials, and runtime observability
+
+The multi-project execution path accepts only the complete approved profile set and the environment
+`local_non_production`. Each authorized issue becomes one immutable
+`SymphonyElixir.ProjectExecutionContext`. Workspace paths use the validated namespace plus the
+sanitized issue identifier, so the same identifier does not collide across projects:
+
+```text
+C:/symphony/workspaces/central-brain/ARO-286
+C:/symphony/workspaces/project-management/ARO-286
+```
+
+The corresponding configuration is:
+
+```yaml
+project_profiles:
+  version: 1
+  profiles:
+    - key: central-brain
+      linear_project_id: d0acfb71-f68c-4a9f-8a1a-477265d3c3ec
+      repository: aroakpm-svg/aroak-central-brain
+      canonical_branch: main
+      workspace_namespace: central-brain
+      credential_ref: github-central-brain
+      environment: local_non_production
+    - key: project-management
+      linear_project_id: 708053e0-f42c-4e93-bec4-7abbb37e74af
+      repository: aroakpm-svg/aroak-project-management
+      canonical_branch: main
+      workspace_namespace: project-management
+      credential_ref: github-project-management
+      environment: local_non_production
+workspace:
+  root: C:/symphony/workspaces
+observability:
+  runtime_state_root: C:/symphony/health/runtime-state
+  notification_command: "pwsh -NoLogo -NoProfile -File C:/symphony/notify-restart-limit.ps1"
+  notification_receiver: "on-call:platform"
+  restart_limit: 3
+  notification_timeout_ms: 5000
+```
+
+`credential_ref` is an opaque approved handle, not a token, path, command, or environment value.
+`SymphonyElixir.ProjectCredentialProvider` has no ambient credential fallback: without an injected
+ARO-195/ARO-196-approved adapter it returns `:credential_provider_unconfigured` and the worker is
+hard-blocked before hooks or Codex. Missing, ambiguous, wrong-reference, invalid-environment, and
+provider failures return `:credential_not_found`, `:credential_ambiguous`,
+`:credential_reference_mismatch`, `:invalid_credential_environment`, or
+`:credential_provider_failed`. Resolved values are passed only through the selected Git/readiness/
+hook/Codex subprocess environment; they are never added to command arguments, application state,
+workspace readiness state, health, logs, or notifications. Context-aware SSH execution with
+credential material currently fails closed as `:remote_credential_environment_unsupported`.
+
+Startup calls the existing Linear endpoint with the real read-only
+`query SymphonyLinearViewer { viewer { id } }` request before terminal cleanup or the first poll.
+The safe startup outcomes are `:linear_unauthorized`, `:linear_forbidden`,
+`:linear_identity_missing`, `:linear_response_invalid`, and `:linear_unavailable`; response bodies,
+headers, raw GraphQL errors, and the API key are not returned or logged.
+
+`SymphonyElixir.RuntimeHealth` owns one bounded snapshot with `last_successful_poll_at`, `linear` and
+`claim_store` dependency status, the latest typed stages, `final_stop`, and bounded `history`. The
+fixed stage names are `candidate_fetch`, `issue_refresh`, `routing`, `profile_resolution`,
+`preflight`, `claim`, and `dispatch`. An immutable `stop-<runtime_epoch>.json` receipt records one of
+`normal_shutdown`, `startup_failure`, `unexpected_exit`, or `restart_limit` beneath the dedicated
+runtime-state directory. Unknown evidence is rendered as `unknown`; credential references and
+credential-like values are rejected.
+
+`observability.runtime_state_root` must name that actual `runtime-state` directory. RuntimeHealth
+derives it as `<receipt_root>/runtime-state`; the built-in defaults align. If a local packaging layer
+overrides application `:runtime_health_opts`, its `:receipt_root` must therefore be the parent of the
+configured workflow path, and its `:workspace_root` must remain disjoint.
+
+Restart notification is optional. Omitting both `notification_command` and
+`notification_receiver` disables it; configuring only one is invalid. Both values are
+operator-provided and must be nonblank and secret-free. The command receives exactly one bounded
+JSON object on stdin:
+
+```json
+{
+  "runtime_identity": "symphony-local",
+  "receiver": "on-call:platform",
+  "attempt_count": 3,
+  "stop_category": "restart_limit",
+  "timestamp": "2026-08-29T06:00:00Z",
+  "runtime_epoch": "example-epoch",
+  "receipt_path": "C:/symphony/health/runtime-state/stop-example-epoch.json"
+}
+```
+
+Command stdout/stderr is always discarded. A zero exit status publishes one delivery receipt keyed
+by SHA-256 of the receiver hash plus epoch; a timeout, non-zero exit, crash-ambiguous claim, malformed
+receipt, or unrepresentable legacy path publishes no delivery. Existing valid legacy
+`receiver_hash-epoch` delivery receipts still suppress duplicates, and a valid legacy claim remains
+ambiguous. Only a representable path whose entry is genuinely absent is treated as absent.
+
+Run the local Windows watchdog from a trusted operator wrapper, substituting only local
+non-Production paths and secret-free commands/identifiers:
+
+```powershell
+pwsh -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass `
+  -File ./bin/symphony-watchdog.ps1 `
+  -ChildCommand '& C:/symphony/start-local.ps1' `
+  -RuntimeIdentity 'symphony-local' `
+  -RuntimeStateRoot 'C:/symphony/health/runtime-state' `
+  -StatePath 'C:/symphony/health/runtime-state/watchdog-state.json' `
+  -RestartLimit 3 `
+  -NotificationTimeoutMs 5000 `
+  -NotificationCommand '& C:/symphony/notify-restart-limit.ps1' `
+  -NotificationReceiver 'on-call:platform'
+```
+
+The watchdog exits `0` after child success, `1` after reaching the restart limit, and `2` for an
+invalid or unsafe configuration/state boundary. The runtime-state root must be an absolute existing
+non-Production directory, and the state file must be directly below it. This is a local boundary:
+no external notification service, deployment, database mutation, Production access, or live
+customer message is created by Symphony. ARO-285 owns live non-Production end-to-end acceptance.
+See [`docs/aro_286_acceptance.md`](docs/aro_286_acceptance.md) for failure and test mapping.
 
 ## Project Layout
 

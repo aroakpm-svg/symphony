@@ -13,7 +13,8 @@ tracker:
     - "Duplicate"
 # Optional versioned mapping; keeping this example commented preserves legacy single-project polling.
 # Enabling the complete set activates approved multi-project polling and exclusive-only dispatch.
-# Credential resolution and per-project workspace isolation remain ARO-286 scope.
+# ARO-286 consumes these opaque references and namespaces. The default credential provider still
+# fails closed until an ARO-195/ARO-196-approved host adapter is injected.
 # project_profiles:
 #   version: 1
 #   profiles:
@@ -33,16 +34,27 @@ tracker:
 #       environment: "local_non_production"
 workspace:
   root: "C:/Users/aroak/Desktop/codex/symphony-workspaces"
+# Optional local restart notification. Omitting both command and receiver disables it; partial
+# configuration is invalid. These operator-provided values must be secret-free, and the runtime
+# state root must remain absolute, non-Production, and outside workspace.root.
+# observability:
+#   runtime_state_root: "C:/Users/aroak/AppData/Local/symphony/health/runtime-state"
+#   notification_command: "pwsh -NoLogo -NoProfile -File C:/symphony/notify-restart-limit.ps1"
+#   notification_receiver: "on-call:platform"
+#   restart_limit: 3
+#   notification_timeout_ms: 5000
 hooks:
   after_create: |
-    ENV_FILE="C:/Users/aroak/Desktop/codex/symphony/elixir/.env.local"
-    if [ ! -f "$ENV_FILE" ] && [ -f "${ENV_FILE}.txt" ]; then
-      ENV_FILE="${ENV_FILE}.txt"
-    fi
-    if [ -f "$ENV_FILE" ]; then
-      set -a
-      . "$ENV_FILE"
-      set +a
+    if [ "${SYMPHONY_PROJECT_ISOLATED:-}" != "1" ]; then
+      ENV_FILE="C:/Users/aroak/Desktop/codex/symphony/elixir/.env.local"
+      if [ ! -f "$ENV_FILE" ] && [ -f "${ENV_FILE}.txt" ]; then
+        ENV_FILE="${ENV_FILE}.txt"
+      fi
+      if [ -f "$ENV_FILE" ]; then
+        set -a
+        . "$ENV_FILE"
+        set +a
+      fi
     fi
     : "${SOURCE_REPO_URL:=https://github.com/aroakpm-svg/aroak-central-brain.git}"
     git clone "$SOURCE_REPO_URL" .
@@ -70,27 +82,33 @@ review_convergence:
 landing:
   mode: human
 codex:
+  executable: "$CODEX_BIN"
+  default_model: "$CODEX_DEFAULT_MODEL"
   command: |
-    ENV_FILE="C:/Users/aroak/Desktop/codex/symphony/elixir/.env.local"
-    if [ ! -f "$ENV_FILE" ] && [ -f "${ENV_FILE}.txt" ]; then
-      ENV_FILE="${ENV_FILE}.txt"
-    fi
-    if [ -f "$ENV_FILE" ]; then
-      set -a
-      . "$ENV_FILE"
-      set +a
+    if [ "${SYMPHONY_PROJECT_ISOLATED:-}" != "1" ]; then
+      ENV_FILE="C:/Users/aroak/Desktop/codex/symphony/elixir/.env.local"
+      if [ ! -f "$ENV_FILE" ] && [ -f "${ENV_FILE}.txt" ]; then
+        ENV_FILE="${ENV_FILE}.txt"
+      fi
+      if [ -f "$ENV_FILE" ]; then
+        set -a
+        . "$ENV_FILE"
+        set +a
+      fi
     fi
     : "${CLAUDE_BIN:=/c/Users/aroak/AppData/Local/Microsoft/WinGet/Packages/Anthropic.ClaudeCode_Microsoft.Winget.Source_8wekyb3d8bbwe/claude.exe}"
     if [ -x "$CLAUDE_BIN" ]; then
       export PATH="$(dirname "$CLAUDE_BIN"):$PATH"
     fi
     : "${CODEX_BIN:=/c/Users/aroak/.codex/plugins/.plugin-appserver/codex.exe}"
-    : "${LINEAR_API_KEY:?Set LINEAR_API_KEY with permission to read issues, create comments, and update issue status}"
+    if [ "${SYMPHONY_PROJECT_ISOLATED:-}" != "1" ]; then
+      : "${LINEAR_API_KEY:?Set LINEAR_API_KEY with permission to read issues, create comments, and update issue status}"
+    fi
     : "${SOURCE_REPO_URL:=https://github.com/aroakpm-svg/aroak-central-brain.git}"
     ISSUE_IDENTIFIER="{{ issue.identifier }}"
     DEFAULT_CODEX_MODEL="${CODEX_DEFAULT_MODEL:-gpt-5.4-mini}"
     SELECTED_CODEX_MODEL="$DEFAULT_CODEX_MODEL"
-    MODEL_SOURCE="workflow default"
+    MODEL_SOURCE="${SYMPHONY_CODEX_MODEL_SOURCE:-workflow default}"
     MODEL_LABELS=""
     BODY_MODEL_HINTS=""
     if [ -n "$LINEAR_API_KEY" ] && [ -n "$ISSUE_IDENTIFIER" ] && ! printf '%s' "$ISSUE_IDENTIFIER" | grep -q '{{'; then

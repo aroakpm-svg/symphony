@@ -22,7 +22,8 @@ defmodule SymphonyElixirWeb.Presenter do
           retrying: Enum.map(snapshot.retrying, &retry_entry_payload/1),
           blocked: Enum.map(Map.get(snapshot, :blocked, []), &blocked_entry_payload/1),
           codex_totals: snapshot.codex_totals,
-          rate_limits: snapshot.rate_limits
+          rate_limits: snapshot.rate_limits,
+          health: Map.get(snapshot, :health, unknown_health())
         }
 
       :timeout ->
@@ -239,4 +240,17 @@ defmodule SymphonyElixirWeb.Presenter do
   end
 
   defp iso8601(_datetime), do: nil
+
+  defp unknown_health do
+    %{
+      last_successful_poll_at: :unknown,
+      dependencies: %{
+        linear: %{status: :unknown, failure_category: nil},
+        claim_store: %{status: :unknown, failure_category: nil}
+      },
+      stages: [],
+      final_stop: :unknown,
+      history: []
+    }
+  end
 end

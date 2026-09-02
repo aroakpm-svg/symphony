@@ -1,6 +1,8 @@
 defmodule SymphonyElixir.CoreTest do
   use SymphonyElixir.TestSupport
 
+  alias SymphonyElixir.ProjectExecutionContext
+
   test "config defaults and validation checks" do
     write_workflow_file!(Workflow.workflow_file_path(),
       tracker_api_token: nil,
@@ -113,6 +115,10 @@ defmodule SymphonyElixir.CoreTest do
     assert Map.get(hooks, "after_create") =~ "SOURCE_REPO_URL"
     assert Map.get(hooks, "after_create") =~ "aroakpm-svg/aroak-central-brain.git"
     assert Map.get(hooks, "after_create") =~ "git clone"
+    assert Map.get(hooks, "after_create") =~ ~s(SYMPHONY_PROJECT_ISOLATED:-)
+
+    codex = Map.get(config, "codex", %{})
+    assert Map.get(codex, "command") =~ ~s(SYMPHONY_PROJECT_ISOLATED:-)
 
     assert String.trim(prompt) != ""
     assert prompt =~ "AROAK Central Brain Symphony Workflow"
@@ -264,6 +270,107 @@ defmodule SymphonyElixir.CoreTest do
     GenServer.stop(pid)
   end
 
+  test "startup identity gate schedules polling only after validation succeeds" do
+    write_workflow_file!(Workflow.workflow_file_path(), tracker_kind: "memory", poll_interval_ms: 30_000)
+    orchestrator_name = Module.concat(__MODULE__, "IdentityGateSuccess#{System.unique_integer([:positive])}")
+    test_pid = self()
+
+    {:ok, pid} =
+      Orchestrator.start_link(
+        name: orchestrator_name,
+        identity_validator: fn ->
+          send(test_pid, :identity_validated)
+          {:ok, %{viewer_id: "viewer-123"}}
+        end
+      )
+
+    on_exit(fn ->
+      if Process.alive?(pid), do: GenServer.stop(pid)
+    end)
+
+    assert_receive :identity_validated
+    Process.sleep(50)
+
+    state = :sys.get_state(pid)
+    assert is_reference(state.tick_timer_ref)
+    assert state.running == %{}
+    assert state.claimed == MapSet.new()
+  end
+
+  test "startup identity failures stop before terminal cleanup or polling" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-startup-identity-gate-#{System.unique_integer([:positive])}"
+      )
+
+    issue_identifier = "MT-identity-gate"
+    workspace = Path.join(test_root, issue_identifier)
+    previous_trap_exit = Process.flag(:trap_exit, true)
+
+    try do
+      write_workflow_file!(Workflow.workflow_file_path(),
+        tracker_kind: "memory",
+        workspace_root: test_root,
+        poll_interval_ms: 30_000
+      )
+
+      File.mkdir_p!(workspace)
+
+      Application.put_env(:symphony_elixir, :memory_tracker_issues, [
+        %Issue{id: "terminal-identity-gate", identifier: issue_identifier, state: "Done"}
+      ])
+
+      for {validator_result, expected_reason} <- [
+            {{:error, :linear_unauthorized}, :linear_unauthorized},
+            {{:error, :linear_identity_missing}, :linear_identity_missing},
+            {{:error, :linear_unavailable}, :linear_unavailable},
+            {{:error, :unexpected_linear_error}, :linear_unavailable},
+            {{:ok, %{viewer_id: "   "}}, :linear_identity_missing}
+          ] do
+        orchestrator_name =
+          Module.concat(__MODULE__, "IdentityGateFailure#{expected_reason}#{System.unique_integer([:positive])}")
+
+        assert {:error, ^expected_reason} =
+                 Orchestrator.start_link(
+                   name: orchestrator_name,
+                   identity_validator: fn -> validator_result end
+                 )
+
+        assert File.exists?(workspace)
+        assert is_nil(Process.whereis(orchestrator_name))
+      end
+    after
+      Process.flag(:trap_exit, previous_trap_exit)
+      File.rm_rf(test_root)
+    end
+  end
+
+  test "default startup validator reaches the configured Linear client" do
+    previous_client_module = Application.get_env(:symphony_elixir, :linear_client_module)
+    previous_identity_result = Application.get_env(:symphony_elixir, :startup_identity_client_result)
+    previous_orchestrator_opts = Application.get_env(:symphony_elixir, :orchestrator_opts)
+    previous_trap_exit = Process.flag(:trap_exit, true)
+
+    on_exit(fn ->
+      restore_app_env(:linear_client_module, previous_client_module)
+      restore_app_env(:startup_identity_client_result, previous_identity_result)
+      restore_app_env(:orchestrator_opts, previous_orchestrator_opts)
+      Process.flag(:trap_exit, previous_trap_exit)
+    end)
+
+    write_workflow_file!(Workflow.workflow_file_path(), tracker_kind: "linear")
+    Application.put_env(:symphony_elixir, :linear_client_module, SymphonyElixir.CoreTest.StartupIdentityLinearClient)
+    Application.put_env(:symphony_elixir, :startup_identity_client_result, {:error, :linear_forbidden})
+    Application.delete_env(:symphony_elixir, :orchestrator_opts)
+
+    orchestrator_name = Module.concat(__MODULE__, "DefaultIdentityValidator#{System.unique_integer([:positive])}")
+
+    assert {:error, :linear_forbidden} = Tracker.validate_identity()
+    assert {:error, :linear_forbidden} = Orchestrator.start_link(name: orchestrator_name)
+    assert is_nil(Process.whereis(orchestrator_name))
+  end
+
   test "linear issue state reconciliation fetch with no running issues is a no-op" do
     assert {:ok, []} = Client.fetch_issue_states_by_ids([])
   end
@@ -389,6 +496,386 @@ defmodule SymphonyElixir.CoreTest do
       refute MapSet.member?(updated_state.claimed, issue_id)
       refute Process.alive?(agent_pid)
       refute File.exists?(workspace)
+    after
+      File.rm_rf(test_root)
+    end
+  end
+
+  test "terminal running cleanup retains the exact project execution context" do
+    test_root =
+      Path.join(System.tmp_dir!(), "symphony-terminal-context-#{System.unique_integer([:positive])}")
+
+    {owned_issue, execution_context} = execution_fixture("central-brain", "ARO-286", "running-context", 21)
+    namespaced_workspace = Path.join([test_root, execution_context.workspace_namespace, owned_issue.identifier])
+    legacy_workspace = Path.join(test_root, owned_issue.identifier)
+
+    try do
+      write_workflow_file!(Workflow.workflow_file_path(),
+        workspace_root: test_root,
+        worker_ssh_hosts: ["worker-enabled-after-local-start"]
+      )
+
+      assert {:ok, %{path: prepared_workspace, workspace_attestation: workspace_attestation}} =
+               Workspace.prepare_for_issue(owned_issue, nil, execution_context)
+
+      assert String.downcase(Path.expand(prepared_workspace)) ==
+               String.downcase(Path.expand(namespaced_workspace))
+
+      File.mkdir_p!(legacy_workspace)
+
+      agent_pid = spawn(fn -> receive do: (:stop -> :ok) end)
+
+      state = %Orchestrator.State{
+        running: %{
+          owned_issue.id => %{
+            pid: agent_pid,
+            ref: nil,
+            identifier: owned_issue.identifier,
+            issue: owned_issue,
+            execution_context: execution_context,
+            workspace_attestation: workspace_attestation,
+            started_at: DateTime.utc_now()
+          }
+        },
+        claimed: MapSet.new([owned_issue.id]),
+        codex_totals: %{input_tokens: 0, output_tokens: 0, total_tokens: 0, seconds_running: 0},
+        retry_attempts: %{}
+      }
+
+      terminal_issue = %{
+        owned_issue
+        | identifier: "PM-286",
+          state: "Done",
+          project_profile: nil,
+          routing_revision: nil
+      }
+
+      updated_state = Orchestrator.reconcile_issue_states_for_test([terminal_issue], state)
+
+      refute Map.has_key?(updated_state.running, owned_issue.id)
+      refute File.exists?(namespaced_workspace)
+      assert File.dir?(legacy_workspace)
+    after
+      File.rm_rf(test_root)
+    end
+  end
+
+  test "running reconciliation retires the old execution context when the project changes" do
+    test_root =
+      Path.join(System.tmp_dir!(), "symphony-running-project-move-#{System.unique_integer([:positive])}")
+
+    {owned_issue, execution_context} =
+      execution_fixture("central-brain", "ARO-286", "running-project-move", 24)
+
+    old_workspace = Path.join([test_root, execution_context.workspace_namespace, owned_issue.identifier])
+    new_workspace = Path.join([test_root, "project-management", owned_issue.identifier])
+    legacy_workspace = Path.join(test_root, owned_issue.identifier)
+    readiness_sidecar = Workspace.readiness_state_path(old_workspace)
+
+    try do
+      write_workflow_file!(Workflow.workflow_file_path(), workspace_root: test_root)
+      private_paths = SymphonyElixir.SubprocessEnvironment.private_home_paths(execution_context)
+      previous_home = Path.join(private_paths.root, "#{owned_issue.identifier}-r23")
+      sibling_home = Path.join(private_paths.root, "#{owned_issue.identifier}0-r23")
+
+      assert {:ok, %{path: prepared_workspace, workspace_attestation: workspace_attestation}} =
+               Workspace.prepare_for_issue(owned_issue, nil, execution_context)
+
+      assert String.downcase(Path.expand(prepared_workspace)) ==
+               String.downcase(Path.expand(old_workspace))
+
+      File.mkdir_p!(new_workspace)
+      File.mkdir_p!(legacy_workspace)
+      File.mkdir_p!(private_paths.codex)
+      File.mkdir_p!(Path.join(previous_home, "codex"))
+      File.mkdir_p!(sibling_home)
+
+      agent_pid = spawn(fn -> receive do: (:stop -> :ok) end)
+
+      state = %Orchestrator.State{
+        running: %{
+          owned_issue.id => %{
+            pid: agent_pid,
+            ref: nil,
+            identifier: owned_issue.identifier,
+            issue: %{owned_issue | project_profile: nil},
+            execution_context: execution_context,
+            workspace_attestation: workspace_attestation,
+            worker_host: nil,
+            started_at: DateTime.utc_now()
+          }
+        },
+        claimed: MapSet.new([owned_issue.id]),
+        codex_totals: %{input_tokens: 0, output_tokens: 0, total_tokens: 0, seconds_running: 0},
+        retry_attempts: %{}
+      }
+
+      moved_issue = %{
+        owned_issue
+        | project_id: "708053e0-f42c-4e93-bec4-7abbb37e74af",
+          state: "In Progress",
+          project_profile: nil,
+          assigned_to_worker: false
+      }
+
+      updated_state = Orchestrator.reconcile_issue_states_for_test([moved_issue], state)
+
+      refute Map.has_key?(updated_state.running, owned_issue.id)
+      refute MapSet.member?(updated_state.claimed, owned_issue.id)
+      refute Process.alive?(agent_pid)
+      refute File.exists?(old_workspace)
+      refute File.exists?(readiness_sidecar)
+      refute File.exists?(private_paths.home)
+      refute File.exists?(previous_home)
+      assert File.dir?(sibling_home)
+      assert File.dir?(new_workspace)
+      assert File.dir?(legacy_workspace)
+    after
+      File.rm_rf(test_root)
+    end
+  end
+
+  test "terminal blocked cleanup retains the exact project execution context" do
+    test_root =
+      Path.join(System.tmp_dir!(), "symphony-blocked-context-#{System.unique_integer([:positive])}")
+
+    {owned_issue, execution_context} = execution_fixture("project-management", "ARO-286", "blocked-context", 22)
+    namespaced_workspace = Path.join([test_root, execution_context.workspace_namespace, owned_issue.identifier])
+    legacy_workspace = Path.join(test_root, owned_issue.identifier)
+
+    try do
+      write_workflow_file!(Workflow.workflow_file_path(), workspace_root: test_root)
+
+      assert {:ok, %{path: prepared_workspace, workspace_attestation: workspace_attestation}} =
+               Workspace.prepare_for_issue(owned_issue, nil, execution_context)
+
+      assert String.downcase(Path.expand(prepared_workspace)) ==
+               String.downcase(Path.expand(namespaced_workspace))
+
+      File.mkdir_p!(legacy_workspace)
+
+      state = %Orchestrator.State{
+        blocked: %{
+          owned_issue.id => %{
+            identifier: owned_issue.identifier,
+            issue: owned_issue,
+            execution_context: execution_context,
+            workspace_attestation: workspace_attestation,
+            worker_host: nil
+          }
+        },
+        claimed: MapSet.new([owned_issue.id]),
+        retry_attempts: %{}
+      }
+
+      terminal_issue = %{
+        owned_issue
+        | identifier: "PM-286",
+          state: "Done",
+          project_profile: nil,
+          routing_revision: nil
+      }
+
+      updated_state = Orchestrator.reconcile_blocked_issue_states_for_test([terminal_issue], state)
+
+      refute Map.has_key?(updated_state.blocked, owned_issue.id)
+      refute File.exists?(namespaced_workspace)
+      assert File.dir?(legacy_workspace)
+    after
+      File.rm_rf(test_root)
+    end
+  end
+
+  test "blocked reconciliation releases a claim when the issue moves to another project" do
+    test_root =
+      Path.join(System.tmp_dir!(), "symphony-blocked-project-move-#{System.unique_integer([:positive])}")
+
+    {owned_issue, execution_context} =
+      execution_fixture("central-brain", "ARO-286", "blocked-project-move", 24)
+
+    old_workspace = Path.join([test_root, execution_context.workspace_namespace, owned_issue.identifier])
+    new_workspace = Path.join([test_root, "project-management", owned_issue.identifier])
+    readiness_sidecar = Workspace.readiness_state_path(old_workspace)
+    legacy_workspace = Path.join(test_root, owned_issue.identifier)
+
+    try do
+      write_workflow_file!(Workflow.workflow_file_path(), workspace_root: test_root)
+
+      assert {:ok, %{path: prepared_workspace}} =
+               Workspace.prepare_for_issue(owned_issue, nil, execution_context)
+
+      assert String.downcase(Path.expand(prepared_workspace)) ==
+               String.downcase(Path.expand(old_workspace))
+
+      File.mkdir_p!(new_workspace)
+      File.mkdir_p!(legacy_workspace)
+
+      state = %Orchestrator.State{
+        blocked: %{
+          owned_issue.id => %{
+            identifier: owned_issue.identifier,
+            issue: owned_issue,
+            execution_context: execution_context,
+            workspace_attestation: nil,
+            worker_host: nil
+          }
+        },
+        claimed: MapSet.new([owned_issue.id]),
+        retry_attempts: %{}
+      }
+
+      moved_issue = %{
+        owned_issue
+        | project_id: "708053e0-f42c-4e93-bec4-7abbb37e74af",
+          state: "In Progress",
+          assigned_to_worker: false
+      }
+
+      updated_state = Orchestrator.reconcile_blocked_issue_states_for_test([moved_issue], state)
+
+      refute Map.has_key?(updated_state.blocked, owned_issue.id)
+      refute MapSet.member?(updated_state.claimed, owned_issue.id)
+      refute File.exists?(old_workspace)
+      refute File.exists?(readiness_sidecar)
+      assert File.dir?(new_workspace)
+      assert File.dir?(legacy_workspace)
+    after
+      File.rm_rf(test_root)
+    end
+  end
+
+  test "retry reconciliation retires the old execution context only on an authoritative project mismatch" do
+    test_root =
+      Path.join(System.tmp_dir!(), "symphony-retry-project-move-#{System.unique_integer([:positive])}")
+
+    {owned_issue, execution_context} =
+      execution_fixture("central-brain", "ARO-286", "retry-project-move", 25)
+
+    old_workspace = Path.join([test_root, execution_context.workspace_namespace, owned_issue.identifier])
+    new_workspace = Path.join([test_root, "project-management", owned_issue.identifier])
+
+    try do
+      write_workflow_file!(Workflow.workflow_file_path(), workspace_root: test_root)
+
+      assert {:ok, %{path: prepared_workspace}} =
+               Workspace.prepare_for_issue(owned_issue, nil, execution_context)
+
+      assert String.downcase(Path.expand(prepared_workspace)) ==
+               String.downcase(Path.expand(old_workspace))
+
+      File.mkdir_p!(new_workspace)
+
+      state = %Orchestrator.State{claimed: MapSet.new([owned_issue.id]), retry_attempts: %{}}
+
+      moved_issue = %{
+        owned_issue
+        | identifier: "PM-286",
+          project_id: "708053e0-f42c-4e93-bec4-7abbb37e74af",
+          state: "In Progress",
+          project_profile: nil
+      }
+
+      updated_state =
+        Orchestrator.handle_retry_issue_lookup_for_test(moved_issue, state, owned_issue.id, 1, %{
+          identifier: nil,
+          execution_context: execution_context,
+          workspace_attestation: nil,
+          worker_host: nil,
+          project_profile: owned_issue.project_profile
+        })
+
+      refute MapSet.member?(updated_state.claimed, owned_issue.id)
+      refute File.exists?(old_workspace)
+      assert File.dir?(new_workspace)
+    after
+      File.rm_rf(test_root)
+    end
+  end
+
+  test "profiled retry refresh fetches by issue id without filtering on the stored project" do
+    {owned_issue, _execution_context} = execution_fixture("central-brain", "ARO-286", "retry-fetch", 24)
+    moved_issue = %{owned_issue | project_id: "708053e0-f42c-4e93-bec4-7abbb37e74af", project_profile: nil}
+
+    project_profiles = """
+    project_profiles:
+      version: 1
+      profiles:
+        - key: central-brain
+          linear_project_id: d0acfb71-f68c-4a9f-8a1a-477265d3c3ec
+          repository: aroakpm-svg/aroak-central-brain
+          canonical_branch: main
+          workspace_namespace: central-brain
+          credential_ref: github-central-brain
+          environment: local_non_production
+        - key: project-management
+          linear_project_id: 708053e0-f42c-4e93-bec4-7abbb37e74af
+          repository: aroakpm-svg/aroak-project-management
+          canonical_branch: main
+          workspace_namespace: project-management
+          credential_ref: github-project-management
+          environment: local_non_production
+    """
+
+    workflow = File.read!(Workflow.workflow_file_path())
+    File.write!(Workflow.workflow_file_path(), String.replace(workflow, "---\n", "---\n#{project_profiles}", global: false))
+    assert :ok = WorkflowStore.force_reload()
+
+    fetch_fun = fn issue_ids ->
+      send(self(), {:retry_fetch_by_ids, issue_ids})
+      {:ok, [moved_issue]}
+    end
+
+    assert {:ok, [^moved_issue]} =
+             Orchestrator.retry_issue_fetch_for_test(
+               owned_issue.id,
+               %{project_profile: owned_issue.project_profile},
+               fetch_fun
+             )
+
+    assert_receive {:retry_fetch_by_ids, [issue_id]}
+    assert issue_id == owned_issue.id
+  end
+
+  test "terminal retry cleanup reacquires a missing attestation in the exact project context" do
+    test_root =
+      Path.join(System.tmp_dir!(), "symphony-retry-context-#{System.unique_integer([:positive])}")
+
+    {owned_issue, execution_context} = execution_fixture("central-brain", "ARO-286", "retry-context", 23)
+    namespaced_workspace = Path.join([test_root, execution_context.workspace_namespace, owned_issue.identifier])
+    legacy_workspace = Path.join(test_root, owned_issue.identifier)
+
+    try do
+      write_workflow_file!(Workflow.workflow_file_path(), workspace_root: test_root)
+
+      assert {:ok, %{path: prepared_workspace}} =
+               Workspace.prepare_for_issue(owned_issue, nil, execution_context)
+
+      assert String.downcase(Path.expand(prepared_workspace)) ==
+               String.downcase(Path.expand(namespaced_workspace))
+
+      File.mkdir_p!(legacy_workspace)
+
+      state = %Orchestrator.State{claimed: MapSet.new([owned_issue.id]), retry_attempts: %{}}
+
+      terminal_issue = %{
+        owned_issue
+        | identifier: "PM-286",
+          state: "Done",
+          project_profile: nil,
+          routing_revision: nil
+      }
+
+      updated_state =
+        Orchestrator.handle_retry_issue_lookup_for_test(terminal_issue, state, owned_issue.id, 1, %{
+          identifier: owned_issue.identifier,
+          execution_context: execution_context,
+          workspace_attestation: nil,
+          worker_host: nil
+        })
+
+      refute MapSet.member?(updated_state.claimed, owned_issue.id)
+      refute File.exists?(namespaced_workspace)
+      assert File.dir?(legacy_workspace)
     after
       File.rm_rf(test_root)
     end
@@ -636,6 +1123,83 @@ defmodule SymphonyElixir.CoreTest do
     refute MapSet.member?(updated_state.claimed, issue_id)
   end
 
+  test "reconcile releases a model-label conflict after the labels are corrected" do
+    issue_id = "blocked-model-conflict-corrected"
+    agent_pid = spawn(fn -> Process.sleep(:infinity) end)
+
+    state = %Orchestrator.State{
+      running: %{
+        issue_id => %{
+          pid: agent_pid,
+          ref: nil,
+          identifier: "MT-564-MODEL",
+          issue: %Issue{id: issue_id, identifier: "MT-564-MODEL", state: "In Progress"},
+          worker_host: nil,
+          started_at: DateTime.utc_now()
+        }
+      },
+      claimed: MapSet.new([issue_id]),
+      codex_totals: %{input_tokens: 0, output_tokens: 0, total_tokens: 0, seconds_running: 0},
+      retry_attempts: %{}
+    }
+
+    {:noreply, blocked_state} =
+      Orchestrator.handle_info(
+        {:agent_hard_blocker, issue_id,
+         %{
+           error: "multiple model labels",
+           kind: {:codex_model_label_conflict, ["model:gpt-5.4", "model:gpt-5.5"]}
+         }},
+        state
+      )
+
+    assert blocked_state.blocked[issue_id].blocker_kind ==
+             {:codex_model_label_conflict, ["model:gpt-5.4", "model:gpt-5.5"]}
+
+    corrected_issue = %Issue{
+      id: issue_id,
+      identifier: "MT-564-MODEL",
+      title: "Corrected model routing",
+      state: "In Progress",
+      labels: ["model:gpt-5.5"]
+    }
+
+    updated_state = Orchestrator.reconcile_blocked_issue_states_for_test([corrected_issue], blocked_state)
+
+    refute Map.has_key?(updated_state.blocked, issue_id)
+    refute MapSet.member?(updated_state.claimed, issue_id)
+  end
+
+  test "reconcile retains a model-label conflict while it remains ambiguous" do
+    issue_id = "blocked-model-conflict-unchanged"
+
+    state = %Orchestrator.State{
+      blocked: %{
+        issue_id => %{
+          identifier: "MT-564-MODEL-STILL",
+          error: "multiple model labels",
+          blocker_kind: {:codex_model_label_conflict, ["model:gpt-5.4", "model:gpt-5.5"]},
+          worker_host: nil
+        }
+      },
+      claimed: MapSet.new([issue_id]),
+      retry_attempts: %{}
+    }
+
+    ambiguous_issue = %Issue{
+      id: issue_id,
+      identifier: "MT-564-MODEL-STILL",
+      title: "Still ambiguous model routing",
+      state: "In Progress",
+      labels: ["model:gpt-5.4", "model:gpt-5.5"]
+    }
+
+    updated_state = Orchestrator.reconcile_blocked_issue_states_for_test([ambiguous_issue], state)
+
+    assert Map.has_key?(updated_state.blocked, issue_id)
+    assert MapSet.member?(updated_state.claimed, issue_id)
+  end
+
   test "retry releases its claim when a required label is removed" do
     write_workflow_file!(Workflow.workflow_file_path(), tracker_required_labels: ["symphony"])
 
@@ -864,19 +1428,70 @@ defmodule SymphonyElixir.CoreTest do
   end
 
   test "startup terminal cleanup isolates profile failures and cleans every successful profile" do
-    profiles = [%{key: "central-brain"}, %{key: "project-management"}, %{key: "failed-profile"}]
+    central_profile = %{
+      key: "central-brain",
+      linear_project_id: "d0acfb71-f68c-4a9f-8a1a-477265d3c3ec",
+      repository: "aroakpm-svg/aroak-central-brain",
+      canonical_branch: "main",
+      workspace_namespace: "central-brain",
+      credential_ref: "github-central-brain",
+      environment: "local_non_production"
+    }
+
+    project_management_profile = %{
+      key: "project-management",
+      linear_project_id: "708053e0-f42c-4e93-bec4-7abbb37e74af",
+      repository: "aroakpm-svg/aroak-project-management",
+      canonical_branch: "main",
+      workspace_namespace: "project-management",
+      credential_ref: "github-project-management",
+      environment: "local_non_production"
+    }
+
+    profiles = [central_profile, project_management_profile, %{key: "failed-profile"}]
     parent = self()
 
     fetcher = fn
-      %{key: "central-brain"}, _states ->
-        {:ok, [%Issue{identifier: "PM-1"}]}
-
-      %{key: "project-management"}, _states ->
+      %{key: "central-brain"} = profile, _states ->
         {:ok,
          [
-           %Issue{identifier: "PM-1"},
-           %Issue{identifier: "PM-fails"},
-           %Issue{identifier: "PM-2"}
+           %Issue{
+             id: "central-pm-1",
+             identifier: "PM-1",
+             project_id: profile.linear_project_id,
+             repository: profile.repository,
+             routing_revision: 11,
+             project_profile: profile
+           }
+         ]}
+
+      %{key: "project-management"} = profile, _states ->
+        {:ok,
+         [
+           %Issue{
+             id: "project-management-pm-1",
+             identifier: "PM-1",
+             project_id: profile.linear_project_id,
+             repository: profile.repository,
+             routing_revision: 12,
+             project_profile: profile
+           },
+           %Issue{
+             id: "project-management-pm-fails",
+             identifier: "PM-fails",
+             project_id: profile.linear_project_id,
+             repository: profile.repository,
+             routing_revision: 13,
+             project_profile: profile
+           },
+           %Issue{
+             id: "project-management-pm-2",
+             identifier: "PM-2",
+             project_id: profile.linear_project_id,
+             repository: profile.repository,
+             routing_revision: 14,
+             project_profile: profile
+           }
          ]}
 
       %{key: "failed-profile"}, _states ->
@@ -884,8 +1499,8 @@ defmodule SymphonyElixir.CoreTest do
     end
 
     cleanup_fun = fn
-      "PM-fails" -> raise "cleanup unavailable"
-      identifier -> send(parent, {:cleaned, identifier})
+      "PM-fails", _context -> raise "cleanup unavailable"
+      identifier, context -> send(parent, {:cleaned, identifier, context.profile_key})
     end
 
     assert :ok =
@@ -896,9 +1511,148 @@ defmodule SymphonyElixir.CoreTest do
                cleanup_fun
              )
 
-    assert_receive {:cleaned, "PM-1"}
-    assert_receive {:cleaned, "PM-2"}
-    refute_receive {:cleaned, "PM-1"}
+    assert_receive {:cleaned, "PM-1", "central-brain"}
+    assert_receive {:cleaned, "PM-1", "project-management"}
+    assert_receive {:cleaned, "PM-2", "project-management"}
+    refute_receive {:cleaned, _, _}
+  end
+
+  test "startup terminal cleanup reacquires an attestation before removing a project workspace" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "aro286-startup-cleanup-#{System.os_time(:nanosecond)}-#{System.unique_integer([:positive, :monotonic])}"
+      )
+
+    profile = %{
+      key: "central-brain",
+      linear_project_id: "d0acfb71-f68c-4a9f-8a1a-477265d3c3ec",
+      repository: "aroakpm-svg/aroak-central-brain",
+      canonical_branch: "main",
+      workspace_namespace: "central-brain",
+      credential_ref: "github-central-brain",
+      environment: "local_non_production"
+    }
+
+    workspace = Path.join([test_root, profile.workspace_namespace, "ARO-286"])
+    File.mkdir_p!(workspace)
+    File.write!(Path.join(workspace, "marker.txt"), "remove me")
+    write_workflow_file!(Workflow.workflow_file_path(), workspace_root: test_root)
+
+    fetcher = fn ^profile, _states ->
+      {:ok,
+       [
+         %Issue{
+           id: "terminal-aro-286",
+           identifier: "ARO-286",
+           project_id: profile.linear_project_id,
+           repository: profile.repository,
+           routing_revision: 15,
+           project_profile: profile
+         }
+       ]}
+    end
+
+    cleanup_fun = fn identifier, context, attestation ->
+      assert is_map(attestation)
+
+      Workspace.remove_issue_workspaces(identifier, nil, context, workspace_attestation: attestation)
+    end
+
+    try do
+      assert :ok =
+               Orchestrator.terminal_cleanup_for_test(
+                 [profile],
+                 ["Done"],
+                 fetcher,
+                 cleanup_fun
+               )
+
+      refute File.exists?(workspace)
+    after
+      File.rm_rf(test_root)
+    end
+  end
+
+  test "startup terminal cleanup reacquires an attestation on every remote worker" do
+    profile = %{
+      key: "central-brain",
+      linear_project_id: "d0acfb71-f68c-4a9f-8a1a-477265d3c3ec",
+      repository: "aroakpm-svg/aroak-central-brain",
+      canonical_branch: "main",
+      workspace_namespace: "central-brain",
+      credential_ref: "github-central-brain",
+      environment: "local_non_production"
+    }
+
+    parent = self()
+    previous_runner = Application.get_env(:symphony_elixir, :ssh_command_runner)
+
+    on_exit(fn ->
+      if previous_runner,
+        do: Application.put_env(:symphony_elixir, :ssh_command_runner, previous_runner),
+        else: Application.delete_env(:symphony_elixir, :ssh_command_runner)
+    end)
+
+    Application.put_env(:symphony_elixir, :ssh_command_runner, fn _executable, args, _opts ->
+      worker_host = Enum.at(args, -2)
+      command = List.last(args)
+      assert command =~ "SYMPHONY_EXISTING_WORKSPACE"
+      physical_path = "/remote/#{worker_host}/central-brain/ARO-286"
+      {"SYMPHONY_EXISTING_WORKSPACE\t#{physical_path}\t1:286\n", 0}
+    end)
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      workspace_root: "~/.symphony-remote-workspaces",
+      worker_ssh_hosts: ["worker-a", "worker-b"]
+    )
+
+    fetcher = fn ^profile, _states ->
+      {:ok,
+       [
+         %Issue{
+           id: "terminal-remote-aro-286",
+           identifier: "ARO-286",
+           project_id: profile.linear_project_id,
+           repository: profile.repository,
+           routing_revision: 16,
+           project_profile: profile
+         }
+       ]}
+    end
+
+    cleanup_fun = fn identifier, worker_host, context, attestation ->
+      send(parent, {:remote_cleanup, identifier, worker_host, context.profile_key, attestation})
+    end
+
+    assert :ok = Orchestrator.terminal_cleanup_for_test([profile], ["Done"], fetcher, cleanup_fun)
+
+    for worker_host <- ["worker-a", "worker-b"] do
+      assert_receive {:remote_cleanup, "ARO-286", ^worker_host, "central-brain", %{kind: :remote, identity: "1:286"}}
+    end
+  end
+
+  test "orchestrator forwards approved AgentRunner dependencies across the spawn boundary" do
+    provider = fn _credential_ref -> {:ok, {"credential", %{}}} end
+    effect_ledger_ready? = fn -> false end
+    start_fun = fn _task -> {:error, :not_started} end
+
+    options =
+      Orchestrator.agent_runner_options_for_test(
+        [
+          credential_provider: provider,
+          effect_ledger_ready?: effect_ledger_ready?,
+          task_start_fun: start_fun
+        ],
+        attempt: 1,
+        worker_host: nil
+      )
+
+    assert options[:credential_provider] == provider
+    assert options[:effect_ledger_ready?] == effect_ledger_ready?
+    assert options[:attempt] == 1
+    refute Keyword.has_key?(options, :task_start_fun)
+    refute Keyword.has_key?(options, :effect_ledger_ready)
   end
 
   test "first abnormal worker exit waits before retrying" do
@@ -2124,5 +2878,51 @@ defmodule SymphonyElixir.CoreTest do
     after
       File.rm_rf(test_root)
     end
+  end
+
+  defp execution_fixture(profile_key, identifier, issue_suffix, routing_revision) do
+    profile =
+      case profile_key do
+        "central-brain" ->
+          %{
+            key: "central-brain",
+            linear_project_id: "d0acfb71-f68c-4a9f-8a1a-477265d3c3ec",
+            repository: "aroakpm-svg/aroak-central-brain",
+            canonical_branch: "main",
+            workspace_namespace: "central-brain",
+            credential_ref: "github-central-brain",
+            environment: "local_non_production"
+          }
+
+        "project-management" ->
+          %{
+            key: "project-management",
+            linear_project_id: "708053e0-f42c-4e93-bec4-7abbb37e74af",
+            repository: "aroakpm-svg/aroak-project-management",
+            canonical_branch: "main",
+            workspace_namespace: "project-management",
+            credential_ref: "github-project-management",
+            environment: "local_non_production"
+          }
+      end
+
+    issue = %Issue{
+      id: "#{profile_key}-#{issue_suffix}",
+      identifier: identifier,
+      state: "In Progress",
+      project_id: profile.linear_project_id,
+      repository: profile.repository,
+      project_profile: profile,
+      routing_revision: routing_revision
+    }
+
+    assert {:ok, execution_context} = ProjectExecutionContext.from_issue(issue)
+    {issue, execution_context}
+  end
+end
+
+defmodule SymphonyElixir.CoreTest.StartupIdentityLinearClient do
+  def validate_identity do
+    Application.fetch_env!(:symphony_elixir, :startup_identity_client_result)
   end
 end

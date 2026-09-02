@@ -5,6 +5,7 @@
 │ Runtime: 0m 0s
 │ Tokens: in 0 | out 0 | total 0
 │ Rate Limits: unavailable
+│ Health: poll=unknown linear=unknown claim_store=unknown stop=unknown
 │ Project: https://linear.app/project/project/issues
 │ Next refresh: n/a
 ├─ Running

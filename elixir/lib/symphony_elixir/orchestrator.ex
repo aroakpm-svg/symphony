@@ -10,12 +10,15 @@ defmodule SymphonyElixir.Orchestrator do
   alias SymphonyElixir.{
     AgentRunner,
     ClaimService,
+    CodexExecutionInputs,
     Config,
     DispatchCandidate,
     MultiProjectPoll,
+    ProjectExecutionContext,
     ProjectProfiles,
     ProjectRepoPreflight,
     ReviewMonitor,
+    RuntimeHealth,
     StatusDashboard,
     Tracker,
     Workspace
@@ -50,6 +53,14 @@ defmodule SymphonyElixir.Orchestrator do
     total_tokens: 0,
     seconds_running: 0
   }
+  @agent_runner_option_keys [
+    :codex_session_starter,
+    :credential_provider,
+    :effect_ledger_ready?,
+    :issue_state_fetcher,
+    :max_turns,
+    :readiness_command_runner
+  ]
 
   defmodule State do
     @moduledoc """
@@ -77,6 +88,7 @@ defmodule SymphonyElixir.Orchestrator do
 
   @spec start_link(keyword()) :: GenServer.on_start()
   def start_link(opts \\ []) do
+    opts = Keyword.merge(configured_orchestrator_opts(), opts)
     name = Keyword.get(opts, :name, __MODULE__)
     GenServer.start_link(__MODULE__, opts, name: name)
   end
@@ -92,25 +104,36 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   @impl true
-  def init(_opts) do
-    now_ms = System.monotonic_time(:millisecond)
-    config = Config.settings!()
+  def init(opts) do
+    identity_validator = identity_validator(opts)
 
-    state = %State{
-      poll_interval_ms: config.polling.interval_ms,
-      max_concurrent_agents: config.agent.max_concurrent_agents,
-      next_poll_due_at_ms: now_ms,
-      poll_check_in_progress: false,
-      tick_timer_ref: nil,
-      tick_token: nil,
-      codex_totals: @empty_codex_totals,
-      codex_rate_limits: nil
-    }
+    case validate_startup_identity(identity_validator) do
+      {:ok, _viewer_id} ->
+        report_health(opts, {:dependency, :linear, %{status: :connected}})
+        now_ms = System.monotonic_time(:millisecond)
+        config = Config.settings!()
 
-    run_terminal_workspace_cleanup()
-    state = schedule_tick(state, 0)
+        state = %State{
+          poll_interval_ms: config.polling.interval_ms,
+          max_concurrent_agents: config.agent.max_concurrent_agents,
+          next_poll_due_at_ms: now_ms,
+          poll_check_in_progress: false,
+          tick_timer_ref: nil,
+          tick_token: nil,
+          codex_totals: @empty_codex_totals,
+          codex_rate_limits: nil
+        }
 
-    {:ok, state}
+        run_terminal_workspace_cleanup()
+        state = schedule_tick(state, 0)
+
+        {:ok, state}
+
+      {:error, reason} ->
+        report_health(opts, {:dependency, :linear, %{status: :failed, failure_category: reason}})
+        report_health(opts, {:stop, %{category: :startup_failure, failure_category: reason}})
+        {:stop, reason}
+    end
   end
 
   @impl true
@@ -192,6 +215,10 @@ defmodule SymphonyElixir.Orchestrator do
           running_entry
           |> maybe_put_runtime_value(:worker_host, runtime_info[:worker_host])
           |> maybe_put_runtime_value(:workspace_path, runtime_info[:workspace_path])
+          |> maybe_put_runtime_value(
+            :workspace_attestation,
+            runtime_info[:workspace_attestation]
+          )
 
         notify_dashboard()
         {:noreply, %{state | running: Map.put(running, issue_id, updated_running_entry)}}
@@ -247,6 +274,7 @@ defmodule SymphonyElixir.Orchestrator do
           running_entry
           |> maybe_put_runtime_value(:worker_host, Map.get(blocker_info, :worker_host))
           |> maybe_put_runtime_value(:workspace_path, Map.get(blocker_info, :workspace_path))
+          |> maybe_put_runtime_value(:blocker_kind, Map.get(blocker_info, :kind))
 
         Logger.warning("Agent reported hard blocker for issue_id=#{issue_id} issue_identifier=#{running_entry.identifier}: #{error}")
 
@@ -284,6 +312,55 @@ defmodule SymphonyElixir.Orchestrator do
     Logger.debug("Orchestrator ignored message: #{inspect(msg)}")
     {:noreply, state}
   end
+
+  defp validate_startup_identity(identity_validator) when is_function(identity_validator, 0) do
+    case identity_validator.() do
+      {:ok, %{viewer_id: viewer_id}} when is_binary(viewer_id) -> validate_viewer_id(viewer_id)
+      {:error, reason} when is_atom(reason) -> {:error, normalize_identity_error(reason)}
+      _result -> {:error, :linear_response_invalid}
+    end
+  rescue
+    _exception -> {:error, :linear_unavailable}
+  catch
+    _kind, _reason -> {:error, :linear_unavailable}
+  end
+
+  defp validate_startup_identity(_identity_validator), do: {:error, :linear_response_invalid}
+
+  defp identity_validator(opts) do
+    case Keyword.fetch(opts, :identity_validator) do
+      {:ok, validator} -> validator
+      :error -> &Tracker.validate_identity/0
+    end
+  end
+
+  defp configured_orchestrator_opts do
+    case Application.get_env(:symphony_elixir, :orchestrator_opts, []) do
+      opts when is_list(opts) -> opts
+      _opts -> []
+    end
+  end
+
+  defp validate_viewer_id(viewer_id) do
+    if String.trim(viewer_id) == "" do
+      {:error, :linear_identity_missing}
+    else
+      {:ok, viewer_id}
+    end
+  end
+
+  defp normalize_identity_error(reason)
+       when reason in [
+              :linear_unauthorized,
+              :linear_forbidden,
+              :linear_identity_missing,
+              :linear_response_invalid,
+              :linear_workspace_mismatch,
+              :linear_unavailable
+            ],
+       do: reason
+
+  defp normalize_identity_error(_reason), do: :linear_unavailable
 
   defp handle_agent_down({:claim_lost, issue_id, reason}, state, issue_id, running_entry, _session_id) do
     block_issue_from_entry(state, issue_id, running_entry, "database claim lost: #{inspect(reason)}")
@@ -344,6 +421,8 @@ defmodule SymphonyElixir.Orchestrator do
         issue_url: running_entry.issue.url,
         worker_host: Map.get(running_entry, :worker_host),
         workspace_path: Map.get(running_entry, :workspace_path),
+        workspace_attestation: Map.get(running_entry, :workspace_attestation),
+        execution_context: Map.get(running_entry, :execution_context),
         project_profile: running_entry.issue.project_profile
       },
       extra
@@ -467,7 +546,28 @@ defmodule SymphonyElixir.Orchestrator do
   defp run_multi_project_poll(state, profiles, profiles_to_poll, opts) do
     fetcher = Keyword.get(opts, :fetcher, &Tracker.fetch_candidate_issues/1)
     poll_opts = multi_project_poll_opts(opts)
+
+    Enum.each(profiles_to_poll, fn profile ->
+      report_health(opts, {:stage, :candidate_fetch, health_profile_metadata(profile, :started)})
+    end)
+
     result = MultiProjectPoll.fetch(profiles_to_poll, fetcher, poll_opts)
+
+    Enum.each(profiles_to_poll, fn profile ->
+      outcome = Map.get(result.outcomes, profile.key, %{status: :error})
+      report_candidate_fetch_outcome(opts, profile, outcome)
+    end)
+
+    if Enum.all?(result.outcomes, fn {_profile, outcome} -> outcome.status == :ok end) do
+      report_health(opts, {:dependency, :linear, %{status: :connected}})
+      report_health(opts, :poll_succeeded)
+    else
+      report_health(opts, {
+        :dependency,
+        :linear,
+        %{status: :failed, failure_category: :candidate_fetch_failed}
+      })
+    end
 
     state = update_profile_poll_outcomes(state, result.outcomes, opts)
 
@@ -515,8 +615,24 @@ defmodule SymphonyElixir.Orchestrator do
   defp dispatch_multi_project_candidate(state, %Issue{} = candidate, profiles, opts) do
     refresh_fun = Keyword.get(opts, :refresh_fun, &Tracker.fetch_issue_states_by_ids/1)
 
-    case revalidate_issue_for_dispatch(candidate, refresh_fun, terminal_state_set()) do
+    report_health(opts, {:stage, :issue_refresh, health_issue_metadata(candidate, :started)})
+
+    refresh_result =
+      observed_call(
+        fn -> revalidate_issue_for_dispatch(candidate, refresh_fun, terminal_state_set()) end,
+        fn failure_category ->
+          report_health(opts, {
+            :stage,
+            :issue_refresh,
+            health_issue_metadata(candidate, :failed, failure_category)
+          })
+        end
+      )
+
+    case refresh_result do
       {:ok, %Issue{} = refreshed_issue} ->
+        report_health(opts, {:stage, :issue_refresh, health_issue_metadata(candidate, :succeeded)})
+
         refreshed_issue = %{
           refreshed_issue
           | project_profile: candidate.project_profile,
@@ -526,15 +642,28 @@ defmodule SymphonyElixir.Orchestrator do
         authorize_multi_project_candidate(state, refreshed_issue, profiles, opts)
 
       {:skip, :missing} ->
+        report_health(opts, {:stage, :issue_refresh, health_issue_metadata(candidate, :skipped, :missing)})
         Logger.info("Skipping dispatch; issue no longer active or visible: #{issue_context(candidate)}")
         transition_retry_release(state, candidate, opts)
 
       {:skip, %Issue{} = refreshed_issue} ->
+        report_health(opts, {
+          :stage,
+          :issue_refresh,
+          health_issue_metadata(refreshed_issue, :skipped, :stale_issue)
+        })
+
         Logger.info("Skipping stale multi-project dispatch after issue refresh: #{issue_context(refreshed_issue)}")
 
         transition_retry_release(state, refreshed_issue, opts)
 
       {:error, _reason} ->
+        report_health(opts, {
+          :stage,
+          :issue_refresh,
+          health_issue_metadata(candidate, :failed, :refresh_unavailable)
+        })
+
         Logger.warning("Retrying profile after issue refresh failed: #{issue_context(candidate)}")
         transition_retry_transient(state, candidate, :refresh_unavailable, opts)
     end
@@ -550,15 +679,52 @@ defmodule SymphonyElixir.Orchestrator do
       route_reader: route_reader
     ]
 
-    case DispatchCandidate.authorize(issue, profiles, authorization_opts) do
+    for stage <- [:routing, :profile_resolution] do
+      report_health(opts, {:stage, stage, health_issue_metadata(issue, :started)})
+    end
+
+    authorization_result =
+      observed_call(
+        fn -> DispatchCandidate.authorize(issue, profiles, authorization_opts) end,
+        fn failure_category ->
+          for stage <- [:routing, :profile_resolution] do
+            report_health(opts, {
+              :stage,
+              stage,
+              health_issue_metadata(issue, :failed, failure_category)
+            })
+          end
+        end
+      )
+
+    case authorization_result do
       {:ok, authorized_issue} ->
+        for stage <- [:routing, :profile_resolution] do
+          report_health(opts, {:stage, stage, health_issue_metadata(authorized_issue, :succeeded)})
+        end
+
+        report_health(opts, {:dependency, :claim_store, %{status: :connected}})
         preflight_multi_project_candidate(state, authorized_issue, opts)
 
       {:skip, reason} ->
+        for stage <- [:routing, :profile_resolution] do
+          report_health(opts, {:stage, stage, health_issue_metadata(issue, :skipped, reason)})
+        end
+
         Logger.info("Skipping ineligible multi-project candidate: #{issue_context(issue)} reason=#{reason}")
         transition_retry_release(state, issue, opts)
 
       {:retry, reason} ->
+        for stage <- [:routing, :profile_resolution] do
+          report_health(opts, {:stage, stage, health_issue_metadata(issue, :retrying, reason)})
+        end
+
+        report_health(opts, {
+          :dependency,
+          :claim_store,
+          %{status: :failed, failure_category: :routing_unavailable}
+        })
+
         Logger.warning("Retrying profile after authorization uncertainty: #{issue_context(issue)} reason=#{reason}")
         transition_retry_transient(state, issue, reason, opts)
     end
@@ -567,11 +733,27 @@ defmodule SymphonyElixir.Orchestrator do
   defp preflight_multi_project_candidate(state, issue, opts) do
     preflight_fun = Keyword.get(opts, :preflight_fun, &ProjectRepoPreflight.check/1)
 
-    case preflight_fun.(issue.project_profile) do
+    report_health(opts, {:stage, :preflight, health_issue_metadata(issue, :started)})
+
+    preflight_result =
+      observed_call(
+        fn -> preflight_fun.(issue.project_profile) end,
+        fn failure_category ->
+          report_health(opts, {
+            :stage,
+            :preflight,
+            health_issue_metadata(issue, :failed, failure_category)
+          })
+        end
+      )
+
+    case preflight_result do
       {:ok, _receipt} ->
+        report_health(opts, {:stage, :preflight, health_issue_metadata(issue, :succeeded)})
         dispatch_authorized_multi_project_candidate(state, issue, opts)
 
       {:blocked, %{code: code}} ->
+        report_health(opts, {:stage, :preflight, health_issue_metadata(issue, :skipped, code)})
         Logger.warning("Skipping multi-project candidate after repository preflight: #{issue_context(issue)} profile=#{issue.project_profile.key} reason=#{code}")
 
         case preflight_blocker_disposition(code) do
@@ -580,6 +762,12 @@ defmodule SymphonyElixir.Orchestrator do
         end
 
       _other ->
+        report_health(opts, {
+          :stage,
+          :preflight,
+          health_issue_metadata(issue, :retrying, :preflight_unavailable)
+        })
+
         Logger.warning("Skipping multi-project candidate after repository preflight: #{issue_context(issue)} profile=#{issue.project_profile.key} reason=preflight_unavailable")
 
         transition_retry_transient(state, issue, :preflight_unavailable, opts)
@@ -912,10 +1100,19 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   @doc false
-  @spec retry_issue_fetch_for_test(String.t(), map()) :: term()
-  def retry_issue_fetch_for_test(issue_id, metadata) when is_binary(issue_id) and is_map(metadata) do
-    retry_issue_fetch(issue_id, metadata)
+  @spec retry_issue_fetch_for_test(String.t(), map(), ([String.t()] -> term())) :: term()
+  def retry_issue_fetch_for_test(issue_id, metadata, fetch_fun \\ &Tracker.fetch_issue_states_by_ids/1)
+      when is_binary(issue_id) and is_map(metadata) and is_function(fetch_fun, 1) do
+    retry_issue_fetch_unfiltered(issue_id, metadata, fetch_fun)
   end
+
+  @doc false
+  @spec report_runtime_health_for_test(term()) :: :ok
+  def report_runtime_health_for_test(event), do: report_runtime_health(event)
+
+  @doc false
+  @spec runtime_health_snapshot_for_test() :: map()
+  def runtime_health_snapshot_for_test, do: runtime_health_snapshot()
 
   @doc false
   @spec approved_profile_result_for_test(term(), String.t()) :: {:ok, map()} | {:error, atom()}
@@ -960,11 +1157,26 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   @doc false
-  @spec terminal_cleanup_for_test([map()], [String.t()], (map(), [String.t()] -> term()), (String.t() -> term())) :: :ok
+  @spec terminal_cleanup_for_test(
+          [map()],
+          [String.t()],
+          (map(), [String.t()] -> term()),
+          (String.t() -> term())
+          | (String.t(), ProjectExecutionContext.t() -> term())
+          | (String.t(), ProjectExecutionContext.t(), map() | nil -> term())
+          | (String.t(), String.t() | nil, ProjectExecutionContext.t(), map() | nil -> term())
+        ) :: :ok
   def terminal_cleanup_for_test(profiles, states, fetcher, cleanup_fun)
-      when is_list(profiles) and is_function(fetcher, 2) and is_function(cleanup_fun, 1) do
+      when is_list(profiles) and is_function(fetcher, 2) and
+             (is_function(cleanup_fun, 1) or is_function(cleanup_fun, 2) or
+                is_function(cleanup_fun, 3) or is_function(cleanup_fun, 4)) do
     cleanup_terminal_profiles(profiles, states, fetcher, cleanup_fun)
   end
+
+  @doc false
+  @spec agent_runner_options_for_test(keyword(), keyword()) :: keyword()
+  def agent_runner_options_for_test(opts, authority) when is_list(opts) and is_list(authority),
+    do: agent_runner_options(opts, authority)
 
   @doc false
   @spec handle_claim_rejection_for_test(term(), Issue.t(), term()) :: term()
@@ -988,12 +1200,16 @@ defmodule SymphonyElixir.Orchestrator do
       terminal_issue_state?(issue.state, terminal_states) ->
         Logger.info("Issue moved to terminal state: #{issue_context(issue)} state=#{issue.state}; stopping active agent")
 
-        terminate_running_issue(state, issue.id, true)
+        terminate_running_issue(state, issue.id, :complete)
+
+      running_project_identity_changed?(state, issue) ->
+        Logger.warning("Running issue project identity changed; releasing claim: #{issue_context(issue)} project_id=#{inspect(issue.project_id)}")
+        terminate_running_issue(state, issue.id, :invalidate_context)
 
       !issue_routable?(issue) ->
         Logger.info("Issue no longer routed to this worker: #{issue_context(issue)} assignee=#{inspect(issue.assignee_id)}; stopping active agent")
 
-        terminate_running_issue(state, issue.id, false)
+        terminate_running_issue(state, issue.id, :retain_context)
 
       active_issue_state?(issue.state, active_states) ->
         reconcile_active_running_issue(state, issue)
@@ -1001,20 +1217,30 @@ defmodule SymphonyElixir.Orchestrator do
       true ->
         Logger.info("Issue moved to non-active state: #{issue_context(issue)} state=#{issue.state}; stopping active agent")
 
-        terminate_running_issue(state, issue.id, false)
+        terminate_running_issue(state, issue.id, :retain_context)
     end
   end
 
   defp reconcile_issue_state(_issue, state, _active_states, _terminal_states), do: state
 
+  defp running_project_identity_changed?(%State{} = state, %Issue{} = issue) do
+    case Map.get(state.running, issue.id) do
+      %{execution_context: %ProjectExecutionContext{}} = running_entry ->
+        not running_project_identity_matches?(running_entry, issue)
+
+      _legacy_or_missing ->
+        false
+    end
+  end
+
   defp reconcile_active_running_issue(state, issue) do
     case Map.get(state.running, issue.id) do
-      %{issue: existing_issue} ->
-        if running_project_identity_matches?(existing_issue, issue) do
+      %{issue: _existing_issue} = running_entry ->
+        if running_project_identity_matches?(running_entry, issue) do
           refresh_running_issue_state(state, issue)
         else
           Logger.warning("Running issue project identity changed; releasing claim: #{issue_context(issue)} project_id=#{inspect(issue.project_id)}")
-          terminate_running_issue(state, issue.id, false)
+          terminate_running_issue(state, issue.id, :invalidate_context)
         end
 
       _missing ->
@@ -1022,12 +1248,27 @@ defmodule SymphonyElixir.Orchestrator do
     end
   end
 
-  defp running_project_identity_matches?(%Issue{project_profile: nil}, _refreshed_issue), do: true
+  defp running_project_identity_matches?(
+         %{execution_context: %ProjectExecutionContext{linear_project_id: expected_project_id}},
+         %Issue{project_id: refreshed_project_id}
+       ) do
+    project_ids_match?(expected_project_id, refreshed_project_id)
+  end
+
+  defp running_project_identity_matches?(%{issue: %Issue{project_profile: nil}}, _refreshed_issue),
+    do: true
 
   defp running_project_identity_matches?(
-         %Issue{project_profile: %{linear_project_id: expected_project_id}},
+         %{issue: %Issue{project_profile: %{linear_project_id: expected_project_id}}},
          %Issue{project_id: refreshed_project_id}
        )
+       when is_binary(expected_project_id) and is_binary(refreshed_project_id) do
+    project_ids_match?(expected_project_id, refreshed_project_id)
+  end
+
+  defp running_project_identity_matches?(_running_entry, _refreshed_issue), do: false
+
+  defp project_ids_match?(expected_project_id, refreshed_project_id)
        when is_binary(expected_project_id) and is_binary(refreshed_project_id) do
     with {:ok, expected_uuid} <- Ecto.UUID.cast(expected_project_id),
          {:ok, refreshed_uuid} <- Ecto.UUID.cast(refreshed_project_id) do
@@ -1037,7 +1278,7 @@ defmodule SymphonyElixir.Orchestrator do
     end
   end
 
-  defp running_project_identity_matches?(_existing_issue, _refreshed_issue), do: false
+  defp project_ids_match?(_expected_project_id, _refreshed_project_id), do: false
 
   defp reconcile_blocked_issue_states([], state, _active_states, _terminal_states), do: state
 
@@ -1054,11 +1295,26 @@ defmodule SymphonyElixir.Orchestrator do
     cond do
       terminal_issue_state?(issue.state, terminal_states) ->
         Logger.info("Blocked issue moved to terminal state: #{issue_context(issue)} state=#{issue.state}; releasing block")
-        cleanup_issue_workspace(issue.identifier, blocked_issue_worker_host(state, issue.id))
+
+        retire_blocked_execution_context(state, issue.id)
+
+        release_issue_claim(state, issue.id)
+
+      !blocked_project_identity_matches?(state, issue) ->
+        Logger.warning(
+          "Blocked issue project identity changed; releasing claim: " <>
+            "#{issue_context(issue)} project_id=#{inspect(issue.project_id)}"
+        )
+
+        retire_blocked_execution_context(state, issue.id)
         release_issue_claim(state, issue.id)
 
       !issue_routable?(issue) ->
         Logger.info("Blocked issue no longer routed to this worker: #{issue_context(issue)} assignee=#{inspect(issue.assignee_id)}; releasing block")
+        release_issue_claim(state, issue.id)
+
+      blocked_condition_resolved?(state, issue) ->
+        Logger.info("Blocked issue condition resolved: #{issue_context(issue)}; releasing block for redispatch")
         release_issue_claim(state, issue.id)
 
       active_issue_state?(issue.state, active_states) ->
@@ -1071,6 +1327,26 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   defp reconcile_blocked_issue_state(_issue, state, _active_states, _terminal_states), do: state
+
+  defp blocked_project_identity_matches?(%State{} = state, %Issue{} = issue) do
+    case Map.get(state.blocked, issue.id) do
+      %{execution_context: %ProjectExecutionContext{linear_project_id: expected_project_id}} ->
+        project_ids_match?(expected_project_id, issue.project_id)
+
+      _legacy_or_missing ->
+        true
+    end
+  end
+
+  defp blocked_condition_resolved?(%State{} = state, %Issue{} = issue) do
+    case Map.get(state.blocked, issue.id) do
+      %{blocker_kind: {:codex_model_label_conflict, _labels}} ->
+        match?({:ok, _environment}, CodexExecutionInputs.resolve(issue, Config.settings!().codex))
+
+      _permanent_or_missing ->
+        false
+    end
+  end
 
   defp reconcile_missing_running_issue_ids(%State{} = state, requested_issue_ids, issues)
        when is_list(requested_issue_ids) and is_list(issues) do
@@ -1087,7 +1363,7 @@ defmodule SymphonyElixir.Orchestrator do
         state_acc
       else
         log_missing_running_issue(state_acc, issue_id)
-        terminate_running_issue(state_acc, issue_id, false)
+        terminate_running_issue(state_acc, issue_id, :retain_context)
       end
     end)
   end
@@ -1162,7 +1438,8 @@ defmodule SymphonyElixir.Orchestrator do
     end
   end
 
-  defp terminate_running_issue(%State{} = state, issue_id, cleanup_workspace) do
+  defp terminate_running_issue(%State{} = state, issue_id, termination_policy)
+       when termination_policy in [:complete, :invalidate_context, :retain_context] do
     case Map.get(state.running, issue_id) do
       nil ->
         release_issue_claim(state, issue_id)
@@ -1170,14 +1447,21 @@ defmodule SymphonyElixir.Orchestrator do
       %{pid: pid, ref: ref, identifier: identifier} = running_entry ->
         state = record_session_completion_totals(state, running_entry)
         worker_host = Map.get(running_entry, :worker_host)
-
-        if cleanup_workspace do
-          cleanup_issue_workspace(identifier, worker_host)
-        end
+        execution_context = Map.get(running_entry, :execution_context)
+        workspace_attestation = Map.get(running_entry, :workspace_attestation)
 
         stop_running_task(pid, ref)
 
-        if cleanup_workspace do
+        if retire_execution_context?(termination_policy) do
+          retire_execution_context(
+            identifier,
+            worker_host,
+            execution_context,
+            workspace_attestation
+          )
+        end
+
+        if termination_policy == :complete do
           finalize_distributed_claim(issue_id, :complete)
         else
           finalize_distributed_claim(issue_id, :release)
@@ -1194,6 +1478,28 @@ defmodule SymphonyElixir.Orchestrator do
       _ ->
         release_issue_claim(state, issue_id)
     end
+  end
+
+  defp retire_execution_context?(termination_policy),
+    do: termination_policy in [:complete, :invalidate_context]
+
+  defp retire_blocked_execution_context(%State{} = state, issue_id) do
+    case Map.get(state.blocked, issue_id) do
+      %{identifier: identifier} = blocked_entry ->
+        retire_execution_context(
+          identifier,
+          Map.get(blocked_entry, :worker_host),
+          Map.get(blocked_entry, :execution_context),
+          Map.get(blocked_entry, :workspace_attestation)
+        )
+
+      _missing ->
+        :ok
+    end
+  end
+
+  defp retire_execution_context(identifier, worker_host, execution_context, workspace_attestation) do
+    cleanup_issue_workspace(identifier, worker_host, execution_context, workspace_attestation)
   end
 
   defp reconcile_stalled_running_issues(%State{running: running} = state) when map_size(running) == 0,
@@ -1242,7 +1548,7 @@ defmodule SymphonyElixir.Orchestrator do
         next_attempt = next_retry_attempt_from_running(running_entry)
 
         state
-        |> terminate_running_issue(issue_id, false)
+        |> terminate_running_issue(issue_id, :retain_context)
         |> schedule_issue_retry(
           issue_id,
           next_attempt,
@@ -1377,6 +1683,9 @@ defmodule SymphonyElixir.Orchestrator do
       issue: Map.get(running_entry, :issue),
       worker_host: Map.get(running_entry, :worker_host),
       workspace_path: Map.get(running_entry, :workspace_path),
+      workspace_attestation: Map.get(running_entry, :workspace_attestation),
+      execution_context: Map.get(running_entry, :execution_context),
+      blocker_kind: Map.get(running_entry, :blocker_kind),
       session_id: running_entry_session_id(running_entry),
       error: error,
       blocked_at: DateTime.utc_now(),
@@ -1572,8 +1881,25 @@ defmodule SymphonyElixir.Orchestrator do
         transition_retry_retained(state, issue, :worker_capacity_race, opts)
 
       worker_host ->
-        case claim_fun.(issue, recipient) do
+        report_health(opts, {:stage, :claim, health_issue_metadata(issue, :started)})
+
+        claim_result =
+          observed_call(
+            fn -> claim_fun.(issue, recipient) end,
+            fn failure_category ->
+              report_health(opts, {
+                :stage,
+                :claim,
+                health_issue_metadata(issue, :failed, failure_category)
+              })
+            end
+          )
+
+        case claim_result do
           {:ok, distributed_claim} ->
+            report_health(opts, {:stage, :claim, health_issue_metadata(issue, :succeeded)})
+            report_health(opts, {:dependency, :claim_store, %{status: :connected}})
+
             dispatch_acquired_claim(
               dispatch_fun,
               state,
@@ -1586,6 +1912,14 @@ defmodule SymphonyElixir.Orchestrator do
             )
 
           {:error, reason} ->
+            report_health(opts, {:stage, :claim, health_issue_metadata(issue, :failed, :claim_rejected)})
+
+            report_health(opts, {
+              :dependency,
+              :claim_store,
+              %{status: :failed, failure_category: :claim_rejected}
+            })
+
             Logger.warning("Skipping dispatch; database claim rejected for #{issue_context(issue)}: #{inspect(reason)}")
             handle_claim_rejection(state, issue, attempt, worker_host, reason, opts)
         end
@@ -1593,12 +1927,33 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   defp dispatch_acquired_claim(dispatch_fun, state, issue, attempt, recipient, worker_host, claim, opts) do
-    dispatch_fun.(state, issue, attempt, recipient, worker_host, claim)
+    report_health(opts, {:stage, :dispatch, health_issue_metadata(issue, :started)})
+
+    case dispatch_fun.(state, issue, attempt, recipient, worker_host, claim) do
+      {:ok, result} ->
+        report_health(opts, {:stage, :dispatch, health_issue_metadata(issue, :succeeded)})
+        result
+
+      {:error, result} ->
+        report_health(opts, {
+          :stage,
+          :dispatch,
+          health_issue_metadata(issue, :failed, :dispatch_failure)
+        })
+
+        result
+
+      result ->
+        report_health(opts, {:stage, :dispatch, health_issue_metadata(issue, :succeeded)})
+        result
+    end
   rescue
     exception ->
+      report_health(opts, {:stage, :dispatch, health_issue_metadata(issue, :failed, :dispatch_exception)})
       cleanup_acquired_dispatch_failure(state, issue, attempt, worker_host, {:exception, exception}, opts)
   catch
     kind, reason ->
+      report_health(opts, {:stage, :dispatch, health_issue_metadata(issue, :failed, :dispatch_failure)})
       cleanup_acquired_dispatch_failure(state, issue, attempt, worker_host, {kind, reason}, opts)
   end
 
@@ -1627,18 +1982,38 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   defp spawn_issue_on_worker_host(%State{} = state, issue, attempt, recipient, worker_host, distributed_claim, opts) do
+    execution_context = execution_context_for_dispatch!(issue)
+    opts = Keyword.put(opts, :execution_context, execution_context)
     start_fun = Keyword.get(opts, :task_start_fun, &Task.Supervisor.start_child(SymphonyElixir.TaskSupervisor, &1))
     bind_fun = Keyword.get(opts, :bind_worker_fun, &ClaimService.bind_worker/2)
     terminate_fun = Keyword.get(opts, :terminate_task_fun, &terminate_task/1)
     finalize_fun = Keyword.get(opts, :finalize_claim_fun, &finalize_distributed_claim/2)
-    track_fun = Keyword.get(opts, :track_worker_fun, &track_spawned_issue/7)
 
-    task_fun = fn ->
-      AgentRunner.run(issue, recipient,
+    track_fun =
+      Keyword.get(opts, :track_worker_fun) ||
+        fn state_arg, issue_arg, attempt_arg, host_arg, claim_arg, pid_arg, ref_arg ->
+          track_spawned_issue(
+            state_arg,
+            issue_arg,
+            attempt_arg,
+            host_arg,
+            claim_arg,
+            pid_arg,
+            ref_arg,
+            execution_context
+          )
+        end
+
+    runner_options =
+      agent_runner_options(opts,
         attempt: attempt,
         worker_host: worker_host,
-        distributed_claim: distributed_claim
+        distributed_claim: distributed_claim,
+        execution_context: execution_context
       )
+
+    task_fun = fn ->
+      AgentRunner.run(issue, recipient, runner_options)
     end
 
     case start_fun.(task_fun) do
@@ -1662,23 +2037,30 @@ defmodule SymphonyElixir.Orchestrator do
         Logger.error("Unable to spawn agent for #{issue_context(issue)}: #{inspect(reason)}")
         next_attempt = if is_integer(attempt), do: attempt + 1, else: nil
 
-        transition_retry_unowned_backoff(
-          state,
-          issue,
-          next_attempt,
-          "failed to spawn agent: #{inspect(reason)}",
-          worker_host,
-          opts
-        )
+        {:error,
+         transition_retry_unowned_backoff(
+           state,
+           issue,
+           next_attempt,
+           "failed to spawn agent: #{inspect(reason)}",
+           worker_host,
+           opts
+         )}
     end
+  end
+
+  defp agent_runner_options(opts, authority) do
+    opts
+    |> Keyword.take(@agent_runner_option_keys)
+    |> Keyword.merge(authority)
   end
 
   defp complete_spawned_worker_startup(context) do
     context = Map.put(context, :ref, Process.monitor(context.pid))
 
     case spawned_worker_startup_outcome(context) do
-      {:ok, state} -> state
-      {:error, reason} -> cleanup_spawned_worker_failure(context, reason)
+      {:ok, state} -> {:ok, state}
+      {:error, reason} -> {:error, cleanup_spawned_worker_failure(context, reason)}
     end
   end
 
@@ -1806,6 +2188,7 @@ defmodule SymphonyElixir.Orchestrator do
       issue_url: issue.url,
       error: error,
       worker_host: worker_host,
+      execution_context: Keyword.get(opts, :execution_context) || retry_metadata[:execution_context],
       project_profile: issue.project_profile || retry_metadata[:project_profile]
     })
   end
@@ -1830,7 +2213,16 @@ defmodule SymphonyElixir.Orchestrator do
     schedule_issue_retry(state, issue.id, attempt, metadata)
   end
 
-  defp track_spawned_issue(state, issue, attempt, worker_host, distributed_claim, pid, ref) do
+  defp track_spawned_issue(
+         state,
+         issue,
+         attempt,
+         worker_host,
+         distributed_claim,
+         pid,
+         ref,
+         execution_context
+       ) do
     Logger.info("Dispatching issue to agent: #{issue_context(issue)} pid=#{inspect(pid)} attempt=#{inspect(attempt)} worker_host=#{worker_host || "local"}")
 
     running =
@@ -1839,8 +2231,10 @@ defmodule SymphonyElixir.Orchestrator do
         ref: ref,
         identifier: issue.identifier,
         issue: issue,
+        execution_context: execution_context,
         worker_host: worker_host,
         workspace_path: nil,
+        workspace_attestation: nil,
         session_id: nil,
         last_codex_message: nil,
         last_codex_timestamp: nil,
@@ -1864,6 +2258,19 @@ defmodule SymphonyElixir.Orchestrator do
         claimed: MapSet.put(state.claimed, issue.id),
         retry_attempts: Map.delete(state.retry_attempts, issue.id)
     }
+  end
+
+  defp execution_context_for_dispatch!(%Issue{project_profile: nil}), do: nil
+
+  defp execution_context_for_dispatch!(%Issue{} = issue) do
+    case ProjectExecutionContext.from_issue(issue) do
+      {:ok, execution_context} ->
+        execution_context
+
+      {:error, reason} ->
+        raise ArgumentError,
+              "invalid project execution context for #{issue_context(issue)}: #{inspect(reason)}"
+    end
   end
 
   defp revalidate_issue_for_dispatch(%Issue{id: issue_id}, issue_fetcher, terminal_states)
@@ -1907,11 +2314,11 @@ defmodule SymphonyElixir.Orchestrator do
     error = pick_retry_error(previous_retry, metadata)
     worker_host = pick_retry_worker_host(previous_retry, metadata)
     workspace_path = pick_retry_workspace_path(previous_retry, metadata)
-    project_profile = Map.get(metadata, :project_profile) || Map.get(previous_retry, :project_profile)
 
-    ownership =
-      Map.get(metadata, :ownership) || Map.get(previous_retry, :ownership) ||
-        if(MapSet.member?(state.claimed, issue_id), do: :retained_owner, else: :unowned_backoff)
+    workspace_attestation = retry_value(metadata, previous_retry, :workspace_attestation)
+    project_profile = retry_value(metadata, previous_retry, :project_profile)
+    execution_context = retry_value(metadata, previous_retry, :execution_context)
+    ownership = retry_ownership(state, issue_id, metadata, previous_retry)
 
     if is_reference(old_timer) do
       Process.cancel_timer(old_timer)
@@ -1936,10 +2343,24 @@ defmodule SymphonyElixir.Orchestrator do
             error: error,
             worker_host: worker_host,
             workspace_path: workspace_path,
+            workspace_attestation: workspace_attestation,
+            execution_context: execution_context,
             project_profile: project_profile,
             ownership: ownership
           })
     }
+  end
+
+  defp retry_value(metadata, previous_retry, key) do
+    Map.get(metadata, key) || Map.get(previous_retry, key)
+  end
+
+  defp retry_ownership(state, issue_id, metadata, previous_retry) do
+    retry_value(metadata, previous_retry, :ownership) || default_retry_ownership(state, issue_id)
+  end
+
+  defp default_retry_ownership(state, issue_id) do
+    if MapSet.member?(state.claimed, issue_id), do: :retained_owner, else: :unowned_backoff
   end
 
   defp pop_retry_attempt_state(%State{} = state, issue_id, retry_token) when is_reference(retry_token) do
@@ -1951,6 +2372,8 @@ defmodule SymphonyElixir.Orchestrator do
           error: Map.get(retry_entry, :error),
           worker_host: Map.get(retry_entry, :worker_host),
           workspace_path: Map.get(retry_entry, :workspace_path),
+          workspace_attestation: Map.get(retry_entry, :workspace_attestation),
+          execution_context: Map.get(retry_entry, :execution_context),
           project_profile: Map.get(retry_entry, :project_profile),
           ownership:
             Map.get(retry_entry, :ownership) ||
@@ -1977,6 +2400,7 @@ defmodule SymphonyElixir.Orchestrator do
         Logger.warning("Retry poll failed for issue_id=#{issue_id} issue_identifier=#{metadata[:identifier] || issue_id}: #{inspect(reason)}")
 
         if reason == :approved_project_profiles_removed do
+          retire_retry_execution_context(nil, metadata)
           {:noreply, transition_retry_release_id(state, issue_id, opts)}
         else
           {:noreply,
@@ -1997,14 +2421,20 @@ defmodule SymphonyElixir.Orchestrator do
     end
   end
 
-  defp retry_issue_fetch(issue_id, %{project_profile: %{key: key}}) do
+  defp retry_issue_fetch(issue_id, %{project_profile: %{key: _key}} = metadata) do
+    retry_issue_fetch_unfiltered(issue_id, metadata, &Tracker.fetch_issue_states_by_ids/1)
+  end
+
+  defp retry_issue_fetch(_issue_id, _metadata), do: Tracker.fetch_candidate_issues()
+
+  defp retry_issue_fetch_unfiltered(issue_id, %{project_profile: %{key: key}}, fetch_fun) do
     case current_project_profiles_result() do
       {:ok, nil} ->
         {:error, :approved_project_profiles_removed}
 
       {:ok, profiles} ->
         case approved_profile_result(profiles, key) do
-          {:ok, profile} -> Tracker.fetch_issue_states_by_ids(profile, [issue_id])
+          {:ok, _profile} -> fetch_fun.([issue_id])
           {:error, reason} -> {:error, reason}
         end
 
@@ -2013,7 +2443,7 @@ defmodule SymphonyElixir.Orchestrator do
     end
   end
 
-  defp retry_issue_fetch(_issue_id, _metadata), do: Tracker.fetch_candidate_issues()
+  defp retry_issue_fetch_unfiltered(issue_id, metadata, _fetch_fun), do: retry_issue_fetch(issue_id, metadata)
 
   defp approved_profile_result(nil, _key), do: {:error, :approved_project_profiles_removed}
 
@@ -2038,7 +2468,18 @@ defmodule SymphonyElixir.Orchestrator do
       terminal_issue_state?(issue.state, terminal_states) ->
         Logger.info("Issue state is terminal: issue_id=#{issue_id} issue_identifier=#{issue.identifier} state=#{issue.state}; removing associated workspace")
 
-        cleanup_issue_workspace(issue.identifier, metadata[:worker_host])
+        retire_retry_execution_context(issue, metadata)
+
+        {:noreply, transition_retry_release(state, issue, opts)}
+
+      retry_project_identity_changed?(metadata, issue) ->
+        Logger.warning(
+          "Retry issue project identity changed; releasing claim: " <>
+            "#{issue_context(issue)} project_id=#{inspect(issue.project_id)}"
+        )
+
+        retire_retry_execution_context(issue, metadata)
+
         {:noreply, transition_retry_release(state, issue, opts)}
 
       retry_candidate_issue?(issue, terminal_states) ->
@@ -2056,19 +2497,89 @@ defmodule SymphonyElixir.Orchestrator do
     {:noreply, transition_retry_release_id(state, issue_id, opts)}
   end
 
-  defp cleanup_issue_workspace(identifier, worker_host \\ nil)
-
-  defp cleanup_issue_workspace(identifier, worker_host) when is_binary(identifier) do
-    Workspace.remove_issue_workspaces(identifier, worker_host)
+  defp retry_project_identity_changed?(
+         %{execution_context: %ProjectExecutionContext{linear_project_id: expected_project_id}},
+         %Issue{project_id: refreshed_project_id}
+       ) do
+    not project_ids_match?(expected_project_id, refreshed_project_id)
   end
 
-  defp cleanup_issue_workspace(_identifier, _worker_host), do: :ok
+  defp retry_project_identity_changed?(_metadata, _issue), do: false
 
-  defp blocked_issue_worker_host(%State{} = state, issue_id) do
-    state.blocked
-    |> Map.get(issue_id, %{})
-    |> Map.get(:worker_host)
+  defp retire_retry_execution_context(
+         _issue,
+         %{execution_context: %ProjectExecutionContext{issue_identifier: identifier}} = metadata
+       ) do
+    retire_execution_context(
+      identifier,
+      metadata[:worker_host],
+      metadata[:execution_context],
+      metadata[:workspace_attestation]
+    )
   end
+
+  defp retire_retry_execution_context(%Issue{identifier: identifier}, metadata) do
+    retire_execution_context(
+      identifier,
+      metadata[:worker_host],
+      metadata[:execution_context],
+      metadata[:workspace_attestation]
+    )
+  end
+
+  defp cleanup_issue_workspace(
+         identifier,
+         worker_host \\ nil,
+         execution_context \\ nil,
+         workspace_attestation \\ nil
+       )
+
+  defp cleanup_issue_workspace(
+         identifier,
+         worker_host,
+         %ProjectExecutionContext{} = execution_context,
+         nil
+       )
+       when is_binary(identifier) do
+    case Workspace.attest_existing_issue_workspace(identifier, worker_host, execution_context) do
+      {:ok, workspace_attestation} ->
+        cleanup_issue_workspace(
+          identifier,
+          worker_host,
+          execution_context,
+          workspace_attestation
+        )
+
+      {:error, reason} ->
+        Logger.warning(
+          "Skipping terminal workspace cleanup " <>
+            "profile=#{execution_context.profile_key} " <>
+            "worker_host=#{worker_host || "local"} " <>
+            "issue_identifier=#{identifier}; attestation failed: #{inspect(reason)}"
+        )
+
+        :ok
+    end
+  end
+
+  defp cleanup_issue_workspace(
+         identifier,
+         worker_host,
+         execution_context,
+         workspace_attestation
+       )
+       when is_binary(identifier) do
+    cleanup_options = [workspace_attestation: workspace_attestation, exact_worker_host: true]
+    Workspace.remove_issue_workspaces(identifier, worker_host, execution_context, cleanup_options)
+  end
+
+  defp cleanup_issue_workspace(
+         _identifier,
+         _worker_host,
+         _execution_context,
+         _workspace_attestation
+       ),
+       do: :ok
 
   defp run_terminal_workspace_cleanup do
     settings = Config.settings!()
@@ -2079,7 +2590,14 @@ defmodule SymphonyElixir.Orchestrator do
           ProjectProfiles.list(settings.project_profiles),
           settings.tracker.terminal_states,
           &Tracker.fetch_issues_by_states/2,
-          &cleanup_issue_workspace/1
+          fn identifier, worker_host, execution_context, workspace_attestation ->
+            cleanup_issue_workspace(
+              identifier,
+              worker_host,
+              execution_context,
+              workspace_attestation
+            )
+          end
         )
 
       _legacy ->
@@ -2090,20 +2608,100 @@ defmodule SymphonyElixir.Orchestrator do
   defp cleanup_terminal_profiles(profiles, terminal_states, fetcher, cleanup_fun) do
     profiles
     |> Enum.flat_map(&fetch_terminal_profile(&1, terminal_states, fetcher))
-    |> Enum.reduce({MapSet.new(), []}, fn
-      %Issue{identifier: identifier}, {seen, identifiers} when is_binary(identifier) ->
-        if MapSet.member?(seen, identifier) do
-          {seen, identifiers}
-        else
-          {MapSet.put(seen, identifier), [identifier | identifiers]}
-        end
-
-      _issue, accumulator ->
-        accumulator
-    end)
+    |> Enum.reduce({MapSet.new(), []}, &collect_terminal_cleanup_target/2)
     |> elem(1)
     |> Enum.reverse()
-    |> Enum.each(&safely_cleanup_terminal_workspace(cleanup_fun, &1, "multi-project"))
+    |> Enum.each(fn {identifier, execution_context} ->
+      attest_and_cleanup_terminal_workspace(cleanup_fun, identifier, execution_context)
+    end)
+  end
+
+  defp collect_terminal_cleanup_target(
+         %Issue{identifier: identifier} = issue,
+         {seen, cleanup_targets}
+       )
+       when is_binary(identifier) do
+    case terminal_cleanup_context(issue) do
+      {:ok, execution_context} ->
+        add_terminal_cleanup_target(identifier, execution_context, seen, cleanup_targets)
+
+      {:error, reason} ->
+        Logger.warning(
+          "Skipping startup terminal workspace cleanup issue_identifier=#{identifier}; " <>
+            "invalid execution authority: #{inspect(reason)}"
+        )
+
+        {seen, cleanup_targets}
+    end
+  end
+
+  defp collect_terminal_cleanup_target(_issue, accumulator), do: accumulator
+
+  defp add_terminal_cleanup_target(identifier, execution_context, seen, cleanup_targets) do
+    cleanup_identity = {execution_context.linear_project_id, identifier}
+
+    if MapSet.member?(seen, cleanup_identity) do
+      {seen, cleanup_targets}
+    else
+      {MapSet.put(seen, cleanup_identity), [{identifier, execution_context} | cleanup_targets]}
+    end
+  end
+
+  defp attest_and_cleanup_terminal_workspace(cleanup_fun, identifier, execution_context) do
+    cleanup_worker_hosts()
+    |> Enum.each(fn worker_host ->
+      attest_and_cleanup_terminal_worker(cleanup_fun, identifier, worker_host, execution_context)
+    end)
+  end
+
+  defp cleanup_worker_hosts do
+    [nil | Config.settings!().worker.ssh_hosts]
+  end
+
+  defp attest_and_cleanup_terminal_worker(
+         cleanup_fun,
+         identifier,
+         worker_host,
+         execution_context
+       ) do
+    case Workspace.attest_existing_issue_workspace(identifier, worker_host, execution_context) do
+      {:ok, workspace_attestation} ->
+        safely_cleanup_terminal_workspace(
+          cleanup_fun,
+          identifier,
+          worker_host,
+          execution_context.profile_key,
+          execution_context,
+          workspace_attestation
+        )
+
+      {:error, reason} ->
+        Logger.warning(
+          "Skipping startup terminal workspace cleanup " <>
+            "profile=#{execution_context.profile_key} " <>
+            "worker_host=#{worker_host || "local"} " <>
+            "issue_identifier=#{identifier}; attestation failed: #{inspect(reason)}"
+        )
+    end
+  end
+
+  defp terminal_cleanup_context(%Issue{} = issue) do
+    case ProjectExecutionContext.from_issue(issue) do
+      {:ok, execution_context} ->
+        {:ok, execution_context}
+
+      {:error, :missing_routing_revision} ->
+        case ClaimService.exclusive_route(issue) do
+          {:ok, %{routing_revision: routing_revision}} ->
+            ProjectExecutionContext.from_issue(%{issue | routing_revision: routing_revision})
+
+          error ->
+            error
+        end
+
+      {:error, _reason} = error ->
+        error
+    end
   end
 
   defp fetch_terminal_profile(profile, terminal_states, fetcher) do
@@ -2121,11 +2719,19 @@ defmodule SymphonyElixir.Orchestrator do
         issues
 
       {:error, reason} ->
-        Logger.warning("Skipping startup terminal workspace cleanup profile=#{profile.key}; failed to fetch terminal issues: #{inspect(reason)}")
+        Logger.warning(
+          "Skipping startup terminal workspace cleanup profile=#{profile.key}; " <>
+            "failed to fetch terminal issues: #{inspect(reason)}"
+        )
+
         []
 
       other ->
-        Logger.warning("Skipping startup terminal workspace cleanup profile=#{profile.key}; invalid terminal issue result: #{inspect(other)}")
+        Logger.warning(
+          "Skipping startup terminal workspace cleanup profile=#{profile.key}; " <>
+            "invalid terminal issue result: #{inspect(other)}"
+        )
+
         []
     end
   end
@@ -2136,19 +2742,48 @@ defmodule SymphonyElixir.Orchestrator do
         issues
         |> Enum.each(fn
           %Issue{identifier: identifier} when is_binary(identifier) ->
-            safely_cleanup_terminal_workspace(cleanup_fun, identifier, profile_key)
+            safely_cleanup_terminal_workspace(cleanup_fun, identifier, nil, profile_key, nil, nil)
 
           _ ->
             :ok
         end)
 
       {:error, reason} ->
-        Logger.warning("Skipping startup terminal workspace cleanup profile=#{profile_key || "legacy"}; failed to fetch terminal issues: #{inspect(reason)}")
+        Logger.warning(
+          "Skipping startup terminal workspace cleanup profile=#{profile_key || "legacy"}; " <>
+            "failed to fetch terminal issues: #{inspect(reason)}"
+        )
     end
   end
 
-  defp safely_cleanup_terminal_workspace(cleanup_fun, identifier, profile_key) do
-    cleanup_fun.(identifier)
+  defp safely_cleanup_terminal_workspace(
+         cleanup_fun,
+         identifier,
+         worker_host,
+         profile_key,
+         execution_context,
+         workspace_attestation
+       ) do
+    result =
+      invoke_terminal_cleanup(
+        cleanup_fun,
+        identifier,
+        worker_host,
+        execution_context,
+        workspace_attestation
+      )
+
+    case result do
+      {:error, reason} ->
+        Logger.warning(
+          "Skipping failed terminal workspace cleanup " <>
+            "profile=#{profile_key || "legacy"} " <>
+            "issue_identifier=#{identifier}: #{inspect(reason)}"
+        )
+
+      _other ->
+        :ok
+    end
   rescue
     exception ->
       Logger.warning("Skipping failed terminal workspace cleanup profile=#{profile_key || "legacy"} issue_identifier=#{identifier}: #{Exception.message(exception)}")
@@ -2159,13 +2794,36 @@ defmodule SymphonyElixir.Orchestrator do
       :ok
   end
 
+  defp invoke_terminal_cleanup(
+         cleanup_fun,
+         identifier,
+         worker_host,
+         execution_context,
+         workspace_attestation
+       ) do
+    case :erlang.fun_info(cleanup_fun, :arity) do
+      {:arity, 4} ->
+        cleanup_fun.(identifier, worker_host, execution_context, workspace_attestation)
+
+      {:arity, 3} ->
+        cleanup_fun.(identifier, execution_context, workspace_attestation)
+
+      {:arity, 2} ->
+        cleanup_fun.(identifier, execution_context)
+
+      {:arity, 1} ->
+        cleanup_fun.(identifier)
+    end
+  end
+
   defp notify_dashboard do
     StatusDashboard.notify_update()
   end
 
   defp handle_active_retry(state, issue, attempt, metadata, opts) do
     if is_map(metadata[:project_profile]) do
-      profile = issue.project_profile
+      profile = current_retry_project_profile(metadata) || metadata[:project_profile]
+      issue = %{issue | project_profile: profile}
 
       refresh_fun =
         Keyword.get(opts, :profile_refresh_fun, fn ids ->
@@ -2187,6 +2845,15 @@ defmodule SymphonyElixir.Orchestrator do
        )}
     else
       handle_legacy_active_retry(state, issue, attempt, metadata)
+    end
+  end
+
+  defp current_retry_project_profile(%{project_profile: %{key: key}}) do
+    with {:ok, profiles} <- current_project_profiles_result(),
+         {:ok, profile} <- approved_profile_result(profiles, key) do
+      profile
+    else
+      _ -> nil
     end
   end
 
@@ -2227,7 +2894,12 @@ defmodule SymphonyElixir.Orchestrator do
 
   defp retire_lost_claim(%State{} = state, issue_id) do
     :ok = finalize_distributed_claim(issue_id, :release)
-    cancel_issue_retry_timer(Map.get(state.retry_attempts, issue_id))
+    retry_entry = Map.get(state.retry_attempts, issue_id)
+    cancel_issue_retry_timer(retry_entry)
+
+    if is_map(retry_entry) do
+      retire_retry_execution_context(nil, retry_entry)
+    end
 
     %{
       state
@@ -2393,6 +3065,96 @@ defmodule SymphonyElixir.Orchestrator do
     "issue_id=#{issue_id} issue_identifier=#{identifier}"
   end
 
+  defp report_candidate_fetch_outcome(opts, profile, %{status: :ok}) do
+    report_health(opts, {:stage, :candidate_fetch, health_profile_metadata(profile, :succeeded)})
+  end
+
+  defp report_candidate_fetch_outcome(opts, profile, %{status: :timeout}) do
+    report_health(opts, {
+      :stage,
+      :candidate_fetch,
+      health_profile_metadata(profile, :failed, :poll_timeout)
+    })
+  end
+
+  defp report_candidate_fetch_outcome(opts, profile, _outcome) do
+    report_health(opts, {
+      :stage,
+      :candidate_fetch,
+      health_profile_metadata(profile, :failed, :poll_error)
+    })
+  end
+
+  defp health_profile_metadata(%{key: profile_key}, status, failure_category \\ nil) do
+    %{profile_key: profile_key, status: status}
+    |> maybe_put_health_failure(failure_category)
+  end
+
+  defp health_issue_metadata(%Issue{} = issue, status, failure_category \\ nil) do
+    issue
+    |> safe_issue_health_metadata()
+    |> Map.put(:status, status)
+    |> maybe_put_health_failure(failure_category)
+  end
+
+  defp safe_issue_health_metadata(issue) do
+    case ProjectExecutionContext.from_issue(issue) do
+      {:ok, context} ->
+        ProjectExecutionContext.safe_metadata(context)
+
+      {:error, _reason} ->
+        %{
+          profile_key: get_in(issue, [Access.key(:project_profile), Access.key(:key)]) || issue.project_slug,
+          issue_id: issue.id,
+          issue_identifier: issue.identifier
+        }
+        |> Enum.reject(fn {_key, value} -> is_nil(value) end)
+        |> Map.new()
+    end
+  end
+
+  defp maybe_put_health_failure(metadata, nil), do: metadata
+  defp maybe_put_health_failure(metadata, failure_category), do: Map.put(metadata, :failure_category, failure_category)
+
+  defp observed_call(fun, on_failure) when is_function(fun, 0) and is_function(on_failure, 1) do
+    fun.()
+  rescue
+    exception ->
+      on_failure.(:callback_exception)
+      reraise exception, __STACKTRACE__
+  catch
+    kind, reason ->
+      on_failure.(:callback_failure)
+      :erlang.raise(kind, reason, __STACKTRACE__)
+  end
+
+  defp report_health(opts, event) do
+    case Keyword.get(opts, :health_fun) do
+      health_fun when is_function(health_fun, 1) -> health_fun.(event)
+      _other -> report_runtime_health(event)
+    end
+
+    :ok
+  rescue
+    _exception -> :ok
+  catch
+    _kind, _reason -> :ok
+  end
+
+  defp report_runtime_health({:stage, stage, metadata}),
+    do: RuntimeHealth.stage(runtime_health_server(), stage, metadata)
+
+  defp report_runtime_health({:dependency, dependency, metadata}),
+    do: RuntimeHealth.dependency(runtime_health_server(), dependency, metadata)
+
+  defp report_runtime_health(:poll_succeeded), do: RuntimeHealth.poll_succeeded(runtime_health_server())
+
+  defp report_runtime_health({:stop, metadata}), do: RuntimeHealth.stop(runtime_health_server(), metadata)
+
+  defp runtime_health_server do
+    Application.get_env(:symphony_elixir, :runtime_health_server, RuntimeHealth)
+  end
+
   defp available_slots(%State{} = state) do
     max(
       (state.max_concurrent_agents || Config.settings!().agent.max_concurrent_agents) -
@@ -2528,6 +3290,7 @@ defmodule SymphonyElixir.Orchestrator do
        review_convergence: observable_review_convergence(state.review_convergence),
        codex_totals: state.codex_totals,
        rate_limits: Map.get(state, :codex_rate_limits),
+       health: runtime_health_snapshot(),
        polling: %{
          checking?: state.poll_check_in_progress == true,
          next_poll_in_ms: next_poll_in_ms(state.next_poll_due_at_ms, now_ms),
@@ -2549,6 +3312,27 @@ defmodule SymphonyElixir.Orchestrator do
        requested_at: DateTime.utc_now(),
        operations: ["poll", "reconcile"]
      }, state}
+  end
+
+  defp runtime_health_snapshot do
+    RuntimeHealth.snapshot(runtime_health_server())
+  rescue
+    _exception -> unknown_runtime_health()
+  catch
+    _kind, _reason -> unknown_runtime_health()
+  end
+
+  defp unknown_runtime_health do
+    %{
+      last_successful_poll_at: :unknown,
+      dependencies: %{
+        linear: %{status: :unknown, failure_category: nil},
+        claim_store: %{status: :unknown, failure_category: nil}
+      },
+      stages: [],
+      final_stop: :unknown,
+      history: []
+    }
   end
 
   defp invalidate_merge_ready_result(%{terminal_result: {:merge_ready_candidate, _candidate}} = entry),

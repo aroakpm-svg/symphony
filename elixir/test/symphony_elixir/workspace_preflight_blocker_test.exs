@@ -253,8 +253,8 @@ defmodule SymphonyElixir.WorkspacePreflightBlockerTest do
     assert script =~ "expected_remote='C:/repo'"
 
     fake_git_script = "git() { printf 'C:/repo.git\\n'; }\n" <> script
-    assert {_output, 0} = System.cmd("bash", ["-n", "-c", fake_git_script], stderr_to_stdout: true)
-    assert {_output, 0} = System.cmd("bash", ["-c", fake_git_script], stderr_to_stdout: true)
+    assert {_output, 0} = System.cmd("sh", ["-n", "-c", fake_git_script], stderr_to_stdout: true)
+    assert {_output, 0} = System.cmd("sh", ["-c", fake_git_script], stderr_to_stdout: true)
   end
 
   test "remote preflight folds Windows paths only on Windows workers" do
@@ -273,8 +273,8 @@ defmodule SymphonyElixir.WorkspacePreflightBlockerTest do
       "uname() { printf 'MINGW64_NT\\n'; }\n" <>
         "git() { printf '%s\\n' '#{windows_remote}'; }\n" <> script
 
-    assert {_output, 1} = System.cmd("bash", ["-c", unix_script], stderr_to_stdout: true)
-    assert {_output, 0} = System.cmd("bash", ["-c", windows_script], stderr_to_stdout: true)
+    assert {_output, 1} = System.cmd("sh", ["-c", unix_script], stderr_to_stdout: true)
+    assert {_output, 0} = System.cmd("sh", ["-c", windows_script], stderr_to_stdout: true)
   end
 
   test "agent-reported workspace preflight failure blocks without retrying" do
@@ -487,6 +487,125 @@ defmodule SymphonyElixir.WorkspacePreflightBlockerTest do
       assert blocker.error =~ "workspace readiness state failed"
       assert blocker.workspace_path == workspace
       assert File.read!(Path.join(workspace, "cleanup.log")) == "cleanup\n"
+    after
+      File.rm_rf(workspace_root)
+    end
+  end
+
+  test "readiness-state error after_run keeps preparation attestation and rejects a replacement" do
+    workspace_root =
+      Path.join(
+        System.tmp_dir!(),
+        "aro286-readiness-error-attestation-#{System.os_time(:nanosecond)}-#{System.unique_integer([:positive, :monotonic])}"
+      )
+
+    try do
+      write_workflow_file!(Workflow.workflow_file_path(), workspace_root: workspace_root)
+
+      first_context = %SymphonyElixir.ProjectExecutionContext{
+        issue_id: "issue-attested-error-first",
+        issue_identifier: "MT/COLLISION",
+        profile_key: "central-brain",
+        linear_project_id: "11111111-1111-4111-8111-111111111111",
+        repository: "owner/repository",
+        canonical_branch: "main",
+        workspace_namespace: "central-brain",
+        credential_ref: "github-central-brain",
+        environment: "local_non_production",
+        routing_revision: 1
+      }
+
+      assert {:ok, %{path: workspace}} =
+               Workspace.prepare_for_issue("MT/COLLISION", nil, first_context)
+
+      colliding_context = %{
+        first_context
+        | issue_id: "issue-attested-error-second",
+          issue_identifier: "MT_COLLISION"
+      }
+
+      assert {:ok, environment} =
+               SymphonyElixir.SubprocessEnvironment.build(
+                 %{"GH_TOKEN" => "approved-test-token"},
+                 colliding_context
+               )
+
+      private_home_paths =
+        SymphonyElixir.SubprocessEnvironment.private_home_paths(colliding_context)
+
+      assert {:error,
+              {:attested_preparation_error, original_reason, ^workspace, attestation, capability} =
+                preparation_error} =
+               Workspace.prepare_for_issue("MT_COLLISION", nil, colliding_context,
+                 attest_preparation_errors: true,
+                 env: environment,
+                 subprocess_home_paths: private_home_paths
+               )
+
+      assert match?({:workspace_readiness_identity_mismatch, ^workspace, _detail}, original_reason)
+
+      runtime_opts =
+        [
+          env: environment,
+          execution_context: colliding_context,
+          subprocess_home_paths: private_home_paths
+        ]
+
+      assert {:ok, ^workspace, effect_opts, ^original_reason} =
+               AgentRunner.readiness_state_error_effect_opts_for_test(
+                 preparation_error,
+                 runtime_opts
+               )
+
+      assert effect_opts[:workspace_attestation] == attestation
+      assert effect_opts[:private_home_capability] == capability
+      assert Workspace.private_home_capability_active_for_test?(capability)
+
+      assert :ok =
+               Workspace.validate_private_home_effect(
+                 workspace,
+                 nil,
+                 colliding_context,
+                 attestation,
+                 effect_opts
+               )
+
+      displaced_workspace = workspace <> "-original"
+      replacement_result = File.rename(workspace, displaced_workspace)
+
+      if replacement_result == :ok do
+        File.mkdir_p!(workspace)
+      end
+
+      write_workflow_file!(Workflow.workflow_file_path(),
+        workspace_root: workspace_root,
+        hook_after_run: "printf '%s' \"$GH_TOKEN\" > credential-hook.marker"
+      )
+
+      assert :ok =
+               Workspace.run_after_run_hook(
+                 workspace,
+                 "MT_COLLISION",
+                 nil,
+                 effect_opts
+               )
+
+      case replacement_result do
+        :ok ->
+          refute File.exists?(Path.join(workspace, "credential-hook.marker"))
+          refute File.exists?(Path.join(displaced_workspace, "credential-hook.marker"))
+
+          assert {:error, :subprocess_home_finalize_failed} =
+                   Workspace.finalize_private_home_capability(capability)
+
+        {:error, _reason} ->
+          assert File.read!(Path.join(workspace, "credential-hook.marker")) ==
+                   "approved-test-token"
+
+          assert :ok = Workspace.finalize_private_home_capability(capability)
+      end
+
+      refute Workspace.private_home_capability_active_for_test?(capability)
     after
       File.rm_rf(workspace_root)
     end

@@ -158,6 +158,8 @@ defmodule SymphonyElixir.TestSupport do
           review_convergence_max_fix_rounds: 3,
           review_convergence_human_owner: nil,
           codex_command: "codex app-server",
+          codex_executable: "codex",
+          codex_default_model: "gpt-5.4-mini",
           codex_approval_policy: %{reject: %{sandbox_approval: true, rules: true, mcp_elicitations: true}},
           codex_thread_sandbox: "workspace-write",
           codex_turn_sandbox_policy: nil,
@@ -202,6 +204,8 @@ defmodule SymphonyElixir.TestSupport do
     review_convergence_max_fix_rounds = Keyword.get(config, :review_convergence_max_fix_rounds)
     review_convergence_human_owner = Keyword.get(config, :review_convergence_human_owner)
     codex_command = Keyword.get(config, :codex_command)
+    codex_executable = Keyword.get(config, :codex_executable)
+    codex_default_model = Keyword.get(config, :codex_default_model)
     codex_approval_policy = Keyword.get(config, :codex_approval_policy)
     codex_thread_sandbox = Keyword.get(config, :codex_thread_sandbox)
     codex_turn_sandbox_policy = Keyword.get(config, :codex_turn_sandbox_policy)
@@ -251,6 +255,8 @@ defmodule SymphonyElixir.TestSupport do
         "  human_owner: #{yaml_value(review_convergence_human_owner)}",
         "codex:",
         "  command: #{yaml_value(codex_command)}",
+        "  executable: #{yaml_value(codex_executable)}",
+        "  default_model: #{yaml_value(codex_default_model)}",
         "  approval_policy: #{yaml_value(codex_approval_policy)}",
         "  thread_sandbox: #{yaml_value(codex_thread_sandbox)}",
         "  turn_sandbox_policy: #{yaml_value(codex_turn_sandbox_policy)}",

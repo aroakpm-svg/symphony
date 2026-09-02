@@ -160,6 +160,106 @@ defmodule SymphonyElixir.Linear.Client do
   }
   """
 
+  @project_identity_query """
+  query SymphonyLinearProjectIdentity($projectId: String!) {
+    project(id: $projectId) {
+      id
+    }
+  }
+  """
+
+  @spec validate_identity(keyword()) :: {:ok, %{viewer_id: String.t()}} | {:error, atom()}
+  def validate_identity(opts \\ []) when is_list(opts) do
+    payload = build_graphql_payload(@viewer_query, %{}, nil)
+    request_fun = Keyword.get(opts, :request_fun, &post_graphql_request/2)
+    project_ids = Keyword.get(opts, :project_ids, [])
+
+    with {:ok, headers} <- graphql_headers(),
+         {:ok, response} <- identity_request(request_fun, payload, headers),
+         {:ok, viewer} <- classify_identity_response(response),
+         :ok <- validate_project_identity_access(project_ids, request_fun, headers) do
+      {:ok, viewer}
+    else
+      {:error, :missing_linear_api_token} ->
+        {:error, :linear_unauthorized}
+
+      {:error, reason}
+      when reason in [
+             :linear_unauthorized,
+             :linear_forbidden,
+             :linear_identity_missing,
+             :linear_response_invalid,
+             :linear_workspace_mismatch
+           ] ->
+        {:error, reason}
+
+      {:error, _reason} ->
+        {:error, :linear_unavailable}
+    end
+  end
+
+  defp validate_project_identity_access([], _request_fun, _headers), do: :ok
+
+  defp validate_project_identity_access(project_ids, request_fun, headers)
+       when is_list(project_ids) do
+    project_ids
+    |> Enum.reduce_while(:ok, fn project_id, :ok ->
+      with {:ok, expected_project_id} <- Ecto.UUID.cast(project_id),
+           payload <-
+             build_graphql_payload(
+               @project_identity_query,
+               %{projectId: expected_project_id},
+               nil
+             ),
+           {:ok, response} <- identity_request(request_fun, payload, headers),
+           :ok <- classify_project_identity_response(response, expected_project_id) do
+        {:cont, :ok}
+      else
+        {:error, reason} -> {:halt, {:error, reason}}
+        _invalid -> {:halt, {:error, :linear_response_invalid}}
+      end
+    end)
+  end
+
+  defp validate_project_identity_access(_project_ids, _request_fun, _headers),
+    do: {:error, :linear_response_invalid}
+
+  defp classify_project_identity_response(%{status: 200, body: body}, expected_project_id) do
+    with {:ok, payload} <- decode_identity_body(body),
+         %{"data" => %{"project" => %{"id" => actual_project_id}}} <- payload,
+         {:ok, actual_project_id} <- Ecto.UUID.cast(actual_project_id),
+         true <- actual_project_id == expected_project_id do
+      :ok
+    else
+      %{"errors" => errors} -> classify_project_identity_errors(errors)
+      _missing_or_mismatch -> {:error, :linear_workspace_mismatch}
+    end
+  end
+
+  defp classify_project_identity_response(%{status: 401}, _expected_project_id),
+    do: {:error, :linear_unauthorized}
+
+  defp classify_project_identity_response(%{status: 403}, _expected_project_id),
+    do: {:error, :linear_workspace_mismatch}
+
+  defp classify_project_identity_response(%{status: status}, _expected_project_id)
+       when is_integer(status),
+       do: {:error, :linear_unavailable}
+
+  defp classify_project_identity_response(_response, _expected_project_id),
+    do: {:error, :linear_response_invalid}
+
+  defp decode_identity_body(body) when is_map(body), do: {:ok, body}
+  defp decode_identity_body(body) when is_binary(body), do: Jason.decode(body)
+  defp decode_identity_body(_body), do: {:error, :invalid_body}
+
+  defp classify_project_identity_errors(errors) do
+    case classify_identity_graphql_errors(errors) do
+      :linear_unauthorized -> {:error, :linear_unauthorized}
+      _not_accessible -> {:error, :linear_workspace_mismatch}
+    end
+  end
+
   @spec fetch_candidate_issues() :: {:ok, [Issue.t()]} | {:error, term()}
   def fetch_candidate_issues do
     tracker = Config.settings!().tracker
@@ -562,6 +662,90 @@ defmodule SymphonyElixir.Linear.Client do
       connect_options: [timeout: 30_000]
     )
   end
+
+  defp identity_request(request_fun, payload, headers) when is_function(request_fun, 2) do
+    request_fun.(payload, headers)
+  rescue
+    _exception -> {:error, :identity_request_failed}
+  catch
+    _kind, _reason -> {:error, :identity_request_failed}
+  end
+
+  defp identity_request(_request_fun, _payload, _headers), do: {:error, :identity_request_invalid}
+
+  defp classify_identity_response(%{status: 200, body: body}), do: classify_identity_body(body)
+  defp classify_identity_response(%{status: 401}), do: {:error, :linear_unauthorized}
+  defp classify_identity_response(%{status: 403}), do: {:error, :linear_forbidden}
+  defp classify_identity_response(%{status: status}) when is_integer(status), do: {:error, :linear_unavailable}
+  defp classify_identity_response(_response), do: {:error, :linear_response_invalid}
+
+  defp classify_identity_body(body) when is_binary(body) do
+    case Jason.decode(body) do
+      {:ok, payload} -> classify_identity_payload(payload)
+      {:error, _reason} -> {:error, :linear_response_invalid}
+    end
+  end
+
+  defp classify_identity_body(body) when is_map(body), do: classify_identity_payload(body)
+  defp classify_identity_body(_body), do: {:error, :linear_response_invalid}
+
+  defp classify_identity_payload(%{"errors" => errors}) do
+    {:error, classify_identity_graphql_errors(errors)}
+  end
+
+  defp classify_identity_payload(%{"data" => %{"viewer" => %{"id" => viewer_id}}})
+       when is_binary(viewer_id) do
+    case String.trim(viewer_id) do
+      "" -> {:error, :linear_identity_missing}
+      _viewer_id -> {:ok, %{viewer_id: viewer_id}}
+    end
+  end
+
+  defp classify_identity_payload(%{"data" => %{"viewer" => _viewer}}),
+    do: {:error, :linear_identity_missing}
+
+  defp classify_identity_payload(_payload), do: {:error, :linear_response_invalid}
+
+  defp classify_identity_graphql_errors(errors) when is_list(errors) do
+    cond do
+      Enum.any?(errors, &(identity_graphql_error_kind(&1) == :linear_forbidden)) -> :linear_forbidden
+      Enum.any?(errors, &(identity_graphql_error_kind(&1) == :linear_unauthorized)) -> :linear_unauthorized
+      true -> :linear_response_invalid
+    end
+  end
+
+  defp classify_identity_graphql_errors(_errors), do: :linear_response_invalid
+
+  defp identity_graphql_error_kind(%{} = error) do
+    error
+    |> get_in(["extensions", "code"])
+    |> identity_graphql_error_kind_from_value()
+    |> case do
+      nil -> error |> Map.get("message") |> identity_graphql_error_kind_from_value()
+      kind -> kind
+    end
+  end
+
+  defp identity_graphql_error_kind(_error), do: nil
+
+  defp identity_graphql_error_kind_from_value(value) when is_binary(value) do
+    normalized = value |> String.trim() |> String.downcase()
+
+    cond do
+      normalized in ["forbidden", "permission_denied"] or String.contains?(normalized, "forbidden") ->
+        :linear_forbidden
+
+      normalized in ["unauthenticated", "authentication_error", "authentication_required"] or
+        String.contains?(normalized, "unauthenticated") or
+          String.contains?(normalized, "authentication") ->
+        :linear_unauthorized
+
+      true ->
+        nil
+    end
+  end
+
+  defp identity_graphql_error_kind_from_value(_value), do: nil
 
   defp decode_linear_response(%{"data" => %{"issues" => %{"nodes" => nodes}}}, assignee_filter) do
     issues =

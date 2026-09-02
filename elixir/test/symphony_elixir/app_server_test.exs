@@ -1,6 +1,8 @@
 defmodule SymphonyElixir.AppServerTest do
   use SymphonyElixir.TestSupport
 
+  alias SymphonyElixir.ProjectExecutionContext
+
   test "app server rejects the workspace root and paths outside workspace root" do
     test_root =
       Path.join(
@@ -43,7 +45,7 @@ defmodule SymphonyElixir.AppServerTest do
     test_root =
       Path.join(
         System.tmp_dir!(),
-        "symphony-elixir-app-server-symlink-cwd-guard-#{System.unique_integer([:positive])}"
+        "symphony-elixir-app-server-symlink-cwd-guard-#{System.os_time(:nanosecond)}-#{System.unique_integer([:positive])}"
       )
 
     try do
@@ -73,6 +75,452 @@ defmodule SymphonyElixir.AppServerTest do
 
       assert {:error, {:invalid_workspace_cwd, :symlink_escape, ^expanded_symlink_workspace, _root}} =
                AppServer.run(symlink_workspace, "guard", issue)
+    after
+      File.rm_rf(test_root)
+    end
+  end
+
+  test "app server requires the exact context-derived issue workspace" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-app-server-context-cwd-#{System.os_time(:nanosecond)}-#{System.unique_integer([:positive])}"
+      )
+
+    try do
+      workspace_root = Path.join(test_root, "workspaces")
+      expected_workspace = Path.join([workspace_root, "central-brain", "ARO-286"])
+      sibling_workspace = Path.join([workspace_root, "central-brain", "ARO-287"])
+      File.mkdir_p!(expected_workspace)
+      File.mkdir_p!(sibling_workspace)
+
+      write_workflow_file!(Workflow.workflow_file_path(), workspace_root: workspace_root)
+
+      context = project_execution_context("ARO-286")
+      parent = self()
+
+      port_opener = fn _spawn_target, _port_opts ->
+        send(parent, :unsafe_port_opened)
+        raise "port must not start outside the exact authorized workspace"
+      end
+
+      assert {:error, {:invalid_workspace_cwd, :execution_context_mismatch, _actual, _expected}} =
+               AppServer.start_session(sibling_workspace,
+                 execution_context: context,
+                 port_opener: port_opener
+               )
+
+      refute_receive :unsafe_port_opened
+
+      displaced_workspace = expected_workspace <> "-original"
+      File.rename!(expected_workspace, displaced_workspace)
+      create_directory_link!(sibling_workspace, expected_workspace)
+
+      assert {:error, {:invalid_workspace_cwd, :execution_context_mismatch, _actual, _expected}} =
+               AppServer.start_session(expected_workspace,
+                 execution_context: context,
+                 port_opener: port_opener
+               )
+
+      refute_receive :unsafe_port_opened
+    after
+      File.rm_rf(test_root)
+    end
+  end
+
+  test "app server injects validated environment only into the local Port process" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-app-server-env-#{System.unique_integer([:positive])}"
+      )
+
+    env_key = "ARO286_CODEX_#{System.unique_integer([:positive])}"
+    secret = "opaque-codex-#{System.unique_integer([:positive, :monotonic])}"
+    previous_env = System.get_env(env_key)
+    on_exit(fn -> restore_env(env_key, previous_env) end)
+    System.delete_env(env_key)
+
+    try do
+      workspace_root = Path.join(test_root, "workspaces")
+      workspace = Path.join(workspace_root, "ARO-286")
+      environment_trace = Path.join(test_root, "environment.trace")
+      argument_trace = Path.join(test_root, "arguments.trace")
+      protocol_script = Path.join(test_root, "protocol.exs")
+      elixir = System.find_executable("elixir")
+      File.mkdir_p!(workspace)
+
+      File.write!(protocol_script, """
+      File.write!(#{inspect(environment_trace)}, System.get_env(#{inspect(env_key)}, "missing"))
+      File.write!(#{inspect(argument_trace)}, Enum.join(System.argv(), " "))
+
+      Stream.repeatedly(fn -> IO.gets("") end)
+      |> Enum.reduce_while(0, fn
+        nil, count -> {:halt, count}
+        _line, count ->
+          next = count + 1
+
+          case next do
+            1 -> IO.puts(~s({"id":1,"result":{}}))
+            2 -> :ok
+            3 -> IO.puts(~s({"id":2,"result":{"thread":{"id":"thread-env"}}}))
+            4 ->
+              IO.puts(~s({"id":3,"result":{"turn":{"id":"turn-env"}}}))
+              IO.puts(~s({"method":"turn/completed"}))
+          end
+
+          if next == 4, do: {:halt, next}, else: {:cont, next}
+      end)
+      """)
+
+      port_opener = fn {:spawn_executable, shell}, port_opts ->
+        {expected_shells, expected_flag} =
+          if match?({:win32, _}, :os.type()),
+            do: {["sh", "sh.exe"], "-c"},
+            else: {["bash"], "-lc"}
+
+        assert Path.basename(to_string(shell)) in expected_shells
+
+        assert port_opts[:args] ==
+                 Enum.map([expected_flag, "fake-codex app-server"], &String.to_charlist/1)
+
+        process_opts =
+          port_opts
+          |> Enum.reject(&match?({:args, _args}, &1))
+          |> Keyword.put(
+            :args,
+            Enum.map([protocol_script], &String.to_charlist/1)
+          )
+
+        Port.open({:spawn_executable, String.to_charlist(elixir)}, process_opts)
+      end
+
+      write_workflow_file!(Workflow.workflow_file_path(),
+        workspace_root: workspace_root,
+        codex_command: "fake-codex app-server"
+      )
+
+      issue = %Issue{
+        id: "issue-app-server-env",
+        identifier: "ARO-286",
+        title: "Inject Codex environment",
+        description: "Keep credentials process-local",
+        state: "In Progress",
+        labels: []
+      }
+
+      log =
+        capture_log(fn ->
+          assert {:ok, _result} =
+                   AppServer.run(workspace, "Run with isolated environment", issue,
+                     env: %{env_key => secret},
+                     port_opener: port_opener
+                   )
+        end)
+
+      assert File.read!(environment_trace) == secret
+      refute File.read!(argument_trace) =~ secret
+      refute log =~ secret
+      assert System.get_env(env_key) == nil
+      refute inspect(Application.get_all_env(:symphony_elixir)) =~ secret
+    after
+      File.rm_rf(test_root)
+    end
+  end
+
+  test "app server recursively redacts credential material from child output and updates" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-app-server-redaction-#{System.unique_integer([:positive])}"
+      )
+
+    secret_prefix = "opaque-app-secret-#{System.unique_integer([:positive, :monotonic])}"
+    secret = secret_prefix <> "-longer"
+
+    try do
+      workspace_root = Path.join(test_root, "workspaces")
+      workspace = Path.join(workspace_root, "ARO-286-REDACT")
+      protocol_script = Path.join(test_root, "protocol.exs")
+      elixir = System.find_executable("elixir")
+      File.mkdir_p!(workspace)
+
+      File.write!(protocol_script, """
+      Stream.repeatedly(fn -> IO.gets("") end)
+      |> Enum.reduce_while(0, fn
+        nil, count -> {:halt, count}
+        _line, count ->
+          next = count + 1
+
+          case next do
+            1 ->
+              IO.puts(:stderr, "warning: #{secret}")
+              IO.puts(~s({"id":1,"result":{"nested":{"credential":"#{secret}"}}}))
+
+            2 ->
+              :ok
+
+            3 ->
+              IO.puts(~s({"id":2,"result":{"thread":{"id":"thread-redaction"}}}))
+
+            4 ->
+              IO.puts(~s({"id":3,"result":{"turn":{"id":"turn-redaction"}}}))
+              IO.puts(~s({"malformed":"#{secret}"))
+              IO.puts(~s({"method":"custom/update","params":{"nested":["#{secret}"]}}))
+              IO.puts(~s({"method":"turn/failed","params":{"message":"failed #{secret}"}}))
+          end
+
+          if next == 4, do: {:halt, next}, else: {:cont, next}
+      end)
+      """)
+
+      port_opener = fn _spawn_target, port_opts ->
+        process_opts =
+          port_opts
+          |> Enum.reject(&match?({:args, _args}, &1))
+          |> Keyword.put(:args, [String.to_charlist(protocol_script)])
+
+        Port.open({:spawn_executable, String.to_charlist(elixir)}, process_opts)
+      end
+
+      write_workflow_file!(Workflow.workflow_file_path(),
+        workspace_root: workspace_root,
+        codex_command: "fake-codex app-server"
+      )
+
+      issue = %Issue{
+        id: "issue-app-server-redaction",
+        identifier: "ARO-286-REDACT",
+        title: "Redact child output",
+        description: "Keep credential material inside the subprocess boundary",
+        state: "In Progress",
+        labels: []
+      }
+
+      test_pid = self()
+      on_message = fn message -> send(test_pid, {:app_server_redacted_message, message}) end
+
+      log =
+        capture_log(fn ->
+          assert {:error, returned_error} =
+                   AppServer.run(workspace, "Exercise redaction", issue,
+                     env: %{"ARO286_SECRET" => secret},
+                     sensitive_env_values: [secret_prefix, secret],
+                     on_message: on_message,
+                     port_opener: port_opener
+                   )
+
+          assert inspect(returned_error) =~ "[redacted]"
+          refute inspect(returned_error) =~ secret
+          refute inspect(returned_error) =~ "-longer"
+        end)
+
+      messages =
+        for _ <- 1..5 do
+          assert_receive {:app_server_redacted_message, message}
+          message
+        end
+
+      assert Enum.any?(messages, &(&1.event == :notification))
+      assert Enum.any?(messages, &(&1.event == :malformed))
+      assert Enum.any?(messages, &(&1.event == :turn_failed))
+      assert Enum.any?(messages, &(&1.event == :turn_ended_with_error))
+      assert inspect(messages) =~ "[redacted]"
+      refute inspect(messages) =~ secret
+      refute inspect(messages) =~ "-longer"
+      assert log =~ "[redacted]"
+      refute log =~ secret
+      refute log =~ "-longer"
+    after
+      File.rm_rf(test_root)
+    end
+  end
+
+  test "app server redacts JSON response errors before returning them" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-app-server-response-redaction-#{System.unique_integer([:positive])}"
+      )
+
+    secret = "opaque-response-secret-#{System.unique_integer([:positive, :monotonic])}"
+
+    try do
+      workspace_root = Path.join(test_root, "workspaces")
+      workspace = Path.join(workspace_root, "ARO-286-RESPONSE")
+      protocol_script = Path.join(test_root, "protocol.exs")
+      elixir = System.find_executable("elixir")
+      File.mkdir_p!(workspace)
+
+      File.write!(protocol_script, """
+      IO.gets("")
+      IO.puts(~s({"id":1,"error":{"message":"startup failed #{secret}","nested":["#{secret}"]}}))
+      """)
+
+      port_opener = fn _spawn_target, port_opts ->
+        process_opts =
+          port_opts
+          |> Enum.reject(&match?({:args, _args}, &1))
+          |> Keyword.put(:args, [String.to_charlist(protocol_script)])
+
+        Port.open({:spawn_executable, String.to_charlist(elixir)}, process_opts)
+      end
+
+      write_workflow_file!(Workflow.workflow_file_path(),
+        workspace_root: workspace_root,
+        codex_command: "fake-codex app-server"
+      )
+
+      assert {:error, returned_error} =
+               AppServer.start_session(workspace,
+                 env: %{"ARO286_SECRET" => secret},
+                 sensitive_env_values: [secret],
+                 port_opener: port_opener
+               )
+
+      assert inspect(returned_error) =~ "[redacted]"
+      refute inspect(returned_error) =~ secret
+    after
+      File.rm_rf(test_root)
+    end
+  end
+
+  test "app server never returns credential material in a session map" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-app-server-session-redaction-#{System.unique_integer([:positive])}"
+      )
+
+    secret = "opaque-session-secret-#{System.unique_integer([:positive, :monotonic])}"
+
+    try do
+      workspace_root = Path.join(test_root, "workspaces")
+      workspace = Path.join(workspace_root, "ARO-286-SESSION")
+      protocol_script = Path.join(test_root, "protocol.exs")
+      elixir = System.find_executable("elixir")
+      File.mkdir_p!(workspace)
+
+      File.write!(protocol_script, """
+      IO.gets("")
+      IO.puts(~s({"id":1,"result":{}}))
+      IO.gets("")
+      IO.gets("")
+      IO.puts(~s({"id":2,"result":{"thread":{"id":"#{secret}"}}}))
+      IO.gets("")
+      """)
+
+      port_opener = fn _spawn_target, port_opts ->
+        process_opts =
+          port_opts
+          |> Enum.reject(&match?({:args, _args}, &1))
+          |> Keyword.put(:args, [String.to_charlist(protocol_script)])
+
+        Port.open({:spawn_executable, String.to_charlist(elixir)}, process_opts)
+      end
+
+      write_workflow_file!(Workflow.workflow_file_path(),
+        workspace_root: workspace_root,
+        codex_command: "fake-codex app-server"
+      )
+
+      assert {:ok, session} =
+               AppServer.start_session(workspace,
+                 env: %{"ARO286_SECRET" => secret},
+                 sensitive_env_values: [secret],
+                 port_opener: port_opener
+               )
+
+      assert session.thread_id == "[redacted]"
+      refute inspect(session) =~ secret
+      AppServer.stop_session(session)
+    after
+      File.rm_rf(test_root)
+    end
+  end
+
+  test "app server parses original protocol fields before sanitizing external copies" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-app-server-protocol-redaction-#{System.unique_integer([:positive])}"
+      )
+
+    try do
+      workspace_root = Path.join(test_root, "workspaces")
+      workspace = Path.join(workspace_root, "ARO-286-PROTOCOL")
+      protocol_script = Path.join(test_root, "protocol.exs")
+      elixir = System.find_executable("elixir")
+      File.mkdir_p!(workspace)
+
+      File.write!(protocol_script, """
+      Stream.repeatedly(fn -> IO.gets("") end)
+      |> Enum.reduce_while(0, fn
+        nil, count -> {:halt, count}
+        _line, count ->
+          next = count + 1
+
+          case next do
+            1 -> IO.puts(~s({"id":1,"result":{}}))
+            2 -> :ok
+            3 -> IO.puts(~s({"id":2,"result":{"thread":{"id":"thread-safe"}}}))
+            4 ->
+              IO.puts(~s({"id":3,"result":{"turn":{"id":"cycle-safe"}}}))
+              IO.puts(~s({"method":"turn/completed","params":{"id":"id","kind":"turn"}}))
+          end
+
+          if next == 4, do: {:halt, next}, else: {:cont, next}
+      end)
+      """)
+
+      port_opener = fn _spawn_target, port_opts ->
+        process_opts =
+          port_opts
+          |> Enum.reject(&match?({:args, _args}, &1))
+          |> Keyword.put(:args, [String.to_charlist(protocol_script)])
+
+        Port.open({:spawn_executable, String.to_charlist(elixir)}, process_opts)
+      end
+
+      write_workflow_file!(Workflow.workflow_file_path(),
+        workspace_root: workspace_root,
+        codex_command: "fake-codex app-server"
+      )
+
+      issue = %Issue{
+        id: "issue-app-server-protocol-redaction",
+        identifier: "ARO-286-PROTOCOL",
+        title: "Preserve protocol parsing",
+        description: "Sanitize only externally visible copies",
+        state: "In Progress",
+        labels: []
+      }
+
+      test_pid = self()
+      on_message = fn message -> send(test_pid, {:protocol_redaction_message, message}) end
+
+      assert {:ok, result} =
+               AppServer.run(workspace, "Exercise protocol parsing", issue,
+                 env: %{"ARO286_KEY_FRAGMENT" => "id", "ARO286_METHOD_FRAGMENT" => "turn"},
+                 sensitive_env_values: ["id", "turn"],
+                 on_message: on_message,
+                 port_opener: port_opener
+               )
+
+      assert result.result == :turn_completed
+      refute inspect(result) =~ ~r/\bid\b/
+      refute inspect(result) =~ ~r/\bturn\b/
+
+      messages =
+        for _ <- 1..2 do
+          assert_receive {:protocol_redaction_message, message}
+          message
+        end
+
+      assert Enum.any?(messages, &(&1.event == :turn_completed))
+      assert inspect(messages) =~ "[redacted]"
+      refute inspect(messages) =~ ~r/\bid\b/
+      refute inspect(messages) =~ ~r/\bturn\b/
     after
       File.rm_rf(test_root)
     end
@@ -1410,10 +1858,10 @@ defmodule SymphonyElixir.AppServerTest do
         bash_opts =
           opts
           |> Enum.reject(&match?({:args, _args}, &1))
-          |> Kernel.++(args: [~c"-lc", String.to_charlist(protocol_script)])
+          |> Kernel.++(args: [~c"-c", String.to_charlist(protocol_script)])
 
         Port.open(
-          {:spawn_executable, String.to_charlist(System.find_executable("bash"))},
+          {:spawn_executable, String.to_charlist(System.find_executable("sh"))},
           bash_opts
         )
       end)
@@ -1446,10 +1894,10 @@ defmodule SymphonyElixir.AppServerTest do
 
       assert argv_line = Enum.find(lines, &String.starts_with?(&1, "ARGV:"))
       assert argv_line =~ "-T -p 2200 worker-01 bash -lc"
-      assert argv_line =~ "cd "
-      assert argv_line =~ remote_workspace
-      assert argv_line =~ "exec "
-      assert argv_line =~ "fake-remote-codex app-server"
+      assert trace =~ "cd "
+      assert trace =~ remote_workspace
+      assert trace =~ "exec "
+      assert trace =~ "fake-remote-codex app-server"
 
       expected_turn_policy = %{
         "type" => "workspaceWrite",
@@ -1491,5 +1939,81 @@ defmodule SymphonyElixir.AppServerTest do
     after
       File.rm_rf(test_root)
     end
+  end
+
+  test "short redaction values never mutate protocol thread identifiers" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-raw-thread-id-#{System.unique_integer([:positive])}"
+      )
+
+    try do
+      workspace = Path.join(test_root, "workspace")
+      protocol_script = Path.join(test_root, "protocol.exs")
+      turn_request_path = Path.join(test_root, "turn-request.json")
+      elixir = System.find_executable("elixir")
+      File.mkdir_p!(workspace)
+
+      File.write!(protocol_script, """
+      IO.gets("")
+      IO.puts(~s({"id":1,"result":{}}))
+      IO.gets("")
+      IO.gets("")
+      IO.puts(~s({"id":2,"result":{"thread":{"id":"thread-101"}}}))
+      turn_request = IO.gets("")
+      File.write!(#{inspect(turn_request_path)}, turn_request)
+      IO.puts(~s({"id":3,"result":{"turn":{"id":"turn-202"}}}))
+      IO.puts(~s({"method":"turn/completed","params":{"status":"completed"}}))
+      """)
+
+      port_opener = fn _spawn_target, port_opts ->
+        process_opts =
+          port_opts
+          |> Enum.reject(&match?({:args, _args}, &1))
+          |> Keyword.put(:args, [String.to_charlist(protocol_script)])
+
+        Port.open({:spawn_executable, String.to_charlist(elixir)}, process_opts)
+      end
+
+      write_workflow_file!(Workflow.workflow_file_path(),
+        workspace_root: test_root,
+        codex_command: "fake-codex app-server"
+      )
+
+      issue = %Issue{
+        id: "issue-raw-thread-id",
+        identifier: "ARO-286-RAW-ID",
+        title: "Preserve raw protocol IDs",
+        state: "In Progress",
+        labels: []
+      }
+
+      assert {:ok, result} =
+               AppServer.run(workspace, "Run", issue,
+                 sensitive_env_values: ["1"],
+                 port_opener: port_opener
+               )
+
+      assert Jason.decode!(File.read!(turn_request_path))["params"]["threadId"] == "thread-101"
+      assert result.thread_id == "thread-[redacted]0[redacted]"
+    after
+      File.rm_rf(test_root)
+    end
+  end
+
+  defp project_execution_context(identifier) do
+    %ProjectExecutionContext{
+      issue_id: "issue-#{identifier}",
+      issue_identifier: identifier,
+      profile_key: "central-brain",
+      linear_project_id: "d0acfb71-f68c-4a9f-8a1a-477265d3c3ec",
+      repository: "aroakpm-svg/aroak-central-brain",
+      canonical_branch: "main",
+      workspace_namespace: "central-brain",
+      credential_ref: "github-central-brain",
+      environment: "local_non_production",
+      routing_revision: 1
+    }
   end
 end

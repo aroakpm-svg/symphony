@@ -2,6 +2,7 @@ defmodule SymphonyElixir.WorkspaceReadinessStateTest do
   use SymphonyElixir.TestSupport
 
   alias SymphonyElixir.GitBranchResolver.Receipt, as: GitReceipt
+  alias SymphonyElixir.ProjectExecutionContext
   alias SymphonyElixir.ReadinessGate
   alias SymphonyElixir.ReadinessGate.{Failure, Receipt}
 
@@ -74,6 +75,102 @@ defmodule SymphonyElixir.WorkspaceReadinessStateTest do
     assert {:ok, _removed} = Workspace.remove(workspace)
     refute File.exists?(workspace)
     refute File.exists?(state_path)
+  end
+
+  test "context-aware readiness state binds durable project identity and rejects drift before reuse" do
+    test_root = temporary_root!("context-identity")
+    workspace_root = Path.join(test_root, "workspaces")
+    context = project_context("ARO-286")
+
+    write_workflow_file!(Workflow.workflow_file_path(), workspace_root: workspace_root)
+
+    assert {:ok,
+            %{
+              path: workspace,
+              readiness_state: %{
+                profile_key: "central-brain",
+                linear_project_id: "d0acfb71-f68c-4a9f-8a1a-477265d3c3ec",
+                repository: "aroakpm-svg/aroak-central-brain",
+                canonical_branch: "main",
+                workspace_namespace: "central-brain",
+                credential_ref: "github-central-brain"
+              }
+            }} = Workspace.prepare_for_issue("ARO-286", nil, context)
+
+    assert {:ok, %{path: ^workspace}} = Workspace.prepare_for_issue("ARO-286", nil, context)
+
+    for {field, replacement} <- [
+          {:profile_key, "project-management"},
+          {:linear_project_id, "708053e0-f42c-4e93-bec4-7abbb37e74af"},
+          {:repository, "aroakpm-svg/aroak-project-management"},
+          {:canonical_branch, "release"},
+          {:credential_ref, "github-project-management"}
+        ] do
+      changed_context = Map.put(context, field, replacement)
+
+      assert {:error, {:workspace_readiness_identity_mismatch, ^workspace, detail}} =
+               Workspace.prepare_for_issue("ARO-286", nil, changed_context)
+
+      assert detail =~ Atom.to_string(field)
+    end
+
+    state_path = Workspace.readiness_state_path(workspace)
+
+    for field <- ["workspace_namespace", "workspace_path"] do
+      original_state = state_path |> File.read!() |> Jason.decode!()
+
+      changed_state =
+        Map.put(
+          original_state,
+          field,
+          if(field == "workspace_namespace", do: "project-management", else: workspace <> "-other")
+        )
+
+      File.write!(state_path, Jason.encode!(changed_state))
+
+      assert {:error, {:workspace_readiness_identity_mismatch, ^workspace, detail}} =
+               Workspace.prepare_for_issue("ARO-286", nil, context)
+
+      assert detail =~ field
+      File.write!(state_path, Jason.encode!(original_state))
+    end
+  end
+
+  test "context-aware readiness completes and reuses the exact durable context" do
+    test_root = temporary_root!("context-ready")
+    workspace_root = Path.join(test_root, "workspaces")
+    issue = issue("ARO-286-READY", "codex/aro-286-ready")
+    context = project_context(issue.identifier)
+
+    write_workflow_file!(Workflow.workflow_file_path(), workspace_root: workspace_root)
+
+    assert {:ok, %{path: workspace} = preparation} =
+             Workspace.prepare_for_issue(issue, nil, context)
+
+    assert :ok =
+             Workspace.mark_readiness_ready(
+               preparation,
+               issue,
+               readiness_receipt(issue),
+               nil,
+               command_runner: readiness_checkout_runner(issue)
+             )
+
+    assert {:ok, %{path: ^workspace, created_now: false, readiness_state: %{phase: :ready, verified_head_sha: @sha}}} =
+             Workspace.prepare_for_issue(issue, nil, context)
+  end
+
+  test "context-aware reuse refuses a legacy readiness sidecar" do
+    test_root = temporary_root!("context-missing")
+    workspace_root = Path.join(test_root, "workspaces")
+    context = project_context("ARO-287")
+    workspace = Path.join([workspace_root, "central-brain", "ARO-287"])
+
+    File.mkdir_p!(workspace)
+    write_workflow_file!(Workflow.workflow_file_path(), workspace_root: workspace_root)
+
+    assert {:error, :workspace_context_missing} =
+             Workspace.prepare_for_issue("ARO-287", nil, context)
   end
 
   test "unverified identifier-only readiness identity enriches once from an exact typed issue" do
@@ -364,7 +461,7 @@ defmodule SymphonyElixir.WorkspaceReadinessStateTest do
 
     Application.put_env(:symphony_elixir, :ssh_command_runner, fn _executable, args, opts ->
       remote_command = args |> List.last() |> to_string()
-      System.cmd("bash", ["-lc", remote_command], opts)
+      System.cmd("sh", ["-c", remote_command], opts)
     end)
 
     write_workflow_file!(Workflow.workflow_file_path(),
@@ -425,6 +522,21 @@ defmodule SymphonyElixir.WorkspaceReadinessStateTest do
       branch_name: branch_name,
       readiness_base: :canonical,
       labels: []
+    }
+  end
+
+  defp project_context(issue_identifier) do
+    %ProjectExecutionContext{
+      issue_id: "issue-#{issue_identifier}",
+      issue_identifier: issue_identifier,
+      profile_key: "central-brain",
+      linear_project_id: "d0acfb71-f68c-4a9f-8a1a-477265d3c3ec",
+      repository: "aroakpm-svg/aroak-central-brain",
+      canonical_branch: "main",
+      workspace_namespace: "central-brain",
+      credential_ref: "github-central-brain",
+      environment: "local_non_production",
+      routing_revision: 1
     }
   end
 

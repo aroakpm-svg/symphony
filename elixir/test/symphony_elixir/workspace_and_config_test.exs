@@ -4,7 +4,7 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
   alias SymphonyElixir.Config.Schema
   alias SymphonyElixir.Config.Schema.{Codex, StringOrMap}
   alias SymphonyElixir.Linear.Client
-  alias SymphonyElixir.ProjectProfiles
+  alias SymphonyElixir.{ProjectExecutionContext, ProjectProfiles, SubprocessEnvironment}
 
   test "project profiles are disabled when absent and available only as a complete valid set" do
     assert {:ok, defaults} = Schema.parse(%{})
@@ -77,6 +77,154 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
     assert message =~ "landing.mode"
   end
 
+  test "restart notifications require a safe absolute runtime-state root and complete local command config" do
+    safe_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-runtime-state-#{System.unique_integer([:positive])}"
+      )
+
+    assert {:ok, defaults} = Schema.parse(%{})
+    assert Path.type(defaults.observability.runtime_state_root) == :absolute
+    assert defaults.observability.notification_command == nil
+    assert defaults.observability.notification_receiver == nil
+    assert defaults.observability.restart_limit > 0
+    assert defaults.observability.notification_timeout_ms > 0
+
+    assert {:ok, configured} =
+             Schema.parse(%{
+               observability: %{
+                 runtime_state_root: safe_root,
+                 notification_command: "pwsh -NoProfile -File notify.ps1",
+                 notification_receiver: "on-call:platform",
+                 restart_limit: 4,
+                 notification_timeout_ms: 2_500
+               }
+             })
+
+    assert configured.observability.runtime_state_root == safe_root
+    assert configured.observability.notification_receiver == "on-call:platform"
+    assert configured.observability.restart_limit == 4
+    assert configured.observability.notification_timeout_ms == 2_500
+
+    invalid_configs = [
+      %{runtime_state_root: safe_root, notification_command: 42, notification_receiver: "on-call"},
+      %{runtime_state_root: safe_root, notification_command: "notify-local", notification_receiver: 42},
+      %{runtime_state_root: safe_root |> Path.split() |> hd()},
+      %{runtime_state_root: "relative/runtime-state"},
+      %{runtime_state_root: Path.join(safe_root, "Production-runtime")},
+      %{runtime_state_root: Path.join(safe_root, "token=canary-value")},
+      %{runtime_state_root: safe_root, notification_command: "notify-local"},
+      %{runtime_state_root: safe_root, notification_receiver: "on-call:platform"},
+      %{
+        runtime_state_root: safe_root,
+        notification_command: " ",
+        notification_receiver: "on-call:platform"
+      },
+      %{
+        runtime_state_root: safe_root,
+        notification_command: "notify-local",
+        notification_receiver: " "
+      },
+      %{
+        runtime_state_root: safe_root,
+        notification_command: "notify-local Authorization: canary-value",
+        notification_receiver: "on-call:platform"
+      },
+      %{
+        runtime_state_root: safe_root,
+        notification_command: "notify-local",
+        notification_receiver: "token=canary-value"
+      },
+      %{
+        runtime_state_root: safe_root,
+        notification_command: "notify-local",
+        notification_receiver: "on-call:platform",
+        restart_limit: 0
+      },
+      %{
+        runtime_state_root: safe_root,
+        notification_command: "notify-local",
+        notification_receiver: "on-call:platform",
+        notification_timeout_ms: 0
+      }
+    ]
+
+    for observability <- invalid_configs do
+      message =
+        case Schema.parse(%{observability: observability}) do
+          {:error, {:invalid_workflow_config, message}} -> message
+          {:ok, _settings} -> flunk("expected invalid observability configuration")
+        end
+
+      refute message =~ "canary-value"
+      refute message =~ "notify-local"
+      refute message =~ "on-call:platform"
+    end
+
+    separation_message =
+      case Schema.parse(%{
+             workspace: %{root: safe_root},
+             observability: %{runtime_state_root: Path.join(safe_root, "runtime-state")}
+           }) do
+        {:error, {:invalid_workflow_config, message}} -> message
+        {:ok, _settings} -> flunk("expected runtime-state/workspace separation error")
+      end
+
+    assert separation_message =~ "observability"
+    refute separation_message =~ safe_root
+  end
+
+  test "runtime state and workspace roots reject overlap in both directions after relative and symlink resolution" do
+    relative_workspace =
+      "task6-relative-workspace-#{System.unique_integer([:positive])}"
+
+    relative_runtime_root = Path.expand(Path.join(relative_workspace, "runtime-state"))
+
+    relative_message =
+      invalid_root_separation_message(%{
+        workspace: %{root: relative_workspace},
+        observability: %{runtime_state_root: relative_runtime_root}
+      })
+
+    assert relative_message =~ "observability.runtime_state_root"
+
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "task6-config-separation-#{System.unique_integer([:positive])}"
+      )
+
+    runtime_root = Path.join(test_root, "runtime-state")
+    workspace_inside_runtime = Path.join(runtime_root, "workspaces")
+    workspace_alias = Path.join(test_root, "workspace-alias")
+
+    File.mkdir_p!(workspace_inside_runtime)
+
+    try do
+      reverse_message =
+        invalid_root_separation_message(%{
+          workspace: %{root: workspace_inside_runtime},
+          observability: %{runtime_state_root: runtime_root}
+        })
+
+      assert reverse_message =~ "observability.runtime_state_root"
+
+      create_directory_link!(workspace_inside_runtime, workspace_alias)
+
+      symlink_message =
+        invalid_root_separation_message(%{
+          workspace: %{root: workspace_alias},
+          observability: %{runtime_state_root: runtime_root}
+        })
+
+      assert symlink_message =~ "observability.runtime_state_root"
+    after
+      _cleanup_link = File.rmdir(workspace_alias)
+      File.rm_rf(test_root)
+    end
+  end
+
   test "workspace bootstrap can be implemented in after_create hook" do
     test_root =
       Path.join(
@@ -126,6 +274,1776 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
 
     assert first_workspace == second_workspace
     assert Path.basename(first_workspace) == "MT_Det"
+  end
+
+  test "project execution contexts isolate identical issue identifiers and cleanup only their target" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-workspace-context-#{System.unique_integer([:positive])}"
+      )
+
+    try do
+      workspace_root = Path.join(test_root, "workspaces")
+      File.mkdir_p!(workspace_root)
+      central = project_context("central-brain", "ARO-286")
+      management = project_context("project-management", "ARO-286")
+
+      write_workflow_file!(Workflow.workflow_file_path(), workspace_root: workspace_root)
+
+      assert {:ok, %{path: central_workspace, workspace_attestation: central_attestation}} =
+               Workspace.prepare_for_issue("ARO-286", nil, central)
+
+      assert {:ok, %{path: management_workspace}} =
+               Workspace.prepare_for_issue("ARO-286", nil, management)
+
+      assert {:ok, root} = SymphonyElixir.PathSafety.canonicalize(workspace_root)
+      assert central_workspace == Path.join([root, "central-brain", "ARO-286"])
+      assert management_workspace == Path.join([root, "project-management", "ARO-286"])
+
+      File.write!(Path.join([root, "central-brain", "namespace-marker.txt"]), "keep")
+      File.write!(Path.join(root, "root-marker.txt"), "keep")
+
+      assert :ok =
+               Workspace.remove_issue_workspaces("ARO-286", nil, central, workspace_attestation: central_attestation)
+
+      refute File.exists?(central_workspace)
+      assert File.exists?(Path.join([root, "central-brain", "namespace-marker.txt"]))
+      assert File.exists?(management_workspace)
+      assert File.exists?(Path.join(root, "root-marker.txt"))
+    after
+      File.rm_rf(test_root)
+    end
+  end
+
+  test "project workspace rejects namespace symlink escapes and production-like roots" do
+    unique_suffix =
+      "#{System.os_time(:nanosecond)}-#{System.unique_integer([:positive, :monotonic])}"
+
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-workspace-context-safety-#{unique_suffix}"
+      )
+
+    try do
+      workspace_root = Path.join(test_root, "workspaces")
+      outside_root = Path.join(test_root, "outside")
+      namespace_link = Path.join(workspace_root, "central-brain")
+      context = project_context("central-brain", "ARO-286")
+
+      File.mkdir_p!(workspace_root)
+      File.mkdir_p!(outside_root)
+      create_directory_link!(outside_root, namespace_link)
+      write_workflow_file!(Workflow.workflow_file_path(), workspace_root: workspace_root)
+
+      assert {:ok, canonical_workspace_root} = SymphonyElixir.PathSafety.canonicalize(workspace_root)
+
+      assert {:error, {:workspace_namespace_outside_root, _canonical_namespace, ^canonical_workspace_root}} =
+               Workspace.create_for_issue("ARO-286", nil, context)
+
+      production_root = Path.join(test_root, "production-workspaces")
+      write_workflow_file!(Workflow.workflow_file_path(), workspace_root: production_root)
+
+      assert {:error, {:workspace_production_root, ^production_root}} =
+               Workspace.create_for_issue("ARO-286", nil, context)
+    after
+      File.rm_rf(test_root)
+    end
+  end
+
+  test "context subprocess environment cannot mutate a rejected Production-like root" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "aro286-private-home-production-#{System.os_time(:nanosecond)}-#{System.unique_integer([:positive, :monotonic])}"
+      )
+
+    workspace_root = Path.join(test_root, "Production-workspaces")
+    context = project_context("central-brain", "ARO-286")
+    paths = private_home_paths(workspace_root, context)
+
+    try do
+      write_workflow_file!(Workflow.workflow_file_path(), workspace_root: workspace_root)
+
+      assert {:ok, environment} = SubprocessEnvironment.build(%{}, context)
+      refute File.exists?(workspace_root)
+      refute File.exists?(paths.root)
+
+      assert {:error, {:workspace_production_root, ^workspace_root}} =
+               Workspace.prepare_for_issue("ARO-286", nil, context,
+                 env: environment,
+                 subprocess_home_paths: paths
+               )
+
+      refute File.exists?(workspace_root)
+      refute File.exists?(paths.root)
+    after
+      File.rm_rf(test_root)
+    end
+  end
+
+  test "context subprocess home rejects namespace aliases before touching sibling or outside targets" do
+    for target_kind <- [:sibling, :outside] do
+      test_root =
+        Path.join(
+          System.tmp_dir!(),
+          "aro286-private-home-namespace-#{target_kind}-#{System.os_time(:nanosecond)}-#{System.unique_integer([:positive, :monotonic])}"
+        )
+
+      workspace_root = Path.join(test_root, "workspaces")
+      namespace_link = Path.join(workspace_root, "central-brain")
+
+      target =
+        case target_kind do
+          :sibling -> Path.join(workspace_root, "project-management")
+          :outside -> Path.join(test_root, "outside")
+        end
+
+      context = project_context("central-brain", "ARO-286")
+
+      try do
+        File.mkdir_p!(workspace_root)
+        File.mkdir_p!(target)
+        File.write!(Path.join(target, "sentinel.txt"), "preserve")
+        create_directory_link!(target, namespace_link)
+        write_workflow_file!(Workflow.workflow_file_path(), workspace_root: workspace_root)
+
+        assert {:ok, _environment} = SubprocessEnvironment.build(%{}, context)
+        assert {:error, _reason} = Workspace.prepare_for_issue("ARO-286", nil, context)
+
+        assert {:ok, ["sentinel.txt"]} = File.ls(target)
+        refute File.exists?(Path.join(target, ".symphony-subprocess"))
+      after
+        remove_directory_link(namespace_link)
+        File.rm_rf(test_root)
+      end
+    end
+  end
+
+  test "context subprocess home rejects aliases at every private descendant without following them" do
+    for alias_kind <- [:root, :home, :gh, :codex] do
+      test_root =
+        Path.join(
+          System.tmp_dir!(),
+          "aro286-private-home-#{alias_kind}-#{System.os_time(:nanosecond)}-#{System.unique_integer([:positive, :monotonic])}"
+        )
+
+      workspace_root = Path.join(test_root, "workspaces")
+      context = project_context("central-brain", "ARO-286")
+      paths = private_home_paths(workspace_root, context)
+      outside_target = Path.join([test_root, "outside", Atom.to_string(alias_kind)])
+
+      alias_path =
+        case alias_kind do
+          :root -> paths.root
+          :home -> paths.home
+          :gh -> paths.gh
+          :codex -> paths.codex
+        end
+
+      try do
+        File.mkdir_p!(Path.dirname(alias_path))
+        File.mkdir_p!(outside_target)
+        File.write!(Path.join(outside_target, "sentinel.txt"), "preserve")
+        create_directory_link!(outside_target, alias_path)
+        write_workflow_file!(Workflow.workflow_file_path(), workspace_root: workspace_root)
+
+        assert {:ok, environment} = SubprocessEnvironment.build(%{}, context)
+
+        assert {:error, :subprocess_home_unavailable} =
+                 Workspace.prepare_for_issue("ARO-286", nil, context,
+                   env: environment,
+                   subprocess_home_paths: paths
+                 )
+
+        assert {:ok, ["sentinel.txt"]} = File.ls(outside_target)
+      after
+        remove_directory_link(alias_path)
+        File.rm_rf(test_root)
+      end
+    end
+  end
+
+  test "context subprocess home revalidates a component replaced at the creation seam" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "aro286-private-home-replacement-#{System.os_time(:nanosecond)}-#{System.unique_integer([:positive, :monotonic])}"
+      )
+
+    workspace_root = Path.join(test_root, "workspaces")
+    outside_target = Path.join(test_root, "outside")
+    context = project_context("central-brain", "ARO-286")
+    paths = private_home_paths(workspace_root, context)
+
+    try do
+      File.mkdir_p!(outside_target)
+      File.write!(Path.join(outside_target, "sentinel.txt"), "preserve")
+      write_workflow_file!(Workflow.workflow_file_path(), workspace_root: workspace_root)
+
+      assert {:ok, environment} = SubprocessEnvironment.build(%{}, context)
+      File.rm_rf!(paths.root)
+
+      replacement = fn path ->
+        if path == paths.root do
+          create_directory_link!(outside_target, path)
+          send(self(), {:private_home_replaced, path})
+        end
+
+        :ok
+      end
+
+      assert {:error, :subprocess_home_unavailable} =
+               Workspace.prepare_for_issue("ARO-286", nil, context,
+                 env: environment,
+                 subprocess_home_paths: paths,
+                 private_home_before_create: replacement
+               )
+
+      assert_received {:private_home_replaced, replaced_path}
+      assert replaced_path == paths.root
+      assert {:ok, ["sentinel.txt"]} = File.ls(outside_target)
+      refute File.exists?(Path.join(outside_target, "ARO-286-r1"))
+    after
+      remove_directory_link(paths.root)
+      File.rm_rf(test_root)
+    end
+  end
+
+  test "validated context preparation creates canonical non-reparse owner-private subprocess homes" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "aro286-private-home-valid-#{System.os_time(:nanosecond)}-#{System.unique_integer([:positive, :monotonic])}"
+      )
+
+    workspace_root = Path.join(test_root, "workspaces")
+    context = project_context("central-brain", "ARO-286")
+    paths = private_home_paths(workspace_root, context)
+
+    try do
+      write_workflow_file!(Workflow.workflow_file_path(), workspace_root: workspace_root)
+
+      assert {:ok, environment} = SubprocessEnvironment.build(%{}, context)
+      refute File.exists?(paths.root)
+
+      assert {:ok, %{workspace_attestation: %{kind: :local}}} =
+               Workspace.prepare_for_issue("ARO-286", nil, context,
+                 env: environment,
+                 subprocess_home_paths: paths
+               )
+
+      private_directories = [
+        paths.root,
+        paths.home,
+        paths.gh,
+        paths.xdg_config,
+        paths.xdg_cache,
+        paths.xdg_data,
+        paths.codex
+      ]
+
+      Enum.each(private_directories, fn path ->
+        assert {:ok, %File.Stat{type: :directory}} = File.lstat(path)
+        assert {:ok, canonical_path} = SymphonyElixir.PathSafety.canonicalize(path)
+        assert canonical_path == Path.expand(path)
+        refute_windows_reparse_point(path)
+      end)
+
+      assert_owner_private_permissions(private_directories)
+    after
+      File.rm_rf(test_root)
+    end
+  end
+
+  test "Windows reparse classification accepts only the non-reparse error code" do
+    assert :ok =
+             Workspace.classify_windows_reparse_query_for_test(
+               "Error 4390: The file or directory is not a reparse point.\r\n",
+               1
+             )
+
+    for {output, status} <- [
+          {"Reparse Tag Value : 0xa000000c", 0},
+          {"Error 5: Access is denied.", 1},
+          {"Error 5: Access is denied for C:\\4390\\private-home.", 1},
+          {"Access denied.\r\nDiagnostic code 4390", 1},
+          {"Error 4390: Not a reparse point.\r\nError 5: Access is denied.", 1},
+          {"Error 14390: unrelated", 1},
+          {"", 1},
+          {"Error 4390: The file or directory is not a reparse point.", 2}
+        ] do
+      assert {:error, :unsafe_private_home_path} =
+               Workspace.classify_windows_reparse_query_for_test(output, status)
+    end
+  end
+
+  test "context subprocess home rolls back every component created before a mid-creation failure" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "aro286-private-home-mid-create-#{System.os_time(:nanosecond)}-#{System.unique_integer([:positive, :monotonic])}"
+      )
+
+    workspace_root = Path.join(test_root, "workspaces")
+    context = project_context("central-brain", "ARO-286")
+    paths = private_home_paths(workspace_root, context)
+
+    try do
+      write_workflow_file!(Workflow.workflow_file_path(), workspace_root: workspace_root)
+      assert {:ok, environment} = SubprocessEnvironment.build(%{}, context)
+
+      fail_before_create = fn path ->
+        if path == paths.xdg_cache do
+          assert_owner_private_permissions([
+            paths.root,
+            paths.home,
+            paths.gh,
+            paths.xdg_config
+          ])
+
+          send(self(), :prior_components_were_private)
+          {:error, :injected_creation_failure}
+        else
+          :ok
+        end
+      end
+
+      assert {:error, :subprocess_home_unavailable} =
+               Workspace.prepare_for_issue("ARO-286", nil, context,
+                 env: environment,
+                 subprocess_home_paths: paths,
+                 private_home_before_create: fail_before_create
+               )
+
+      assert_received :prior_components_were_private
+      Enum.each(private_directories(paths), &refute(File.exists?(&1)))
+    after
+      File.rm_rf(test_root)
+    end
+  end
+
+  test "context subprocess home rolls back an injected permission failure without weak residue" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "aro286-private-home-permission-failure-#{System.os_time(:nanosecond)}-#{System.unique_integer([:positive, :monotonic])}"
+      )
+
+    workspace_root = Path.join(test_root, "workspaces")
+    context = project_context("central-brain", "ARO-286")
+    paths = private_home_paths(workspace_root, context)
+
+    try do
+      write_workflow_file!(Workflow.workflow_file_path(), workspace_root: workspace_root)
+      assert {:ok, environment} = SubprocessEnvironment.build(%{}, context)
+
+      assert {:error, :subprocess_home_unavailable} =
+               Workspace.prepare_for_issue("ARO-286", nil, context,
+                 env: environment,
+                 subprocess_home_paths: paths,
+                 private_home_permission_failure: paths.gh
+               )
+
+      Enum.each(private_directories(paths), &refute(File.exists?(&1)))
+    after
+      File.rm_rf(test_root)
+    end
+  end
+
+  test "pre-existing private components must already be owner-private and remain untouched on rejection" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "aro286-private-home-existing-permissions-#{System.os_time(:nanosecond)}-#{System.unique_integer([:positive, :monotonic])}"
+      )
+
+    workspace_root = Path.join(test_root, "workspaces")
+    context = project_context("central-brain", "ARO-286")
+    paths = private_home_paths(workspace_root, context)
+
+    try do
+      File.mkdir_p!(paths.root)
+      set_non_private_permissions!(paths.root)
+      before_permissions = private_permissions_snapshot!(paths.root)
+      write_workflow_file!(Workflow.workflow_file_path(), workspace_root: workspace_root)
+      assert {:ok, environment} = SubprocessEnvironment.build(%{}, context)
+
+      assert {:error, :subprocess_home_unavailable} =
+               Workspace.prepare_for_issue("ARO-286", nil, context,
+                 env: environment,
+                 subprocess_home_paths: paths
+               )
+
+      assert private_permissions_snapshot!(paths.root) == before_permissions
+      refute File.exists?(paths.home)
+    after
+      File.rm_rf(test_root)
+    end
+  end
+
+  test "Windows retained namespace capability blocks replacement after validation" do
+    if match?({:win32, _name}, :os.type()) do
+      test_root =
+        Path.join(
+          System.tmp_dir!(),
+          "aro286-private-home-retained-parent-#{System.os_time(:nanosecond)}-#{System.unique_integer([:positive, :monotonic])}"
+        )
+
+      workspace_root = Path.join(test_root, "workspaces")
+      namespace_path = Path.join(workspace_root, "central-brain")
+      moved_namespace = Path.join(workspace_root, "central-brain-moved")
+      outside_target = Path.join(test_root, "outside")
+      context = project_context("central-brain", "ARO-286")
+      paths = private_home_paths(workspace_root, context)
+
+      try do
+        File.mkdir_p!(outside_target)
+        File.write!(Path.join(outside_target, "sentinel.txt"), "preserve")
+        write_workflow_file!(Workflow.workflow_file_path(), workspace_root: workspace_root)
+        assert {:ok, environment} = SubprocessEnvironment.build(%{}, context)
+
+        replacement = fn path ->
+          if path == paths.root do
+            rename_result = File.rename(namespace_path, moved_namespace)
+
+            if rename_result == :ok do
+              create_directory_link!(outside_target, namespace_path)
+            end
+
+            send(self(), {:namespace_rename_result, rename_result})
+          end
+
+          :ok
+        end
+
+        assert {:ok, _preparation} =
+                 Workspace.prepare_for_issue("ARO-286", nil, context,
+                   env: environment,
+                   subprocess_home_paths: paths,
+                   private_home_before_create: replacement
+                 )
+
+        assert_received {:namespace_rename_result, {:error, _reason}}
+        refute File.exists?(moved_namespace)
+        assert {:ok, ["sentinel.txt"]} = File.ls(outside_target)
+        assert_owner_private_permissions(private_directories(paths))
+      after
+        remove_directory_link(namespace_path)
+
+        if File.dir?(moved_namespace) and not File.exists?(namespace_path) do
+          File.rename!(moved_namespace, namespace_path)
+        end
+
+        File.rm_rf(test_root)
+      end
+    else
+      assert true
+    end
+  end
+
+  test "Windows post-create observer sees an atomically private pinned directory" do
+    if match?({:win32, _name}, :os.type()) do
+      test_root =
+        Path.join(
+          System.tmp_dir!(),
+          "aro286-private-home-atomic-acl-#{System.os_time(:nanosecond)}-#{System.unique_integer([:positive, :monotonic])}"
+        )
+
+      workspace_root = Path.join(test_root, "workspaces")
+      context = project_context("central-brain", "ARO-286")
+      paths = private_home_paths(workspace_root, context)
+      moved_root = paths.root <> "-moved"
+
+      try do
+        write_workflow_file!(Workflow.workflow_file_path(), workspace_root: workspace_root)
+        assert {:ok, environment} = SubprocessEnvironment.build(%{}, context)
+
+        observer = fn path ->
+          if path == paths.root do
+            assert_owner_private_permissions([path])
+            send(self(), {:post_create_rename, File.rename(path, moved_root)})
+          end
+
+          :ok
+        end
+
+        assert {:ok, %{private_home_capability: capability}} =
+                 Workspace.prepare_for_issue("ARO-286", nil, context,
+                   env: environment,
+                   subprocess_home_paths: paths,
+                   private_home_after_create: observer
+                 )
+
+        assert_received {:post_create_rename, {:error, _reason}}
+        refute File.exists?(moved_root)
+        assert :ok = Workspace.finalize_private_home_capability(capability)
+      after
+        File.rm_rf(test_root)
+      end
+    else
+      assert true
+    end
+  end
+
+  test "preparation failure after private-home creation rolls back only this attempt's homes" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "aro286-private-home-prepare-rollback-#{System.os_time(:nanosecond)}-#{System.unique_integer([:positive, :monotonic])}"
+      )
+
+    workspace_root = Path.join(test_root, "workspaces")
+    context = project_context("central-brain", "ARO-286")
+    paths = private_home_paths(workspace_root, context)
+
+    try do
+      write_workflow_file!(Workflow.workflow_file_path(),
+        workspace_root: workspace_root,
+        hook_after_create: "exit 23"
+      )
+
+      assert {:ok, environment} = SubprocessEnvironment.build(%{"GH_TOKEN" => "approved"}, context)
+
+      assert {:error, _reason} =
+               Workspace.prepare_for_issue("ARO-286", nil, context,
+                 env: environment,
+                 subprocess_home_paths: paths
+               )
+
+      Enum.each(private_directories(paths), fn path ->
+        refute File.exists?(path), "private-home residue remained at #{path}"
+      end)
+    after
+      File.rm_rf(test_root)
+    end
+  end
+
+  test "Windows commit failure is bounded, retires the capability, and rolls back new homes" do
+    if match?({:win32, _name}, :os.type()) do
+      test_root =
+        Path.join(
+          System.tmp_dir!(),
+          "aro286-private-home-commit-failure-#{System.os_time(:nanosecond)}-#{System.unique_integer([:positive, :monotonic])}"
+        )
+
+      workspace_root = Path.join(test_root, "workspaces")
+      context = project_context("central-brain", "ARO-286")
+      paths = private_home_paths(workspace_root, context)
+
+      try do
+        write_workflow_file!(Workflow.workflow_file_path(), workspace_root: workspace_root)
+        assert {:ok, environment} = SubprocessEnvironment.build(%{"GH_TOKEN" => "approved"}, context)
+
+        assert {:ok, %{private_home_capability: capability}} =
+                 Workspace.prepare_for_issue("ARO-286", nil, context,
+                   env: environment,
+                   subprocess_home_paths: paths,
+                   private_home_commit_failure: true
+                 )
+
+        assert {:error, :subprocess_home_finalize_failed} =
+                 Workspace.finalize_private_home_capability(capability)
+
+        refute Workspace.private_home_capability_active_for_test?(capability)
+
+        assert_eventually(fn ->
+          Enum.all?(private_directories(paths), &(not File.exists?(&1)))
+        end)
+      after
+        File.rm_rf(test_root)
+      end
+    else
+      assert true
+    end
+  end
+
+  test "Windows rollback deletion failure is surfaced and never reported as success" do
+    if match?({:win32, _name}, :os.type()) do
+      test_root =
+        Path.join(
+          System.tmp_dir!(),
+          "aro286-private-home-rollback-failure-#{System.os_time(:nanosecond)}-#{System.unique_integer([:positive, :monotonic])}"
+        )
+
+      workspace_root = Path.join(test_root, "workspaces")
+      context = project_context("central-brain", "ARO-286")
+      paths = private_home_paths(workspace_root, context)
+      blocker = Path.join(paths.codex, "rollback-blocker")
+
+      try do
+        write_workflow_file!(Workflow.workflow_file_path(),
+          workspace_root: workspace_root,
+          hook_after_create: "exit 23"
+        )
+
+        assert {:ok, environment} = SubprocessEnvironment.build(%{"GH_TOKEN" => "approved"}, context)
+
+        post_create = fn path ->
+          if path == paths.codex, do: File.write!(blocker, "retain")
+          :ok
+        end
+
+        assert {:error, :subprocess_home_rollback_failed} =
+                 Workspace.prepare_for_issue("ARO-286", nil, context,
+                   env: environment,
+                   subprocess_home_paths: paths,
+                   private_home_after_create: post_create
+                 )
+
+        assert File.regular?(blocker)
+      after
+        File.rm_rf(test_root)
+      end
+    else
+      assert true
+    end
+  end
+
+  test "Windows owner-process exit retires its helper and rolls back uncommitted homes" do
+    if match?({:win32, _name}, :os.type()) do
+      test_root =
+        Path.join(
+          System.tmp_dir!(),
+          "aro286-private-home-owner-exit-#{System.os_time(:nanosecond)}-#{System.unique_integer([:positive, :monotonic])}"
+        )
+
+      workspace_root = Path.join(test_root, "workspaces")
+      context = project_context("central-brain", "ARO-286")
+      paths = private_home_paths(workspace_root, context)
+      parent = self()
+
+      try do
+        write_workflow_file!(Workflow.workflow_file_path(), workspace_root: workspace_root)
+        assert {:ok, environment} = SubprocessEnvironment.build(%{"GH_TOKEN" => "approved"}, context)
+
+        {owner, monitor} =
+          spawn_monitor(fn ->
+            result =
+              Workspace.prepare_for_issue("ARO-286", nil, context,
+                env: environment,
+                subprocess_home_paths: paths
+              )
+
+            send(parent, {:owner_preparation, self(), result})
+          end)
+
+        assert_receive {:owner_preparation, ^owner, {:ok, _preparation}}, 15_000
+        assert_receive {:DOWN, ^monitor, :process, ^owner, :normal}, 15_000
+
+        assert_eventually(fn ->
+          Enum.all?(private_directories(paths), &(not File.exists?(&1)))
+        end)
+      after
+        File.rm_rf(test_root)
+      end
+    else
+      assert true
+    end
+  end
+
+  test "private-home replacement after preparation is rejected before a credential-bearing hook" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "aro286-private-home-before-hook-#{System.os_time(:nanosecond)}-#{System.unique_integer([:positive, :monotonic])}"
+      )
+
+    workspace_root = Path.join(test_root, "workspaces")
+    hook_marker = Path.join(test_root, "hook.marker")
+    context = project_context("central-brain", "ARO-286")
+    paths = private_home_paths(workspace_root, context)
+
+    try do
+      write_workflow_file!(Workflow.workflow_file_path(),
+        workspace_root: workspace_root,
+        hook_before_run: "printf unsafe > '#{shell_path(hook_marker)}'"
+      )
+
+      assert {:ok, environment} = SubprocessEnvironment.build(%{"GH_TOKEN" => "approved"}, context)
+
+      assert {:ok,
+              %{
+                path: workspace,
+                workspace_attestation: workspace_attestation,
+                private_home_capability: capability
+              }} =
+               Workspace.prepare_for_issue("ARO-286", nil, context,
+                 env: environment,
+                 subprocess_home_paths: paths
+               )
+
+      replace_or_weaken_private_home!(paths.codex)
+
+      assert {:error, :subprocess_home_unavailable} =
+               Workspace.run_before_run_hook(
+                 workspace,
+                 "ARO-286",
+                 nil,
+                 private_home_effect_opts(
+                   environment,
+                   paths,
+                   context,
+                   workspace_attestation,
+                   capability
+                 )
+               )
+
+      refute File.exists?(hook_marker)
+
+      assert {:error, :subprocess_home_finalize_failed} =
+               Workspace.finalize_private_home_capability(capability)
+    after
+      File.rm_rf(test_root)
+    end
+  end
+
+  test "private-home replacement after preparation is rejected before a credential-bearing Git command" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "aro286-private-home-before-git-#{System.os_time(:nanosecond)}-#{System.unique_integer([:positive, :monotonic])}"
+      )
+
+    workspace_root = Path.join(test_root, "workspaces")
+    context = project_context("central-brain", "ARO-286")
+    paths = private_home_paths(workspace_root, context)
+
+    try do
+      write_workflow_file!(Workflow.workflow_file_path(), workspace_root: workspace_root)
+      assert {:ok, environment} = SubprocessEnvironment.build(%{"GH_TOKEN" => "approved"}, context)
+
+      assert {:ok,
+              %{
+                path: workspace,
+                workspace_attestation: workspace_attestation,
+                private_home_capability: capability
+              }} =
+               Workspace.prepare_for_issue("ARO-286", nil, context,
+                 env: environment,
+                 subprocess_home_paths: paths
+               )
+
+      assert {_, 0} = System.cmd("git", ["-C", workspace, "init"])
+      replace_or_weaken_private_home!(paths.codex)
+
+      assert {:error, :subprocess_home_unavailable} =
+               Workspace.run_git_command(
+                 workspace,
+                 ["rev-parse", "--is-inside-work-tree"],
+                 nil,
+                 private_home_effect_opts(
+                   environment,
+                   paths,
+                   context,
+                   workspace_attestation,
+                   capability
+                 )
+               )
+
+      assert {:error, :subprocess_home_finalize_failed} =
+               Workspace.finalize_private_home_capability(capability)
+    after
+      File.rm_rf(test_root)
+    end
+  end
+
+  test "private-home replacement after preparation is rejected before Codex AppServer opens a process" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "aro286-private-home-before-codex-#{System.os_time(:nanosecond)}-#{System.unique_integer([:positive, :monotonic])}"
+      )
+
+    workspace_root = Path.join(test_root, "workspaces")
+    context = project_context("central-brain", "ARO-286")
+    paths = private_home_paths(workspace_root, context)
+    test_pid = self()
+
+    try do
+      write_workflow_file!(Workflow.workflow_file_path(), workspace_root: workspace_root)
+      assert {:ok, environment} = SubprocessEnvironment.build(%{"GH_TOKEN" => "approved"}, context)
+
+      assert {:ok,
+              %{
+                path: workspace,
+                workspace_attestation: workspace_attestation,
+                private_home_capability: capability
+              }} =
+               Workspace.prepare_for_issue("ARO-286", nil, context,
+                 env: environment,
+                 subprocess_home_paths: paths
+               )
+
+      replace_or_weaken_private_home!(paths.codex)
+
+      port_opener = fn _spawn_target, _port_opts ->
+        send(test_pid, :unsafe_codex_process_opened)
+        raise "Codex process must not open"
+      end
+
+      assert {:error, :subprocess_home_unavailable} =
+               AppServer.start_session(
+                 workspace,
+                 Keyword.put(
+                   private_home_effect_opts(
+                     environment,
+                     paths,
+                     context,
+                     workspace_attestation,
+                     capability
+                   ),
+                   :port_opener,
+                   port_opener
+                 )
+               )
+
+      refute_received :unsafe_codex_process_opened
+
+      assert {:error, :subprocess_home_finalize_failed} =
+               Workspace.finalize_private_home_capability(capability)
+    after
+      File.rm_rf(test_root)
+    end
+  end
+
+  test "POSIX private permission validation requires mode 0700 and effective ownership" do
+    effective_uid = 1_001
+
+    assert :ok =
+             Workspace.validate_posix_private_permissions_for_test(
+               %File.Stat{type: :directory, mode: 0o700, uid: effective_uid},
+               effective_uid
+             )
+
+    for stat <- [
+          %File.Stat{type: :directory, mode: 0o755, uid: effective_uid},
+          %File.Stat{type: :directory, mode: 0o700, uid: effective_uid + 1},
+          %File.Stat{type: :regular, mode: 0o700, uid: effective_uid}
+        ] do
+      assert {:error, :private_home_permissions_failed} =
+               Workspace.validate_posix_private_permissions_for_test(stat, effective_uid)
+    end
+  end
+
+  test "POSIX rollback tracking adds only directories created by this mkdir call" do
+    path = "/private/issue-home"
+    existing = [{"/private/root", %{type: :directory, inode: 10, uid: 1_001}}]
+    identity = %{type: :directory, major_device: 1, minor_device: 2, inode: 11, uid: 1_001}
+    test_pid = self()
+
+    for mkdir_result <- [{:error, :eexist}, {:error, :eacces}] do
+      mkdir = fn ^path -> mkdir_result end
+
+      identity_reader = fn _unexpected ->
+        send(test_pid, :identity_read_for_uncreated_directory)
+        {:ok, identity}
+      end
+
+      assert {:error, :private_home_create_failed, ^existing} =
+               Workspace.posix_mkdir_and_track_for_test(
+                 path,
+                 existing,
+                 mkdir,
+                 identity_reader
+               )
+
+      refute_received :identity_read_for_uncreated_directory
+    end
+
+    assert {:ok, ^identity, [{^path, ^identity} | ^existing]} =
+             Workspace.posix_mkdir_and_track_for_test(
+               path,
+               existing,
+               fn ^path -> :ok end,
+               fn ^path -> {:ok, identity} end
+             )
+
+    assert {:error, :private_home_rollback_failed, ^existing} =
+             Workspace.posix_mkdir_and_track_for_test(
+               path,
+               existing,
+               fn ^path -> :ok end,
+               fn ^path -> {:error, :identity_unavailable} end
+             )
+
+    assert {:error, :private_home_rollback_failed, ^existing} =
+             Workspace.posix_mkdir_and_track_for_test(
+               path,
+               existing,
+               fn ^path -> :ok end,
+               fn ^path -> raise "identity read failed" end
+             )
+  end
+
+  test "POSIX rollback revalidates owner identity, removes newest-first, and reports every failure" do
+    parent = "/private/root"
+    child = "/private/root/issue-home"
+
+    parent_identity =
+      %{type: :directory, major_device: 1, minor_device: 2, inode: 10, uid: 1_001}
+
+    child_identity =
+      %{type: :directory, major_device: 1, minor_device: 2, inode: 11, uid: 1_001}
+
+    created = [{child, child_identity}, {parent, parent_identity}]
+    test_pid = self()
+
+    identity_reader = fn
+      ^child -> {:ok, child_identity}
+      ^parent -> {:ok, parent_identity}
+    end
+
+    assert :ok =
+             Workspace.rollback_posix_private_home_for_test(
+               created,
+               identity_reader,
+               fn path ->
+                 send(test_pid, {:removed, path})
+                 :ok
+               end
+             )
+
+    assert_received {:removed, ^child}
+    assert_received {:removed, ^parent}
+
+    changed_reader = fn
+      ^child -> {:ok, %{child_identity | inode: 99}}
+      ^parent -> {:ok, parent_identity}
+    end
+
+    assert {:error, :private_home_rollback_failed} =
+             Workspace.rollback_posix_private_home_for_test(
+               created,
+               changed_reader,
+               fn path ->
+                 send(test_pid, {:unsafe_remove, path})
+                 :ok
+               end
+             )
+
+    refute_received {:unsafe_remove, ^child}
+    assert_received {:unsafe_remove, ^parent}
+
+    assert {:error, :private_home_rollback_failed} =
+             Workspace.rollback_posix_private_home_for_test(
+               created,
+               identity_reader,
+               fn
+                 ^child -> {:error, :eacces}
+                 ^parent -> :ok
+               end
+             )
+  end
+
+  test "context cleanup without an attestation preserves the workspace and creates no private home or hook effect" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "aro286-cleanup-no-attestation-#{System.os_time(:nanosecond)}-#{System.unique_integer([:positive, :monotonic])}"
+      )
+
+    workspace_root = Path.join(test_root, "workspaces")
+    workspace = Path.join([workspace_root, "central-brain", "ARO-286"])
+    hook_marker = Path.join(test_root, "cleanup-hook.txt")
+    context = project_context("central-brain", "ARO-286")
+    paths = private_home_paths(workspace_root, context)
+
+    try do
+      File.mkdir_p!(workspace)
+      File.write!(Path.join(workspace, "preserve.txt"), "preserve")
+
+      write_workflow_file!(Workflow.workflow_file_path(),
+        workspace_root: workspace_root,
+        hook_before_remove: "echo unsafe > '#{shell_path(hook_marker)}'"
+      )
+
+      assert :ok = Workspace.remove_issue_workspaces("ARO-286", nil, context)
+      assert File.read!(Path.join(workspace, "preserve.txt")) == "preserve"
+      refute File.exists?(paths.root)
+      refute File.exists?(hook_marker)
+    after
+      File.rm_rf(test_root)
+    end
+  end
+
+  test "context cleanup removes an orphaned readiness sidecar with a namespace-bound absence attestation" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "aro286-cleanup-orphaned-readiness-#{System.os_time(:nanosecond)}-#{System.unique_integer([:positive, :monotonic])}"
+      )
+
+    workspace_root = Path.join(test_root, "workspaces")
+    workspace = Path.join([workspace_root, "central-brain", "ARO-286"])
+    state_path = Workspace.readiness_state_path(workspace)
+    hook_marker = Path.join(test_root, "cleanup-hook.txt")
+    context = project_context("central-brain", "ARO-286")
+
+    try do
+      File.mkdir_p!(Path.dirname(workspace))
+      File.write!(state_path, "orphaned readiness state")
+
+      write_workflow_file!(Workflow.workflow_file_path(),
+        workspace_root: workspace_root,
+        hook_before_remove: "echo unsafe > '#{shell_path(hook_marker)}'"
+      )
+
+      assert {:ok, %{kind: :local_absent} = attestation} =
+               Workspace.attest_existing_issue_workspace("ARO-286", nil, context)
+
+      assert :ok =
+               Workspace.remove_issue_workspaces("ARO-286", nil, context, workspace_attestation: attestation)
+
+      refute File.exists?(state_path)
+      refute File.exists?(workspace)
+      refute File.exists?(hook_marker)
+    after
+      File.rm_rf(test_root)
+    end
+  end
+
+  test "an absence attestation cannot remove state after the workspace leaf appears" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "aro286-cleanup-stale-absence-#{System.os_time(:nanosecond)}-#{System.unique_integer([:positive, :monotonic])}"
+      )
+
+    workspace_root = Path.join(test_root, "workspaces")
+    workspace = Path.join([workspace_root, "central-brain", "ARO-286"])
+    state_path = Workspace.readiness_state_path(workspace)
+    context = project_context("central-brain", "ARO-286")
+
+    try do
+      File.mkdir_p!(Path.dirname(workspace))
+      File.write!(state_path, "preserve")
+      write_workflow_file!(Workflow.workflow_file_path(), workspace_root: workspace_root)
+
+      assert {:ok, %{kind: :local_absent} = attestation} =
+               Workspace.attest_existing_issue_workspace("ARO-286", nil, context)
+
+      File.mkdir_p!(workspace)
+      File.write!(Path.join(workspace, "preserve.txt"), "preserve")
+
+      assert :ok =
+               Workspace.remove_issue_workspaces("ARO-286", nil, context, workspace_attestation: attestation)
+
+      assert File.read!(state_path) == "preserve"
+      assert File.read!(Path.join(workspace, "preserve.txt")) == "preserve"
+    after
+      File.rm_rf(test_root)
+    end
+  end
+
+  test "attested context cleanup never creates a missing private home for a credential-bearing hook" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "aro286-cleanup-missing-home-#{System.os_time(:nanosecond)}-#{System.unique_integer([:positive, :monotonic])}"
+      )
+
+    workspace_root = Path.join(test_root, "workspaces")
+    hook_marker = Path.join(test_root, "cleanup-hook.txt")
+    context = project_context("central-brain", "ARO-286")
+    paths = private_home_paths(workspace_root, context)
+
+    try do
+      write_workflow_file!(Workflow.workflow_file_path(),
+        workspace_root: workspace_root,
+        hook_before_remove: "echo unsafe > '#{shell_path(hook_marker)}'"
+      )
+
+      assert {:ok, %{path: workspace, workspace_attestation: attestation}} =
+               Workspace.prepare_for_issue("ARO-286", nil, context)
+
+      refute File.exists?(paths.root)
+
+      assert :ok =
+               Workspace.remove_issue_workspaces("ARO-286", nil, context, workspace_attestation: attestation)
+
+      assert File.dir?(workspace)
+      refute File.exists?(paths.root)
+      refute File.exists?(hook_marker)
+    after
+      File.rm_rf(test_root)
+    end
+  end
+
+  test "attested context cleanup without a hook removes the workspace without creating a private home" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "aro286-cleanup-no-hook-#{System.os_time(:nanosecond)}-#{System.unique_integer([:positive, :monotonic])}"
+      )
+
+    workspace_root = Path.join(test_root, "workspaces")
+    context = project_context("central-brain", "ARO-286")
+    paths = private_home_paths(workspace_root, context)
+
+    try do
+      write_workflow_file!(Workflow.workflow_file_path(), workspace_root: workspace_root)
+
+      assert {:ok, %{path: workspace, workspace_attestation: attestation}} =
+               Workspace.prepare_for_issue("ARO-286", nil, context)
+
+      refute File.exists?(paths.root)
+      File.mkdir_p!(paths.codex)
+      File.write!(Path.join(paths.codex, "session.json"), "private state")
+      previous_home = Path.join(paths.root, "ARO-286-r1")
+      File.mkdir_p!(Path.join(previous_home, "codex"))
+      File.write!(Path.join([previous_home, "codex", "previous-session.json"]), "old private state")
+      sibling_home = Path.join(paths.root, "ARO-2860-r1")
+      invalid_revision_home = Path.join(paths.root, "ARO-286-rbackup")
+      File.mkdir_p!(sibling_home)
+      File.mkdir_p!(invalid_revision_home)
+
+      assert :ok =
+               Workspace.remove_issue_workspaces("ARO-286", nil, context, workspace_attestation: attestation)
+
+      refute File.exists?(workspace)
+      refute File.exists?(paths.home)
+      refute File.exists?(previous_home)
+      refute File.exists?(Path.join(paths.codex, "session.json"))
+      assert File.dir?(sibling_home)
+      assert File.dir?(invalid_revision_home)
+    after
+      File.rm_rf(test_root)
+    end
+  end
+
+  test "remote absence attestation authorizes sidecar-only cleanup" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "aro286-remote-absence-cleanup-#{System.unique_integer([:positive, :monotonic])}"
+      )
+
+    on_exit(fn -> File.rm_rf(test_root) end)
+    context = project_context("central-brain", "ARO-286")
+    parent = self()
+    previous_runner = Application.get_env(:symphony_elixir, :ssh_command_runner)
+
+    on_exit(fn ->
+      if previous_runner,
+        do: Application.put_env(:symphony_elixir, :ssh_command_runner, previous_runner),
+        else: Application.delete_env(:symphony_elixir, :ssh_command_runner)
+    end)
+
+    Application.put_env(:symphony_elixir, :ssh_command_runner, fn _executable, args, _opts ->
+      command = List.last(args)
+
+      if command =~ "SYMPHONY_EXISTING_WORKSPACE" do
+        {"SYMPHONY_EXISTING_WORKSPACE\tmissing\n", 0}
+      else
+        send(parent, {:remote_absence_cleanup, command})
+        {"", 0}
+      end
+    end)
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      workspace_root: test_root,
+      worker_ssh_hosts: ["worker-01"],
+      hook_before_remove: "echo unsafe"
+    )
+
+    assert {:ok, %{kind: :remote_absent} = attestation} =
+             Workspace.attest_existing_issue_workspace("ARO-286", "worker-01", context)
+
+    assert :ok =
+             Workspace.remove_issue_workspaces("ARO-286", "worker-01", context, workspace_attestation: attestation)
+
+    assert_receive {:remote_absence_cleanup, command}
+    assert command =~ "rm -f \"$readiness_state\""
+    refute command =~ "rm -rf \"$workspace\""
+    refute command =~ "echo unsafe"
+  end
+
+  test "project workspace rejects an in-root namespace alias without touching its target" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-workspace-context-alias-#{System.unique_integer([:positive])}"
+      )
+
+    try do
+      workspace_root = Path.join(test_root, "workspaces")
+      management_workspace = Path.join([workspace_root, "project-management", "ARO-286"])
+      central_namespace = Path.join(workspace_root, "central-brain")
+      hook_marker = Path.join(management_workspace, "before-remove-marker.txt")
+      context = project_context("central-brain", "ARO-286")
+
+      File.mkdir_p!(management_workspace)
+      File.write!(Path.join(management_workspace, "marker.txt"), "management")
+      create_directory_link!(Path.join(workspace_root, "project-management"), central_namespace)
+
+      write_workflow_file!(Workflow.workflow_file_path(),
+        workspace_root: workspace_root,
+        hook_before_remove: "echo unsafe > before-remove-marker.txt"
+      )
+
+      assert {:error, {:workspace_namespace_identity_mismatch, _actual, _expected}} =
+               Workspace.prepare_for_issue("ARO-286", nil, context)
+
+      assert :ok = Workspace.remove_issue_workspaces("ARO-286", nil, context)
+      assert File.read!(Path.join(management_workspace, "marker.txt")) == "management"
+      refute File.exists?(hook_marker)
+    after
+      File.rm_rf(test_root)
+    end
+  end
+
+  test "project workspace rejects a same-namespace issue leaf alias without touching its sibling" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-workspace-context-leaf-alias-#{System.unique_integer([:positive])}"
+      )
+
+    try do
+      workspace_root = Path.join(test_root, "workspaces")
+      sibling_workspace = Path.join([workspace_root, "central-brain", "ARO-287"])
+      expected_workspace = Path.join([workspace_root, "central-brain", "ARO-286"])
+      context = project_context("central-brain", "ARO-286")
+
+      File.mkdir_p!(sibling_workspace)
+      File.write!(Path.join(sibling_workspace, "marker.txt"), "sibling")
+      create_directory_link!(sibling_workspace, expected_workspace)
+
+      write_workflow_file!(Workflow.workflow_file_path(),
+        workspace_root: workspace_root,
+        hook_before_remove: "echo unsafe > before-remove-marker.txt"
+      )
+
+      assert {:error, {:workspace_issue_identity_mismatch, _actual, _expected}} =
+               Workspace.prepare_for_issue("ARO-286", nil, context)
+
+      assert :ok = Workspace.remove_issue_workspaces("ARO-286", nil, context)
+      assert File.read!(Path.join(sibling_workspace, "marker.txt")) == "sibling"
+      refute File.exists?(Path.join(sibling_workspace, "before-remove-marker.txt"))
+    after
+      File.rm_rf(test_root)
+    end
+  end
+
+  test "project workspace revalidates a replaced issue leaf immediately before a local hook" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-workspace-context-replaced-leaf-#{System.unique_integer([:positive])}"
+      )
+
+    try do
+      workspace_root = Path.join(test_root, "workspaces")
+      context = project_context("central-brain", "ARO-286")
+
+      write_workflow_file!(Workflow.workflow_file_path(),
+        workspace_root: workspace_root,
+        hook_before_run: "echo unsafe > before-run-marker.txt"
+      )
+
+      assert {:ok, %{path: expected_workspace, workspace_attestation: attestation}} =
+               Workspace.prepare_for_issue("ARO-286", nil, context)
+
+      displaced_workspace = expected_workspace <> "-original"
+      File.rename!(expected_workspace, displaced_workspace)
+      File.mkdir_p!(expected_workspace)
+
+      assert {:error, {:workspace_issue_identity_changed, actual, ^attestation}} =
+               Workspace.run_before_run_hook(expected_workspace, "ARO-286", nil,
+                 execution_context: context,
+                 workspace_attestation: attestation
+               )
+
+      refute actual.identity == attestation.identity
+
+      refute File.exists?(Path.join(expected_workspace, "before-run-marker.txt"))
+      refute File.exists?(Path.join(displaced_workspace, "before-run-marker.txt"))
+    after
+      File.rm_rf(test_root)
+    end
+  end
+
+  test "project workspace identity survives normal content mutation across local effect boundaries" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-workspace-stable-identity-#{System.unique_integer([:positive])}"
+      )
+
+    previous_source_repo_url = System.get_env("SOURCE_REPO_URL")
+    System.delete_env("SOURCE_REPO_URL")
+
+    try do
+      template_repo = Path.join(test_root, "source")
+      workspace_root = Path.join(test_root, "workspaces")
+      cleanup_marker = Path.join(test_root, "before-remove-marker.txt")
+      context = project_context("central-brain", "ARO-286")
+
+      File.mkdir_p!(template_repo)
+      File.write!(Path.join(template_repo, "README.md"), "stable identity\n")
+      assert {_, 0} = System.cmd("git", ["-C", template_repo, "init", "-b", "main"])
+      assert {_, 0} = System.cmd("git", ["-C", template_repo, "config", "user.name", "Test User"])
+      assert {_, 0} = System.cmd("git", ["-C", template_repo, "config", "user.email", "test@example.com"])
+      assert {_, 0} = System.cmd("git", ["-C", template_repo, "add", "README.md"])
+      assert {_, 0} = System.cmd("git", ["-C", template_repo, "commit", "-m", "initial"])
+      context = %{context | repository: shell_path(template_repo)}
+
+      write_workflow_file!(Workflow.workflow_file_path(),
+        workspace_root: workspace_root,
+        hook_after_create: "git clone --depth 1 '#{shell_path(template_repo)}' .",
+        hook_before_run: "echo hook > before-run-marker.txt",
+        hook_before_remove: "echo cleanup > '#{shell_path(cleanup_marker)}'"
+      )
+
+      assert {:ok, environment} = SubprocessEnvironment.build(%{}, context)
+
+      preparation_opts = [
+        env: environment,
+        subprocess_home_paths: SubprocessEnvironment.private_home_paths(context)
+      ]
+
+      assert {:ok,
+              %{
+                path: workspace,
+                workspace_attestation: attestation,
+                private_home_capability: capability
+              }} =
+               Workspace.prepare_for_issue("ARO-286", nil, context, preparation_opts)
+
+      transient_directory = Path.join(workspace, "codex-created")
+      transient_file = Path.join(workspace, "hook-created.txt")
+      File.mkdir_p!(transient_directory)
+      File.write!(transient_file, "temporary")
+      File.rm_rf!(transient_directory)
+      File.rm!(transient_file)
+
+      effect_opts =
+        preparation_opts ++
+          [
+            execution_context: context,
+            workspace_attestation: attestation,
+            private_home_capability: capability
+          ]
+
+      assert :ok = Workspace.preflight(workspace, "ARO-286", nil, effect_opts)
+      assert :ok = Workspace.run_before_run_hook(workspace, "ARO-286", nil, effect_opts)
+      assert File.read!(Path.join(workspace, "before-run-marker.txt")) == "hook\n"
+
+      parent = self()
+
+      port_opener = fn _spawn_target, _port_opts ->
+        send(parent, :app_server_workspace_validated)
+        raise "app server process boundary reached"
+      end
+
+      assert_raise RuntimeError, "app server process boundary reached", fn ->
+        AppServer.start_session(workspace, effect_opts ++ [port_opener: port_opener])
+      end
+
+      assert_receive :app_server_workspace_validated
+
+      assert :ok = Workspace.finalize_private_home_capability(capability)
+
+      assert :ok =
+               Workspace.remove_issue_workspaces("ARO-286", nil, context, workspace_attestation: attestation)
+
+      assert File.read!(cleanup_marker) == "cleanup\n"
+      refute File.exists?(workspace)
+    after
+      restore_env("SOURCE_REPO_URL", previous_source_repo_url)
+      File.rm_rf(test_root)
+    end
+  end
+
+  test "POSIX workspace identity rejects unavailable or invalid directory coordinates" do
+    valid_stat = %File.Stat{
+      type: :directory,
+      major_device: 3,
+      minor_device: 7,
+      inode: 11
+    }
+
+    assert {:ok, %{type: :directory, major_device: 3, minor_device: 7, inode: 11}} =
+             Workspace.posix_file_identity_for_test(valid_stat)
+
+    private_stat = %{valid_stat | uid: 1_001}
+
+    assert {:ok,
+            %{
+              type: :directory,
+              major_device: 3,
+              minor_device: 7,
+              inode: 11,
+              uid: 1_001
+            }} = Workspace.posix_private_file_identity_for_test(private_stat)
+
+    for invalid_uid <- [:undefined, nil, "1001", -1] do
+      assert {:error, :invalid_posix_private_file_identity} =
+               Workspace.posix_private_file_identity_for_test(%{
+                 private_stat
+                 | uid: invalid_uid
+               })
+    end
+
+    for {field, invalid_value} <- [
+          {:major_device, :undefined},
+          {:minor_device, :undefined},
+          {:inode, :undefined},
+          {:major_device, "3"},
+          {:minor_device, 7.0},
+          {:inode, nil},
+          {:major_device, -1},
+          {:minor_device, -1},
+          {:inode, -1},
+          {:type, :regular}
+        ] do
+      invalid_stat = Map.replace!(valid_stat, field, invalid_value)
+
+      assert {:error, :invalid_posix_file_identity} =
+               Workspace.posix_file_identity_for_test(invalid_stat)
+    end
+  end
+
+  test "Windows file identity parser accepts exactly one standalone native ID token" do
+    file_id = "0x0123456789abcdefABCDEF0123456789"
+    normalized_file_id = "0x0123456789abcdefabcdef0123456789"
+
+    assert {:ok, ^normalized_file_id} =
+             Workspace.parse_windows_file_id_for_test("File ID is #{file_id}\r\n")
+
+    for invalid_output <- [
+          "",
+          "File ID is unavailable",
+          "File ID is 0x0123",
+          "prefix#{file_id}",
+          "#{file_id}suffix",
+          "File ID is (#{file_id})",
+          "File ID is #{file_id}0",
+          "File IDs are #{file_id} #{file_id}"
+        ] do
+      assert {:error, :invalid_windows_file_id_output} =
+               Workspace.parse_windows_file_id_for_test(invalid_output)
+    end
+  end
+
+  test "project cleanup preserves a replacement issue leaf after readiness" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-workspace-context-replaced-cleanup-#{System.unique_integer([:positive])}"
+      )
+
+    try do
+      workspace_root = Path.join(test_root, "workspaces")
+      context = project_context("central-brain", "ARO-286")
+
+      write_workflow_file!(Workflow.workflow_file_path(),
+        workspace_root: workspace_root,
+        hook_before_remove: "echo unsafe > before-remove-marker.txt"
+      )
+
+      assert {:ok, %{path: expected_workspace, workspace_attestation: attestation}} =
+               Workspace.prepare_for_issue("ARO-286", nil, context)
+
+      displaced_workspace = expected_workspace <> "-original"
+      File.rename!(expected_workspace, displaced_workspace)
+      File.mkdir_p!(expected_workspace)
+      File.write!(Path.join(expected_workspace, "replacement.txt"), "preserve")
+
+      assert :ok =
+               Workspace.remove_issue_workspaces("ARO-286", nil, context, workspace_attestation: attestation)
+
+      assert File.read!(Path.join(expected_workspace, "replacement.txt")) == "preserve"
+      assert File.dir?(displaced_workspace)
+      refute File.exists?(Path.join(expected_workspace, "before-remove-marker.txt"))
+      refute File.exists?(Path.join(displaced_workspace, "before-remove-marker.txt"))
+    after
+      File.rm_rf(test_root)
+    end
+  end
+
+  test "remote project hook rejects a replaced or linked issue leaf before mutation" do
+    previous_runner = Application.get_env(:symphony_elixir, :ssh_command_runner)
+
+    on_exit(fn ->
+      if previous_runner do
+        Application.put_env(:symphony_elixir, :ssh_command_runner, previous_runner)
+      else
+        Application.delete_env(:symphony_elixir, :ssh_command_runner)
+      end
+    end)
+
+    context = project_context("central-brain", "ARO-286")
+    parent = self()
+
+    Application.put_env(:symphony_elixir, :ssh_command_runner, fn _executable, args, _opts ->
+      command = List.last(args)
+      send(parent, {:remote_hook_command, command})
+
+      if remote_check_precedes_mutation?(
+           command,
+           "if [ -L \"$workspace\" ]; then exit 1; fi",
+           ["echo unsafe"]
+         ) and command =~ "workspace_physical" and command =~ "expected_workspace" do
+        if command =~ "current_workspace_identity" and command =~ "expected_workspace_identity" do
+          {"unsafe issue leaf", 1}
+        else
+          send(parent, :unsafe_remote_hook_ran)
+          {"", 0}
+        end
+      else
+        send(parent, :unsafe_remote_hook_ran)
+        {"", 0}
+      end
+    end)
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      workspace_root: "/tmp/symphony-workspaces",
+      worker_ssh_hosts: ["worker-01"],
+      hook_before_run: "echo unsafe"
+    )
+
+    workspace = "/tmp/symphony-workspaces/central-brain/ARO-286"
+
+    assert {:error, {:workspace_hook_failed, "before_run", 1, "unsafe issue leaf"}} =
+             Workspace.run_before_run_hook(workspace, "ARO-286", "worker-01",
+               execution_context: context,
+               workspace_attestation: %{kind: :remote, identity: "1:286"}
+             )
+
+    assert_receive {:remote_hook_command, _command}
+    refute_receive :unsafe_remote_hook_ran
+  end
+
+  test "remote namespace alias fails closed before the before_remove hook" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-remote-workspace-context-alias-#{System.unique_integer([:positive])}"
+      )
+
+    previous_runner = Application.get_env(:symphony_elixir, :ssh_command_runner)
+
+    on_exit(fn ->
+      if previous_runner do
+        Application.put_env(:symphony_elixir, :ssh_command_runner, previous_runner)
+      else
+        Application.delete_env(:symphony_elixir, :ssh_command_runner)
+      end
+    end)
+
+    try do
+      workspace_root = Path.join(test_root, "workspaces")
+      management_workspace = Path.join([workspace_root, "project-management", "ARO-286"])
+      central_namespace = Path.join(workspace_root, "central-brain")
+      hook_marker = Path.join(management_workspace, "before-remove-marker.txt")
+      context = project_context("central-brain", "ARO-286")
+
+      File.mkdir_p!(management_workspace)
+      create_directory_link!(Path.join(workspace_root, "project-management"), central_namespace)
+
+      Application.put_env(:symphony_elixir, :ssh_command_runner, fn _executable, args, _opts ->
+        command = List.last(args)
+
+        cond do
+          command =~ "rm -rf \"$workspace\"" and
+              remote_check_precedes_mutation?(command, "if [ \"$namespace_physical\" != \"$expected_namespace\" ]; then exit 1; fi", [
+                "echo unsafe > before-remove-marker.txt"
+              ]) ->
+            {"unsafe namespace", 1}
+
+          command =~ "echo unsafe > before-remove-marker.txt" ->
+            File.write!(hook_marker, "unsafe")
+            {"", 0}
+
+          command =~ "rm -rf \"$workspace\"" ->
+            File.write!(hook_marker, "unsafe")
+            {"unsafe namespace", 1}
+
+          true ->
+            {"", 0}
+        end
+      end)
+
+      write_workflow_file!(Workflow.workflow_file_path(),
+        workspace_root: workspace_root,
+        worker_ssh_hosts: ["worker-01"],
+        hook_before_remove: "echo unsafe > before-remove-marker.txt"
+      )
+
+      assert :ok = Workspace.remove_issue_workspaces("ARO-286", "worker-01", context)
+      refute File.exists?(hook_marker)
+    after
+      File.rm_rf(test_root)
+    end
+  end
+
+  test "context issue identifier mismatches fail before local or remote workspace handling" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-workspace-context-identifier-#{System.unique_integer([:positive])}"
+      )
+
+    previous_runner = Application.get_env(:symphony_elixir, :ssh_command_runner)
+
+    on_exit(fn ->
+      if previous_runner do
+        Application.put_env(:symphony_elixir, :ssh_command_runner, previous_runner)
+      else
+        Application.delete_env(:symphony_elixir, :ssh_command_runner)
+      end
+    end)
+
+    try do
+      workspace_root = Path.join(test_root, "workspaces")
+      context = project_context("central-brain", "ARO-286")
+      test_pid = self()
+
+      write_workflow_file!(Workflow.workflow_file_path(), workspace_root: workspace_root)
+
+      assert {:error, :workspace_context_identity_mismatch} =
+               Workspace.prepare_for_issue("ARO-287", nil, context)
+
+      refute File.exists?(Path.join([workspace_root, "central-brain", "ARO-286.symphony-readiness-v1.json"]))
+
+      Application.put_env(:symphony_elixir, :ssh_command_runner, fn _executable, _args, _opts ->
+        send(test_pid, :remote_workspace_called)
+        {"", 0}
+      end)
+
+      assert {:error, :workspace_context_identity_mismatch} =
+               Workspace.prepare_for_issue("ARO-287", "worker-01", context)
+
+      refute_received :remote_workspace_called
+
+      assert :ok = Workspace.remove_issue_workspaces("ARO-287", "worker-01", context)
+      refute_received :remote_workspace_called
+    after
+      File.rm_rf(test_root)
+    end
+  end
+
+  test "remote context workspace validates physical namespace identity before mutation" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-remote-workspace-context-order-#{System.unique_integer([:positive])}"
+      )
+
+    previous_runner = Application.get_env(:symphony_elixir, :ssh_command_runner)
+
+    on_exit(fn ->
+      if previous_runner do
+        Application.put_env(:symphony_elixir, :ssh_command_runner, previous_runner)
+      else
+        Application.delete_env(:symphony_elixir, :ssh_command_runner)
+      end
+    end)
+
+    try do
+      context = project_context("central-brain", "ARO-286")
+      workspace_root = "~/.symphony-remote-workspaces"
+      workspace_path = "/remote/home/.symphony-remote-workspaces/central-brain/ARO-286"
+
+      Application.put_env(:symphony_elixir, :ssh_command_runner, fn _executable, args, _opts ->
+        command = List.last(args)
+
+        cond do
+          command =~ "__SYMPHONY_WORKSPACE__" and
+              remote_check_precedes_mutation?(command, "namespace_physical=", ["rm -rf \"$workspace\"", "mkdir -p \"$workspace\""]) ->
+            {"__SYMPHONY_WORKSPACE__\t1\t#{workspace_path}\t1:286\n", 0}
+
+          command =~ "__SYMPHONY_WORKSPACE__" ->
+            {"remote namespace validation was late", 17}
+
+          command =~ "rm -rf \"$workspace\"" and
+            remote_check_precedes_mutation?(command, "if [ \"$parent_physical\" != \"$namespace_physical\" ]; then exit 1; fi", [
+              "echo remote-before-remove",
+              "rm -rf \"$workspace\""
+            ]) and
+            remote_check_precedes_mutation?(command, "echo remote-before-remove", ["rm -rf \"$workspace\""]) and
+              length(String.split(command, "echo remote-before-remove")) == 2 ->
+            {"", 0}
+
+          command =~ "rm -rf \"$workspace\"" ->
+            {"remote cleanup hook was not validated before removing the workspace", 17}
+
+          true ->
+            {"", 0}
+        end
+      end)
+
+      write_workflow_file!(Workflow.workflow_file_path(),
+        workspace_root: workspace_root,
+        worker_ssh_hosts: ["worker-01"],
+        hook_before_remove: "echo remote-before-remove"
+      )
+
+      assert {:ok, ^workspace_path} = Workspace.create_for_issue("ARO-286", "worker-01", context)
+      assert :ok = Workspace.remove_issue_workspaces("ARO-286", "worker-01", context)
+    after
+      File.rm_rf(test_root)
+    end
+  end
+
+  test "remote project workspace uses the same context namespace and cleanup target" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-remote-workspace-context-#{System.unique_integer([:positive])}"
+      )
+
+    previous_runner = Application.get_env(:symphony_elixir, :ssh_command_runner)
+
+    on_exit(fn ->
+      if previous_runner do
+        Application.put_env(:symphony_elixir, :ssh_command_runner, previous_runner)
+      else
+        Application.delete_env(:symphony_elixir, :ssh_command_runner)
+      end
+    end)
+
+    try do
+      trace_file = Path.join(test_root, "ssh.trace")
+      workspace_root = "~/.symphony-remote-workspaces"
+      workspace_path = "/remote/home/.symphony-remote-workspaces/central-brain/ARO-286"
+      context = project_context("central-brain", "ARO-286")
+
+      File.mkdir_p!(test_root)
+
+      Application.put_env(:symphony_elixir, :ssh_command_runner, fn _executable, args, _opts ->
+        command = Enum.join(args, " ")
+        File.write!(trace_file, command <> "\n", [:append])
+
+        output =
+          if command =~ "__SYMPHONY_WORKSPACE__" do
+            "__SYMPHONY_WORKSPACE__\t1\t#{workspace_path}\t1:286\n"
+          else
+            ""
+          end
+
+        {output, 0}
+      end)
+
+      write_workflow_file!(Workflow.workflow_file_path(),
+        workspace_root: workspace_root,
+        worker_ssh_hosts: ["worker-01"]
+      )
+
+      assert {:ok, ^workspace_path} = Workspace.create_for_issue("ARO-286", "worker-01", context)
+      assert :ok = Workspace.remove_issue_workspaces("ARO-286", "worker-01", context)
+
+      trace = File.read!(trace_file)
+      assert trace =~ "~/.symphony-remote-workspaces/central-brain/ARO-286"
+      refute trace =~ "rm -rf '~/.symphony-remote-workspaces'"
+      refute trace =~ "rm -rf '~/.symphony-remote-workspaces/central-brain'"
+      refute trace =~ "\nnil\n"
+    after
+      File.rm_rf(test_root)
+    end
   end
 
   test "workspace reuses existing issue directory without deleting local changes" do
@@ -1027,31 +2945,43 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
   test "config resolves $VAR references for env-backed secret and path values" do
     workspace_env_var = "SYMP_WORKSPACE_ROOT_#{System.unique_integer([:positive])}"
     api_key_env_var = "SYMP_LINEAR_API_KEY_#{System.unique_integer([:positive])}"
+    codex_bin_env_var = "SYMP_CODEX_BIN_#{System.unique_integer([:positive])}"
+    codex_model_env_var = "SYMP_CODEX_MODEL_#{System.unique_integer([:positive])}"
     workspace_root = Path.join(System.tmp_dir!(), "symphony-workspace-root")
     api_key = "resolved-secret"
     codex_bin = Path.join(["~", "bin", "codex"])
 
     previous_workspace_root = System.get_env(workspace_env_var)
     previous_api_key = System.get_env(api_key_env_var)
+    previous_codex_bin = System.get_env(codex_bin_env_var)
+    previous_codex_model = System.get_env(codex_model_env_var)
 
     System.put_env(workspace_env_var, workspace_root)
     System.put_env(api_key_env_var, api_key)
+    System.put_env(codex_bin_env_var, codex_bin)
+    System.put_env(codex_model_env_var, "gpt-5.5")
 
     on_exit(fn ->
       restore_env(workspace_env_var, previous_workspace_root)
       restore_env(api_key_env_var, previous_api_key)
+      restore_env(codex_bin_env_var, previous_codex_bin)
+      restore_env(codex_model_env_var, previous_codex_model)
     end)
 
     write_workflow_file!(Workflow.workflow_file_path(),
       tracker_api_token: "$#{api_key_env_var}",
       workspace_root: "$#{workspace_env_var}",
-      codex_command: "#{codex_bin} app-server"
+      codex_command: "#{codex_bin} app-server",
+      codex_executable: "$#{codex_bin_env_var}",
+      codex_default_model: "$#{codex_model_env_var}"
     )
 
     config = Config.settings!()
     assert config.tracker.api_key == api_key
     assert config.workspace.root == workspace_root
     assert config.codex.command == "#{codex_bin} app-server"
+    assert config.codex.executable == codex_bin
+    assert config.codex.default_model == "gpt-5.5"
   end
 
   test "config no longer resolves legacy env: references" do
@@ -1528,5 +3458,281 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
         }
       ]
     }
+  end
+
+  defp project_context(namespace, issue_identifier, overrides \\ []) do
+    attrs = %{
+      issue_id: "issue-#{issue_identifier}",
+      issue_identifier: issue_identifier,
+      profile_key: namespace,
+      linear_project_id: "d0acfb71-f68c-4e93-bec4-7abbb37e74af",
+      repository: "aroakpm-svg/#{namespace}",
+      canonical_branch: "main",
+      workspace_namespace: namespace,
+      credential_ref: "github-#{namespace}",
+      environment: "local_non_production",
+      routing_revision: 1
+    }
+
+    struct!(ProjectExecutionContext, Map.merge(attrs, Map.new(overrides)))
+  end
+
+  defp private_home_paths(workspace_root, context) do
+    root =
+      Path.join([
+        Path.expand(workspace_root),
+        context.workspace_namespace,
+        ".symphony-subprocess"
+      ])
+
+    home = Path.join(root, "#{context.issue_identifier}-r#{context.routing_revision}")
+
+    %{
+      root: root,
+      home: home,
+      gh: Path.join(home, "gh"),
+      xdg_config: Path.join(home, "xdg-config"),
+      xdg_cache: Path.join(home, "xdg-cache"),
+      xdg_data: Path.join(home, "xdg-data"),
+      codex: Path.join(home, "codex")
+    }
+  end
+
+  defp private_directories(paths) do
+    [
+      paths.root,
+      paths.home,
+      paths.gh,
+      paths.xdg_config,
+      paths.xdg_cache,
+      paths.xdg_data,
+      paths.codex
+    ]
+  end
+
+  defp assert_eventually(predicate, attempts \\ 100)
+
+  defp assert_eventually(predicate, 0) do
+    assert predicate.()
+  end
+
+  defp assert_eventually(predicate, attempts) do
+    if predicate.() do
+      :ok
+    else
+      Process.sleep(20)
+      assert_eventually(predicate, attempts - 1)
+    end
+  end
+
+  defp private_home_effect_opts(
+         environment,
+         paths,
+         context,
+         workspace_attestation,
+         capability
+       ) do
+    [
+      env: environment,
+      subprocess_home_paths: paths,
+      execution_context: context,
+      workspace_attestation: workspace_attestation,
+      private_home_capability: capability
+    ]
+  end
+
+  defp replace_or_weaken_private_home!(path) do
+    moved_path = path <> "-moved"
+
+    case File.rename(path, moved_path) do
+      :ok ->
+        :ok
+
+      {:error, _reason} ->
+        set_non_private_permissions!(path)
+    end
+  end
+
+  defp set_non_private_permissions!(path) do
+    case :os.type() do
+      {:unix, _name} ->
+        File.chmod!(path, 0o755)
+
+      {:win32, _name} ->
+        script = """
+        $ErrorActionPreference = 'Stop'
+        $path = $env:SYMPHONY_PRIVATE_HOME_PATH
+        $current = [Security.Principal.WindowsIdentity]::GetCurrent().User
+        $users = [Security.Principal.SecurityIdentifier]::new(
+          [Security.Principal.WellKnownSidType]::BuiltinUsersSid,
+          $null
+        )
+        $acl = [Security.AccessControl.DirectorySecurity]::new()
+        $acl.SetOwner($current)
+        $acl.SetAccessRuleProtection($true, $false)
+        $ownerRule = [Security.AccessControl.FileSystemAccessRule]::new(
+          $current,
+          [Security.AccessControl.FileSystemRights]::FullControl,
+          [Security.AccessControl.InheritanceFlags]'ContainerInherit,ObjectInherit',
+          [Security.AccessControl.PropagationFlags]::None,
+          [Security.AccessControl.AccessControlType]::Allow
+        )
+        $usersRule = [Security.AccessControl.FileSystemAccessRule]::new(
+          $users,
+          [Security.AccessControl.FileSystemRights]::ReadAndExecute,
+          [Security.AccessControl.InheritanceFlags]'ContainerInherit,ObjectInherit',
+          [Security.AccessControl.PropagationFlags]::None,
+          [Security.AccessControl.AccessControlType]::Allow
+        )
+        $acl.AddAccessRule($ownerRule)
+        $acl.AddAccessRule($usersRule)
+        [IO.DirectoryInfo]::new($path).SetAccessControl($acl)
+        """
+
+        assert {"", 0} =
+                 System.cmd(
+                   windows_powershell!(),
+                   ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", script],
+                   env: [{"SYMPHONY_PRIVATE_HOME_PATH", path}]
+                 )
+    end
+  end
+
+  defp private_permissions_snapshot!(path) do
+    case :os.type() do
+      {:unix, _name} ->
+        stat = File.stat!(path)
+        %{mode: Bitwise.band(stat.mode, 0o777), uid: stat.uid}
+
+      {:win32, _name} ->
+        script = """
+        $ErrorActionPreference = 'Stop'
+        $acl = [IO.DirectoryInfo]::new($env:SYMPHONY_PRIVATE_HOME_PATH).GetAccessControl()
+        [Console]::Out.Write($acl.GetSecurityDescriptorSddlForm(
+          [Security.AccessControl.AccessControlSections]::All
+        ))
+        """
+
+        {snapshot, 0} =
+          System.cmd(
+            windows_powershell!(),
+            ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", script],
+            stderr_to_stdout: true,
+            env: [{"SYMPHONY_PRIVATE_HOME_PATH", path}]
+          )
+
+        snapshot
+    end
+  end
+
+  defp windows_powershell! do
+    Path.join([
+      System.fetch_env!("SystemRoot"),
+      "System32",
+      "WindowsPowerShell",
+      "v1.0",
+      "powershell.exe"
+    ])
+  end
+
+  defp remove_directory_link(path) do
+    case File.lstat(path) do
+      {:ok, %File.Stat{type: :symlink}} ->
+        _removed = File.rm(path)
+        :ok
+
+      {:ok, %File.Stat{type: :directory}} ->
+        _removed = File.rmdir(path)
+        :ok
+
+      _missing_or_other ->
+        :ok
+    end
+  end
+
+  defp refute_windows_reparse_point(path) do
+    if match?({:win32, _}, :os.type()) do
+      executable = Path.join([System.fetch_env!("SystemRoot"), "System32", "fsutil.exe"])
+      {_output, status} = System.cmd(executable, ["reparsepoint", "query", path], stderr_to_stdout: true)
+      refute status == 0, "expected #{path} not to be a Windows reparse point"
+    end
+  end
+
+  defp assert_owner_private_permissions(paths) do
+    case :os.type() do
+      {:unix, _name} ->
+        Enum.each(paths, fn path ->
+          assert {:ok, %File.Stat{mode: mode}} = File.stat(path)
+          assert Bitwise.band(mode, 0o777) == 0o700
+        end)
+
+      {:win32, _name} ->
+        script = """
+        $ErrorActionPreference = 'Stop'
+        $paths = $env:SYMPHONY_PRIVATE_HOME_PATHS | ConvertFrom-Json
+        if ($paths.Count -lt 1) { exit 19 }
+        $current = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+        foreach ($path in $paths) {
+          $directory = [IO.DirectoryInfo]::new($path)
+          $acl = $directory.GetAccessControl()
+          if (-not $acl.AreAccessRulesProtected) { exit 20 }
+          $rules = @($acl.GetAccessRules($true, $true, [Security.Principal.SecurityIdentifier]))
+          if ($rules.Count -lt 1) { exit 21 }
+          foreach ($rule in $rules) {
+            if ($rule.IdentityReference.Value -ne $current) { exit 22 }
+            if ($rule.AccessControlType -ne [Security.AccessControl.AccessControlType]::Allow) { exit 23 }
+          }
+          $full = [int][Security.AccessControl.FileSystemRights]::FullControl
+          $currentFull = @($rules | Where-Object {
+            $_.IdentityReference.Value -eq $current -and
+            (([int]$_.FileSystemRights -band $full) -eq $full)
+          })
+          if ($currentFull.Count -lt 1) { exit 24 }
+        }
+        """
+
+        executable =
+          Path.join([
+            System.fetch_env!("SystemRoot"),
+            "System32",
+            "WindowsPowerShell",
+            "v1.0",
+            "powershell.exe"
+          ])
+
+        {output, status} =
+          System.cmd(
+            executable,
+            ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", script],
+            stderr_to_stdout: true,
+            env: [{"SYMPHONY_PRIVATE_HOME_PATHS", Jason.encode!(paths)}]
+          )
+
+        assert status == 0, "expected owner-private Windows ACLs, status=#{status}: #{output}"
+    end
+  end
+
+  defp invalid_root_separation_message(config) do
+    case Schema.parse(config) do
+      {:error, {:invalid_workflow_config, message}} -> message
+      {:ok, _settings} -> flunk("expected runtime-state/workspace separation error")
+    end
+  end
+
+  defp remote_check_precedes_mutation?(command, check, mutations) do
+    case :binary.match(command, check) do
+      :nomatch ->
+        false
+
+      {check_index, _} ->
+        mutations
+        |> Enum.map(fn mutation -> :binary.match(command, mutation) end)
+        |> then(&matches_follow_check?(&1, check_index))
+    end
+  end
+
+  defp matches_follow_check?(matches, check_index) do
+    Enum.all?(matches, &(&1 != :nomatch)) and
+      Enum.all?(matches, fn {mutation_index, _} -> check_index < mutation_index end)
   end
 end
