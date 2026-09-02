@@ -2879,7 +2879,10 @@ defmodule SymphonyElixir.Orchestrator do
     :ok = finalize_distributed_claim(issue_id, :release)
     retry_entry = Map.get(state.retry_attempts, issue_id)
     cancel_issue_retry_timer(retry_entry)
-    retire_retry_execution_context(nil, retry_entry || %{})
+
+    if is_map(retry_entry) do
+      retire_retry_execution_context(nil, retry_entry)
+    end
 
     %{
       state
