@@ -227,6 +227,9 @@ defmodule SymphonyElixir.RuntimeHealthTest do
     assert :ok = Orchestrator.report_runtime_health_for_test(event)
 
     assert [%{stage: :candidate_fetch, status: :succeeded}] = RuntimeHealth.snapshot(server).stages
+
+    assert [%{stage: :candidate_fetch, status: :succeeded}] =
+             Orchestrator.runtime_health_snapshot_for_test().stages
   end
 
   test "rejects invalid unknown and oversized clock output before accepting a stop", context do

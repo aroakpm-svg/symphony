@@ -1109,6 +1109,10 @@ defmodule SymphonyElixir.Orchestrator do
   def report_runtime_health_for_test(event), do: report_runtime_health(event)
 
   @doc false
+  @spec runtime_health_snapshot_for_test() :: map()
+  def runtime_health_snapshot_for_test, do: runtime_health_snapshot()
+
+  @doc false
   @spec approved_profile_result_for_test(term(), String.t()) :: {:ok, map()} | {:error, atom()}
   def approved_profile_result_for_test(profiles, key) when is_binary(key), do: approved_profile_result(profiles, key)
 
@@ -3289,7 +3293,7 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   defp runtime_health_snapshot do
-    RuntimeHealth.snapshot(RuntimeHealth)
+    RuntimeHealth.snapshot(runtime_health_server())
   rescue
     _exception -> unknown_runtime_health()
   catch
