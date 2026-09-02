@@ -2945,31 +2945,43 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
   test "config resolves $VAR references for env-backed secret and path values" do
     workspace_env_var = "SYMP_WORKSPACE_ROOT_#{System.unique_integer([:positive])}"
     api_key_env_var = "SYMP_LINEAR_API_KEY_#{System.unique_integer([:positive])}"
+    codex_bin_env_var = "SYMP_CODEX_BIN_#{System.unique_integer([:positive])}"
+    codex_model_env_var = "SYMP_CODEX_MODEL_#{System.unique_integer([:positive])}"
     workspace_root = Path.join(System.tmp_dir!(), "symphony-workspace-root")
     api_key = "resolved-secret"
     codex_bin = Path.join(["~", "bin", "codex"])
 
     previous_workspace_root = System.get_env(workspace_env_var)
     previous_api_key = System.get_env(api_key_env_var)
+    previous_codex_bin = System.get_env(codex_bin_env_var)
+    previous_codex_model = System.get_env(codex_model_env_var)
 
     System.put_env(workspace_env_var, workspace_root)
     System.put_env(api_key_env_var, api_key)
+    System.put_env(codex_bin_env_var, codex_bin)
+    System.put_env(codex_model_env_var, "gpt-5.5")
 
     on_exit(fn ->
       restore_env(workspace_env_var, previous_workspace_root)
       restore_env(api_key_env_var, previous_api_key)
+      restore_env(codex_bin_env_var, previous_codex_bin)
+      restore_env(codex_model_env_var, previous_codex_model)
     end)
 
     write_workflow_file!(Workflow.workflow_file_path(),
       tracker_api_token: "$#{api_key_env_var}",
       workspace_root: "$#{workspace_env_var}",
-      codex_command: "#{codex_bin} app-server"
+      codex_command: "#{codex_bin} app-server",
+      codex_executable: "$#{codex_bin_env_var}",
+      codex_default_model: "$#{codex_model_env_var}"
     )
 
     config = Config.settings!()
     assert config.tracker.api_key == api_key
     assert config.workspace.root == workspace_root
     assert config.codex.command == "#{codex_bin} app-server"
+    assert config.codex.executable == codex_bin
+    assert config.codex.default_model == "gpt-5.5"
   end
 
   test "config no longer resolves legacy env: references" do

@@ -325,6 +325,8 @@ defmodule SymphonyElixir.Config.Schema do
     @primary_key false
     embedded_schema do
       field(:command, :string, default: "codex app-server")
+      field(:executable, :string, default: "codex")
+      field(:default_model, :string, default: "gpt-5.4-mini")
 
       field(:approval_policy, StringOrMap,
         default: %{
@@ -350,6 +352,8 @@ defmodule SymphonyElixir.Config.Schema do
         attrs,
         [
           :command,
+          :executable,
+          :default_model,
           :approval_policy,
           :thread_sandbox,
           :turn_sandbox_policy,
@@ -359,7 +363,7 @@ defmodule SymphonyElixir.Config.Schema do
         ],
         empty_values: []
       )
-      |> validate_required([:command])
+      |> validate_required([:command, :executable, :default_model])
       |> validate_number(:turn_timeout_ms, greater_than: 0)
       |> validate_number(:read_timeout_ms, greater_than: 0)
       |> validate_number(:stall_timeout_ms, greater_than_or_equal_to: 0)
@@ -654,7 +658,9 @@ defmodule SymphonyElixir.Config.Schema do
 
     codex = %{
       settings.codex
-      | approval_policy: normalize_keys(settings.codex.approval_policy),
+      | executable: resolve_secret_setting(settings.codex.executable, "codex"),
+        default_model: resolve_secret_setting(settings.codex.default_model, "gpt-5.4-mini"),
+        approval_policy: normalize_keys(settings.codex.approval_policy),
         turn_sandbox_policy: normalize_optional_map(settings.codex.turn_sandbox_policy)
     }
 

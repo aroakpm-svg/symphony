@@ -33,9 +33,9 @@ defmodule SymphonyElixir.SubprocessEnvironment do
           codex: Path.t()
         }
 
-  @spec build(map(), ProjectExecutionContext.t()) :: {:ok, t()}
-  def build(provider_environment, %ProjectExecutionContext{} = context)
-      when is_map(provider_environment) do
+  @spec build(map(), ProjectExecutionContext.t(), map()) :: {:ok, t()}
+  def build(provider_environment, %ProjectExecutionContext{} = context, trusted_environment \\ %{})
+      when is_map(provider_environment) and is_map(trusted_environment) do
     paths = private_home_paths(context)
     platform = :os.type()
     ambient_environment = isolated_runtime_environment(%{}, platform)
@@ -47,6 +47,7 @@ defmodule SymphonyElixir.SubprocessEnvironment do
           project_environment(context),
           credential_defaults(),
           approved_provider_environment(provider_environment),
+          trusted_environment,
           isolated_home_environment(paths)
         ],
         platform

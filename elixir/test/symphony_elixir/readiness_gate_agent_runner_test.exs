@@ -309,7 +309,7 @@ defmodule SymphonyElixir.ReadinessGateAgentRunnerTest do
 
     Enum.each(ambient_environment, fn {key, value} -> System.put_env(key, value) end)
 
-    issue = profiled_issue("ARO-286", "codex/aro-286", fixture.remote)
+    issue = %{profiled_issue("ARO-286", "codex/aro-286", fixture.remote) | labels: ["model:gpt-5.5"]}
     after_create_marker = shell_path(Path.join(fixture.root, "profile-after-create.marker"))
     before_run_marker = shell_path(Path.join(fixture.root, "profile-before-run.marker"))
     after_run_marker = shell_path(Path.join(fixture.root, "profile-after-run.marker"))
@@ -333,6 +333,8 @@ defmodule SymphonyElixir.ReadinessGateAgentRunnerTest do
 
     write_workflow_file!(Workflow.workflow_file_path(),
       workspace_root: fixture.workspace_root,
+      codex_executable: "/opt/trusted/codex",
+      codex_default_model: "gpt-5.4-mini",
       hook_after_create: "git clone #{shell_escape(shell_path(fixture.remote))} . && printf '%s' \"$#{env_key}\" > #{shell_escape(after_create_marker)}",
       hook_before_run:
         "printf '%s' \"$#{env_key}\" > #{shell_escape(before_run_marker)} && " <>
@@ -397,6 +399,9 @@ defmodule SymphonyElixir.ReadinessGateAgentRunnerTest do
     assert runtime_opts[:env]["GIT_SSH_COMMAND"] == false
     assert runtime_opts[:env]["BASH_ENV"] == false
     assert runtime_opts[:env]["ENV"] == false
+    assert runtime_opts[:env]["CODEX_BIN"] == "/opt/trusted/codex"
+    assert runtime_opts[:env]["CODEX_DEFAULT_MODEL"] == "gpt-5.5"
+    assert runtime_opts[:env]["SYMPHONY_CODEX_MODEL_SOURCE"] == "Linear label model:gpt-5.5"
     assert runtime_opts[:env]["GIT_CONFIG_NOSYSTEM"] == "1"
     assert runtime_opts[:env]["GIT_CONFIG_COUNT"] == "0"
     assert runtime_opts[:env]["GIT_CONFIG_PARAMETERS"] == "'credential.helper='"

@@ -82,6 +82,8 @@ review_convergence:
 landing:
   mode: human
 codex:
+  executable: "$CODEX_BIN"
+  default_model: "$CODEX_DEFAULT_MODEL"
   command: |
     if [ "${SYMPHONY_PROJECT_ISOLATED:-}" != "1" ]; then
       ENV_FILE="C:/Users/aroak/Desktop/codex/symphony/elixir/.env.local"
@@ -106,7 +108,7 @@ codex:
     ISSUE_IDENTIFIER="{{ issue.identifier }}"
     DEFAULT_CODEX_MODEL="${CODEX_DEFAULT_MODEL:-gpt-5.4-mini}"
     SELECTED_CODEX_MODEL="$DEFAULT_CODEX_MODEL"
-    MODEL_SOURCE="workflow default"
+    MODEL_SOURCE="${SYMPHONY_CODEX_MODEL_SOURCE:-workflow default}"
     MODEL_LABELS=""
     BODY_MODEL_HINTS=""
     if [ -n "$LINEAR_API_KEY" ] && [ -n "$ISSUE_IDENTIFIER" ] && ! printf '%s' "$ISSUE_IDENTIFIER" | grep -q '{{'; then

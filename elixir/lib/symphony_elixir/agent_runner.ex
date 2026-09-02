@@ -4,7 +4,7 @@ defmodule SymphonyElixir.AgentRunner do
   """
 
   require Logger
-  alias SymphonyElixir.{ClaimService, Codex.AppServer, Config, Linear.Issue}
+  alias SymphonyElixir.{ClaimService, Codex.AppServer, CodexExecutionInputs, Config, Linear.Issue}
   alias SymphonyElixir.{ProjectCredentialProvider, ProjectExecutionContext}
   alias SymphonyElixir.{PromptBuilder, ReadinessGate, SubprocessEnvironment, Tracker, Workspace}
 
@@ -44,9 +44,10 @@ defmodule SymphonyElixir.AgentRunner do
     Logger.info("Starting worker attempt for #{issue_context(issue)} worker_host=#{worker_host_for_log(worker_host)}")
 
     with {:ok, execution_context} <- execution_context(issue, opts),
+         {:ok, launch_env} <- codex_launch_environment(issue, execution_context),
          {:ok, credential_env} <- credential_environment(execution_context, opts),
          project_env <- Map.drop(credential_env, ["OPENAI_API_KEY"]),
-         {:ok, process_env} <- subprocess_environment(project_env, execution_context) do
+         {:ok, process_env} <- subprocess_environment(project_env, execution_context, launch_env) do
       run_with_execution_context(
         issue,
         codex_update_recipient,
@@ -266,10 +267,17 @@ defmodule SymphonyElixir.AgentRunner do
     )
   end
 
-  defp subprocess_environment(environment, nil), do: {:ok, environment}
+  defp codex_launch_environment(%Issue{}, nil), do: {:ok, %{}}
 
-  defp subprocess_environment(environment, %ProjectExecutionContext{} = execution_context) do
-    SubprocessEnvironment.build(environment, execution_context)
+  defp codex_launch_environment(%Issue{} = issue, %ProjectExecutionContext{}) do
+    CodexExecutionInputs.resolve(issue, Config.settings!().codex)
+  end
+
+  defp subprocess_environment(environment, nil, trusted_environment),
+    do: {:ok, Map.merge(environment, trusted_environment)}
+
+  defp subprocess_environment(environment, %ProjectExecutionContext{} = execution_context, trusted_environment) do
+    SubprocessEnvironment.build(environment, execution_context, trusted_environment)
   end
 
   defp maybe_put_subprocess_home_paths(opts, nil), do: opts
