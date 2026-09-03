@@ -1655,6 +1655,99 @@ defmodule SymphonyElixir.CoreTest do
     refute Keyword.has_key?(options, :effect_ledger_ready)
   end
 
+  test "classifies every canonical GitHub preflight blocker without retrying policy failures" do
+    transient = [
+      :repository_unavailable,
+      :repository_metadata_invalid,
+      :default_branch_unresolvable,
+      :required_check_contract_unreadable,
+      :github_unavailable
+    ]
+
+    permanent = [
+      :project_mapping_missing,
+      :repository_mismatch,
+      :default_branch_mismatch,
+      :required_check_contract_invalid,
+      :required_check_contract_missing,
+      :credential_source_unconfigured,
+      :credential_source_missing,
+      :credential_source_conflict,
+      :credential_reference_mismatch,
+      :credential_expired,
+      :credential_resolver_failed,
+      :github_unauthorized,
+      :github_forbidden,
+      :github_unexpected_actor,
+      :github_repository_not_allowed,
+      :github_pull_authority_missing,
+      :github_push_authority_missing,
+      :github_response_invalid,
+      :github_authority_invalid,
+      :git_checkout_invalid,
+      :git_checkout_mismatch,
+      :git_remote_mismatch,
+      :git_branch_mismatch,
+      :github_remote_head_changed,
+      :git_metadata_missing,
+      :git_metadata_unsafe,
+      :git_metadata_unwritable
+    ]
+
+    for blocker <- transient do
+      assert Orchestrator.preflight_blocker_classification_for_test(blocker) == :transient
+    end
+
+    for blocker <- permanent do
+      assert Orchestrator.preflight_blocker_classification_for_test(blocker) == :permanent
+    end
+
+    assert Orchestrator.preflight_blocker_classification_for_test(:unknown_secret_bearing_failure) ==
+             :unclassified
+  end
+
+  test "forwards only trusted credential callbacks and non-secret worker validation seams" do
+    sentinel = "ghs_task6_must_not_enter_orchestrator_state"
+    callback = fn _value -> :ok end
+    request_fun = fn _request -> {:error, :timeout} end
+    worker_runner = fn _command, _args, _opts -> {:error, :unavailable} end
+
+    options =
+      Orchestrator.agent_runner_options_for_test(
+        [
+          credential_source: callback,
+          worker_credential_source: callback,
+          expected_actor: "aroak-symphony[bot]",
+          request_fun: request_fun,
+          worker_authority_request_fun: request_fun,
+          git_checkout_command_runner: worker_runner,
+          workspace_attestor: callback,
+          workspace_guard: callback,
+          metadata_inspector: callback,
+          metadata_probe: callback,
+          resolved_credential: sentinel,
+          env: %{"GH_TOKEN" => sentinel},
+          authorization: "Bearer #{sentinel}"
+        ],
+        attempt: 1
+      )
+
+    assert options[:credential_source] == callback
+    assert options[:worker_credential_source] == callback
+    assert options[:expected_actor] == "aroak-symphony[bot]"
+    assert options[:request_fun] == request_fun
+    assert options[:worker_authority_request_fun] == request_fun
+    assert options[:git_checkout_command_runner] == worker_runner
+    assert options[:workspace_attestor] == callback
+    assert options[:workspace_guard] == callback
+    assert options[:metadata_inspector] == callback
+    assert options[:metadata_probe] == callback
+    refute inspect(options) =~ sentinel
+    refute Keyword.has_key?(options, :resolved_credential)
+    refute Keyword.has_key?(options, :env)
+    refute Keyword.has_key?(options, :authorization)
+  end
+
   test "first abnormal worker exit waits before retrying" do
     issue_id = "issue-crash-initial"
     ref = make_ref()

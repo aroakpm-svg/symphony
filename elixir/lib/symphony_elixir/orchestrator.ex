@@ -32,12 +32,35 @@ defmodule SymphonyElixir.Orchestrator do
     default_branch_mismatch
     required_check_contract_invalid
     required_check_contract_missing
+    credential_source_unconfigured
+    credential_source_missing
+    credential_source_conflict
+    credential_reference_mismatch
+    credential_expired
+    credential_resolver_failed
+    github_unauthorized
+    github_forbidden
+    github_unexpected_actor
+    github_repository_not_allowed
+    github_pull_authority_missing
+    github_push_authority_missing
+    github_response_invalid
+    github_authority_invalid
+    git_checkout_invalid
+    git_checkout_mismatch
+    git_remote_mismatch
+    git_branch_mismatch
+    github_remote_head_changed
+    git_metadata_missing
+    git_metadata_unsafe
+    git_metadata_unwritable
   )a
   @transient_preflight_blockers ~w(
     repository_unavailable
     repository_metadata_invalid
     default_branch_unresolvable
     required_check_contract_unreadable
+    github_unavailable
   )a
 
   @continuation_retry_delay_ms 1_000
@@ -56,11 +79,22 @@ defmodule SymphonyElixir.Orchestrator do
   @agent_runner_option_keys [
     :codex_session_starter,
     :credential_provider,
+    :credential_source,
     :effect_ledger_ready?,
+    :expected_actor,
+    :git_checkout_command_runner,
     :issue_state_fetcher,
     :max_turns,
-    :readiness_command_runner
+    :metadata_inspector,
+    :metadata_probe,
+    :readiness_command_runner,
+    :request_fun,
+    :worker_authority_request_fun,
+    :worker_credential_source,
+    :workspace_attestor,
+    :workspace_guard
   ]
+  @preflight_option_keys [:credential_source, :expected_actor, :request_fun]
 
   defmodule State do
     @moduledoc """
@@ -731,13 +765,14 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   defp preflight_multi_project_candidate(state, issue, opts) do
-    preflight_fun = Keyword.get(opts, :preflight_fun, &ProjectRepoPreflight.check/1)
+    preflight_fun = Keyword.get(opts, :preflight_fun, &ProjectRepoPreflight.check/2)
+    preflight_opts = Keyword.take(opts, @preflight_option_keys)
 
     report_health(opts, {:stage, :preflight, health_issue_metadata(issue, :started)})
 
     preflight_result =
       observed_call(
-        fn -> preflight_fun.(issue.project_profile) end,
+        fn -> invoke_preflight(preflight_fun, issue.project_profile, preflight_opts) end,
         fn failure_category ->
           report_health(opts, {
             :stage,
@@ -773,6 +808,12 @@ defmodule SymphonyElixir.Orchestrator do
         transition_retry_transient(state, issue, :preflight_unavailable, opts)
     end
   end
+
+  defp invoke_preflight(preflight_fun, profile, opts) when is_function(preflight_fun, 2),
+    do: preflight_fun.(profile, opts)
+
+  defp invoke_preflight(preflight_fun, profile, _opts) when is_function(preflight_fun, 1),
+    do: preflight_fun.(profile)
 
   defp preflight_blocker_disposition(code) do
     case preflight_blocker_classification(code) do

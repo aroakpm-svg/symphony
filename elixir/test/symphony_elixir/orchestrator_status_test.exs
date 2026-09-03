@@ -1962,6 +1962,62 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
            end)
   end
 
+  test "preflight failures expose only typed evidence to state health and logs" do
+    profile = health_test_profile()
+    profiles = %{version: 1, profiles: %{profile.key => profile}}
+    issue = health_test_issue(profile)
+    sentinel = "ghs_task6_preflight_secret"
+    {:ok, health_events} = Agent.start_link(fn -> [] end)
+    credential_source = fn _ref -> flunk("orchestrator must not resolve credentials") end
+    request_fun = fn _request -> flunk("injected preflight owns external requests") end
+
+    opts =
+      issue
+      |> health_dispatch_opts(fn event -> Agent.update(health_events, &(&1 ++ [event])) end)
+      |> Keyword.put(:credential_source, credential_source)
+      |> Keyword.put(:expected_actor, "aroak-symphony[bot]")
+      |> Keyword.put(:request_fun, request_fun)
+      |> Keyword.put(:preflight_fun, fn received_profile, received_opts ->
+        assert received_profile.key == profile.key
+        assert received_opts[:credential_source] == credential_source
+        assert received_opts[:expected_actor] == "aroak-symphony[bot]"
+        assert received_opts[:request_fun] == request_fun
+        refute Keyword.has_key?(received_opts, :env)
+
+        {:blocked,
+         %{
+           code: :credential_source_conflict,
+           detail: %{upstream_body: sentinel},
+           next_step: sentinel
+         }}
+      end)
+
+    log =
+      ExUnit.CaptureLog.capture_log(fn ->
+        state = Orchestrator.multi_project_dispatch_for_test(health_test_state(), profiles, opts)
+        send(self(), {:safe_state, state})
+      end)
+
+    assert_receive {:safe_state, state}
+    assert state.running == %{}
+    assert state.retry_attempts == %{}
+    refute inspect(state) =~ sentinel
+
+    events = Agent.get(health_events, & &1)
+
+    assert Enum.any?(events, fn
+             {:stage, :preflight, %{status: :skipped, failure_category: :credential_source_conflict}} ->
+               true
+
+             _event ->
+               false
+           end)
+
+    refute inspect(events) =~ sentinel
+    refute log =~ sentinel
+    assert log =~ "reason=credential_source_conflict"
+  end
+
   test "health reporting failure cannot change claim or dispatch authorization" do
     profile = health_test_profile()
     profiles = %{version: 1, profiles: %{profile.key => profile}}
