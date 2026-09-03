@@ -2,6 +2,7 @@ defmodule SymphonyElixir.GitHubCredentialResolverTest do
   use ExUnit.Case, async: false
 
   import ExUnit.CaptureLog
+  require Logger
 
   alias SymphonyElixir.GitHubCredentialResolver, as: Resolver
   alias SymphonyElixir.GitHubCredentialResolver.Credential
@@ -39,27 +40,33 @@ defmodule SymphonyElixir.GitHubCredentialResolverTest do
   end
 
   test "fails closed when no trusted source is configured" do
-    assert {:error, :credential_source_unconfigured} = Resolver.resolve(@central_ref, [])
+    assert_secret_safe(
+      fn -> Resolver.resolve(@central_ref, []) end,
+      "credential-source-unconfigured-sentinel",
+      :credential_source_unconfigured
+    )
   end
 
   test "rejects competing source results" do
     secret = "credential-source-conflict-sentinel"
     conflict = fn @central_ref -> {:error, {:conflict, secret}} end
 
-    assert {:error, :credential_source_conflict} =
-             Resolver.resolve(@central_ref, credential_source: conflict)
-
-    refute inspect(:credential_source_conflict) =~ secret
+    assert_secret_safe(
+      fn -> Resolver.resolve(@central_ref, credential_source: conflict) end,
+      secret,
+      :credential_source_conflict
+    )
   end
 
   test "normalizes ambiguous source results to a source conflict" do
     secret = "credential-source-ambiguous-sentinel"
     ambiguous = fn @central_ref -> {:error, {:ambiguous, secret}} end
 
-    assert {:error, :credential_source_conflict} =
-             Resolver.resolve(@central_ref, credential_source: ambiguous)
-
-    refute inspect(:credential_source_conflict) =~ secret
+    assert_secret_safe(
+      fn -> Resolver.resolve(@central_ref, credential_source: ambiguous) end,
+      secret,
+      :credential_source_conflict
+    )
   end
 
   test "rejects a source result bound to another reference" do
@@ -90,34 +97,54 @@ defmodule SymphonyElixir.GitHubCredentialResolverTest do
         ] do
       source = fn @central_ref -> result end
 
-      assert {:error, :credential_resolver_failed} =
-               Resolver.resolve(@central_ref, credential_source: source)
+      assert_secret_safe(
+        fn -> Resolver.resolve(@central_ref, credential_source: source) end,
+        secret,
+        :credential_resolver_failed
+      )
     end
 
     missing_source = fn @central_ref -> {:error, {:missing, secret}} end
 
-    assert {:error, :credential_source_missing} =
-             Resolver.resolve(@central_ref, credential_source: missing_source)
-
-    raising_source = fn @central_ref -> raise secret <> " raised" end
-
-    log =
-      capture_log(fn ->
-        assert {:error, :credential_resolver_failed} =
-                 Resolver.resolve(@central_ref, credential_source: raising_source)
-      end)
-
-    refute log =~ secret
-    refute inspect(:credential_resolver_failed) =~ secret
+    assert_secret_safe(
+      fn -> Resolver.resolve(@central_ref, credential_source: missing_source) end,
+      secret,
+      :credential_source_missing
+    )
   end
 
   test "does not expose credential-shaped values in source conflicts or raised text" do
     secret = "credential-shaped-conflict-sentinel"
     source = fn @central_ref -> raise ArgumentError, secret end
 
-    result = Resolver.resolve(@central_ref, credential_source: source)
-    assert {:error, reason} = result
-    refute inspect(reason) =~ secret
-    refute Exception.message(%RuntimeError{message: inspect(reason)}) =~ secret
+    assert_secret_safe(
+      fn -> Resolver.resolve(@central_ref, credential_source: source) end,
+      secret,
+      :credential_resolver_failed
+    )
+  end
+
+  defp assert_secret_safe(resolve_fun, secret, expected_reason) do
+    log =
+      capture_log(fn ->
+        result = resolve_fun.()
+        Logger.error("resolver outcome: #{inspect(result)}")
+        send(self(), {:resolver_result, result})
+      end)
+
+    assert_receive {:resolver_result, result}
+    assert {:error, ^expected_reason} = result
+    refute inspect(expected_reason) =~ secret
+    refute inspect(result) =~ secret
+    refute log =~ secret
+
+    raised_text =
+      try do
+        raise RuntimeError, inspect(result)
+      rescue
+        error -> Exception.message(error)
+      end
+
+    refute raised_text =~ secret
   end
 end
