@@ -377,9 +377,12 @@ The observability UI now runs on a minimal Phoenix stack:
 
 ## Approved project repository preflight
 
-`SymphonyElixir.ProjectRepoPreflight.check/1` accepts one complete profile map from the validated
-`project_profiles` contract. It verifies GitHub CLI read authentication, repository identity, the
-`main` default branch and exact head, and the approved quality-script contract. The supported
+`SymphonyElixir.ProjectRepoPreflight.check/2` accepts one complete profile map from the validated
+`project_profiles` contract plus trusted runtime options. It resolves a short-lived credential
+through `SymphonyElixir.GitHubCredentialResolver`, verifies the configured dedicated actor and
+repository read/push authority through `SymphonyElixir.GitHubAuthorityClient`, then verifies the
+`main` default branch, exact head, and approved quality-script contract at that immutable head. It
+does not invoke ambient `gh` or Git credential discovery. The supported
 profiles are:
 
 - `aroakpm-svg/aroak-central-brain`: `typecheck`, `build`, and `test`
@@ -392,14 +395,16 @@ settings = SymphonyElixir.Config.settings!()
 
 settings.project_profiles
 |> SymphonyElixir.ProjectProfiles.list()
-|> Enum.map(&SymphonyElixir.ProjectRepoPreflight.check/1)
+|> Enum.map(&SymphonyElixir.ProjectRepoPreflight.check(&1,
+     credential_source: trusted_source,
+     expected_actor: "configured-dedicated-bot[bot]"))
 ```
 
 Each result is either `{:ok, receipt}` or `{:blocked, reason}` with one minimal human next step.
 Preflight is a necessary dispatch gate, but success is readiness evidence rather than authorization:
 it does not independently enable polling, dispatch, credentials, deployment authority, or automatic
-pickup permission. The selected profile is consumed by the ARO-286 execution context described
-below; preflight still does not resolve credentials by itself.
+pickup permission. The credential is discarded before capacity and claim; only the secret-free
+authority receipt continues with the selected ARO-286 execution context.
 
 ## Approved multi-project profile contract
 
@@ -430,7 +435,8 @@ When `project_profiles` is absent, Symphony retains the legacy single-project tr
 
 This contract selects an approved repository but does not install credentials, clone repositories,
 grant deployment authority, or operate in Production. ARO-286 consumes the selected profile for
-workspace and subprocess isolation; ARO-195/ARO-196 still own the approved host credential source.
+workspace and subprocess isolation; ARO-196 defines the host-source interface, while ARO-197 owns
+provisioning and machine rollout.
 
 See the commented example in [`WORKFLOW.md`](WORKFLOW.md). Remove the comment
 markers only when intentionally configuring the exact approved set.
@@ -478,15 +484,33 @@ observability:
 ```
 
 `credential_ref` is an opaque approved handle, not a token, path, command, or environment value.
-`SymphonyElixir.ProjectCredentialProvider` has no ambient credential fallback: without an injected
-ARO-195/ARO-196-approved adapter it returns `:credential_provider_unconfigured` and the worker is
-hard-blocked before hooks or Codex. Missing, ambiguous, wrong-reference, invalid-environment, and
-provider failures return `:credential_not_found`, `:credential_ambiguous`,
-`:credential_reference_mismatch`, `:invalid_credential_environment`, or
-`:credential_provider_failed`. Resolved values are passed only through the selected Git/readiness/
-hook/Codex subprocess environment; they are never added to command arguments, application state,
-workspace readiness state, health, logs, or notifications. Context-aware SSH execution with
-credential material currently fails closed as `:remote_credential_environment_unsupported`.
+Only `github-central-brain` and `github-project-management` are accepted, for the two repositories
+listed above. Trusted application configuration supplies `:github_credential_source`; runtime
+options supply the expected dedicated actor and may inject the same source explicitly for packaging
+or tests. Configuring both sources is a conflict. `WORKFLOW.md`, issue text, environment variables,
+ambient `gh`, Git Credential Manager, and other profiles cannot select or replace the source.
+
+The source returns exactly one reference-bound credential for the current call. Before claim,
+`ProjectRepoPreflight` resolves it, validates actor/repository/pull/push/default branch/head, reads
+the quality contract at that verified head, and discards it. After claim,
+`SymphonyElixir.AgentRunner` resolves a second fresh credential and repeats full authority
+validation before `SymphonyElixir.GitCheckoutPreflight` checks the actual selected local, WSL, or
+SSH worker's namespaced checkout, origin, branch, remote head, and safe writable `.git` metadata.
+Remote execution requires worker-local credential, GitHub-request, checkout-command, workspace
+attestation, and metadata seams; it never falls back to controller evidence.
+
+Only after these gates may `SymphonyElixir.ProjectCredentialProvider` produce the minimal
+`GH_TOKEN` child environment. Credentials and authorization headers are call-local and never enter
+arguments, orchestrator state, retries, workspace state, health, logs, receipts, notifications, or
+durable files. `:github_unavailable` and repository transport/timeout blockers are transient.
+Source, expiry, 401/403, actor, allowlist, authority, checkout, remote-head, and Git-metadata
+failures are permanent until configuration changes; unknown failures fail closed. When
+`project_profiles` is absent, the legacy single-project path remains unchanged.
+
+ARO-196 does not create an App, key, token, credential file, or Scheduled Task and does not perform
+machine rollout. ARO-197 owns provisioning, installation on Amy/Matt/Han, rotation, revocation, and
+rollback. ARO-285 owns the live two-project acceptance. See
+[`docs/aro_196_acceptance.md`](docs/aro_196_acceptance.md) for the evidence map.
 
 Startup calls the existing Linear endpoint with the real read-only
 `query SymphonyLinearViewer { viewer { id } }` request before terminal cleanup or the first poll.

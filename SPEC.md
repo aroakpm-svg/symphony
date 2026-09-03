@@ -532,13 +532,33 @@ configuration MUST fail validation. Both values are operator-provided and MUST b
 secret-free. Neither field grants deployment, Production, external-resource, or customer-message
 authority.
 
-The default multi-project credential provider MUST fail closed when no approved host adapter is
-configured. It MUST NOT fall back to ambient GitHub tokens, credential helpers, another profile,
-or repository state. A successful provider result MUST be scoped to the selected worker's immediate
-subprocess environment and MUST NOT be retained in commands, application state, workspace state,
-health, errors, logs, or notifications. ARO-195 owns the approved machine credential inventory and
-automation identity; ARO-196 owns the canonical GitHub credential-source resolver and authority
-preflight. This extension defines only their consuming boundary.
+The default multi-project credential resolver MUST fail closed when no approved host source or
+expected automation actor is configured through trusted application/runtime options. It MUST NOT
+fall back to ambient GitHub tokens, GitHub CLI, credential helpers, another profile, or repository
+state. Only `github-central-brain` and `github-project-management` are approved opaque references;
+they bind respectively to `aroakpm-svg/aroak-central-brain` and
+`aroakpm-svg/aroak-project-management`. The host source MUST return one reference-bound,
+short-lived credential and MUST NOT be selected by workflow or issue content.
+
+Before claim, a fresh credential MUST validate the expected actor, approved repository pull and
+push authority, canonical default branch, exact head, and quality contract at that verified head.
+That credential MUST then be discarded. After claim and before any hook or Codex effect, the
+selected local, WSL, or SSH worker MUST resolve a second fresh credential, repeat the full GitHub
+authority validation through a worker-local request seam, and validate the exact namespaced
+checkout, origin, branch, remote head, and safe writable Git metadata. A remote worker without its
+own credential source or request/checkout seam MUST fail closed; controller evidence MUST NOT
+authorize it.
+
+Credentials, authorization headers, raw response bodies, credential paths, and secret-derived
+details MUST NOT be retained in commands, application state, retries, workspace state, health,
+errors, logs, receipts, or notifications. Transport unavailability is retryable; missing,
+conflicting, expired, unauthorized, forbidden, identity, repository, authority, checkout, and Git
+metadata policy failures remain blocked until configuration changes. The legacy single-project
+path remains unchanged when `project_profiles` is absent.
+
+ARO-195 owns the approved inventory and identity decision. ARO-196 owns only this canonical
+resolver/preflight consuming boundary. ARO-197 owns App/Bot provisioning, three-machine rollout,
+rotation, revocation, and rollback; ARO-285 owns live multi-project acceptance.
 
 #### 5.3.1 `tracker` (object)
 

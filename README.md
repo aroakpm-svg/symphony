@@ -73,10 +73,17 @@ is isolated by its approved namespace, for example:
 
 The approved profiles contain only the opaque references `github-central-brain` and
 `github-project-management`; they never contain credential material. The built-in default
-credential provider deliberately fails closed with `credential_provider_unconfigured` until an
-ARO-195/ARO-196-approved host adapter is injected. Resolved values are limited to the selected
-worker's immediate subprocess environment and are excluded from commands, workspace state,
-runtime health, logs, and notifications.
+credential resolver deliberately fails closed until a trusted application-level source and the
+expected dedicated automation actor are configured. It never falls back to environment tokens,
+GitHub CLI, Git credential helpers, or another profile. A fresh short-lived credential validates
+actor, repository read/push authority, default branch, and exact head before claim; a second fresh
+credential repeats authority validation inside the selected local, WSL, or SSH worker before its
+checkout, origin, branch, remote head, and Git metadata are accepted. Resolved values are limited
+to immediate request or subprocess boundaries and are excluded from commands, orchestrator state,
+retries, workspace state, runtime health, logs, receipts, and notifications.
+
+ARO-196 defines and verifies this consuming contract only. ARO-197 owns GitHub App/Bot
+provisioning and rollout to the three machines; ARO-285 owns live multi-project acceptance.
 
 Startup performs the real read-only Linear `viewer { id }` request before cleanup or polling. The
 runtime then exposes typed, secret-safe stage/dependency health and an immutable final-stop receipt.
