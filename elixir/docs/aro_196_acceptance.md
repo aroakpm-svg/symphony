@@ -7,8 +7,12 @@ It does not provision credentials or claim that a live three-machine deployment 
 
 - Trusted application/runtime configuration selects one credential source and the expected
   dedicated automation actor. Workflow and issue content contain only an approved opaque reference.
-- Approved mappings are `github-central-brain` to `aroakpm-svg/aroak-central-brain` and
-  `github-project-management` to `aroakpm-svg/aroak-project-management`.
+- The complete ARO-196 dispatch manifest has two mappings: `github-central-brain` to
+  `aroakpm-svg/aroak-central-brain` and `github-project-management` to
+  `aroakpm-svg/aroak-project-management`.
+- The distinct ARO-195 GitHub App installation allowlist has three repositories: the two dispatch
+  targets plus `aroakpm-svg/symphony`. Installation access to `symphony` does not create a third
+  dispatch profile.
 - There is no fallback to environment tokens, ambient `gh`, Git credential helpers, repository
   state, controller credentials for remote workers, or another profile.
 - A fresh credential validates actor, repository pull/push authority, default branch, exact head,
@@ -58,7 +62,8 @@ working-tree changes:
 ## Ownership handoff
 
 ARO-197 may implement the approved host source and provision the dedicated GitHub App/Bot on Amy,
-Matt, and Han, then validate rotation, revocation, rollback, and actual runtime identity. It must not
-weaken the resolver, expected-actor, allowlist, double-validation, worker-local, or secret-lifetime
-boundaries. ARO-285 performs the final live two-project acceptance. Neither activity is completed or
-authorized by this document.
+Matt, and Han for the three-repository installation allowlist, then validate rotation, revocation,
+rollback, and actual runtime identity. It must not weaken the resolver, expected-actor, allowlist,
+double-validation, worker-local, or secret-lifetime boundaries, and it must not add a `symphony`
+dispatch profile. ARO-285 performs the final live two-project acceptance. Neither activity is
+completed or authorized by this document.

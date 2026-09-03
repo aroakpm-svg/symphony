@@ -535,10 +535,13 @@ authority.
 The default multi-project credential resolver MUST fail closed when no approved host source or
 expected automation actor is configured through trusted application/runtime options. It MUST NOT
 fall back to ambient GitHub tokens, GitHub CLI, credential helpers, another profile, or repository
-state. Only `github-central-brain` and `github-project-management` are approved opaque references;
-they bind respectively to `aroakpm-svg/aroak-central-brain` and
-`aroakpm-svg/aroak-project-management`. The host source MUST return one reference-bound,
-short-lived credential and MUST NOT be selected by workflow or issue content.
+state. The ARO-196 multi-project dispatch manifest has exactly two approved opaque references:
+`github-central-brain` and `github-project-management`. They bind respectively to
+`aroakpm-svg/aroak-central-brain` and `aroakpm-svg/aroak-project-management`. The separate
+ARO-195-approved GitHub App installation allowlist has three repositories: those two targets plus
+`aroakpm-svg/symphony`, which supports the orchestration repository but MUST NOT be interpreted as
+or create a third dispatch profile. The host source MUST return one reference-bound, short-lived
+credential and MUST NOT be selected by workflow or issue content.
 
 Before claim, a fresh credential MUST validate the expected actor, approved repository pull and
 push authority, canonical default branch, exact head, and quality contract at that verified head.
@@ -558,7 +561,8 @@ path remains unchanged when `project_profiles` is absent.
 
 ARO-195 owns the approved inventory and identity decision. ARO-196 owns only this canonical
 resolver/preflight consuming boundary. ARO-197 owns App/Bot provisioning, three-machine rollout,
-rotation, revocation, and rollback; ARO-285 owns live multi-project acceptance.
+rotation, revocation, and rollback across the three-repository installation allowlist; it MUST NOT
+expand the two-profile dispatch manifest. ARO-285 owns live multi-project acceptance.
 
 #### 5.3.1 `tracker` (object)
 

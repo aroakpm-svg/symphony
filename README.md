@@ -83,7 +83,11 @@ to immediate request or subprocess boundaries and are excluded from commands, or
 retries, workspace state, runtime health, logs, receipts, and notifications.
 
 ARO-196 defines and verifies this consuming contract only. ARO-197 owns GitHub App/Bot
-provisioning and rollout to the three machines; ARO-285 owns live multi-project acceptance.
+provisioning and rollout to the three machines. Its ARO-195-approved App installation allowlist is
+`aroakpm-svg/symphony`, `aroakpm-svg/aroak-central-brain`, and
+`aroakpm-svg/aroak-project-management`; this does not add `symphony` as a third dispatch profile.
+ARO-196's dispatch manifest remains the two mappings above. ARO-285 owns live multi-project
+acceptance.
 
 Startup performs the real read-only Linear `viewer { id }` request before cleanup or polling. The
 runtime then exposes typed, secret-safe stage/dependency health and an immutable final-stop receipt.

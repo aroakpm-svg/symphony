@@ -485,7 +485,10 @@ observability:
 
 `credential_ref` is an opaque approved handle, not a token, path, command, or environment value.
 Only `github-central-brain` and `github-project-management` are accepted, for the two repositories
-listed above. Trusted application configuration supplies `:github_credential_source`; runtime
+listed above; these are the complete ARO-196 multi-project dispatch manifest. Separately, the
+ARO-195-approved GitHub App installation allowlist also includes `aroakpm-svg/symphony`, for a total
+of three repositories. That installation scope does not define or add a `symphony` dispatch
+profile. Trusted application configuration supplies `:github_credential_source`; runtime
 options supply the expected dedicated actor and may inject the same source explicitly for packaging
 or tests. Configuring both sources is a conflict. `WORKFLOW.md`, issue text, environment variables,
 ambient `gh`, Git Credential Manager, and other profiles cannot select or replace the source.
@@ -509,7 +512,8 @@ failures are permanent until configuration changes; unknown failures fail closed
 
 ARO-196 does not create an App, key, token, credential file, or Scheduled Task and does not perform
 machine rollout. ARO-197 owns provisioning, installation on Amy/Matt/Han, rotation, revocation, and
-rollback. ARO-285 owns the live two-project acceptance. See
+rollback for the three-repository App allowlist; it must preserve ARO-196's two-profile dispatch
+manifest. ARO-285 owns the live two-project acceptance. See
 [`docs/aro_196_acceptance.md`](docs/aro_196_acceptance.md) for the evidence map.
 
 Startup calls the existing Linear endpoint with the real read-only
