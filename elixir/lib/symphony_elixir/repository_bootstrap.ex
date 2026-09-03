@@ -7,7 +7,8 @@ defmodule SymphonyElixir.RepositoryBootstrap do
   worker-aware command boundary.
   """
 
-  alias SymphonyElixir.{GitHubCredentialResolver.Credential, ProjectExecutionContext, Workspace}
+  alias SymphonyElixir.{GitCredentialEnvironment, GitHubCredentialResolver.Credential}
+  alias SymphonyElixir.{ProjectExecutionContext, Workspace}
 
   @sha_pattern ~r/\A(?:[0-9a-fA-F]{40}|[0-9a-fA-F]{64})\z/
 
@@ -100,14 +101,16 @@ defmodule SymphonyElixir.RepositoryBootstrap do
 
       {nil, nil} ->
         {:ok,
-         fn args, %Credential{token: token}, runtime ->
-           workspace_opts =
-             runtime
-             |> Keyword.take([:workspace_attestation, :private_home_capability])
-             |> Keyword.put(:execution_context, context)
-             |> Keyword.put(:env, bootstrap_environment(token))
+         fn args, %Credential{} = credential, runtime ->
+           with {:ok, environment} <- GitCredentialEnvironment.build(credential) do
+             workspace_opts =
+               runtime
+               |> Keyword.take([:workspace_attestation, :private_home_capability])
+               |> Keyword.put(:execution_context, context)
+               |> Keyword.put(:env, environment)
 
-           Workspace.run_git_command(workspace, args, nil, workspace_opts)
+             Workspace.run_git_command(workspace, args, nil, workspace_opts)
+           end
          end}
 
       _remote_or_invalid ->
@@ -148,17 +151,4 @@ defmodule SymphonyElixir.RepositoryBootstrap do
   end
 
   defp canonical_url(repository), do: "https://github.com/#{repository}.git"
-
-  # Git does not consume GH_TOKEN by itself. This fixed, call-local helper emits it only into Git's
-  # credential protocol; the token is never placed in argv, repository config, or retained state.
-  defp bootstrap_environment(token) do
-    %{
-      "GH_TOKEN" => token,
-      "GIT_CONFIG_COUNT" => "2",
-      "GIT_CONFIG_KEY_0" => "credential.helper",
-      "GIT_CONFIG_VALUE_0" => "",
-      "GIT_CONFIG_KEY_1" => "credential.helper",
-      "GIT_CONFIG_VALUE_1" => "!f() { test \"$1\" = get && printf 'username=x-access-token\\npassword=%s\\n' \"$GH_TOKEN\"; }; f"
-    }
-  end
 end

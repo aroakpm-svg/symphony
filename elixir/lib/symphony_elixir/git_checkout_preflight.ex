@@ -6,7 +6,7 @@ defmodule SymphonyElixir.GitCheckoutPreflight do
   results are deliberately bounded to non-secret checkout identity.
   """
 
-  alias SymphonyElixir.{Config, PathSafety, ProjectExecutionContext, Workspace}
+  alias SymphonyElixir.{Config, GitCredentialEnvironment, PathSafety, ProjectExecutionContext, Workspace}
   alias SymphonyElixir.GitHubCredentialResolver.Credential
 
   @sha_pattern ~r/\A(?:[0-9a-fA-F]{40}|[0-9a-fA-F]{64})\z/
@@ -163,14 +163,16 @@ defmodule SymphonyElixir.GitCheckoutPreflight do
 
       {nil, nil} ->
         {:ok,
-         fn args, %Credential{token: token}, runtime ->
-           workspace_opts =
-             runtime
-             |> Keyword.take([:workspace_attestation])
-             |> Keyword.put(:execution_context, context)
-             |> Keyword.put(:env, %{"GH_TOKEN" => token})
+         fn args, %Credential{} = credential, runtime ->
+           with {:ok, environment} <- GitCredentialEnvironment.build(credential) do
+             workspace_opts =
+               runtime
+               |> Keyword.take([:workspace_attestation])
+               |> Keyword.put(:execution_context, context)
+               |> Keyword.put(:env, environment)
 
-           Workspace.run_git_command(workspace, args, nil, workspace_opts)
+             Workspace.run_git_command(workspace, args, nil, workspace_opts)
+           end
          end}
 
       {nil, _worker_host} ->
