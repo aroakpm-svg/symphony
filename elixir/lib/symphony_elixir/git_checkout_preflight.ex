@@ -79,9 +79,17 @@ defmodule SymphonyElixir.GitCheckoutPreflight do
   defp exact_workspace(context, workspace, opts) do
     root = Keyword.get(opts, :workspace_root, Config.settings!().workspace.root)
 
-    expected =
-      Path.join([root, context.workspace_namespace, safe_identifier(context.issue_identifier)])
-      |> normalize_path()
+    expected = Path.join([root, context.workspace_namespace, safe_identifier(context.issue_identifier)])
+
+    case Keyword.get(opts, :worker_host) do
+      nil -> exact_local_workspace(workspace, expected)
+      worker_host when is_binary(worker_host) -> exact_remote_workspace(context, workspace, expected, worker_host, opts)
+      _invalid -> {:error, :git_checkout_mismatch}
+    end
+  end
+
+  defp exact_local_workspace(workspace, expected) do
+    expected = normalize_path(expected)
 
     with {:ok, canonical_workspace} <- PathSafety.canonicalize(workspace),
          {:ok, canonical_expected} <- PathSafety.canonicalize(expected),
@@ -93,7 +101,46 @@ defmodule SymphonyElixir.GitCheckoutPreflight do
     end
   end
 
+  defp exact_remote_workspace(context, workspace, expected, worker_host, opts) do
+    expected_attestation = Keyword.get(opts, :workspace_attestation)
+
+    with true <- normalize_path_lexical(workspace) == normalize_path_lexical(expected),
+         {:ok, attestor} <- workspace_attestor(opts),
+         {:ok, current_attestation} <- attest(attestor, context, worker_host),
+         true <- current_attestation == expected_attestation,
+         {:ok, guard} <- workspace_guard(opts),
+         :ok <- guard.(workspace, worker_host, context, current_attestation) do
+      :ok
+    else
+      _failure -> {:error, :git_checkout_mismatch}
+    end
+  end
+
+  defp workspace_attestor(opts) do
+    case Keyword.get(opts, :workspace_attestor) do
+      attestor when is_function(attestor, 3) -> {:ok, attestor}
+      nil -> {:ok, &Workspace.attest_existing_issue_workspace/3}
+      _invalid -> {:error, :git_checkout_mismatch}
+    end
+  end
+
+  defp workspace_guard(opts) do
+    case Keyword.get(opts, :workspace_guard, &Workspace.validate_execution_workspace/4) do
+      guard when is_function(guard, 4) -> {:ok, guard}
+      _invalid -> {:error, :git_checkout_mismatch}
+    end
+  end
+
+  defp attest(attestor, context, worker_host) do
+    attestor.(context.issue_identifier, worker_host, context)
+  rescue
+    _exception -> {:error, :git_checkout_mismatch}
+  catch
+    _kind, _reason -> {:error, :git_checkout_mismatch}
+  end
+
   defp normalize_path(path), do: path |> Path.expand() |> String.replace("\\", "/")
+  defp normalize_path_lexical(path), do: String.replace(path, "\\", "/")
 
   defp safe_identifier(identifier) do
     String.replace(identifier, ~r/[^A-Za-z0-9._-]/, "_")
@@ -219,40 +266,66 @@ defmodule SymphonyElixir.GitCheckoutPreflight do
   end
 
   defp inspect_metadata(path, opts) do
-    case Keyword.get(opts, :metadata_inspector) do
-      inspector when is_function(inspector, 1) -> inspector.(path)
-      nil -> local_metadata_type(path)
-      _invalid -> {:error, :invalid_inspector}
+    worker_host = Keyword.get(opts, :worker_host)
+
+    case {worker_host, Keyword.get(opts, :metadata_inspector)} do
+      {nil, inspector} when is_function(inspector, 1) ->
+        inspector.(path)
+
+      {nil, nil} ->
+        local_metadata_type(path)
+
+      {host, inspector} when is_binary(host) and is_function(inspector, 2) ->
+        inspector.(path, worker_runtime(opts))
+
+      _invalid ->
+        {:error, :invalid_inspector}
     end
   rescue
     _exception -> {:error, :invalid_inspector}
   end
 
   defp local_metadata_type(path) do
-    case File.lstat(path) do
-      {:ok, %File.Stat{type: :directory}} -> {:ok, :directory}
-      {:ok, %File.Stat{type: :symlink}} -> {:ok, :symlink}
-      {:ok, _stat} -> {:ok, :other}
-      {:error, reason} -> {:error, reason}
+    case Workspace.validate_non_reparse_directory_for_worker(path) do
+      :ok -> {:ok, :directory}
+      {:error, :enoent} -> {:error, :enoent}
+      {:error, _unsafe} -> {:ok, :reparse}
     end
   end
 
   defp probe_metadata(git_dir, opts) do
     probe_path = Path.join(git_dir, @probe_prefix <> random_suffix())
 
-    try do
-      case Keyword.get(opts, :metadata_probe) do
-        probe when is_function(probe, 1) -> normalize_probe(probe.(probe_path))
-        nil -> exclusive_probe(probe_path)
-        _invalid -> {:error, :invalid_probe}
-      end
-    rescue
-      _exception -> {:error, :probe_failed}
-    catch
-      _kind, _reason -> {:error, :probe_failed}
-    after
-      _ = File.rm(probe_path)
+    if is_binary(Keyword.get(opts, :worker_host)) do
+      remote_probe_metadata(probe_path, opts)
+    else
+      local_probe_metadata(probe_path, opts)
     end
+  end
+
+  defp remote_probe_metadata(probe_path, opts) do
+    case Keyword.get(opts, :metadata_probe) do
+      probe when is_function(probe, 2) -> normalize_probe(probe.(probe_path, worker_runtime(opts)))
+      _missing_or_invalid -> {:error, :probe_failed}
+    end
+  rescue
+    _exception -> {:error, :probe_failed}
+  catch
+    _kind, _reason -> {:error, :probe_failed}
+  end
+
+  defp local_probe_metadata(probe_path, opts) do
+    case Keyword.get(opts, :metadata_probe) do
+      probe when is_function(probe, 1) -> normalize_probe(probe.(probe_path))
+      nil -> exclusive_probe(probe_path)
+      _invalid -> {:error, :invalid_probe}
+    end
+  rescue
+    _exception -> {:error, :probe_failed}
+  catch
+    _kind, _reason -> {:error, :probe_failed}
+  after
+    _ = File.rm(probe_path)
   end
 
   defp normalize_probe(:ok), do: :ok

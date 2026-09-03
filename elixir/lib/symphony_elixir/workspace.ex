@@ -1783,6 +1783,16 @@ defmodule SymphonyElixir.Workspace do
     end
   end
 
+  @doc false
+  @spec validate_non_reparse_directory_for_worker(Path.t()) ::
+          :ok | {:error, :enoent | :unsafe_private_home_path}
+  def validate_non_reparse_directory_for_worker(path) when is_binary(path) do
+    case File.lstat(path) do
+      {:error, :enoent} -> {:error, :enoent}
+      _present -> validate_non_reparse_directory(path)
+    end
+  end
+
   defp validate_platform_reparse_state(path) do
     case :os.type() do
       {:unix, _name} -> :ok

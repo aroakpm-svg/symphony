@@ -90,13 +90,117 @@ defmodule SymphonyElixir.GitCheckoutPreflightTest do
         command_result(args)
       end
 
-      {workspace, opts} = successful_seams(worker_host: worker_host, command_runner: runner)
+      overrides =
+        if worker_host do
+          [
+            worker_host: worker_host,
+            command_runner: runner,
+            workspace_attestor: remote_attestor(),
+            workspace_attestation: remote_attestation(),
+            workspace_guard: remote_workspace_guard(),
+            metadata_inspector: remote_metadata_inspector(),
+            metadata_probe: remote_metadata_probe()
+          ]
+        else
+          [worker_host: worker_host, command_runner: runner]
+        end
+
+      {workspace, opts} = successful_seams(overrides)
       assert {:ok, _receipt} = GitCheckoutPreflight.check(context(), workspace, credential(), opts)
 
       for _ <- 1..4 do
         assert_receive {:ran, args, true, ^worker_host}
         refute inspect(args) =~ @secret
       end
+    end
+  end
+
+  test "remote mode never falls back to controller workspace or metadata checks" do
+    parent = self()
+
+    runner = fn _args, _credential, _runtime ->
+      send(parent, :command_ran)
+      {:ok, "unexpected"}
+    end
+
+    {workspace, opts} =
+      successful_seams(
+        worker_host: "worker.example",
+        command_runner: runner,
+        metadata_inspector: nil,
+        metadata_probe: nil
+      )
+
+    assert {:error, :git_checkout_mismatch} =
+             GitCheckoutPreflight.check(context(), workspace, credential(), opts)
+
+    refute_received :command_ran
+  end
+
+  test "remote mode freshly validates the selected worker attestation" do
+    parent = self()
+
+    attestor = fn identifier, worker_host, received_context ->
+      send(parent, {:attested, identifier, worker_host, received_context})
+      {:ok, remote_attestation()}
+    end
+
+    {workspace, opts} =
+      successful_seams(
+        worker_host: "wsl://Ubuntu",
+        workspace_attestor: attestor,
+        workspace_attestation: remote_attestation(),
+        workspace_guard: remote_workspace_guard(),
+        metadata_inspector: remote_metadata_inspector(),
+        metadata_probe: remote_metadata_probe()
+      )
+
+    assert {:ok, _receipt} = GitCheckoutPreflight.check(context(), workspace, credential(), opts)
+    assert_receive {:attested, "ARO-196", "wsl://Ubuntu", %ProjectExecutionContext{} = received}
+    assert received == context()
+
+    changed_attestor = fn _identifier, _worker_host, _context ->
+      {:ok, %{remote_attestation() | identity: "changed-worker-identity"}}
+    end
+
+    assert {:error, :git_checkout_mismatch} =
+             GitCheckoutPreflight.check(
+               context(),
+               workspace,
+               credential(),
+               Keyword.put(opts, :workspace_attestor, changed_attestor)
+             )
+  end
+
+  @tag :windows
+  test "production metadata validation rejects a real Windows directory junction" do
+    if match?({:win32, _}, :os.type()) do
+      base = Path.join(System.tmp_dir!(), "task4-junction-#{System.unique_integer([:positive])}")
+      target = Path.join(base, "target")
+      junction = Path.join(base, "junction")
+      File.mkdir_p!(target)
+
+      on_exit(fn ->
+        _ = File.rmdir(junction)
+        _ = File.rm_rf(base)
+      end)
+
+      {_output, 0} =
+        System.cmd(
+          "cmd.exe",
+          [
+            "/d",
+            "/c",
+            "mklink",
+            "/J",
+            String.replace(junction, "/", "\\"),
+            String.replace(target, "/", "\\")
+          ],
+          stderr_to_stdout: true
+        )
+
+      assert {:error, :unsafe_private_home_path} =
+               Workspace.validate_non_reparse_directory_for_worker(junction)
     end
   end
 
@@ -170,6 +274,9 @@ defmodule SymphonyElixir.GitCheckoutPreflightTest do
       workspace_root: Keyword.get(overrides, :workspace_root, "/runtime/workspaces"),
       worker_host: Keyword.get(overrides, :worker_host),
       command_runner: runner,
+      workspace_attestor: Keyword.get(overrides, :workspace_attestor),
+      workspace_attestation: Keyword.get(overrides, :workspace_attestation),
+      workspace_guard: Keyword.get(overrides, :workspace_guard),
       metadata_inspector: Keyword.get(overrides, :metadata_inspector, fn _ -> Keyword.get(overrides, :metadata_result, {:ok, :directory}) end),
       metadata_probe: Keyword.get(overrides, :metadata_probe, fn _ -> :ok end)
     ]
@@ -214,6 +321,40 @@ defmodule SymphonyElixir.GitCheckoutPreflightTest do
   end
 
   defp credential, do: %Credential{credential_ref: "github-central-brain", token: @secret}
+
+  defp remote_attestation do
+    %{
+      kind: :remote,
+      lexical_path: "/runtime/workspaces/central-brain/ARO-196",
+      physical_path: "/runtime/workspaces/central-brain/ARO-196",
+      identity: "worker-device-and-inode"
+    }
+  end
+
+  defp remote_attestor do
+    fn _identifier, _worker_host, _context -> {:ok, remote_attestation()} end
+  end
+
+  defp remote_workspace_guard do
+    fn workspace, worker_host, received_context, attestation ->
+      if workspace == "/runtime/workspaces/central-brain/ARO-196" and worker_host != nil and
+           received_context == context() and attestation == remote_attestation(),
+         do: :ok,
+         else: {:error, :wrong_boundary}
+    end
+  end
+
+  defp remote_metadata_inspector do
+    fn _path, runtime ->
+      if runtime[:worker_host], do: {:ok, :directory}, else: {:error, :wrong_boundary}
+    end
+  end
+
+  defp remote_metadata_probe do
+    fn _path, runtime ->
+      if runtime[:worker_host], do: :ok, else: {:error, :wrong_boundary}
+    end
+  end
 
   defp temporary_root! do
     base = Path.join(System.tmp_dir!(), "task4-workspaces-#{System.unique_integer([:positive])}")
