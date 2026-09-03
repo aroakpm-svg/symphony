@@ -10,7 +10,7 @@ defmodule SymphonyElixir.GitHubAuthorityClientTest do
   @actor "aroak-symphony[bot]"
   @repository "aroakpm-svg/aroak-central-brain"
   @branch "main"
-  @head_sha "a1b2c3d4e5f6"
+  @head_sha "a1b2c3d4e5f678901234567890abcdef12345678"
   @token "github-authority-token-sentinel"
 
   test "returns only verified actor and repository authority evidence" do
@@ -34,11 +34,11 @@ defmodule SymphonyElixir.GitHubAuthorityClientTest do
     assert Map.keys(receipt) |> Enum.sort() ==
              [:actor, :default_branch, :head_sha, :pull?, :push?, :repository]
 
-    assert_receive {:github_request, :get, "https://api.github.com/user", headers}
+    assert_receive {:github_request, :get, "https://api.github.com/user", headers, false}
     assert {"authorization", "Bearer " <> @token} in headers
-    assert_receive {:github_request, :get, "https://api.github.com/repos/aroakpm-svg/aroak-central-brain", ^headers}
+    assert_receive {:github_request, :get, "https://api.github.com/repos/aroakpm-svg/aroak-central-brain", ^headers, false}
 
-    assert_receive {:github_request, :get, "https://api.github.com/repos/aroakpm-svg/aroak-central-brain/git/ref/heads/main", ^headers}
+    assert_receive {:github_request, :get, "https://api.github.com/repos/aroakpm-svg/aroak-central-brain/git/ref/heads/main", ^headers, false}
   end
 
   test "normalizes an unauthorized GitHub response" do
@@ -81,6 +81,39 @@ defmodule SymphonyElixir.GitHubAuthorityClientTest do
                expected_actor: @actor,
                request_fun: authority_request_fun(self(), push?: false)
              )
+  end
+
+  test "keeps redirects fail closed without following them" do
+    request_fun = fn request ->
+      send(self(), {:github_redirect, Keyword.get(request, :redirect)})
+      {:ok, %{status: 302, body: %{}}}
+    end
+
+    assert {:error, :github_unavailable} =
+             Client.verify(approved_profile(), credential(approved_profile()),
+               expected_actor: @actor,
+               request_fun: request_fun
+             )
+
+    assert_receive {:github_redirect, false}
+  end
+
+  test "accepts only full hexadecimal branch head SHAs" do
+    assert {:ok, %{head_sha: sixty_four_sha}} =
+             Client.verify(approved_profile(), credential(approved_profile()),
+               expected_actor: @actor,
+               request_fun: authority_request_fun(self(), head_sha: String.duplicate("a", 64))
+             )
+
+    assert sixty_four_sha == String.duplicate("a", 64)
+
+    for invalid_sha <- ["a1b2c3d4e5f6", String.duplicate("a", 39), String.duplicate("g", 40)] do
+      assert {:error, :github_response_invalid} =
+               Client.verify(approved_profile(), credential(approved_profile()),
+                 expected_actor: @actor,
+                 request_fun: authority_request_fun(self(), head_sha: invalid_sha)
+               )
+    end
   end
 
   test "does not expose the credential header or raw failure body outside the request boundary" do
@@ -132,12 +165,14 @@ defmodule SymphonyElixir.GitHubAuthorityClientTest do
     actor = Keyword.get(overrides, :actor, @actor)
     pull? = Keyword.get(overrides, :pull?, true)
     push? = Keyword.get(overrides, :push?, true)
+    head_sha = Keyword.get(overrides, :head_sha, @head_sha)
 
     fn request ->
       method = Keyword.fetch!(request, :method)
       url = Keyword.fetch!(request, :url)
       headers = Keyword.fetch!(request, :headers)
-      send(parent, {:github_request, method, url, headers})
+      redirect = Keyword.get(request, :redirect)
+      send(parent, {:github_request, method, url, headers, redirect})
 
       case url do
         "https://api.github.com/user" ->
@@ -158,7 +193,7 @@ defmodule SymphonyElixir.GitHubAuthorityClientTest do
           {:ok,
            %{
              status: 200,
-             body: %{"ref" => "refs/heads/main", "object" => %{"sha" => @head_sha}}
+             body: %{"ref" => "refs/heads/main", "object" => %{"sha" => head_sha}}
            }}
 
         _other ->

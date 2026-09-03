@@ -9,6 +9,7 @@ defmodule SymphonyElixir.GitHubAuthorityClient do
   alias SymphonyElixir.GitHubCredentialResolver.Credential
 
   @github_api "https://api.github.com"
+  @full_sha ~r/\A(?:[0-9a-fA-F]{40}|[0-9a-fA-F]{64})\z/
   @approved_profiles [
     %{
       key: "central-brain",
@@ -162,7 +163,7 @@ defmodule SymphonyElixir.GitHubAuthorityClient do
     with {:ok, %{"ref" => ref, "object" => %{"sha" => sha}}} <-
            github_get(request_fun, head_url(profile, branch), headers),
          true <- ref == "refs/heads/" <> branch,
-         true <- valid_text?(sha) do
+         true <- full_sha?(sha) do
       {:ok, sha}
     else
       {:error, reason} -> {:error, reason}
@@ -173,7 +174,7 @@ defmodule SymphonyElixir.GitHubAuthorityClient do
 
   defp github_get(request_fun, url, headers) do
     request_fun
-    |> invoke_request(method: :get, url: url, headers: headers)
+    |> invoke_request(method: :get, url: url, headers: headers, redirect: false)
     |> classify_response()
   end
 
@@ -202,4 +203,7 @@ defmodule SymphonyElixir.GitHubAuthorityClient do
 
   defp valid_text?(value) when is_binary(value), do: byte_size(String.trim(value)) > 0
   defp valid_text?(_value), do: false
+
+  defp full_sha?(sha) when is_binary(sha), do: Regex.match?(@full_sha, sha)
+  defp full_sha?(_sha), do: false
 end
