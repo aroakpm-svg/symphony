@@ -1,0 +1,259 @@
+# ARO-196 Canonical Credential Resolver and GitHub Preflight Design
+
+**Date:** 2026-09-03
+**Status:** Proposed for human review
+**Work item:** ARO-196 / ARO-171B
+
+## Purpose
+
+Implement one canonical, fail-closed GitHub credential-resolution and authority-preflight path for
+Symphony's approved multi-project workers. The implementation consumes the ARO-195 decision: a
+dedicated GitHub App/Bot identity, short-lived installation credentials, an explicit repository
+allowlist, and least-privilege permissions.
+
+This work does not create a GitHub App, installation, private key, token, machine credential, or
+scheduled task. ARO-197 owns provisioning, three-machine rollout, rotation/revocation smoke, and
+rollback. ARO-285 owns the final live multi-project acceptance.
+
+## Confirmed Problem
+
+The current multi-project dispatch path performs `ProjectRepoPreflight.check/1` before claim and
+workspace creation, but that preflight invokes ambient `gh`. The selected project credential is not
+resolved until `AgentRunner` starts after claim. This ordering has three consequences:
+
+1. preflight can prove the human desktop credential rather than the background worker identity;
+2. competing `GH_TOKEN`, `GITHUB_TOKEN`, Git Credential Manager, GitHub CLI, or WSL sources are not
+   rejected by one canonical policy; and
+3. a successful Windows `gh` probe can be incorrectly treated as evidence for Han's WSL runtime.
+
+Passing a credential through orchestrator state would fix the ordering symptom but violate the
+secret-lifetime boundary. The root correction is to resolve and validate a fresh credential at each
+effect boundary without retaining it.
+
+## ARO-195 Decision Consumed by This Design
+
+- Canonical automation identity: dedicated GitHub App/Bot, distinct from the human
+  `aroakpm-svg` identity.
+- Approved repositories:
+  - `aroakpm-svg/symphony`
+  - `aroakpm-svg/aroak-central-brain`
+  - `aroakpm-svg/aroak-project-management`
+- Baseline permissions: Metadata read, Contents read/write, Pull requests read/write, Checks read.
+- Administration, Deployments, Issues, Members, Secrets, and Actions administration are denied by
+  default. Workflow write is not assumed.
+- Installation credentials are short-lived and resolved on demand.
+- Ambient or competing credential sources fail closed.
+- Credential identity and authority are proven inside the actual worker environment.
+
+## Scope
+
+### In scope
+
+- A canonical source contract that accepts only an approved `credential_ref` and returns one
+  short-lived credential result.
+- A concrete runtime resolver boundary selected by trusted application configuration, not by
+  `WORKFLOW.md` or issue content.
+- Secret-safe validation of credential source uniqueness, validity, expected actor, repository
+  allowlist, read/push authority, canonical repository/default branch/head, checkout remote, and
+  writable Git metadata.
+- Pre-claim credential/authority validation using a fresh credential that is discarded immediately.
+- Post-claim worker preparation using a newly resolved credential; no credential crosses the claim
+  or orchestrator-state boundary.
+- Explicit typed outcomes for 401, 403, unexpected actor, source conflict, missing source, wrong
+  repository/remote, insufficient authority, remote-head drift, and unwritable Git metadata.
+- Regression tests and secret-leak tests for local and worker-host-aware execution boundaries.
+- Operator and specification documentation for the resolver interface and ARO-197 handoff.
+
+### Out of scope
+
+- GitHub App/Bot creation, installation, private-key generation, credential storage, or token
+  persistence.
+- Selecting or implementing a vendor-specific secret manager.
+- Machine rollout, scheduled-task changes, WSL package installation, worker startup, rotation,
+  revocation, rollback, or live smoke.
+- Production, deployment, billing, repository-administration changes, or workflow permission.
+- A second scheduler, claim service, capacity pool, or durable secret cache.
+
+## Architecture
+
+### 1. Canonical source boundary
+
+Add a `GitHubCredentialResolver` domain boundary. It receives an immutable
+`ProjectExecutionContext` (or the equivalent approved profile inputs) and trusted runtime options.
+The trusted source is configured outside `WORKFLOW.md` as a module/function supplied by the host
+packaging layer.
+
+The source contract returns exactly one result bound to the requested reference:
+
+```elixir
+{:ok, %{credential_ref: ref, token: opaque_binary, expires_at: datetime_or_nil}}
+```
+
+or a typed non-secret error. The resolver rejects missing sources, multiple/competing sources,
+reference mismatch, blank/NUL-bearing material, expired material, and unapproved references. It
+never returns the token inside an error or receipt.
+
+ARO-197 may later install a source implementation that exchanges GitHub App material for a
+short-lived installation token. ARO-196 defines and tests the consuming contract but does not
+perform that provisioning.
+
+### 2. Credential-scoped GitHub client
+
+Add a small GitHub authority client that receives the resolved credential only as a call argument.
+It sends the credential in the immediate request authorization header, disables ambient `gh`/Git
+credential discovery, parses only the required fields, and drops response bodies from failures.
+
+The client verifies:
+
+- authenticated actor equals the configured expected automation actor;
+- target repository is in the compiled/trusted allowlist and matches the approved profile;
+- repository metadata matches the canonical full name and default branch;
+- repository permission proves pull and push without performing a write;
+- default-branch head is a valid SHA and matches the head used by subsequent preparation.
+
+HTTP 401 and 403 remain distinct typed outcomes. Malformed responses, redirects to an unexpected
+host, timeouts, and transport failures are non-secret typed failures.
+
+### 3. Pre-claim authority gate
+
+Replace the ambient `gh` portion of multi-project preflight with a credential-scoped authority gate:
+
+```text
+approved profile
+  -> fresh canonical resolve
+  -> actor validation
+  -> repository allowlist and permission validation
+  -> canonical default-branch HEAD and quality-contract validation
+  -> discard credential
+  -> existing capacity and atomic claim
+```
+
+Only secret-free receipt fields may flow back to Orchestrator: profile key, repository, actor label,
+permission booleans, branch, head SHA, and checked contract names. The credential and authorization
+header must never enter the issue, dispatch candidate, retry entry, health event, log, or process
+dictionary.
+
+Transient transport/unavailability failures retain retry behavior. Policy/identity/authority
+failures release or block according to explicit classification; unknown errors fail closed.
+
+### 4. Post-claim execution gate
+
+After claim, `AgentRunner` resolves a new short-lived credential for the selected immutable
+execution context. It does not reuse the preflight credential. Before hooks or Codex start, the
+worker-side gate revalidates reference, actor, repository authority, canonical checkout, origin,
+remote HEAD, and `.git` writability in the actual local/WSL/SSH execution environment.
+
+On success, the existing `ProjectCredentialProvider` converts the validated material into the
+minimal subprocess environment (normally `GH_TOKEN`) and the existing
+`SubprocessEnvironment` isolation passes it only to the selected Git/readiness/hook/Codex child
+processes. On failure, no effect starts and the hard blocker contains only a typed safe reason.
+
+Remote execution must use a worker-aware source supplied on that host. A credential proven on the
+controller cannot authorize an SSH/WSL worker.
+
+### 5. Checkout and Git metadata validation
+
+The worker-side preflight composes with the existing workspace/readiness checks instead of creating
+a second clone path. It verifies:
+
+- checkout is the expected namespaced project workspace;
+- `origin` canonicalizes to the approved repository;
+- current branch and default-branch head match the bound execution context;
+- `.git` is a real, non-reparse metadata location under the approved workspace;
+- the runtime principal can write Git metadata using a reversible/no-content probe or an existing
+  platform capability check that leaves no artifact.
+
+Any head change between authority receipt and workspace readiness invalidates the receipt and fails
+closed; it is not silently rebound.
+
+## Error Model
+
+The public error surface is bounded and secret-safe. Proposed categories:
+
+- `credential_source_unconfigured`
+- `credential_source_missing`
+- `credential_source_conflict`
+- `credential_reference_mismatch`
+- `credential_expired`
+- `github_unauthorized`
+- `github_forbidden`
+- `github_identity_missing`
+- `github_unexpected_actor`
+- `github_repository_not_allowed`
+- `github_repository_mismatch`
+- `github_read_authority_missing`
+- `github_push_authority_missing`
+- `github_default_branch_mismatch`
+- `github_remote_head_invalid`
+- `github_remote_head_changed`
+- `git_checkout_mismatch`
+- `git_remote_mismatch`
+- `git_metadata_unwritable`
+- `credential_resolver_failed`
+
+No category includes raw response bodies, headers, token fragments, credential paths, command
+output, or exception text. Secret-safety filtering occurs before logging, truncation, and receipt
+construction.
+
+## Configuration and Trust Boundary
+
+`WORKFLOW.md` continues to contain only approved opaque `credential_ref` values. It must not select
+an executable, token variable, key path, secret manager, actor override, or repository permission.
+
+Trusted application configuration supplies:
+
+- resolver implementation;
+- expected automation actor;
+- approved repository allowlist;
+- request timeout and GitHub API base fixed to `https://api.github.com` in normal operation.
+
+The built-in default remains fail closed. Test-only callbacks remain injectable through explicit
+options, but production startup must not silently fall back to ambient `gh`, environment tokens,
+Git Credential Manager, or another profile's result.
+
+## Testing
+
+Use test-driven development for each boundary.
+
+1. Resolver contract tests: exact reference, missing/conflicting sources, expiry, malformed results,
+   exceptions, and secret non-disclosure.
+2. GitHub authority client tests: 401, 403, malformed responses, expected/unexpected actor,
+   allowlist, read/push permissions, branch/head validation, and header containment.
+3. Orchestrator tests: canonical preflight occurs before capacity/claim; credentials are absent from
+   state, retry, health, and logs; transient/permanent classifications are explicit.
+4. AgentRunner tests: fresh post-claim resolution, no reuse of preflight material, worker-host-aware
+   resolution, no hooks/Codex before validation, and immediate subprocess-only injection.
+5. Workspace tests: checkout, origin, head, and `.git` writability checks fail closed without leaving
+   probe artifacts.
+6. Secret safety tests: credential-shaped values across every source/client failure never appear in
+   messages, receipts, logs, diagnostics, state inspection, or persisted files.
+7. Compatibility tests: legacy single-project operation remains unchanged; approved multi-project
+   behavior retains existing claim/capacity/retry semantics.
+
+Run focused tests during implementation, then `mix specs.check`, compile with warnings as errors,
+Credo, Dialyzer, diff/secret scans, and authoritative Linux `make all`. The current Windows baseline
+on unmodified `main` is 1059/1076 passed, 13 skipped, and 17 failures due to known CRLF-sensitive,
+WSL-dependent, and watchdog-timeout cases; those failures are not accepted as regressions or as
+evidence of ARO-196 correctness.
+
+## Acceptance Criteria
+
+- AC-1: An approved reference resolves through exactly one trusted source; ambient or competing
+  sources fail closed.
+- AC-2: The credential is validated against the expected automation actor and approved repository
+  read/push authority before claim and again inside the actual worker boundary before effects.
+- AC-3: Repository, checkout, origin, branch, remote head, and writable Git metadata remain bound to
+  the approved project execution context.
+- AC-4: No credential, header, raw failure body, or secret-derived detail enters application state,
+  retries, health, logs, workspace state, receipts, or durable files.
+- AC-5: Legacy single-project behavior is unchanged, while unauthorized or ambiguous multi-project
+  execution fails closed with typed non-secret outcomes.
+- AC-6: Focused regression suites and repository quality gates converge on the latest head; ARO-197
+  can provide a host source without changing Symphony's resolver/preflight policy.
+
+## Rollout Handoff
+
+After ARO-196 merges, ARO-197 may provision the approved GitHub App/Bot and install one canonical
+host source on Amy, Matt, and Han. It must verify actual runtime actor/source consistency,
+rotation/revocation, old-credential rejection, rollback, and masked receipts. No provisioning action
+is authorized by this design or by ARO-196.
