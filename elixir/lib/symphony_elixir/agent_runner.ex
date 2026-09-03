@@ -5,6 +5,7 @@ defmodule SymphonyElixir.AgentRunner do
 
   require Logger
   alias SymphonyElixir.{ClaimService, Codex.AppServer, CodexExecutionInputs, Config, Linear.Issue}
+  alias SymphonyElixir.{GitCheckoutPreflight, GitHubAuthorityClient}
   alias SymphonyElixir.{ProjectCredentialProvider, ProjectExecutionContext}
   alias SymphonyElixir.{PromptBuilder, ReadinessGate, SubprocessEnvironment, Tracker, Workspace}
 
@@ -21,6 +22,17 @@ defmodule SymphonyElixir.AgentRunner do
   def continue_with_issue_for_test(%Issue{} = issue, issue_state_fetcher)
       when is_function(issue_state_fetcher, 1) do
     continue_with_issue?(issue, issue_state_fetcher)
+  end
+
+  @doc false
+  @spec post_claim_gate_for_test(ProjectExecutionContext.t(), Path.t(), keyword()) ::
+          {:ok, map()} | {:error, term()}
+  def post_claim_gate_for_test(%ProjectExecutionContext{} = context, workspace, opts)
+      when is_binary(workspace) and is_list(opts) do
+    with {:ok, credential, authority} <- fresh_worker_authority(context, opts),
+         :ok <- verify_worker_checkout(context, workspace, credential, authority, opts) do
+      ProjectCredentialProvider.environment(credential)
+    end
   end
 
   @spec run(Issue.t(), pid() | nil, keyword()) :: :ok | no_return()
@@ -45,17 +57,17 @@ defmodule SymphonyElixir.AgentRunner do
 
     with {:ok, execution_context} <- execution_context(issue, opts),
          {:ok, launch_env} <- codex_launch_environment(issue, execution_context),
-         {:ok, credential_env} <- credential_environment(execution_context, opts),
-         project_env <- Map.drop(credential_env, ["OPENAI_API_KEY"]),
-         {:ok, process_env} <- subprocess_environment(project_env, execution_context, launch_env) do
+         {:ok, credential, authority} <-
+           fresh_worker_authority(execution_context, Keyword.put(opts, :worker_host, worker_host)) do
       run_with_execution_context(
         issue,
         codex_update_recipient,
         opts,
         worker_host,
         execution_context,
-        process_env,
-        credential_env
+        launch_env,
+        credential,
+        authority
       )
     else
       {:error, {:multiple_codex_model_labels, labels}} ->
@@ -84,28 +96,77 @@ defmodule SymphonyElixir.AgentRunner do
          opts,
          worker_host,
          execution_context,
-         process_env,
-         credential_env
+         launch_env,
+         credential,
+         authority
        ) do
-    codex_env = Map.take(credential_env, ["OPENAI_API_KEY"])
+    {:ok, preparation_env} = subprocess_environment(%{}, execution_context, launch_env)
 
-    runtime_opts =
-      [
-        env: process_env,
-        sensitive_env_values: Map.values(credential_env),
-        codex_env: codex_env,
-        execution_context: execution_context
-      ]
-      |> maybe_put_subprocess_home_paths(execution_context)
+    runtime_opts = [
+      env: preparation_env,
+      sensitive_env_values: [],
+      codex_env: %{},
+      execution_context: execution_context
+    ]
+
+    runtime_opts = maybe_put_subprocess_home_paths(runtime_opts, execution_context)
 
     preparation_opts = Keyword.put(runtime_opts, :attest_preparation_errors, true)
 
     case Workspace.prepare_for_issue(issue, worker_host, execution_context, preparation_opts) do
       {:ok, preparation} ->
-        run_prepared_issue(preparation, issue, codex_update_recipient, opts, worker_host, runtime_opts)
+        finish_worker_preparation(
+          preparation,
+          issue,
+          codex_update_recipient,
+          opts,
+          worker_host,
+          {execution_context, launch_env, credential, authority, runtime_opts}
+        )
 
       {:error, reason} ->
         handle_preparation_error(reason, runtime_opts, issue, codex_update_recipient, worker_host)
+    end
+  end
+
+  defp finish_worker_preparation(
+         preparation,
+         issue,
+         recipient,
+         opts,
+         worker_host,
+         {execution_context, launch_env, credential, authority, runtime_opts}
+       ) do
+    checkout_opts =
+      opts
+      |> Keyword.put(:worker_host, worker_host)
+      |> Keyword.put(:workspace_attestation, preparation.workspace_attestation)
+
+    with :ok <-
+           verify_worker_checkout(
+             execution_context,
+             preparation.path,
+             credential,
+             authority,
+             checkout_opts
+           ),
+         {:ok, credential_env} <- credential_environment(credential),
+         {:ok, process_env} <- subprocess_environment(credential_env, execution_context, launch_env) do
+      effect_opts =
+        runtime_opts
+        |> Keyword.put(:env, process_env)
+        |> Keyword.put(:sensitive_env_values, Map.values(credential_env))
+
+      run_prepared_issue(preparation, issue, recipient, opts, worker_host, effect_opts)
+    else
+      {:error, reason} ->
+        handle_workspace_preflight_failure(
+          recipient,
+          issue,
+          worker_host,
+          preparation.path,
+          {:project_credential_unavailable, reason}
+        )
     end
   end
 
@@ -268,13 +329,72 @@ defmodule SymphonyElixir.AgentRunner do
     end
   end
 
-  defp credential_environment(nil, _opts), do: {:ok, %{}}
+  defp fresh_worker_authority(nil, _opts), do: {:ok, nil, nil}
 
-  defp credential_environment(%ProjectExecutionContext{} = context, opts) do
-    ProjectCredentialProvider.resolve(context,
-      credential_provider: Keyword.get(opts, :credential_provider)
-    )
+  defp fresh_worker_authority(%ProjectExecutionContext{} = context, opts) do
+    with {:ok, credential} <- ProjectCredentialProvider.resolve(context, resolver_opts(opts)),
+         {:ok, authority} <- GitHubAuthorityClient.verify(authority_profile(context), credential, authority_opts(opts)) do
+      {:ok, credential, authority}
+    end
   end
+
+  defp verify_worker_checkout(nil, _workspace, nil, nil, _opts), do: :ok
+
+  defp verify_worker_checkout(%ProjectExecutionContext{} = context, workspace, credential, authority, opts) do
+    checkout_opts =
+      opts
+      |> Keyword.take([
+        :worker_host,
+        :workspace_root,
+        :workspace_attestation,
+        :workspace_attestor,
+        :workspace_guard,
+        :metadata_inspector,
+        :metadata_probe
+      ])
+      |> Keyword.put(:expected_head_sha, authority.head_sha)
+      |> maybe_put_checkout_runner(Keyword.get(opts, :git_checkout_command_runner))
+
+    case GitCheckoutPreflight.check(context, workspace, credential, checkout_opts) do
+      {:ok, _receipt} -> :ok
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp credential_environment(nil), do: {:ok, %{}}
+  defp credential_environment(credential), do: ProjectCredentialProvider.environment(credential)
+
+  defp resolver_opts(opts) do
+    case Keyword.get(opts, :worker_host) do
+      nil ->
+        Keyword.take(opts, [:credential_source])
+
+      worker_host when is_binary(worker_host) ->
+        case Keyword.get(opts, :worker_credential_source) do
+          source when is_function(source, 1) -> [credential_source: source]
+          _missing -> [credential_source: nil]
+        end
+    end
+  end
+
+  defp authority_opts(opts), do: Keyword.take(opts, [:expected_actor, :request_fun])
+
+  defp authority_profile(%ProjectExecutionContext{} = context) do
+    %{
+      key: context.profile_key,
+      linear_project_id: context.linear_project_id,
+      repository: context.repository,
+      canonical_branch: context.canonical_branch,
+      workspace_namespace: context.workspace_namespace,
+      credential_ref: context.credential_ref,
+      environment: context.environment
+    }
+  end
+
+  defp maybe_put_checkout_runner(opts, runner) when is_function(runner, 3),
+    do: Keyword.put(opts, :command_runner, runner)
+
+  defp maybe_put_checkout_runner(opts, _runner), do: opts
 
   defp codex_launch_environment(%Issue{}, nil), do: {:ok, %{}}
 
@@ -405,7 +525,29 @@ defmodule SymphonyElixir.AgentRunner do
               :credential_provider_unconfigured,
               :credential_not_found,
               :credential_ambiguous,
+              :credential_source_unconfigured,
+              :credential_source_missing,
+              :credential_source_conflict,
               :credential_reference_mismatch,
+              :credential_expired,
+              :credential_resolver_failed,
+              :github_unauthorized,
+              :github_forbidden,
+              :github_unexpected_actor,
+              :github_repository_not_allowed,
+              :github_pull_authority_missing,
+              :github_push_authority_missing,
+              :github_response_invalid,
+              :github_authority_invalid,
+              :github_unavailable,
+              :git_checkout_invalid,
+              :git_checkout_mismatch,
+              :git_remote_mismatch,
+              :git_branch_mismatch,
+              :github_remote_head_changed,
+              :git_metadata_missing,
+              :git_metadata_unsafe,
+              :git_metadata_unwritable,
               :invalid_credential_environment,
               :credential_provider_failed,
               :missing_project_profile,

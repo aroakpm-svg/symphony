@@ -1,7 +1,133 @@
 defmodule SymphonyElixir.ReadinessGateAgentRunnerTest do
   use SymphonyElixir.TestSupport
 
-  @central_project_id "11111111-1111-4111-8111-111111111111"
+  @central_project_id "d0acfb71-f68c-4a9f-8a1a-477265d3c3ec"
+
+  test "post-claim gate freshly verifies authority before checkout and only then returns child env" do
+    root = Path.join(System.tmp_dir!(), "aro196-worker-gate-#{System.unique_integer([:positive])}")
+    workspace = Path.join([root, "central-brain", "ARO-196"])
+    File.mkdir_p!(workspace)
+    on_exit(fn -> File.rm_rf(root) end)
+
+    token = "fresh-worker-#{System.unique_integer([:positive, :monotonic])}"
+    preclaim_token = "discarded-preclaim-#{System.unique_integer([:positive, :monotonic])}"
+    head = String.duplicate("a", 40)
+    context = aro196_context()
+    Process.put(:aro196_resolution_count, 1)
+    Process.put(:aro196_preclaim_token, preclaim_token)
+
+    source = fn "github-central-brain" ->
+      Process.put(:aro196_resolution_count, Process.get(:aro196_resolution_count) + 1)
+      Process.put(:aro196_resolved, true)
+      {:ok, %{credential_ref: "github-central-brain", token: token, expires_at: nil}}
+    end
+
+    request = fn request ->
+      assert Process.get(:aro196_resolved)
+      assert {"authorization", "Bearer " <> token} in request[:headers]
+
+      response =
+        case request[:url] do
+          "https://api.github.com/user" ->
+            %{"login" => "aroak-automation[bot]"}
+
+          "https://api.github.com/repos/aroakpm-svg/aroak-central-brain" ->
+            %{"full_name" => context.repository, "default_branch" => "main", "permissions" => %{"pull" => true, "push" => true}}
+
+          "https://api.github.com/repos/aroakpm-svg/aroak-central-brain/git/ref/heads/main" ->
+            Process.put(:aro196_authority_verified, true)
+            %{"ref" => "refs/heads/main", "object" => %{"sha" => head}}
+        end
+
+      {:ok, %{status: 200, body: response}}
+    end
+
+    runner = fn args, credential, _runtime ->
+      assert Process.get(:aro196_authority_verified)
+      assert credential.token == token
+
+      case args do
+        ["remote", "get-url", "origin"] -> {:ok, "https://github.com/aroakpm-svg/aroak-central-brain.git\n"}
+        ["branch", "--show-current"] -> {:ok, "main\n"}
+        ["rev-parse", "--verify", "HEAD^{commit}"] -> {:ok, head <> "\n"}
+        ["ls-remote", "--heads", "origin", "refs/heads/main"] -> {:ok, head <> "\trefs/heads/main\n"}
+      end
+    end
+
+    assert {:ok, %{"GH_TOKEN" => ^token}} =
+             AgentRunner.post_claim_gate_for_test(context, workspace,
+               credential_source: source,
+               expected_actor: "aroak-automation[bot]",
+               request_fun: request,
+               workspace_root: root,
+               git_checkout_command_runner: runner,
+               metadata_inspector: fn _path -> {:ok, :directory} end,
+               metadata_probe: fn _path -> :ok end
+             )
+
+    assert Process.get(:aro196_resolution_count) == 2
+    refute token == Process.get(:aro196_preclaim_token)
+  end
+
+  test "post-claim remote checkout uses only the selected worker seams" do
+    token = "remote-worker-#{System.unique_integer([:positive, :monotonic])}"
+    head = String.duplicate("b", 40)
+    context = aro196_context()
+    workspace = "/workers/central-brain/ARO-196"
+    attestation = %{kind: :remote, path: workspace, identity: "worker-id"}
+    gate_opts = canonical_gate_options(token, head)
+
+    runner = fn args, credential, runtime ->
+      assert credential.token == token
+      assert runtime[:worker_host] == "han-wsl"
+      assert runtime[:workspace_attestation] == attestation
+
+      case args do
+        ["remote", "get-url", "origin"] -> {:ok, "git@github.com:aroakpm-svg/aroak-central-brain.git\n"}
+        ["branch", "--show-current"] -> {:ok, "main\n"}
+        ["rev-parse", "--verify", "HEAD^{commit}"] -> {:ok, head <> "\n"}
+        ["ls-remote", "--heads", "origin", "refs/heads/main"] -> {:ok, head <> "\trefs/heads/main\n"}
+      end
+    end
+
+    assert {:ok, %{"GH_TOKEN" => ^token}} =
+             AgentRunner.post_claim_gate_for_test(context, workspace,
+               worker_credential_source: gate_opts[:credential_source],
+               expected_actor: gate_opts[:expected_actor],
+               request_fun: gate_opts[:request_fun],
+               worker_host: "han-wsl",
+               workspace_root: "/workers",
+               workspace_attestation: attestation,
+               workspace_attestor: fn "ARO-196", "han-wsl", ^context -> {:ok, attestation} end,
+               workspace_guard: fn ^workspace, "han-wsl", ^context, ^attestation -> :ok end,
+               git_checkout_command_runner: runner,
+               metadata_inspector: fn _path, runtime ->
+                 assert runtime[:worker_host] == "han-wsl"
+                 {:ok, :directory}
+               end,
+               metadata_probe: fn _path, runtime ->
+                 assert runtime[:worker_host] == "han-wsl"
+                 :ok
+               end
+             )
+  end
+
+  test "post-claim authority failures are bounded and stop before worker checkout" do
+    secret = "authority-body-secret-#{System.unique_integer([:positive, :monotonic])}"
+    source = fn ref -> {:ok, %{credential_ref: ref, token: secret, expires_at: nil}} end
+    request = fn _request -> {:ok, %{status: 403, body: secret}} end
+    runner = fn _args, _credential, _runtime -> flunk("checkout must not run") end
+
+    assert {:error, :github_forbidden} =
+             AgentRunner.post_claim_gate_for_test(aro196_context(), "unused",
+               credential_source: source,
+               expected_actor: "aroak-automation[bot]",
+               request_fun: request,
+               git_checkout_command_runner: runner
+             )
+
+    refute inspect(:github_forbidden) =~ secret
+  end
 
   test "credential values emitted by a hook are redacted from failures before truncation" do
     root = Path.join(System.tmp_dir!(), "aro286-hook-redaction-#{System.unique_integer([:positive])}")
@@ -131,7 +257,7 @@ defmodule SymphonyElixir.ReadinessGateAgentRunnerTest do
 
     workspace_root = Path.join(test_root, "remote-shaped-workspaces")
     private_root = Path.join([workspace_root, "central-brain", ".symphony-subprocess"])
-    issue = profiled_issue("ARO-286-REMOTE-HOME", "codex/aro-286-remote-home", "owner/repository")
+    issue = profiled_issue("ARO-286-REMOTE-HOME", "codex/aro-286-remote-home", "aroakpm-svg/aroak-central-brain")
     secret = "opaque-remote-home-#{System.unique_integer([:positive, :monotonic])}"
     previous_runner = Application.get_env(:symphony_elixir, :ssh_command_runner)
 
@@ -154,14 +280,14 @@ defmodule SymphonyElixir.ReadinessGateAgentRunnerTest do
 
     write_workflow_file!(Workflow.workflow_file_path(), workspace_root: workspace_root)
 
-    credential_provider = fn "github-central-brain" ->
-      {:ok, {"github-central-brain", %{"GH_TOKEN" => secret}}}
-    end
+    gate_opts = canonical_gate_options(secret, String.duplicate("a", 40))
 
     assert_raise RuntimeError, ~r/remote_credential_environment_unsupported/, fn ->
       AgentRunner.run(issue, nil,
         worker_host: "worker-credential",
-        credential_provider: credential_provider
+        worker_credential_source: gate_opts[:credential_source],
+        expected_actor: gate_opts[:expected_actor],
+        request_fun: gate_opts[:request_fun]
       )
     end
 
@@ -170,7 +296,7 @@ defmodule SymphonyElixir.ReadinessGateAgentRunnerTest do
     refute_received :remote_home_ssh_called
   end
 
-  test "safe Git defaults ignore ambient helpers and an approved provider can select one" do
+  test "safe Git defaults ignore ambient helpers and canonical credentials cannot select one" do
     root = Path.join(System.tmp_dir!(), "aro286-git-helper-#{System.unique_integer([:positive])}")
     workspace = Path.join(root, "workspace")
     ambient_marker = Path.join(root, "ambient.marker")
@@ -240,38 +366,9 @@ defmodule SymphonyElixir.ReadinessGateAgentRunnerTest do
     refute File.exists?(local_marker)
     refute File.exists?(selected_marker)
 
-    selected_parameters =
-      "'credential.helper=' 'credential.helper=!#{shell_path(selected_helper)}'"
-
-    provider = fn "github-central-brain" ->
-      {:ok,
-       {"github-central-brain",
-        %{
-          "GIT_CONFIG_PARAMETERS" => selected_parameters
-        }}}
-    end
-
-    issue = profiled_issue("ARO-286-GIT-SELECTED", "codex/aro-286-git-selected", "owner/repository")
-    assert {:ok, context} = SymphonyElixir.ProjectExecutionContext.from_issue(issue)
-
-    assert {:ok, approved_environment} =
-             SymphonyElixir.ProjectCredentialProvider.resolve(context,
-               credential_provider: provider
-             )
-
-    provider_env = Map.merge(safe_env, approved_environment)
-
-    assert :ok =
-             Workspace.run_before_run_hook(workspace, "ARO-286-GIT-SELECTED", nil,
-               env: provider_env,
-               sensitive_env_values: [selected_secret]
-             )
-
     refute File.exists?(ambient_marker)
     refute File.exists?(local_marker)
-    assert File.read!(selected_marker) == "selected"
-    assert File.read!(credential_output) =~ "username=selected"
-    assert File.read!(credential_output) =~ "password=#{selected_secret}"
+    refute File.exists?(selected_marker)
   end
 
   test "profile context and its environment reach workspace hooks and Codex runtime settings only" do
@@ -309,7 +406,7 @@ defmodule SymphonyElixir.ReadinessGateAgentRunnerTest do
 
     Enum.each(ambient_environment, fn {key, value} -> System.put_env(key, value) end)
 
-    issue = %{profiled_issue("ARO-286", "codex/aro-286", fixture.remote) | labels: ["model:gpt-5.5"]}
+    issue = %{profiled_issue("ARO-286", "codex/aro-286", "aroakpm-svg/aroak-central-brain") | labels: ["model:gpt-5.5"]}
     after_create_marker = shell_path(Path.join(fixture.root, "profile-after-create.marker"))
     before_run_marker = shell_path(Path.join(fixture.root, "profile-before-run.marker"))
     after_run_marker = shell_path(Path.join(fixture.root, "profile-after-run.marker"))
@@ -335,7 +432,11 @@ defmodule SymphonyElixir.ReadinessGateAgentRunnerTest do
       workspace_root: fixture.workspace_root,
       codex_executable: "/opt/trusted/codex",
       codex_default_model: "gpt-5.4-mini",
-      hook_after_create: "git clone #{shell_escape(shell_path(fixture.remote))} . && printf '%s' \"$#{env_key}\" > #{shell_escape(after_create_marker)}",
+      hook_after_create:
+        "git clone #{shell_escape(shell_path(fixture.remote))} . && " <>
+          "git remote set-url origin https://github.com/aroakpm-svg/aroak-central-brain.git && " <>
+          "git config url.#{shell_escape(shell_path(fixture.remote))}.insteadOf https://github.com/aroakpm-svg/aroak-central-brain.git && " <>
+          "printf '%s' \"$#{env_key}\" > #{shell_escape(after_create_marker)}",
       hook_before_run:
         "printf '%s' \"$#{env_key}\" > #{shell_escape(before_run_marker)} && " <>
           ~s/printf '%s|%s|%s|%s|%s|%s|%s|%s' "$GITHUB_TOKEN" "$LINEAR_API_KEY" "$NPM_TOKEN" "$NODE_AUTH_TOKEN" "$SSH_AUTH_SOCK" "$SSH_AGENT_PID" "$GIT_SSH_COMMAND" "$OPENAI_API_KEY" > #{shell_escape(ambient_marker)} && / <>
@@ -343,16 +444,7 @@ defmodule SymphonyElixir.ReadinessGateAgentRunnerTest do
       hook_after_run: "printf '%s' \"$#{env_key}\" > #{shell_escape(after_run_marker)}"
     )
 
-    codex_api_key = "codex-#{System.unique_integer([:positive, :monotonic])}"
-
-    credential_provider = fn "github-central-brain" ->
-      {:ok,
-       {"github-central-brain",
-        %{
-          env_key => env_value,
-          "OPENAI_API_KEY" => codex_api_key
-        }}}
-    end
+    gate_opts = canonical_gate_options(env_value, fixture.initial_sha)
 
     codex_session_starter = fn workspace, runtime_opts ->
       send(test_pid, {:codex_runtime_settings, workspace, runtime_opts})
@@ -361,7 +453,12 @@ defmodule SymphonyElixir.ReadinessGateAgentRunnerTest do
 
     assert_raise RuntimeError, ~r/captured_runtime_settings/, fn ->
       AgentRunner.run(issue, self(),
-        credential_provider: credential_provider,
+        credential_source: gate_opts[:credential_source],
+        expected_actor: gate_opts[:expected_actor],
+        request_fun: gate_opts[:request_fun],
+        git_checkout_command_runner: checkout_runner(fixture.initial_sha, env_value),
+        metadata_inspector: fn _path -> {:ok, :directory} end,
+        metadata_probe: fn _path -> :ok end,
         codex_session_starter: codex_session_starter
       )
     end
@@ -371,7 +468,7 @@ defmodule SymphonyElixir.ReadinessGateAgentRunnerTest do
     assert normalized_path(workspace) ==
              normalized_path(Path.join([fixture.workspace_root, "central-brain", "ARO-286"]))
 
-    assert File.read!(after_create_marker) == env_value
+    assert File.read!(after_create_marker) == ""
     assert File.read!(before_run_marker) == env_value
     assert File.read!(after_run_marker) == env_value
     assert File.read!(ambient_marker) == "|||||||"
@@ -388,7 +485,7 @@ defmodule SymphonyElixir.ReadinessGateAgentRunnerTest do
     assert capability
     refute Workspace.private_home_capability_active_for_test?(capability)
     assert runtime_opts[:env][env_key] == env_value
-    assert runtime_opts[:env]["OPENAI_API_KEY"] == codex_api_key
+    assert runtime_opts[:env]["OPENAI_API_KEY"] == nil
     assert runtime_opts[:env]["GITHUB_TOKEN"] == false
     assert runtime_opts[:env]["LINEAR_API_KEY"] == false
     assert runtime_opts[:env]["NPM_TOKEN"] == false
@@ -434,7 +531,7 @@ defmodule SymphonyElixir.ReadinessGateAgentRunnerTest do
       hook_after_create: "printf hook > #{shell_escape(hook_marker)}"
     )
 
-    credential_provider = fn "github-central-brain" ->
+    credential_source = fn "github-central-brain" ->
       raise secret
     end
 
@@ -445,13 +542,13 @@ defmodule SymphonyElixir.ReadinessGateAgentRunnerTest do
 
     assert :ok =
              AgentRunner.run(issue, self(),
-               credential_provider: credential_provider,
+               credential_source: credential_source,
                codex_session_starter: codex_session_starter,
                distributed_claim: %{claim_id: "claim-286", generation: 1}
              )
 
     assert_receive {:agent_hard_blocker, "issue-ARO-286-BLOCK", blocker}
-    assert blocker.error == "project credential unavailable reason=credential_provider_failed"
+    assert blocker.error == "project credential unavailable reason=credential_resolver_failed"
     refute blocker.error =~ secret
     refute File.exists?(hook_marker)
     refute File.exists?(codex_marker)
@@ -703,6 +800,60 @@ defmodule SymphonyElixir.ReadinessGateAgentRunnerTest do
       readiness_base: :canonical,
       labels: []
     }
+  end
+
+  defp aro196_context do
+    %SymphonyElixir.ProjectExecutionContext{
+      issue_id: "issue-ARO-196",
+      issue_identifier: "ARO-196",
+      profile_key: "central-brain",
+      linear_project_id: "d0acfb71-f68c-4a9f-8a1a-477265d3c3ec",
+      repository: "aroakpm-svg/aroak-central-brain",
+      canonical_branch: "main",
+      workspace_namespace: "central-brain",
+      credential_ref: "github-central-brain",
+      environment: "local_non_production",
+      routing_revision: 1
+    }
+  end
+
+  defp canonical_gate_options(token, head) do
+    source = fn ref -> {:ok, %{credential_ref: ref, token: token, expires_at: nil}} end
+
+    request = fn request ->
+      body =
+        case request[:url] do
+          "https://api.github.com/user" ->
+            %{"login" => "aroak-automation[bot]"}
+
+          "https://api.github.com/repos/aroakpm-svg/aroak-central-brain" ->
+            %{
+              "full_name" => "aroakpm-svg/aroak-central-brain",
+              "default_branch" => "main",
+              "permissions" => %{"pull" => true, "push" => true}
+            }
+
+          "https://api.github.com/repos/aroakpm-svg/aroak-central-brain/git/ref/heads/main" ->
+            %{"ref" => "refs/heads/main", "object" => %{"sha" => head}}
+        end
+
+      {:ok, %{status: 200, body: body}}
+    end
+
+    [credential_source: source, expected_actor: "aroak-automation[bot]", request_fun: request]
+  end
+
+  defp checkout_runner(head, token) do
+    fn args, credential, _runtime ->
+      assert credential.token == token
+
+      case args do
+        ["remote", "get-url", "origin"] -> {:ok, "https://github.com/aroakpm-svg/aroak-central-brain.git\n"}
+        ["branch", "--show-current"] -> {:ok, "main\n"}
+        ["rev-parse", "--verify", "HEAD^{commit}"] -> {:ok, head <> "\n"}
+        ["ls-remote", "--heads", "origin", "refs/heads/main"] -> {:ok, head <> "\trefs/heads/main\n"}
+      end
+    end
   end
 
   defp git_null_device do
