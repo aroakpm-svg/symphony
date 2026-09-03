@@ -324,7 +324,7 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
 
       assert :ok = Workspace.finalize_private_home_capability(committed_capability)
 
-      assert {:ok, %{private_home_capability: existing_capability}} =
+      assert {:ok, %{private_home_capability: existing_capability} = existing_preparation} =
                Workspace.prepare_for_issue("ARO-196-ROLLBACK", nil, context,
                  env: environment,
                  subprocess_home_paths: paths,
@@ -332,6 +332,24 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
                )
 
       assert :ok = Workspace.rollback_failed_private_home_capability(existing_capability)
+      assert Enum.all?(private_directories(paths), &File.exists?/1)
+
+      before_remove_marker = Path.join(test_root, "before-remove.marker")
+
+      write_workflow_file!(Workflow.workflow_file_path(),
+        workspace_root: workspace_root,
+        hook_before_remove: "printf unsafe > '#{shell_path(before_remove_marker)}'"
+      )
+
+      assert :ok =
+               Workspace.rollback_failed_repository_bootstrap(
+                 context,
+                 nil,
+                 existing_preparation.workspace_attestation
+               )
+
+      refute File.exists?(existing_preparation.path)
+      refute File.exists?(before_remove_marker)
       assert Enum.all?(private_directories(paths), &File.exists?/1)
     after
       File.rm_rf(test_root)

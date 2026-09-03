@@ -6,7 +6,7 @@ defmodule SymphonyElixir.AgentRunner do
   require Logger
   alias SymphonyElixir.{ClaimService, Codex.AppServer, CodexExecutionInputs, Config, Linear.Issue}
   alias SymphonyElixir.{GitCheckoutPreflight, GitHubAuthorityClient}
-  alias SymphonyElixir.{ProjectCredentialProvider, ProjectExecutionContext}
+  alias SymphonyElixir.{ProjectCredentialProvider, ProjectExecutionContext, RepositoryBootstrap}
   alias SymphonyElixir.{PromptBuilder, ReadinessGate, SubprocessEnvironment, Tracker, Workspace}
 
   @type worker_host :: String.t() | nil
@@ -164,8 +164,19 @@ defmodule SymphonyElixir.AgentRunner do
       opts
       |> Keyword.put(:worker_host, worker_host)
       |> Keyword.put(:workspace_attestation, preparation.workspace_attestation)
+      |> Keyword.put(:private_home_capability, preparation.private_home_capability)
+      |> Keyword.put(:created_now, preparation.created_now)
+      |> Keyword.put(:expected_issue_branch, issue.branch_name)
 
     with :ok <-
+           bootstrap_worker_repository(
+             execution_context,
+             preparation,
+             credential,
+             authority,
+             checkout_opts
+           ),
+         :ok <-
            verify_worker_checkout(
              execution_context,
              preparation.path,
@@ -398,6 +409,27 @@ defmodule SymphonyElixir.AgentRunner do
     end
   end
 
+  defp bootstrap_worker_repository(nil, _preparation, nil, nil, _opts), do: :ok
+
+  defp bootstrap_worker_repository(
+         %ProjectExecutionContext{} = context,
+         preparation,
+         credential,
+         authority,
+         opts
+       ) do
+    bootstrap_opts =
+      opts
+      |> Keyword.take([
+        :worker_host,
+        :workspace_attestation,
+        :private_home_capability
+      ])
+      |> maybe_put_bootstrap_runner(Keyword.get(opts, :repository_bootstrap_command_runner))
+
+    RepositoryBootstrap.ensure(context, preparation, credential, authority, bootstrap_opts)
+  end
+
   defp verify_worker_checkout(nil, _workspace, nil, nil, _opts), do: :ok
 
   defp verify_worker_checkout(%ProjectExecutionContext{} = context, workspace, credential, authority, opts) do
@@ -410,7 +442,9 @@ defmodule SymphonyElixir.AgentRunner do
         :workspace_attestor,
         :workspace_guard,
         :metadata_inspector,
-        :metadata_probe
+        :metadata_probe,
+        :created_now,
+        :expected_issue_branch
       ])
       |> Keyword.put(:expected_head_sha, authority.head_sha)
       |> maybe_put_checkout_runner(Keyword.get(opts, :git_checkout_command_runner))
@@ -468,6 +502,11 @@ defmodule SymphonyElixir.AgentRunner do
     do: Keyword.put(opts, :command_runner, runner)
 
   defp maybe_put_checkout_runner(opts, _runner), do: opts
+
+  defp maybe_put_bootstrap_runner(opts, runner) when is_function(runner, 3),
+    do: Keyword.put(opts, :command_runner, runner)
+
+  defp maybe_put_bootstrap_runner(opts, _runner), do: opts
 
   defp codex_launch_environment(%Issue{}, nil), do: {:ok, %{}}
 
@@ -616,6 +655,7 @@ defmodule SymphonyElixir.AgentRunner do
               :github_response_invalid,
               :github_authority_invalid,
               :github_unavailable,
+              :repository_bootstrap_failed,
               :git_checkout_invalid,
               :git_checkout_mismatch,
               :git_remote_mismatch,

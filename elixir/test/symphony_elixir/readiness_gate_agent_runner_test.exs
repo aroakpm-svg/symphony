@@ -168,6 +168,7 @@ defmodule SymphonyElixir.ReadinessGateAgentRunnerTest do
                credential_source: gate_opts[:credential_source],
                expected_actor: gate_opts[:expected_actor],
                request_fun: gate_opts[:request_fun],
+               repository_bootstrap_command_runner: fn _args, _credential, _runtime -> {:ok, ""} end,
                git_checkout_command_runner: checkout_runner,
                metadata_inspector: fn _path -> {:ok, :directory} end,
                metadata_probe: fn _path -> :ok end
@@ -559,9 +560,7 @@ defmodule SymphonyElixir.ReadinessGateAgentRunnerTest do
       codex_executable: "/opt/trusted/codex",
       codex_default_model: "gpt-5.4-mini",
       hook_after_create:
-        "git clone #{shell_escape(shell_path(fixture.remote))} . && " <>
-          "git remote set-url origin https://github.com/aroakpm-svg/aroak-central-brain.git && " <>
-          "git config url.#{shell_escape(shell_path(fixture.remote))}.insteadOf https://github.com/aroakpm-svg/aroak-central-brain.git && " <>
+        "git config url.#{shell_escape(shell_path(fixture.remote))}.insteadOf https://github.com/aroakpm-svg/aroak-central-brain.git && " <>
           "printf '%s' \"$#{env_key}\" > #{shell_escape(after_create_marker)}",
       hook_before_run:
         "printf '%s' \"$#{env_key}\" > #{shell_escape(before_run_marker)} && " <>
@@ -571,11 +570,12 @@ defmodule SymphonyElixir.ReadinessGateAgentRunnerTest do
     )
 
     gate_opts = canonical_gate_options(env_value, fixture.initial_sha)
-    base_checkout_runner = checkout_runner(fixture.initial_sha, env_value)
+    workspace = Path.join([fixture.workspace_root, "central-brain", "ARO-286"])
+    bootstrap_runner = real_bootstrap_runner(workspace, fixture.remote, env_value)
 
-    guarded_checkout_runner = fn args, credential, runtime ->
+    guarded_bootstrap_runner = fn args, credential, runtime ->
       refute File.exists?(after_create_marker)
-      base_checkout_runner.(args, credential, runtime)
+      bootstrap_runner.(args, credential, runtime)
     end
 
     codex_session_starter = fn workspace, runtime_opts ->
@@ -588,9 +588,8 @@ defmodule SymphonyElixir.ReadinessGateAgentRunnerTest do
         credential_source: gate_opts[:credential_source],
         expected_actor: gate_opts[:expected_actor],
         request_fun: gate_opts[:request_fun],
-        git_checkout_command_runner: guarded_checkout_runner,
-        metadata_inspector: fn _path -> {:ok, :directory} end,
-        metadata_probe: fn _path -> :ok end,
+        repository_bootstrap_command_runner: guarded_bootstrap_runner,
+        git_checkout_command_runner: real_checkout_runner(workspace, fixture.remote, env_value),
         codex_session_starter: codex_session_starter
       )
     end
@@ -995,15 +994,40 @@ defmodule SymphonyElixir.ReadinessGateAgentRunnerTest do
     }
   end
 
-  defp checkout_runner(head, token) do
+  defp real_bootstrap_runner(workspace, fixture_remote, expected_token) do
     fn args, credential, _runtime ->
-      assert credential.token == token
+      assert credential.token == expected_token
+      refute Enum.any?(args, &String.contains?(&1, expected_token))
 
-      case args do
-        ["remote", "get-url", "origin"] -> {:ok, "https://github.com/aroakpm-svg/aroak-central-brain.git\n"}
-        ["branch", "--show-current"] -> {:ok, "main\n"}
-        ["rev-parse", "--verify", "HEAD^{commit}"] -> {:ok, head <> "\n"}
-        ["ls-remote", "--heads", "origin", "refs/heads/main"] -> {:ok, head <> "\trefs/heads/main\n"}
+      args =
+        if "fetch" in args,
+          do: Enum.map(args, &if(&1 == "origin", do: fixture_remote, else: &1)),
+          else: args
+
+      case System.cmd("git", ["-C", workspace | args], stderr_to_stdout: true) do
+        {output, 0} -> {:ok, output}
+        {_output, _status} -> {:error, :git_failed}
+      end
+    end
+  end
+
+  defp real_checkout_runner(workspace, fixture_remote, expected_token) do
+    fn args, credential, _runtime ->
+      assert credential.token == expected_token
+      refute Enum.any?(args, &String.contains?(&1, expected_token))
+
+      args =
+        case args do
+          ["ls-remote", "--heads", "origin", ref] ->
+            ["ls-remote", "--heads", fixture_remote, ref]
+
+          other ->
+            other
+        end
+
+      case System.cmd("git", ["-C", workspace | args], stderr_to_stdout: true) do
+        {output, 0} -> {:ok, output}
+        {_output, _status} -> {:error, :git_failed}
       end
     end
   end

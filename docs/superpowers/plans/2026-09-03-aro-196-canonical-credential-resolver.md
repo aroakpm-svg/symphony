@@ -4,7 +4,7 @@
 
 **Goal:** Build one fail-closed GitHub credential resolver and authority-preflight path that validates the approved automation identity before claim and again inside the actual worker before effects.
 
-**Architecture:** A trusted host callback resolves an opaque approved reference into a short-lived credential. A credential-scoped GitHub client validates actor, repository, permissions, branch, and head without ambient `gh`; Orchestrator discards the credential before claim, while AgentRunner resolves a fresh credential and validates the actual checkout before starting hooks or Codex.
+**Architecture:** A trusted host callback resolves an opaque approved reference into a short-lived credential. A credential-scoped GitHub client validates actor, repository, permissions, branch, and head without ambient `gh`; Orchestrator discards the credential before claim, while AgentRunner resolves a fresh credential, bootstraps only a newly-created profiled workspace from the approved repository at the verified head, and validates the actual checkout before starting arbitrary hooks or Codex.
 
 **Tech Stack:** Elixir 1.19/OTP 28, Req, ExUnit, existing Symphony ProjectProfiles/ProjectExecutionContext/Workspace/Orchestrator boundaries.
 
@@ -28,6 +28,7 @@
 - Create `elixir/lib/symphony_elixir/github_credential_resolver.ex`: canonical trusted-source contract and secret-safe normalization.
 - Create `elixir/lib/symphony_elixir/github_authority_client.ex`: credential-scoped GitHub HTTP validation with typed safe failures.
 - Create `elixir/lib/symphony_elixir/git_checkout_preflight.ex`: actual worker checkout, remote/head, and Git metadata capability checks.
+- Create `elixir/lib/symphony_elixir/repository_bootstrap.ex`: bounded worker-side canonical bootstrap for a newly-created profiled workspace.
 - Modify `elixir/lib/symphony_elixir/project_credential_provider.ex`: consume the canonical resolver and emit only the immediate subprocess environment.
 - Modify `elixir/lib/symphony_elixir/project_repo_preflight.ex`: replace ambient `gh` authority evidence with resolver/client evidence while retaining quality-contract validation.
 - Modify `elixir/lib/symphony_elixir/orchestrator.ex`: invoke canonical preflight before capacity/claim and classify new failures explicitly.
@@ -241,7 +242,7 @@ Expected: failures show the current direct provider callback and missing checkou
 
 - [ ] **Step 3: Wire canonical resolver and worker gate**
 
-Resolve into a local variable, validate authority and checkout, derive the minimal child environment, then allow existing readiness/hooks/Codex flow. Do not add credential fields to structs or messages.
+Resolve into a local variable; validate authority; bootstrap a newly-created profiled workspace using only the approved repository, canonical branch, and verified head; validate checkout; derive the minimal child environment; then allow deferred `after_create`, readiness/hooks, and Codex. Reused workspaces may continue only on the exact tracker issue branch (with readiness enforcing cleanliness/divergence) or the verified canonical head. Do not add credential fields to structs or messages. ARO-197 must remove clone commands from profiled `after_create` configuration; non-profiled behavior remains unchanged.
 
 - [ ] **Step 4: Run focused tests and leak scans**
 

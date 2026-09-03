@@ -35,9 +35,8 @@ defmodule SymphonyElixir.GitCheckoutPreflight do
          {:ok, repository} <- canonical_repository(origin),
          :ok <- equal(repository, context.repository, :git_remote_mismatch),
          {:ok, branch} <- run_text(runner, ["branch", "--show-current"], credential, opts),
-         :ok <- equal(branch, context.canonical_branch, :git_branch_mismatch),
          {:ok, local_head} <- run_text(runner, ["rev-parse", "--verify", "HEAD^{commit}"], credential, opts),
-         :ok <- valid_bound_head(local_head, expected_head, :git_checkout_mismatch),
+         :ok <- validate_local_checkout(branch, local_head, expected_head, context, opts),
          {:ok, remote_head} <- remote_head(runner, context, credential, opts),
          :ok <- valid_bound_head(remote_head, expected_head, :github_remote_head_changed),
          :ok <- metadata_capability(workspace, opts) do
@@ -237,6 +236,24 @@ defmodule SymphonyElixir.GitCheckoutPreflight do
   defp valid_bound_head(head, expected, reason) do
     normalized = String.downcase(String.trim(head))
     if valid_sha?(normalized) and normalized == expected, do: :ok, else: {:error, reason}
+  end
+
+  defp validate_local_checkout(branch, local_head, expected_head, context, opts) do
+    created_now = Keyword.get(opts, :created_now, true)
+    issue_branch = Keyword.get(opts, :expected_issue_branch)
+
+    cond do
+      branch == context.canonical_branch ->
+        valid_bound_head(local_head, expected_head, :git_checkout_mismatch)
+
+      created_now == false and is_binary(issue_branch) and issue_branch != "" and branch == issue_branch ->
+        if valid_sha?(String.downcase(String.trim(local_head))),
+          do: :ok,
+          else: {:error, :git_checkout_mismatch}
+
+      true ->
+        {:error, :git_branch_mismatch}
+    end
   end
 
   defp valid_sha?(sha), do: Regex.match?(@sha_pattern, sha)

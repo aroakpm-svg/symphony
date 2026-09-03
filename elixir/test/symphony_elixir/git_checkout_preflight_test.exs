@@ -61,6 +61,30 @@ defmodule SymphonyElixir.GitCheckoutPreflightTest do
     end
   end
 
+  test "reused workspace accepts only the exact issue branch without binding local head to canonical" do
+    {workspace, opts} = successful_seams(branch: "codex/aro-196\n", local_head: @other_head <> "\n")
+
+    assert {:ok, %{branch: "codex/aro-196"}} =
+             GitCheckoutPreflight.check(
+               context(),
+               workspace,
+               credential(),
+               opts
+               |> Keyword.put(:created_now, false)
+               |> Keyword.put(:expected_issue_branch, "codex/aro-196")
+             )
+
+    assert {:error, :git_branch_mismatch} =
+             GitCheckoutPreflight.check(
+               context(),
+               workspace,
+               credential(),
+               opts
+               |> Keyword.put(:created_now, false)
+               |> Keyword.put(:expected_issue_branch, "codex/other")
+             )
+  end
+
   test "rejects a workspace other than the exact namespaced issue checkout" do
     {_workspace, opts} = successful_seams()
 
@@ -271,6 +295,8 @@ defmodule SymphonyElixir.GitCheckoutPreflightTest do
 
     opts = [
       expected_head_sha: @head,
+      created_now: Keyword.get(overrides, :created_now, true),
+      expected_issue_branch: Keyword.get(overrides, :expected_issue_branch, "codex/aro-196"),
       workspace_root: Keyword.get(overrides, :workspace_root, "/runtime/workspaces"),
       worker_host: Keyword.get(overrides, :worker_host),
       command_runner: runner,

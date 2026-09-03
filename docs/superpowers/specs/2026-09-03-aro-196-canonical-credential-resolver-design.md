@@ -153,18 +153,30 @@ controller cannot authorize an SSH/WSL worker.
 
 ### 5. Checkout and Git metadata validation
 
-The worker-side preflight composes with the existing workspace/readiness checks instead of creating
-a second clone path. It verifies:
+For a newly-created profiled workspace, the worker first performs a bounded trusted bootstrap. This
+is not a second arbitrary clone hook: it accepts only the repository and canonical branch from the
+approved execution context and the immutable head from fresh authority verification, passes the
+credential only to the immediate worker command environment, and leaves `origin` canonical and
+the checkout at that exact head. A partial bootstrap is removed through the attested, exact
+workspace cleanup boundary. Remote bootstrap requires an explicit worker command seam.
+
+The worker-side preflight then composes with the existing workspace/readiness checks. It verifies:
 
 - checkout is the expected namespaced project workspace;
 - `origin` canonicalizes to the approved repository;
-- current branch and default-branch head match the bound execution context;
+- a newly-created checkout is on the canonical branch at the verified default-branch head;
+- a reused checkout is either still on that exact canonical head or on the exact tracker issue
+  branch; readiness remains authoritative for continuation cleanliness and divergence;
 - `.git` is a real, non-reparse metadata location under the approved workspace;
 - the runtime principal can write Git metadata using a reversible/no-content probe or an existing
   platform capability check that leaves no artifact.
 
 Any head change between authority receipt and workspace readiness invalidates the receipt and fails
 closed; it is not silently rebound.
+
+Only after this validation may the arbitrary `after_create` hook run. Profiled deployments must
+remove repository cloning from `after_create` as an ARO-197 configuration migration; legacy
+non-profiled workspace behavior remains unchanged.
 
 ## Error Model
 

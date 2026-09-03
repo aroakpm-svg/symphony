@@ -2212,13 +2212,7 @@ defmodule SymphonyElixir.Workspace do
              execution_context,
              workspace_attestation
            ),
-         :ok <-
-           run_context_cleanup_hook(
-             workspace,
-             execution_context,
-             workspace_attestation,
-             opts
-           ) do
+         :ok <- maybe_run_context_cleanup_hook(workspace, execution_context, workspace_attestation, opts) do
       with :ok <-
              validate_execution_workspace(
                workspace,
@@ -2228,7 +2222,7 @@ defmodule SymphonyElixir.Workspace do
              ),
            {:ok, removed} <- File.rm_rf(workspace),
            :ok <- remove_local_readiness_state(state_path),
-           :ok <- remove_context_private_home(execution_context, opts) do
+           :ok <- maybe_remove_context_private_home(execution_context, opts) do
         {:ok, removed}
       else
         {:error, _file, _reason} = error -> error
@@ -2239,11 +2233,34 @@ defmodule SymphonyElixir.Workspace do
     end
   end
 
+  defp maybe_run_context_cleanup_hook(workspace, context, attestation, opts) do
+    if Keyword.get(opts, :skip_before_remove_hook, false),
+      do: :ok,
+      else: run_context_cleanup_hook(workspace, context, attestation, opts)
+  end
+
+  defp maybe_remove_context_private_home(context, opts) do
+    if Keyword.get(opts, :preserve_private_home, false),
+      do: :ok,
+      else: remove_context_private_home(context, opts)
+  end
+
   @spec remove_issue_workspaces(term()) :: :ok
   @spec remove_issue_workspaces(term(), worker_host()) :: :ok
   @spec remove_issue_workspaces(term(), worker_host(), ProjectExecutionContext.t() | nil) :: :ok
   def remove_issue_workspaces(identifier, worker_host \\ nil, execution_context \\ nil) do
     remove_issue_workspaces(identifier, worker_host, execution_context, [])
+  end
+
+  @doc "Removes only a partial newly-created repository workspace without running lifecycle hooks."
+  @spec rollback_failed_repository_bootstrap(ProjectExecutionContext.t(), worker_host(), map()) :: :ok
+  def rollback_failed_repository_bootstrap(%ProjectExecutionContext{} = context, worker_host, attestation) do
+    remove_issue_workspaces(context.issue_identifier, worker_host, context,
+      workspace_attestation: attestation,
+      exact_worker_host: true,
+      skip_before_remove_hook: true,
+      preserve_private_home: true
+    )
   end
 
   @spec attest_existing_issue_workspace(
@@ -2409,14 +2426,15 @@ defmodule SymphonyElixir.Workspace do
 
     cond do
       is_binary(identifier) and is_binary(worker_host) ->
-        remove_issue_workspace(identifier, worker_host, execution_context, workspace_attestation)
+        remove_issue_workspace(identifier, worker_host, execution_context, workspace_attestation, opts)
 
       is_binary(identifier) and is_nil(worker_host) ->
         remove_nil_host_issue_workspaces(
           identifier,
           execution_context,
           workspace_attestation,
-          exact_worker_host?
+          exact_worker_host?,
+          opts
         )
 
       true ->
@@ -2426,19 +2444,19 @@ defmodule SymphonyElixir.Workspace do
     :ok
   end
 
-  defp remove_nil_host_issue_workspaces(identifier, execution_context, attestation, true) do
-    remove_issue_workspace(identifier, nil, execution_context, attestation)
+  defp remove_nil_host_issue_workspaces(identifier, execution_context, attestation, true, opts) do
+    remove_issue_workspace(identifier, nil, execution_context, attestation, opts)
   end
 
-  defp remove_nil_host_issue_workspaces(identifier, execution_context, attestation, false) do
+  defp remove_nil_host_issue_workspaces(identifier, execution_context, attestation, false, opts) do
     case Config.settings!().worker.ssh_hosts do
       [] ->
-        remove_issue_workspace(identifier, nil, execution_context, attestation)
+        remove_issue_workspace(identifier, nil, execution_context, attestation, opts)
 
       worker_hosts ->
         Enum.each(
           worker_hosts,
-          &remove_issue_workspace(identifier, &1, execution_context, attestation)
+          &remove_issue_workspace(identifier, &1, execution_context, attestation, opts)
         )
     end
   end
@@ -2447,7 +2465,8 @@ defmodule SymphonyElixir.Workspace do
          identifier,
          worker_host,
          execution_context,
-         workspace_attestation
+         workspace_attestation,
+         opts
        ) do
     safe_id = safe_identifier(identifier)
 
@@ -2465,6 +2484,11 @@ defmodule SymphonyElixir.Workspace do
              ),
            {:ok, cleanup_opts} <-
              cleanup_effect_opts(worker_host, execution_context, workspace_attestation) do
+        cleanup_opts =
+          cleanup_opts
+          |> Keyword.put(:skip_before_remove_hook, Keyword.get(opts, :skip_before_remove_hook, false))
+          |> Keyword.put(:preserve_private_home, Keyword.get(opts, :preserve_private_home, false))
+
         remove_issue_workspace_path(
           workspace,
           worker_host,
@@ -2543,10 +2567,13 @@ defmodule SymphonyElixir.Workspace do
          worker_host,
          %ProjectExecutionContext{workspace_namespace: namespace},
          workspace_attestation,
-         _opts
+         opts
        )
        when is_binary(worker_host) do
-    before_remove_hook = Config.settings!().hooks.before_remove
+    before_remove_hook =
+      if Keyword.get(opts, :skip_before_remove_hook, false),
+        do: nil,
+        else: Config.settings!().hooks.before_remove
 
     script =
       [
