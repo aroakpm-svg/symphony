@@ -1610,6 +1610,11 @@ defmodule SymphonyElixir.Workspace do
     :atomics.put(lifecycle, 1, 1)
   end
 
+  @spec rollback_failed_private_home_capability(PrivateHomeCapability.t() | nil) ::
+          :ok | {:error, :subprocess_home_rollback_failed}
+  def rollback_failed_private_home_capability(capability),
+    do: rollback_private_home_capability(capability)
+
   @spec validate_private_home_effect(
           Path.t(),
           worker_host(),

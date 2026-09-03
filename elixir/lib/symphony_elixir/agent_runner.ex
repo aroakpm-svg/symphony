@@ -140,9 +140,7 @@ defmodule SymphonyElixir.AgentRunner do
          worker_host,
          {execution_context, launch_env, credential, authority, runtime_opts}
        ) do
-    notify_preparation_observer(opts, preparation.private_home_capability)
-
-    with_private_home_capability(preparation.private_home_capability, fn ->
+    with_private_home_preparation_capability(preparation.private_home_capability, fn ->
       finish_worker_preparation_with_capability(
         preparation,
         issue,
@@ -186,24 +184,20 @@ defmodule SymphonyElixir.AgentRunner do
 
       case Workspace.run_deferred_after_create_hook(preparation, issue, worker_host, effect_opts) do
         :ok -> run_prepared_issue(preparation, issue, recipient, opts, worker_host, effect_opts)
-        {:error, _reason} = error -> error
+        {:error, _reason} = error -> {:private_home_preparation_failed, error}
       end
     else
       {:error, reason} ->
-        handle_workspace_preflight_failure(
-          recipient,
-          issue,
-          worker_host,
-          preparation.path,
-          {:project_credential_unavailable, reason}
-        )
-    end
-  end
+        outcome =
+          handle_workspace_preflight_failure(
+            recipient,
+            issue,
+            worker_host,
+            preparation.path,
+            {:project_credential_unavailable, reason}
+          )
 
-  defp notify_preparation_observer(opts, capability) do
-    case Keyword.get(opts, :preparation_capability_observer) do
-      observer when is_function(observer, 1) -> observer.(capability)
-      _missing -> :ok
+        {:private_home_preparation_failed, outcome}
     end
   end
 
@@ -344,6 +338,37 @@ defmodule SymphonyElixir.AgentRunner do
     case :atomics.get(finalization_state, 1) do
       1 -> result
       2 -> {:error, :subprocess_home_finalize_failed}
+    end
+  end
+
+  defp with_private_home_preparation_capability(private_home_capability, callback)
+       when is_function(callback, 0) do
+    callback.()
+    |> finish_private_home_preparation_capability(private_home_capability)
+  rescue
+    error ->
+      _ = Workspace.finalize_private_home_capability(private_home_capability)
+      reraise error, __STACKTRACE__
+  catch
+    kind, reason ->
+      _ = Workspace.finalize_private_home_capability(private_home_capability)
+      :erlang.raise(kind, reason, __STACKTRACE__)
+  end
+
+  defp finish_private_home_preparation_capability(
+         {:private_home_preparation_failed, outcome},
+         private_home_capability
+       ) do
+    case Workspace.rollback_failed_private_home_capability(private_home_capability) do
+      :ok -> outcome
+      {:error, :subprocess_home_rollback_failed} = error -> error
+    end
+  end
+
+  defp finish_private_home_preparation_capability(outcome, private_home_capability) do
+    case Workspace.finalize_private_home_capability(private_home_capability) do
+      :ok -> outcome
+      {:error, :subprocess_home_finalize_failed} = error -> error
     end
   end
 

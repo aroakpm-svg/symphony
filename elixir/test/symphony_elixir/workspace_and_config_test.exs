@@ -295,6 +295,49 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
     end
   end
 
+  test "failed deferred preparation rolls back new private homes but preserves pre-existing homes" do
+    test_root = Path.join(System.tmp_dir!(), "aro196-deferred-rollback-#{System.unique_integer([:positive])}")
+    workspace_root = Path.join(test_root, "workspaces")
+    context = project_context("central-brain", "ARO-196-ROLLBACK")
+    paths = private_home_paths(workspace_root, context)
+
+    try do
+      write_workflow_file!(Workflow.workflow_file_path(), workspace_root: workspace_root)
+      assert {:ok, environment} = SubprocessEnvironment.build(%{}, context)
+
+      assert {:ok, %{private_home_capability: new_capability}} =
+               Workspace.prepare_for_issue("ARO-196-ROLLBACK", nil, context,
+                 env: environment,
+                 subprocess_home_paths: paths,
+                 defer_after_create: true
+               )
+
+      assert :ok = Workspace.rollback_failed_private_home_capability(new_capability)
+      assert Enum.all?(private_directories(paths), &(not File.exists?(&1)))
+
+      assert {:ok, %{private_home_capability: committed_capability}} =
+               Workspace.prepare_for_issue("ARO-196-ROLLBACK", nil, context,
+                 env: environment,
+                 subprocess_home_paths: paths,
+                 defer_after_create: true
+               )
+
+      assert :ok = Workspace.finalize_private_home_capability(committed_capability)
+
+      assert {:ok, %{private_home_capability: existing_capability}} =
+               Workspace.prepare_for_issue("ARO-196-ROLLBACK", nil, context,
+                 env: environment,
+                 subprocess_home_paths: paths,
+                 defer_after_create: true
+               )
+
+      assert :ok = Workspace.rollback_failed_private_home_capability(existing_capability)
+      assert Enum.all?(private_directories(paths), &File.exists?/1)
+    after
+      File.rm_rf(test_root)
+    end
+  end
+
   test "workspace path is deterministic per issue identifier" do
     workspace_root =
       Path.join(

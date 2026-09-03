@@ -169,18 +169,13 @@ defmodule SymphonyElixir.ReadinessGateAgentRunnerTest do
                request_fun: gate_opts[:request_fun],
                git_checkout_command_runner: checkout_runner,
                metadata_inspector: fn _path -> {:ok, :directory} end,
-               metadata_probe: fn _path -> :ok end,
-               preparation_capability_observer: fn capability ->
-                 send(self(), {:checkout_failure_capability, capability})
-               end
+               metadata_probe: fn _path -> :ok end
              )
 
     assert_receive {:agent_hard_blocker, "issue-ARO-196-CLEAN", blocker}
-    assert_receive {:checkout_failure_capability, capability}
     assert blocker.error == "project credential unavailable reason=git_remote_mismatch"
     refute File.exists?(marker)
-    refute Workspace.private_home_capability_active_for_test?(capability)
-    assert File.exists?(private_home)
+    refute File.exists?(private_home)
   end
 
   test "credential values emitted by a hook are redacted from failures before truncation" do
