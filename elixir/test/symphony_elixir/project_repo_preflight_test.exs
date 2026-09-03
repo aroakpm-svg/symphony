@@ -105,6 +105,59 @@ defmodule SymphonyElixir.ProjectRepoPreflightTest do
     end
   end
 
+  test "keeps every remaining public resolver and authority failure mapping secret-safe" do
+    sentinel = "credential-mapping-secret-sentinel"
+
+    cases = [
+      {:credential_reference_mismatch,
+       [
+         credential_source: fn _ref ->
+           {:ok,
+            %{
+              credential_ref: "github-central-brain",
+              token: sentinel,
+              expires_at: nil
+            }}
+         end
+       ]},
+      {:credential_resolver_failed, [credential_source: fn _ref -> raise "resolver failed with #{sentinel}" end]},
+      {:github_repository_not_allowed,
+       [profile: %{@profile | linear_project_id: "not-approved"}] ++
+         valid_options(self(), profile: %{@profile | linear_project_id: "not-approved"})},
+      {:github_response_invalid,
+       [
+         credential_source: fn ref -> credential(ref) end,
+         expected_actor: @actor,
+         request_fun: fn _request ->
+           {:ok, %{status: 200, body: %{"unexpected" => sentinel}}}
+         end
+       ]},
+      {:github_authority_invalid,
+       [
+         credential_source: fn ref -> credential(ref) end,
+         request_fun: request_fun(self())
+       ]}
+    ]
+
+    for {code, options} <- cases do
+      profile = Keyword.get(options, :profile, @profile)
+      options = Keyword.delete(options, :profile)
+
+      log =
+        capture_log(fn ->
+          result = ProjectRepoPreflight.check(profile, options)
+          Logger.error("preflight=#{inspect(result)}")
+          send(self(), {:mapped_failure, code, result})
+        end)
+
+      assert_receive {:mapped_failure, ^code, {:blocked, %{code: ^code, detail: nil, next_step: next_step}} = result}
+
+      assert is_binary(next_step) and next_step != ""
+      refute inspect(result) =~ sentinel
+      refute log =~ sentinel
+    end
+  end
+
   test "quality failures stay bounded and secret-safe" do
     options =
       valid_options(self(), package_body: %{"scripts" => %{"typecheck" => "tsc"}})
