@@ -154,7 +154,9 @@ defmodule SymphonyElixir.ProjectRepoPreflightTest do
 
       assert is_binary(next_step) and next_step != ""
       refute inspect(result) =~ sentinel
+      refute inspect(result) =~ @token
       refute log =~ sentinel
+      refute log =~ @token
     end
   end
 
