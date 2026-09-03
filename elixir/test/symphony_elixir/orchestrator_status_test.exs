@@ -2018,6 +2018,79 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
     assert log =~ "reason=credential_source_conflict"
   end
 
+  test "an actual preclaim credential is absent from live state health logs and serialized state" do
+    secret = "ghs_preclaim_sentinel_#{System.unique_integer([:positive, :monotonic])}"
+    head = String.duplicate("a", 40)
+
+    profile = %{
+      key: "central-brain",
+      linear_project_id: "d0acfb71-f68c-4a9f-8a1a-477265d3c3ec",
+      repository: "aroakpm-svg/aroak-central-brain",
+      canonical_branch: "main",
+      workspace_namespace: "central-brain",
+      credential_ref: "github-central-brain",
+      environment: "local_non_production"
+    }
+
+    issue = health_test_issue(profile)
+    profiles = %{version: 1, profiles: %{profile.key => profile}}
+    {:ok, health_events} = Agent.start_link(fn -> [] end)
+
+    source = fn ref ->
+      {:ok, %{credential_ref: ref, token: secret, expires_at: nil}}
+    end
+
+    request_fun = fn request ->
+      assert {"authorization", "Bearer " <> ^secret} = List.keyfind(request[:headers], "authorization", 0)
+
+      body =
+        case request[:url] do
+          "https://api.github.com/user" ->
+            %{"login" => "aroak-symphony[bot]"}
+
+          "https://api.github.com/repos/aroakpm-svg/aroak-central-brain" ->
+            %{
+              "full_name" => profile.repository,
+              "default_branch" => "main",
+              "permissions" => %{"pull" => true, "push" => true}
+            }
+
+          "https://api.github.com/repos/aroakpm-svg/aroak-central-brain/git/ref/heads/main" ->
+            %{"ref" => "refs/heads/main", "object" => %{"sha" => head}}
+
+          "https://api.github.com/repos/aroakpm-svg/aroak-central-brain/contents/package.json?ref=" <> ^head ->
+            %{"scripts" => %{"typecheck" => "tsc", "build" => "build", "test" => "test"}}
+        end
+
+      {:ok, %{status: 200, body: body}}
+    end
+
+    opts =
+      issue
+      |> health_dispatch_opts(fn event -> Agent.update(health_events, &(&1 ++ [event])) end)
+      |> Keyword.delete(:preflight_fun)
+      |> Keyword.put(:credential_source, source)
+      |> Keyword.put(:expected_actor, "aroak-symphony[bot]")
+      |> Keyword.put(:request_fun, request_fun)
+
+    log =
+      capture_log(fn ->
+        state = Orchestrator.multi_project_dispatch_for_test(health_test_state(), profiles, opts)
+        {:ok, pid} = Orchestrator.start_link(name: nil, identity_validator: fn -> {:ok, %{viewer_id: "viewer"}} end)
+        :sys.replace_state(pid, fn _state -> state end)
+        send(self(), {:live_secret_free_state, :sys.get_state(pid)})
+        GenServer.stop(pid)
+      end)
+
+    assert_receive {:live_secret_free_state, state}
+    assert Map.has_key?(state.running, issue.id)
+    refute inspect(issue) =~ secret
+    refute inspect(state) =~ secret
+    assert :binary.match(:erlang.term_to_binary(state), secret) == :nomatch
+    refute inspect(Agent.get(health_events, & &1)) =~ secret
+    refute log =~ secret
+  end
+
   test "health reporting failure cannot change claim or dispatch authorization" do
     profile = health_test_profile()
     profiles = %{version: 1, profiles: %{profile.key => profile}}

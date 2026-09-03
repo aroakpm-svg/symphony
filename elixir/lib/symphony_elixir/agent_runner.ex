@@ -591,6 +591,9 @@ defmodule SymphonyElixir.AgentRunner do
   defp hard_blocker_kind({:codex_model_label_conflict, labels}),
     do: {:codex_model_label_conflict, labels}
 
+  defp hard_blocker_kind({:project_credential_unavailable, reason}),
+    do: {:project_credential_unavailable, safe_credential_reason(reason)}
+
   defp hard_blocker_kind(_reason), do: nil
 
   defp safe_credential_reason(reason)

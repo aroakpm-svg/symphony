@@ -1748,6 +1748,93 @@ defmodule SymphonyElixir.CoreTest do
     refute Keyword.has_key?(options, :authorization)
   end
 
+  test "post-claim credential blockers release and retry only transient failures" do
+    issue = %Issue{
+      id: "postclaim-transient",
+      identifier: "ARO-196-TRANSIENT",
+      state: "In Progress",
+      project_profile: %{key: "central-brain"}
+    }
+
+    running_entry = %{
+      pid: self(),
+      ref: nil,
+      identifier: issue.identifier,
+      issue: issue,
+      worker_host: nil,
+      started_at: DateTime.utc_now(),
+      retry_attempt: 0,
+      distributed_claim: nil
+    }
+
+    state = %Orchestrator.State{
+      running: %{issue.id => running_entry},
+      claimed: MapSet.new([issue.id]),
+      retry_attempts: %{},
+      codex_totals: %{input_tokens: 0, output_tokens: 0, total_tokens: 0, seconds_running: 0}
+    }
+
+    {:noreply, retried} =
+      Orchestrator.handle_info(
+        {:agent_hard_blocker, issue.id,
+         %{
+           error: "project credential unavailable reason=github_unavailable",
+           kind: {:project_credential_unavailable, :github_unavailable}
+         }},
+        state
+      )
+
+    refute Map.has_key?(retried.running, issue.id)
+    refute Map.has_key?(retried.blocked, issue.id)
+    refute MapSet.member?(retried.claimed, issue.id)
+    assert retried.retry_attempts[issue.id].attempt == 1
+    assert retried.retry_attempts[issue.id].ownership == :unowned_backoff
+
+    assert retried.retry_attempts[issue.id].error ==
+             "project credential unavailable reason=github_unavailable"
+  end
+
+  test "post-claim permanent and unknown credential blockers release and remain blocked" do
+    for {id, reason} <- [
+          {"postclaim-permanent", :github_unexpected_actor},
+          {"postclaim-unknown", :unexpected_secret_failure}
+        ] do
+      issue = %Issue{id: id, identifier: String.upcase(id), state: "In Progress"}
+
+      state = %Orchestrator.State{
+        running: %{
+          id => %{
+            pid: self(),
+            ref: nil,
+            identifier: issue.identifier,
+            issue: issue,
+            started_at: DateTime.utc_now(),
+            distributed_claim: nil
+          }
+        },
+        claimed: MapSet.new([id]),
+        retry_attempts: %{},
+        codex_totals: %{input_tokens: 0, output_tokens: 0, total_tokens: 0, seconds_running: 0}
+      }
+
+      {:noreply, blocked} =
+        Orchestrator.handle_info(
+          {:agent_hard_blocker, id,
+           %{
+             error: "project credential unavailable reason=#{reason}",
+             kind: {:project_credential_unavailable, reason}
+           }},
+          state
+        )
+
+      refute Map.has_key?(blocked.running, id)
+      expected_reason = if reason == :unexpected_secret_failure, do: :credential_provider_failed, else: reason
+      assert blocked.blocked[id].blocker_kind == {:project_credential_unavailable, expected_reason}
+      assert blocked.blocked[id].error == "project credential unavailable reason=#{expected_reason}"
+      assert blocked.retry_attempts == %{}
+    end
+  end
+
   test "first abnormal worker exit waits before retrying" do
     issue_id = "issue-crash-initial"
     ref = make_ref()

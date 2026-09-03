@@ -151,7 +151,8 @@ defmodule SymphonyElixir.ReadinessGateAgentRunnerTest do
     issue = profiled_issue("ARO-196-CLEAN", "codex/aro-196-clean", "aroakpm-svg/aroak-central-brain")
     marker = Path.join(fixture.root, "after-create-must-not-run.marker")
     private_home = Path.join([fixture.workspace_root, "central-brain", ".symphony-subprocess", "ARO-196-CLEAN-r1"])
-    gate_opts = canonical_gate_options("cleanup-token", fixture.initial_sha)
+    secret = "ghs_postclaim_sentinel_#{System.unique_integer([:positive, :monotonic])}"
+    gate_opts = canonical_gate_options(secret, fixture.initial_sha)
 
     write_workflow_file!(Workflow.workflow_file_path(),
       workspace_root: fixture.workspace_root,
@@ -174,8 +175,84 @@ defmodule SymphonyElixir.ReadinessGateAgentRunnerTest do
 
     assert_receive {:agent_hard_blocker, "issue-ARO-196-CLEAN", blocker}
     assert blocker.error == "project credential unavailable reason=git_remote_mismatch"
+    assert blocker.kind == {:project_credential_unavailable, :git_remote_mismatch}
+    refute inspect(blocker) =~ secret
+
+    {:noreply, blocked_state} =
+      Orchestrator.handle_info(
+        {:agent_hard_blocker, issue.id, blocker},
+        running_orchestrator_state(issue)
+      )
+
+    assert blocked_state.blocked[issue.id].error ==
+             "project credential unavailable reason=git_remote_mismatch"
+
+    refute inspect(blocked_state) =~ secret
+    assert :binary.match(:erlang.term_to_binary(blocked_state), secret) == :nomatch
     refute File.exists?(marker)
     refute File.exists?(private_home)
+  end
+
+  test "an actual transient post-claim credential failure releases into secret-free retry" do
+    fixture = git_fixture!()
+    on_exit(fn -> File.rm_rf(fixture.root) end)
+    previous_source_repo_url = System.get_env("SOURCE_REPO_URL")
+    on_exit(fn -> restore_env("SOURCE_REPO_URL", previous_source_repo_url) end)
+    System.put_env("SOURCE_REPO_URL", shell_path(fixture.remote))
+
+    issue =
+      profiled_issue(
+        "ARO-196-RETRY",
+        "codex/aro-196-retry",
+        "aroakpm-svg/aroak-central-brain"
+      )
+
+    issue_id = issue.id
+    secret = "ghs_postclaim_retry_#{System.unique_integer([:positive, :monotonic])}"
+
+    write_workflow_file!(Workflow.workflow_file_path(), workspace_root: fixture.workspace_root)
+
+    source = fn ref -> {:ok, %{credential_ref: ref, token: secret, expires_at: nil}} end
+
+    request_fun = fn request ->
+      assert {"authorization", "Bearer " <> ^secret} = List.keyfind(request[:headers], "authorization", 0)
+      {:error, :timeout}
+    end
+
+    log =
+      capture_log(fn ->
+        assert :ok =
+                 AgentRunner.run(issue, self(),
+                   credential_source: source,
+                   expected_actor: "aroak-automation[bot]",
+                   request_fun: request_fun
+                 )
+
+        assert_receive {:agent_hard_blocker, ^issue_id, blocker}
+        send(self(), {:actual_transient_blocker, blocker})
+
+        {:noreply, retried} =
+          Orchestrator.handle_info(
+            {:agent_hard_blocker, issue.id, blocker},
+            running_orchestrator_state(issue)
+          )
+
+        send(self(), {:actual_secret_free_retry, retried})
+      end)
+
+    assert_receive {:actual_transient_blocker, blocker}
+    assert blocker.kind == {:project_credential_unavailable, :github_unavailable}
+    assert blocker.error == "project credential unavailable reason=github_unavailable"
+    refute inspect(blocker) =~ secret
+
+    assert_receive {:actual_secret_free_retry, retried}
+    refute Map.has_key?(retried.running, issue.id)
+    refute Map.has_key?(retried.blocked, issue.id)
+    refute MapSet.member?(retried.claimed, issue.id)
+    assert retried.retry_attempts[issue.id].ownership == :unowned_backoff
+    refute inspect(retried) =~ secret
+    assert :binary.match(:erlang.term_to_binary(retried), secret) == :nomatch
+    refute log =~ secret
   end
 
   test "credential values emitted by a hook are redacted from failures before truncation" do
@@ -896,6 +973,26 @@ defmodule SymphonyElixir.ReadinessGateAgentRunnerTest do
     end
 
     [credential_source: source, expected_actor: "aroak-automation[bot]", request_fun: request]
+  end
+
+  defp running_orchestrator_state(issue) do
+    %Orchestrator.State{
+      running: %{
+        issue.id => %{
+          pid: self(),
+          ref: nil,
+          identifier: issue.identifier,
+          issue: issue,
+          worker_host: nil,
+          started_at: DateTime.utc_now(),
+          retry_attempt: 0,
+          distributed_claim: nil
+        }
+      },
+      claimed: MapSet.new([issue.id]),
+      retry_attempts: %{},
+      codex_totals: %{input_tokens: 0, output_tokens: 0, total_tokens: 0, seconds_running: 0}
+    }
   end
 
   defp checkout_runner(head, token) do

@@ -302,20 +302,13 @@ defmodule SymphonyElixir.Orchestrator do
         {:noreply, state}
 
       running_entry ->
-        error = Map.get(blocker_info, :error) || "agent hard blocker"
-
         running_entry =
           running_entry
           |> maybe_put_runtime_value(:worker_host, Map.get(blocker_info, :worker_host))
           |> maybe_put_runtime_value(:workspace_path, Map.get(blocker_info, :workspace_path))
           |> maybe_put_runtime_value(:blocker_kind, Map.get(blocker_info, :kind))
 
-        Logger.warning("Agent reported hard blocker for issue_id=#{issue_id} issue_identifier=#{running_entry.identifier}: #{error}")
-
-        state =
-          state
-          |> record_session_completion_totals(running_entry)
-          |> block_issue_from_entry(issue_id, running_entry, error)
+        state = handle_agent_hard_blocker(state, issue_id, running_entry, blocker_info)
 
         notify_dashboard()
         {:noreply, state}
@@ -346,6 +339,54 @@ defmodule SymphonyElixir.Orchestrator do
     Logger.debug("Orchestrator ignored message: #{inspect(msg)}")
     {:noreply, state}
   end
+
+  defp handle_agent_hard_blocker(
+         state,
+         issue_id,
+         running_entry,
+         %{kind: {:project_credential_unavailable, reason}}
+       ) do
+    safe_reason = safe_project_credential_reason(reason)
+    error = "project credential unavailable reason=#{safe_reason}"
+    running_entry = Map.put(running_entry, :blocker_kind, {:project_credential_unavailable, safe_reason})
+
+    Logger.warning("Agent reported hard blocker for issue_id=#{issue_id} issue_identifier=#{running_entry.identifier}: #{error}")
+
+    case preflight_blocker_disposition(safe_reason) do
+      :transient -> retry_post_claim_credential_failure(state, issue_id, running_entry, error)
+      :permanent -> state |> record_session_completion_totals(running_entry) |> block_issue_from_entry(issue_id, running_entry, error)
+    end
+  end
+
+  defp handle_agent_hard_blocker(state, issue_id, running_entry, blocker_info) do
+    error = Map.get(blocker_info, :error) || "agent hard blocker"
+    Logger.warning("Agent reported hard blocker for issue_id=#{issue_id} issue_identifier=#{running_entry.identifier}: #{error}")
+    state |> record_session_completion_totals(running_entry) |> block_issue_from_entry(issue_id, running_entry, error)
+  end
+
+  defp retry_post_claim_credential_failure(state, issue_id, running_entry, error) do
+    :ok = finalize_distributed_claim(issue_id, :release)
+
+    released_state = %{
+      record_session_completion_totals(state, running_entry)
+      | running: Map.delete(state.running, issue_id),
+        claimed: MapSet.delete(state.claimed, issue_id),
+        blocked: Map.delete(state.blocked, issue_id)
+    }
+
+    schedule_issue_retry(
+      released_state,
+      issue_id,
+      next_retry_attempt_from_running(running_entry),
+      running_retry_metadata(running_entry, %{error: error, ownership: :unowned_backoff})
+    )
+  end
+
+  defp safe_project_credential_reason(reason)
+       when reason in @permanent_preflight_blockers or reason in @transient_preflight_blockers,
+       do: reason
+
+  defp safe_project_credential_reason(_reason), do: :credential_provider_failed
 
   defp validate_startup_identity(identity_validator) when is_function(identity_validator, 0) do
     case identity_validator.() do
