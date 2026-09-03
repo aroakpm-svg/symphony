@@ -76,6 +76,7 @@ defmodule SymphonyElixir.ReadinessGateAgentRunnerTest do
     workspace = "/workers/central-brain/ARO-196"
     attestation = %{kind: :remote, path: workspace, identity: "worker-id"}
     gate_opts = canonical_gate_options(token, head)
+    controller_request = fn _request -> flunk("controller authority request must not run") end
 
     runner = fn args, credential, runtime ->
       assert credential.token == token
@@ -94,7 +95,8 @@ defmodule SymphonyElixir.ReadinessGateAgentRunnerTest do
              AgentRunner.post_claim_gate_for_test(context, workspace,
                worker_credential_source: gate_opts[:credential_source],
                expected_actor: gate_opts[:expected_actor],
-               request_fun: gate_opts[:request_fun],
+               request_fun: controller_request,
+               worker_authority_request_fun: gate_opts[:request_fun],
                worker_host: "han-wsl",
                workspace_root: "/workers",
                workspace_attestation: attestation,
@@ -127,6 +129,58 @@ defmodule SymphonyElixir.ReadinessGateAgentRunnerTest do
              )
 
     refute inspect(:github_forbidden) =~ secret
+  end
+
+  test "remote authority fails closed without a worker request seam and never uses controller HTTP" do
+    token = "remote-authority-#{System.unique_integer([:positive, :monotonic])}"
+    source = fn ref -> {:ok, %{credential_ref: ref, token: token, expires_at: nil}} end
+    controller_request = fn _request -> flunk("controller authority request must not run") end
+
+    assert {:error, :github_authority_invalid} =
+             AgentRunner.post_claim_gate_for_test(aro196_context(), "/workers/central-brain/ARO-196",
+               worker_host: "han-wsl",
+               worker_credential_source: source,
+               expected_actor: "aroak-automation[bot]",
+               request_fun: controller_request
+             )
+  end
+
+  test "checkout failure suppresses after_create and finalizes the private home capability" do
+    fixture = git_fixture!()
+    on_exit(fn -> File.rm_rf(fixture.root) end)
+    issue = profiled_issue("ARO-196-CLEAN", "codex/aro-196-clean", "aroakpm-svg/aroak-central-brain")
+    marker = Path.join(fixture.root, "after-create-must-not-run.marker")
+    private_home = Path.join([fixture.workspace_root, "central-brain", ".symphony-subprocess", "ARO-196-CLEAN-r1"])
+    gate_opts = canonical_gate_options("cleanup-token", fixture.initial_sha)
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      workspace_root: fixture.workspace_root,
+      hook_after_create: "printf ran > #{shell_escape(shell_path(marker))}"
+    )
+
+    checkout_runner = fn
+      ["remote", "get-url", "origin"], _credential, _runtime -> {:ok, "https://github.com/wrong/repository.git\n"}
+    end
+
+    assert :ok =
+             AgentRunner.run(issue, self(),
+               credential_source: gate_opts[:credential_source],
+               expected_actor: gate_opts[:expected_actor],
+               request_fun: gate_opts[:request_fun],
+               git_checkout_command_runner: checkout_runner,
+               metadata_inspector: fn _path -> {:ok, :directory} end,
+               metadata_probe: fn _path -> :ok end,
+               preparation_capability_observer: fn capability ->
+                 send(self(), {:checkout_failure_capability, capability})
+               end
+             )
+
+    assert_receive {:agent_hard_blocker, "issue-ARO-196-CLEAN", blocker}
+    assert_receive {:checkout_failure_capability, capability}
+    assert blocker.error == "project credential unavailable reason=git_remote_mismatch"
+    refute File.exists?(marker)
+    refute Workspace.private_home_capability_active_for_test?(capability)
+    assert File.exists?(private_home)
   end
 
   test "credential values emitted by a hook are redacted from failures before truncation" do
@@ -248,7 +302,7 @@ defmodule SymphonyElixir.ReadinessGateAgentRunnerTest do
     refute_received :ssh_called
   end
 
-  test "remote credential rejection never creates a local context-private home" do
+  test "remote authority without a worker request seam fails before SSH or local private home" do
     test_root =
       Path.join(
         System.tmp_dir!(),
@@ -282,7 +336,7 @@ defmodule SymphonyElixir.ReadinessGateAgentRunnerTest do
 
     gate_opts = canonical_gate_options(secret, String.duplicate("a", 40))
 
-    assert_raise RuntimeError, ~r/remote_credential_environment_unsupported/, fn ->
+    assert_raise RuntimeError, ~r/github_authority_invalid/, fn ->
       AgentRunner.run(issue, nil,
         worker_host: "worker-credential",
         worker_credential_source: gate_opts[:credential_source],
@@ -445,6 +499,12 @@ defmodule SymphonyElixir.ReadinessGateAgentRunnerTest do
     )
 
     gate_opts = canonical_gate_options(env_value, fixture.initial_sha)
+    base_checkout_runner = checkout_runner(fixture.initial_sha, env_value)
+
+    guarded_checkout_runner = fn args, credential, runtime ->
+      refute File.exists?(after_create_marker)
+      base_checkout_runner.(args, credential, runtime)
+    end
 
     codex_session_starter = fn workspace, runtime_opts ->
       send(test_pid, {:codex_runtime_settings, workspace, runtime_opts})
@@ -456,7 +516,7 @@ defmodule SymphonyElixir.ReadinessGateAgentRunnerTest do
         credential_source: gate_opts[:credential_source],
         expected_actor: gate_opts[:expected_actor],
         request_fun: gate_opts[:request_fun],
-        git_checkout_command_runner: checkout_runner(fixture.initial_sha, env_value),
+        git_checkout_command_runner: guarded_checkout_runner,
         metadata_inspector: fn _path -> {:ok, :directory} end,
         metadata_probe: fn _path -> :ok end,
         codex_session_starter: codex_session_starter
@@ -468,7 +528,7 @@ defmodule SymphonyElixir.ReadinessGateAgentRunnerTest do
     assert normalized_path(workspace) ==
              normalized_path(Path.join([fixture.workspace_root, "central-brain", "ARO-286"]))
 
-    assert File.read!(after_create_marker) == ""
+    assert File.read!(after_create_marker) == env_value
     assert File.read!(before_run_marker) == env_value
     assert File.read!(after_run_marker) == env_value
     assert File.read!(ambient_marker) == "|||||||"

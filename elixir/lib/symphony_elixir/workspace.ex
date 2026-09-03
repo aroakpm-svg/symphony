@@ -147,6 +147,7 @@ defmodule SymphonyElixir.Workspace do
   @type preparation :: %{
           path: Path.t(),
           created_now: boolean(),
+          after_create_deferred: boolean(),
           workspace_attestation: map() | nil,
           private_home_capability: PrivateHomeCapability.t() | nil,
           readiness_state: ReadinessState.t()
@@ -258,17 +259,19 @@ defmodule SymphonyElixir.Workspace do
                opts
              ),
            :ok <-
-             maybe_run_after_create_hook(
+             maybe_run_or_defer_after_create_hook(
                workspace,
                issue_context,
                created?,
                worker_host,
-               effect_opts
+               effect_opts,
+               opts
              ) do
         {:ok,
          %{
            path: workspace,
            created_now: created?,
+           after_create_deferred: created? and Keyword.get(opts, :defer_after_create, false),
            workspace_attestation: workspace_attestation,
            private_home_capability: private_home_capability,
            readiness_state: readiness_state
@@ -286,6 +289,46 @@ defmodule SymphonyElixir.Workspace do
         rollback_failed_private_home_preparation(private_home_capability, error)
     end
   end
+
+  @spec run_deferred_after_create_hook(
+          preparation(),
+          map() | String.t() | nil,
+          worker_host(),
+          keyword()
+        ) :: :ok | {:error, term()}
+  def run_deferred_after_create_hook(preparation, issue_or_identifier, worker_host, opts)
+      when is_map(preparation) and is_list(opts) do
+    case preparation do
+      %{
+        path: workspace,
+        created_now: true,
+        after_create_deferred: true,
+        workspace_attestation: workspace_attestation,
+        private_home_capability: private_home_capability
+      } ->
+        effect_opts =
+          opts
+          |> Keyword.put(:workspace_attestation, workspace_attestation)
+          |> Keyword.put(:private_home_capability, private_home_capability)
+
+        maybe_run_after_create_hook(
+          workspace,
+          issue_context(issue_or_identifier, effect_opts[:execution_context]),
+          true,
+          worker_host,
+          effect_opts
+        )
+
+      %{after_create_deferred: false} ->
+        :ok
+
+      _invalid ->
+        {:error, :deferred_after_create_invalid}
+    end
+  end
+
+  def run_deferred_after_create_hook(_preparation, _issue_or_identifier, _worker_host, _opts),
+    do: {:error, :deferred_after_create_invalid}
 
   @spec readiness_state_path(Path.t()) :: Path.t()
   def readiness_state_path(workspace) when is_binary(workspace) do
@@ -3062,6 +3105,21 @@ if [ -e "$workspace" ] || [ -L "$workspace" ]; then exit 1; fi>
 
       false ->
         :ok
+    end
+  end
+
+  defp maybe_run_or_defer_after_create_hook(
+         workspace,
+         issue_context,
+         created?,
+         worker_host,
+         effect_opts,
+         opts
+       ) do
+    if created? and Keyword.get(opts, :defer_after_create, false) do
+      :ok
+    else
+      maybe_run_after_create_hook(workspace, issue_context, created?, worker_host, effect_opts)
     end
   end
 

@@ -111,7 +111,10 @@ defmodule SymphonyElixir.AgentRunner do
 
     runtime_opts = maybe_put_subprocess_home_paths(runtime_opts, execution_context)
 
-    preparation_opts = Keyword.put(runtime_opts, :attest_preparation_errors, true)
+    preparation_opts =
+      runtime_opts
+      |> Keyword.put(:attest_preparation_errors, true)
+      |> Keyword.put(:defer_after_create, true)
 
     case Workspace.prepare_for_issue(issue, worker_host, execution_context, preparation_opts) do
       {:ok, preparation} ->
@@ -130,6 +133,28 @@ defmodule SymphonyElixir.AgentRunner do
   end
 
   defp finish_worker_preparation(
+         preparation,
+         issue,
+         recipient,
+         opts,
+         worker_host,
+         {execution_context, launch_env, credential, authority, runtime_opts}
+       ) do
+    notify_preparation_observer(opts, preparation.private_home_capability)
+
+    with_private_home_capability(preparation.private_home_capability, fn ->
+      finish_worker_preparation_with_capability(
+        preparation,
+        issue,
+        recipient,
+        opts,
+        worker_host,
+        {execution_context, launch_env, credential, authority, runtime_opts}
+      )
+    end)
+  end
+
+  defp finish_worker_preparation_with_capability(
          preparation,
          issue,
          recipient,
@@ -156,8 +181,13 @@ defmodule SymphonyElixir.AgentRunner do
         runtime_opts
         |> Keyword.put(:env, process_env)
         |> Keyword.put(:sensitive_env_values, Map.values(credential_env))
+        |> Keyword.put(:workspace_attestation, preparation.workspace_attestation)
+        |> Keyword.put(:private_home_capability, preparation.private_home_capability)
 
-      run_prepared_issue(preparation, issue, recipient, opts, worker_host, effect_opts)
+      case Workspace.run_deferred_after_create_hook(preparation, issue, worker_host, effect_opts) do
+        :ok -> run_prepared_issue(preparation, issue, recipient, opts, worker_host, effect_opts)
+        {:error, _reason} = error -> error
+      end
     else
       {:error, reason} ->
         handle_workspace_preflight_failure(
@@ -167,6 +197,13 @@ defmodule SymphonyElixir.AgentRunner do
           preparation.path,
           {:project_credential_unavailable, reason}
         )
+    end
+  end
+
+  defp notify_preparation_observer(opts, capability) do
+    case Keyword.get(opts, :preparation_capability_observer) do
+      observer when is_function(observer, 1) -> observer.(capability)
+      _missing -> :ok
     end
   end
 
@@ -183,11 +220,9 @@ defmodule SymphonyElixir.AgentRunner do
       |> Keyword.put(:workspace_attestation, workspace_attestation)
       |> Keyword.put(:private_home_capability, private_home_capability)
 
-    with_private_home_capability(private_home_capability, fn ->
-      send_worker_runtime_info(recipient, issue, worker_host, workspace, workspace_attestation)
+    send_worker_runtime_info(recipient, issue, worker_host, workspace, workspace_attestation)
 
-      run_prepared_attempt(preparation, issue, recipient, opts, worker_host, effect_opts)
-    end)
+    run_prepared_attempt(preparation, issue, recipient, opts, worker_host, effect_opts)
   end
 
   defp run_prepared_attempt(preparation, issue, recipient, opts, worker_host, effect_opts) do
@@ -377,7 +412,20 @@ defmodule SymphonyElixir.AgentRunner do
     end
   end
 
-  defp authority_opts(opts), do: Keyword.take(opts, [:expected_actor, :request_fun])
+  defp authority_opts(opts) do
+    base = Keyword.take(opts, [:expected_actor])
+
+    case Keyword.get(opts, :worker_host) do
+      nil ->
+        Keyword.merge(base, Keyword.take(opts, [:request_fun]))
+
+      worker_host when is_binary(worker_host) ->
+        case Keyword.get(opts, :worker_authority_request_fun) do
+          request_fun when is_function(request_fun, 1) -> Keyword.put(base, :request_fun, request_fun)
+          _missing -> Keyword.put(base, :request_fun, nil)
+        end
+    end
+  end
 
   defp authority_profile(%ProjectExecutionContext{} = context) do
     %{

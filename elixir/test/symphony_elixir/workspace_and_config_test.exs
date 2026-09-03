@@ -260,6 +260,41 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
     end
   end
 
+  test "workspace preparation can defer after_create until the caller authorizes effects" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-workspace-deferred-hook-#{System.unique_integer([:positive])}"
+      )
+
+    try do
+      workspace_root = Path.join(test_root, "workspaces")
+      marker = Path.join(test_root, "after-create.marker")
+
+      write_workflow_file!(Workflow.workflow_file_path(),
+        workspace_root: workspace_root,
+        hook_after_create: "printf authorized > '#{shell_path(marker)}'"
+      )
+
+      assert {:ok, %{after_create_deferred: true} = preparation} =
+               Workspace.prepare_for_issue("ARO-196-DEFER", nil, nil, defer_after_create: true)
+
+      refute File.exists?(marker)
+
+      assert :ok =
+               Workspace.run_deferred_after_create_hook(
+                 preparation,
+                 "ARO-196-DEFER",
+                 nil,
+                 []
+               )
+
+      assert File.read!(marker) == "authorized"
+    after
+      File.rm_rf(test_root)
+    end
+  end
+
   test "workspace path is deterministic per issue identifier" do
     workspace_root =
       Path.join(
