@@ -30,6 +30,53 @@ defmodule SymphonyElixir.RepositoryBootstrapTest do
     assert :ok = RepositoryBootstrap.ensure(context(), preparation(false), credential(), authority(), command_runner: runner)
   end
 
+  test "fetch transport failures and timeouts are transient after exact cleanup" do
+    for failure <- [
+          {:git_command_failed, "git fetch", 128, "connection reset " <> @secret},
+          {:git_command_failed, "git fetch", "connection lost " <> @secret},
+          {:workspace_hook_timeout, "git fetch", 100},
+          :timeout
+        ] do
+      runner = fn args, _, _ ->
+        if "fetch" in args, do: {:error, failure}, else: {:ok, ""}
+      end
+
+      result =
+        RepositoryBootstrap.ensure(context(), preparation(true), credential(), authority(),
+          command_runner: runner,
+          cleanup: fn path, host, _, attestation -> send(self(), {:cleaned, path, host, attestation}) end
+        )
+
+      assert result == {:error, :repository_bootstrap_unavailable}
+      refute inspect(result) =~ @secret
+      assert_receive {:cleaned, "/workers/central-brain/ARO-196", nil, %{id: "workspace"}}
+      refute_received {:cleaned, _, _, _}
+    end
+  end
+
+  test "local command failures remain permanent" do
+    for failed_command <- ["init", "remote", "config", "checkout"] do
+      assert {:error, :repository_bootstrap_failed} =
+               RepositoryBootstrap.ensure(context(), preparation(true), credential(), authority(),
+                 command_runner: fn args, _, _ ->
+                   failure = {:error, {:git_command_failed, failed_command, 128, @secret}}
+                   if hd(args) == failed_command, do: failure, else: {:ok, ""}
+                 end,
+                 cleanup: fn _, _, _, _ -> :ok end
+               )
+    end
+  end
+
+  test "invalid fetch results and credential failures remain permanent" do
+    for failure <- [{:error, :invalid_credential_environment}, {:error, :subprocess_home_unavailable}, :invalid] do
+      assert {:error, :repository_bootstrap_failed} =
+               RepositoryBootstrap.ensure(context(), preparation(true), credential(), authority(),
+                 command_runner: fn args, _, _ -> if "fetch" in args, do: failure, else: {:ok, ""} end,
+                 cleanup: fn _, _, _, _ -> :ok end
+               )
+    end
+  end
+
   test "Orchestrator forwards the selected remote bootstrap boundary through to materialization" do
     runner = fn args, credential, runtime ->
       assert credential.token == @secret

@@ -13,6 +13,7 @@ defmodule SymphonyElixir.Orchestrator do
     CodexExecutionInputs,
     Config,
     DispatchCandidate,
+    GitHubCredentialResolver,
     MultiProjectPoll,
     ProjectExecutionContext,
     ProjectProfiles,
@@ -47,6 +48,7 @@ defmodule SymphonyElixir.Orchestrator do
     github_push_authority_missing
     github_response_invalid
     github_authority_invalid
+    repository_bootstrap_failed
     git_checkout_invalid
     git_checkout_mismatch
     git_remote_mismatch
@@ -62,6 +64,7 @@ defmodule SymphonyElixir.Orchestrator do
     default_branch_unresolvable
     required_check_contract_unreadable
     github_unavailable
+    repository_bootstrap_unavailable
   )a
 
   @continuation_retry_delay_ms 1_000
@@ -162,6 +165,12 @@ defmodule SymphonyElixir.Orchestrator do
   # Rendering redaction cannot remove a closure's environment from raw process state.
   # Validate before crossing the process boundary, and again for direct init callers.
   defp validate_runtime_options(opts) do
+    with :ok <- GitHubCredentialResolver.validate_application_source() do
+      validate_retained_options(opts)
+    end
+  end
+
+  defp validate_retained_options(opts) do
     case Enum.find(Keyword.take(opts, @runtime_option_keys), fn {key, value} ->
            not safe_runtime_option?(key, value)
          end) do

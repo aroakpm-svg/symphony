@@ -114,6 +114,48 @@ defmodule SymphonyElixir.GitHubCredentialResolverTest do
     assert {:ok, %Credential{credential_ref: @management_ref}} = Resolver.resolve(@management_ref, [])
   end
 
+  test "application fallback rejects captured secrets without invoking the source" do
+    secret = Enum.join(["captured", "token", "private/path"], "-")
+    parent = self()
+
+    source = fn ref ->
+      send(parent, :unsafe_source_invoked)
+      {:ok, %{credential_ref: ref, token: secret, expires_at: nil}}
+    end
+
+    Application.put_env(:symphony_elixir, :github_credential_source, source)
+
+    assert_secret_safe(fn -> Resolver.resolve(@central_ref, []) end, secret, :credential_resolver_failed)
+    refute_received :unsafe_source_invoked
+  end
+
+  test "application source replacement is revalidated on every resolution" do
+    Application.put_env(:symphony_elixir, :github_credential_source, HostSource)
+    assert {:ok, %Credential{}} = Resolver.resolve(@central_ref, [])
+    captured_path = Path.join(System.tmp_dir!(), "synthetic-private-credential")
+
+    Application.put_env(:symphony_elixir, :github_credential_source, fn ref ->
+      {:ok, %{credential_ref: ref, token: captured_path, expires_at: nil}}
+    end)
+
+    assert {:error, :credential_resolver_failed} = Resolver.resolve(@central_ref, [])
+    Application.put_env(:symphony_elixir, :github_credential_source, &HostSource.resolve/1)
+    assert {:ok, %Credential{}} = Resolver.resolve(@central_ref, [])
+  end
+
+  test "startup validation permits absent or noncapturing sources and rejects malformed handles" do
+    for source <- [nil, HostSource, &HostSource.resolve/1, fn _ -> {:error, :missing} end] do
+      Application.put_env(:symphony_elixir, :github_credential_source, source)
+      assert :ok = Resolver.validate_application_source()
+    end
+
+    for source <- [42, :not_a_source, {HostSource, :resolve, ["private-path"]}, fn _, _ -> :error end] do
+      Application.put_env(:symphony_elixir, :github_credential_source, source)
+      assert {:error, :credential_resolver_failed} = Resolver.validate_application_source()
+      assert {:error, :credential_resolver_failed} = Resolver.resolve(@central_ref, [])
+    end
+  end
+
   test "fails closed when no trusted source is configured" do
     assert_secret_safe(
       fn -> Resolver.resolve(@central_ref, []) end,

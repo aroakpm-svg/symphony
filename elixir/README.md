@@ -533,6 +533,13 @@ worker dependencies, and to both explicit options and application-configured orc
 Resolve secrets inside the trusted source on each invocation; never capture a token or credential
 path in runtime configuration. Call-local test seams outside the scheduler are unaffected.
 
+The standalone application value `:github_credential_source` has the same module/empty-environment
+restriction. It is checked before scheduler startup and again whenever the application fallback
+is resolved, including after a runtime configuration replacement. Invalid sources return
+`credential_resolver_failed` without invocation. Configuration owners must replace rejected values;
+validation does not rewrite application configuration. Explicit call-local sources remain available
+for isolated tests, and competing controller sources still fail closed.
+
 Actor evidence uses the installation-token-compatible, fixed GraphQL `viewer.login` read; GraphQL
 errors (including partial responses) fail closed. Missing or hidden repositories/refs (HTTP 404)
 are permanent authority blockers, not transport retries.
@@ -541,6 +548,13 @@ Only canonical HTTPS GitHub origins are accepted, preventing ambient SSH-key aut
 ARO-197 owns migration of legacy SSH origins and cloning hooks; the runtime does not rewrite reused
 repository configuration. Fresh workspaces that fail checkout validation are rolled back through
 their exact ownership attestation; reused workspaces and pre-existing private homes are preserved.
+
+During fresh bootstrap, Git fetch execution failures and timeouts return the transient
+`repository_bootstrap_unavailable` reason. The owned fresh checkout is rolled back before the
+worker reports the failure; the scheduler releases ownership and schedules backoff. Retry starts
+with fresh pre-claim and post-claim authority checks before fetching again. Local init/config/checkout
+failures, invalid credentials or attestations, and malformed callback results remain permanent
+`repository_bootstrap_failed` blockers.
 
 Only after these gates may `SymphonyElixir.ProjectCredentialProvider` produce the call-local
 `GH_TOKEN` plus fixed HTTPS-GitHub-only Git credential helper environment for readiness, hooks,

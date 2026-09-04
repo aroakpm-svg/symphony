@@ -162,6 +162,34 @@ defmodule SymphonyElixir.ScheduledRuntimeOptionsTest do
     end
   end
 
+  test "startup rejects captured application sources before identity validation" do
+    previous = Application.get_env(:symphony_elixir, :github_credential_source)
+
+    on_exit(fn ->
+      if previous,
+        do: Application.put_env(:symphony_elixir, :github_credential_source, previous),
+        else: Application.delete_env(:symphony_elixir, :github_credential_source)
+    end)
+
+    secret = Enum.join(["application", "credential", "path"], "-")
+    Application.put_env(:symphony_elixir, :github_credential_source, fn _ -> secret end)
+    parent = self()
+
+    opts = [
+      name: nil,
+      identity_validator: fn ->
+        send(parent, :identity_called)
+        {:ok, %{viewer_id: "synthetic"}}
+      end
+    ]
+
+    result = Orchestrator.start_link(opts)
+    if match?({:ok, _}, result), do: GenServer.stop(elem(result, 1))
+    assert result == {:error, :credential_resolver_failed}
+    assert {:stop, :credential_resolver_failed} = Orchestrator.init(opts)
+    refute_received :identity_called
+  end
+
   test "a timed out scheduled preflight releases the scheduler and retries without claiming" do
     parent = self()
     {:ok, ready} = Agent.start_link(fn -> false end)
@@ -198,104 +226,181 @@ defmodule SymphonyElixir.ScheduledRuntimeOptionsTest do
     assert_receive :runner_finished, 10_000
   end
 
-  @tag timeout: 60_000
-  test "scheduled pickup bootstraps a real checkout, completes a Codex turn and reports completion" do
-    parent = self()
-    {:ok, ready} = Agent.start_link(fn -> false end)
-    issue = candidate()
-    opts = options(parent, ready, issue, "synthetic-instance[bot]")
-    root = Path.dirname(Workflow.workflow_file_path())
-    seed = Path.join(root, "seed")
-    File.mkdir_p!(seed)
-    git!(seed, ["init", "-b", "main"])
-    git!(seed, ["config", "user.name", "Synthetic Test"])
-    git!(seed, ["config", "user.email", "synthetic@example.invalid"])
-    File.write!(Path.join(seed, "README.md"), "Synthetic local acceptance fixture\n")
-    git!(seed, ["add", "."])
-    git!(seed, ["commit", "-m", "fixture"])
-    head = git!(seed, ["rev-parse", "HEAD"])
-    workspace = Path.join([root, "workspaces", @profile.key, issue.identifier])
-    fake_codex = Path.join(root, "fake-codex")
+  test "scheduled polling rejects a captured application source installed after startup" do
+    previous = Application.get_env(:symphony_elixir, :github_credential_source)
 
-    File.write!(fake_codex, """
-    #!/bin/sh
-    printf launched > codex-ran.marker
-    count=0
-    while IFS= read -r line; do
-      count=$((count + 1))
-      case "$count" in
-        1) printf '%s\\n' '{"id":1,"result":{}}' ;;
-        2) ;;
-        3) printf '%s\\n' '{"id":2,"result":{"thread":{"id":"thread-scheduled"}}}' ;;
-        4)
-          printf '%s\\n' '{"id":3,"result":{"turn":{"id":"turn-scheduled"}}}'
-          printf '%s\\n' '{"method":"turn/completed"}'
-          exit 0 ;;
-      esac
-    done
-    """)
-
-    File.chmod!(fake_codex, 0o755)
-
-    [_, frontmatter, _] = String.split(File.read!(Workflow.workflow_file_path()), "---", parts: 3)
-    config = Jason.decode!(frontmatter)
-    config = Map.put(config, "codex", %{"command" => shell_quote(shell_path(fake_codex)) <> " app-server"})
-    rewrite = "url.#{shell_path(seed)}.insteadOf"
-    config = Map.put(config, "hooks", %{"after_create" => "git config " <> shell_quote(rewrite) <> " https://github.com/aroakpm-svg/aroak-central-brain.git"})
-    File.write!(Workflow.workflow_file_path(), "---\n" <> Jason.encode!(config) <> "\n---\nSynthetic")
-    :ok = WorkflowStore.force_reload()
-
-    Agent.update(Callbacks, fn callbacks ->
-      original_request = Keyword.fetch!(callbacks, :request_fun)
-
-      callbacks
-      |> Keyword.put(:request_fun, fn request ->
-        if String.contains?(request[:url], "/git/ref/") do
-          {:ok, %{status: 200, body: %{"ref" => "refs/heads/main", "object" => %{"sha" => head}}}}
-        else
-          original_request.(request)
-        end
-      end)
-      |> Keyword.put(:repository_bootstrap_command_runner, fn args, _credential, _runtime ->
-        args = if "fetch" in args, do: Enum.map(args, &if(&1 == "origin", do: seed, else: &1)), else: args
-        {:ok, git!(workspace, args)}
-      end)
-      |> Keyword.put(:git_checkout_command_runner, fn args, _credential, _runtime ->
-        args =
-          case args do
-            ["ls-remote", "--heads", "origin", ref] -> ["ls-remote", "--heads", seed, ref]
-            other -> other
-          end
-
-        {:ok, git!(workspace, args)}
-      end)
+    on_exit(fn ->
+      if previous,
+        do: Application.put_env(:symphony_elixir, :github_credential_source, previous),
+        else: Application.delete_env(:symphony_elixir, :github_credential_source)
     end)
 
-    opts =
-      opts
-      |> Keyword.put(:name, nil)
-      |> Keyword.put(:effect_ledger_ready?, fn -> true end)
-      |> Keyword.put(:git_checkout_command_runner, &Callbacks.git_checkout_command_runner/3)
-
-    {:ok, server} = Orchestrator.start_link(opts)
+    parent = self()
+    {:ok, ready} = Agent.start_link(fn -> false end)
+    opts = options(parent, ready, candidate(), "synthetic-instance[bot]") |> Keyword.delete(:credential_source)
+    Application.put_env(:symphony_elixir, :github_credential_source, Callbacks)
+    {:ok, server} = Orchestrator.start_link([name: nil] ++ opts)
     on_exit(fn -> if Process.alive?(server), do: GenServer.stop(server) end)
     assert_receive {:fetched, "project-management"}, 2_000
+    :sys.get_state(server)
+
+    Application.put_env(:symphony_elixir, :github_credential_source, fn _ ->
+      send(parent, :unsafe_source_invoked)
+      {:error, :missing}
+    end)
+
     Agent.update(ready, fn _ -> true end)
     send(server, :run_poll_cycle)
+    :sys.get_state(server)
+    refute_received :unsafe_source_invoked
+    refute_received :claimed
+    assert :sys.get_state(server).profile_retry_attempts == %{}
+    Application.put_env(:symphony_elixir, :github_credential_source, &Callbacks.resolve/1)
+    send(server, :run_poll_cycle)
     assert_receive :claimed, 2_000
-    assert_receive :runner_finished, 30_000
-    refute_received {:runner_exception, _}
-    assert File.read!(Path.join(workspace, "codex-ran.marker")) == "launched"
-    assert git!(workspace, ["branch", "--show-current"]) == issue.branch_name
-    assert git!(workspace, ["rev-parse", "HEAD"]) == head
-    state = await_completed(server, issue.id, 100)
-    assert state.blocked == %{}
-    assert state.running == %{}
-    refute :erlang.term_to_binary(state) =~ "synthetic-only-token"
-    snapshot = GenServer.call(server, :snapshot)
-    assert snapshot.running == []
-    assert snapshot.blocked == []
-    assert Enum.any?(snapshot.retrying, &(&1.issue_id == issue.id and is_nil(&1.error)))
+    assert_receive :runner_finished, 15_000
+  end
+
+  for fetch_failures <- [0, 1] do
+    @tag timeout: 90_000, fetch_failures: fetch_failures
+    test "scheduled pickup completes and reports after #{fetch_failures} fetch interruptions", %{fetch_failures: fetch_failures} do
+      parent = self()
+      {:ok, ready} = Agent.start_link(fn -> false end)
+      {:ok, failure_budget} = Agent.start_link(fn -> fetch_failures end)
+      issue = candidate()
+      opts = options(parent, ready, issue, "synthetic-instance[bot]")
+      root = Path.dirname(Workflow.workflow_file_path())
+      seed = Path.join(root, "seed")
+      File.mkdir_p!(seed)
+      git!(seed, ["init", "-b", "main"])
+      git!(seed, ["config", "user.name", "Synthetic Test"])
+      git!(seed, ["config", "user.email", "synthetic@example.invalid"])
+      File.write!(Path.join(seed, "README.md"), "Synthetic local acceptance fixture\n")
+      git!(seed, ["add", "."])
+      git!(seed, ["commit", "-m", "fixture"])
+      head = git!(seed, ["rev-parse", "HEAD"])
+      workspace = Path.join([root, "workspaces", @profile.key, issue.identifier])
+      fake_codex = Path.join(root, "fake-codex")
+
+      File.write!(fake_codex, """
+      #!/bin/sh
+      printf launched > codex-ran.marker
+      count=0
+      while IFS= read -r line; do
+        count=$((count + 1))
+        case "$count" in
+          1) printf '%s\\n' '{"id":1,"result":{}}' ;;
+          2) ;;
+          3) printf '%s\\n' '{"id":2,"result":{"thread":{"id":"thread-scheduled"}}}' ;;
+          4)
+            printf '%s\\n' '{"id":3,"result":{"turn":{"id":"turn-scheduled"}}}'
+            printf '%s\\n' '{"method":"turn/completed"}'
+            exit 0 ;;
+        esac
+      done
+      """)
+
+      File.chmod!(fake_codex, 0o755)
+
+      [_, frontmatter, _] = String.split(File.read!(Workflow.workflow_file_path()), "---", parts: 3)
+      config = Jason.decode!(frontmatter)
+      config = Map.put(config, "codex", %{"command" => shell_quote(shell_path(fake_codex)) <> " app-server"})
+      rewrite = "url.#{shell_path(seed)}.insteadOf"
+      config = Map.put(config, "hooks", %{"after_create" => "git config " <> shell_quote(rewrite) <> " https://github.com/aroakpm-svg/aroak-central-brain.git"})
+      File.write!(Workflow.workflow_file_path(), "---\n" <> Jason.encode!(config) <> "\n---\nSynthetic")
+      :ok = WorkflowStore.force_reload()
+
+      Agent.update(Callbacks, fn callbacks ->
+        original_request = Keyword.fetch!(callbacks, :request_fun)
+
+        callbacks
+        |> Keyword.put(:request_fun, fn request ->
+          if String.contains?(request[:url], "/git/ref/") do
+            {:ok, %{status: 200, body: %{"ref" => "refs/heads/main", "object" => %{"sha" => head}}}}
+          else
+            original_request.(request)
+          end
+        end)
+        |> Keyword.put(:repository_bootstrap_command_runner, fn args, _credential, _runtime ->
+          bootstrap_with_interruption(args, workspace, seed, failure_budget)
+        end)
+        |> Keyword.put(:git_checkout_command_runner, fn args, _credential, _runtime ->
+          args =
+            case args do
+              ["ls-remote", "--heads", "origin", ref] -> ["ls-remote", "--heads", seed, ref]
+              other -> other
+            end
+
+          {:ok, git!(workspace, args)}
+        end)
+      end)
+
+      opts =
+        opts
+        |> Keyword.put(:name, nil)
+        |> Keyword.put(:effect_ledger_ready?, fn -> true end)
+        |> Keyword.put(:git_checkout_command_runner, &Callbacks.git_checkout_command_runner/3)
+
+      {:ok, server} = Orchestrator.start_link(opts)
+      on_exit(fn -> if Process.alive?(server), do: GenServer.stop(server) end)
+      assert_receive {:fetched, "project-management"}, 2_000
+      Agent.update(ready, fn _ -> true end)
+      send(server, :run_poll_cycle)
+      assert_receive :claimed, 2_000
+
+      if fetch_failures > 0 do
+        assert_receive :runner_finished, 20_000
+        state = await_retry(server, issue.id, 100)
+        assert state.blocked == %{}
+        refute MapSet.member?(state.claimed, issue.id)
+        assert state.retry_attempts[issue.id].ownership == :unowned_backoff
+        assert state.retry_attempts[issue.id].error =~ "repository_bootstrap_unavailable"
+        refute File.exists?(workspace)
+        retry = state.retry_attempts[issue.id]
+        send(server, {:retry_issue, issue.id, retry.retry_token})
+        assert_receive :claimed, 2_000
+      end
+
+      assert_receive :runner_finished, 30_000
+      refute_received {:runner_exception, _}
+      assert File.read!(Path.join(workspace, "codex-ran.marker")) == "launched"
+      assert git!(workspace, ["branch", "--show-current"]) == issue.branch_name
+      assert git!(workspace, ["rev-parse", "HEAD"]) == head
+      state = await_completed(server, issue.id, 100)
+      assert state.blocked == %{}
+      assert state.running == %{}
+      refute :erlang.term_to_binary(state) =~ "synthetic-only-token"
+      snapshot = GenServer.call(server, :snapshot)
+      assert snapshot.running == []
+      assert snapshot.blocked == []
+      assert Enum.any?(snapshot.retrying, &(&1.issue_id == issue.id and is_nil(&1.error)))
+    end
+  end
+
+  defp bootstrap_with_interruption(args, workspace, seed, failure_budget) do
+    fail? = "fetch" in args and Agent.get_and_update(failure_budget, &{&1 > 0, max(&1 - 1, 0)})
+
+    if fail? do
+      {:error, {:git_command_failed, "git fetch", 128, "connection reset synthetic-only-token"}}
+    else
+      {:ok, git!(workspace, fixture_fetch_args(args, seed))}
+    end
+  end
+
+  defp fixture_fetch_args(args, seed) do
+    if "fetch" in args, do: Enum.map(args, &if(&1 == "origin", do: seed, else: &1)), else: args
+  end
+
+  defp await_retry(server, issue_id, attempts) do
+    state = :sys.get_state(server)
+
+    if Map.has_key?(state.retry_attempts, issue_id) and state.running == %{} do
+      state
+    else
+      assert attempts > 0, "scheduler never recorded a retry"
+      Process.sleep(10)
+      await_retry(server, issue_id, attempts - 1)
+    end
   end
 
   defp await_completed(server, issue_id, attempts) do

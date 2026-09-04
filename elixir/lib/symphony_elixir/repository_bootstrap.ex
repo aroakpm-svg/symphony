@@ -13,7 +13,7 @@ defmodule SymphonyElixir.RepositoryBootstrap do
   @sha_pattern ~r/\A(?:[0-9a-fA-F]{40}|[0-9a-fA-F]{64})\z/
 
   @spec ensure(ProjectExecutionContext.t(), Workspace.preparation(), Credential.t(), map(), keyword()) ::
-          :ok | {:error, :repository_bootstrap_failed}
+          :ok | {:error, :repository_bootstrap_failed | :repository_bootstrap_unavailable}
   def ensure(%ProjectExecutionContext{}, %{created_now: false}, %Credential{}, _authority, _opts),
     do: :ok
 
@@ -49,7 +49,8 @@ defmodule SymphonyElixir.RepositoryBootstrap do
                  "refs/heads/#{context.canonical_branch}:refs/remotes/origin/#{context.canonical_branch}"
                ],
                credential,
-               opts
+               opts,
+               :fetch
              ),
            :ok <- execute(runner, ["config", "--local", "core.autocrlf", "false"], credential, opts),
            :ok <-
@@ -61,6 +62,7 @@ defmodule SymphonyElixir.RepositoryBootstrap do
              ) do
         :ok
       else
+        {:error, :repository_bootstrap_unavailable} = error -> error
         _failure -> {:error, :repository_bootstrap_failed}
       end
 
@@ -68,7 +70,7 @@ defmodule SymphonyElixir.RepositoryBootstrap do
       :ok
     else
       _ = cleanup(preparation, context, opts)
-      {:error, :repository_bootstrap_failed}
+      result
     end
   rescue
     _exception ->
@@ -114,9 +116,10 @@ defmodule SymphonyElixir.RepositoryBootstrap do
     end
   end
 
-  defp execute(runner, args, credential, opts) do
+  defp execute(runner, args, credential, opts, phase \\ :local) do
     case runner.(args, credential, worker_runtime(opts)) do
       {:ok, output} when is_binary(output) -> :ok
+      {:error, reason} when phase == :fetch -> classify_fetch_failure(reason)
       _failure -> {:error, :command_failed}
     end
   rescue
@@ -124,6 +127,20 @@ defmodule SymphonyElixir.RepositoryBootstrap do
   catch
     _kind, _reason -> {:error, :command_failed}
   end
+
+  # Fetch failures retry only after a fresh authority check. Local setup, integrity,
+  # credential-environment failures and malformed callback results still fail closed.
+  defp classify_fetch_failure({:git_command_failed, _command, _status, _output}),
+    do: {:error, :repository_bootstrap_unavailable}
+
+  defp classify_fetch_failure({:git_command_failed, _command, _reason}),
+    do: {:error, :repository_bootstrap_unavailable}
+
+  defp classify_fetch_failure({:workspace_hook_timeout, _command, _timeout}),
+    do: {:error, :repository_bootstrap_unavailable}
+
+  defp classify_fetch_failure(:timeout), do: {:error, :repository_bootstrap_unavailable}
+  defp classify_fetch_failure(_reason), do: {:error, :command_failed}
 
   defp worker_runtime(opts) do
     Keyword.take(opts, [:worker_host, :workspace_attestation, :private_home_capability])

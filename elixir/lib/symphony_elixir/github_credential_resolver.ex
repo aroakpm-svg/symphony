@@ -29,6 +29,15 @@ defmodule SymphonyElixir.GitHubCredentialResolver do
           | :credential_expired
           | :credential_resolver_failed
 
+  @doc "Rejects unsafe persistent application sources without invoking or modifying them."
+  @spec validate_application_source() :: :ok | {:error, :credential_resolver_failed}
+  def validate_application_source do
+    case Application.get_env(:symphony_elixir, :github_credential_source) do
+      nil -> :ok
+      source -> validate_persistent_source(source)
+    end
+  end
+
   @spec resolve(String.t(), keyword()) :: {:ok, Credential.t()} | {:error, reason()}
   def resolve(ref, opts) when is_binary(ref) and is_list(opts) do
     with :ok <- approved_ref(ref),
@@ -66,10 +75,20 @@ defmodule SymphonyElixir.GitHubCredentialResolver do
         configured_source(option_source)
 
       not is_nil(application_source) ->
-        configured_source(application_source)
+        with :ok <- validate_persistent_source(application_source) do
+          configured_source(application_source)
+        end
 
       true ->
         {:error, :credential_source_unconfigured}
+    end
+  end
+
+  defp validate_persistent_source(source) do
+    if source_callback?(source) and (not is_function(source) or :erlang.fun_info(source, :env) == {:env, []}) do
+      :ok
+    else
+      {:error, :credential_resolver_failed}
     end
   end
 

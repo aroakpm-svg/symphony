@@ -226,7 +226,7 @@ defmodule SymphonyElixir.AgentRunner do
          worker_host,
          reason
        )
-       when reason != :repository_bootstrap_failed do
+       when reason not in [:repository_bootstrap_failed, :repository_bootstrap_unavailable] do
     Workspace.rollback_failed_repository_bootstrap(context, worker_host, attestation)
   end
 
@@ -677,6 +677,7 @@ defmodule SymphonyElixir.AgentRunner do
               :github_authority_invalid,
               :github_unavailable,
               :repository_bootstrap_failed,
+              :repository_bootstrap_unavailable,
               :git_checkout_invalid,
               :git_checkout_mismatch,
               :git_remote_mismatch,
