@@ -27,6 +27,7 @@ defmodule SymphonyElixir.Orchestrator do
   alias SymphonyElixir.Linear.Issue
 
   @permanent_preflight_blockers ~w(
+    profiled_ssh_topology_unsupported
     project_mapping_missing
     repository_mismatch
     default_branch_mismatch

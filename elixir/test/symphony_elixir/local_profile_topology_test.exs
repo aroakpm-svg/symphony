@@ -319,7 +319,27 @@ defmodule SymphonyElixir.LocalProfileTopologyTest do
                  end
                )
 
-      assert_received {:agent_hard_blocker, "local-topology", %{kind: {:project_credential_unavailable, @reason}}}
+      assert_received {:agent_hard_blocker, "local-topology", blocker}
+      assert blocker.kind == {:project_credential_unavailable, @reason}
+
+      entry = %{
+        issue: issue,
+        identifier: issue.identifier,
+        started_at: DateTime.utc_now(),
+        worker_host: host
+      }
+
+      state = %Orchestrator.State{
+        running: %{issue.id => entry},
+        claimed: MapSet.new([issue.id]),
+        codex_totals: %{input_tokens: 0, output_tokens: 0, total_tokens: 0, seconds_running: 0}
+      }
+
+      assert {:noreply, blocked} = Orchestrator.handle_info({:agent_hard_blocker, issue.id, blocker}, state)
+      assert blocked.blocked[issue.id].blocker_kind == {:project_credential_unavailable, @reason}
+      assert blocked.blocked[issue.id].error == "project credential unavailable reason=profiled_ssh_topology_unsupported"
+      refute Map.has_key?(blocked.running, issue.id)
+      refute Map.has_key?(blocked.retry_attempts, issue.id)
       refute_received :credential_effect
       refute_received :http_effect
       refute_received :bootstrap_effect
