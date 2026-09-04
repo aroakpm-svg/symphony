@@ -5,7 +5,7 @@ defmodule SymphonyElixir.AgentRunner do
 
   require Logger
   alias SymphonyElixir.{ClaimService, Codex.AppServer, CodexExecutionInputs, Config, Linear.Issue}
-  alias SymphonyElixir.{GitCheckoutPreflight, GitHubAuthorityClient}
+  alias SymphonyElixir.{GitCheckoutPreflight, ProjectRepoPreflight}
   alias SymphonyElixir.{ProjectCredentialProvider, ProjectExecutionContext, RepositoryBootstrap}
   alias SymphonyElixir.{PromptBuilder, ReadinessGate, SubprocessEnvironment, Tracker, Workspace}
 
@@ -450,8 +450,12 @@ defmodule SymphonyElixir.AgentRunner do
 
   defp fresh_worker_authority(%ProjectExecutionContext{} = context, opts) do
     with {:ok, credential} <- ProjectCredentialProvider.resolve(context, resolver_opts(opts)),
-         {:ok, authority} <- GitHubAuthorityClient.verify(authority_profile(context), credential, authority_opts(opts)) do
+         {:ok, authority} <-
+           ProjectRepoPreflight.check_credential(authority_profile(context), credential, authority_opts(opts)) do
       {:ok, credential, authority}
+    else
+      {:blocked, %{code: code}} -> {:error, code}
+      {:error, _reason} = error -> error
     end
   end
 
@@ -702,6 +706,9 @@ defmodule SymphonyElixir.AgentRunner do
               :github_response_invalid,
               :github_authority_invalid,
               :github_unavailable,
+              :required_check_contract_missing,
+              :required_check_contract_invalid,
+              :required_check_contract_unreadable,
               :repository_bootstrap_failed,
               :repository_rollback_failed,
               :subprocess_home_rollback_failed,

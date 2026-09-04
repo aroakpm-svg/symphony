@@ -3,6 +3,88 @@ defmodule SymphonyElixir.ReadinessGateAgentRunnerTest do
 
   @central_project_id "d0acfb71-f68c-4a9f-8a1a-477265d3c3ec"
 
+  test "a newly resolved worker head must pass its own quality contract before checkout" do
+    old_head = String.duplicate("a", 40)
+    new_head = String.duplicate("b", 40)
+    old_opts = canonical_gate_options("old-token", old_head)
+    old_request = old_opts[:request_fun]
+    profile = profiled_issue("ARO-196", "codex/aro-196", "aroakpm-svg/aroak-central-brain").project_profile
+
+    old_opts =
+      Keyword.put(old_opts, :request_fun, fn request ->
+        if String.ends_with?(request[:url], "/contents/package.json?ref=" <> old_head),
+          do: {:ok, %{status: 200, body: %{"scripts" => %{"typecheck" => "tsc", "build" => "build", "test" => "test"}}}},
+          else: old_request.(request)
+      end)
+
+    assert {:ok, %{head_sha: ^old_head}} = SymphonyElixir.ProjectRepoPreflight.check(profile, old_opts)
+    opts = canonical_gate_options("fresh-token", new_head)
+    fresh_request = opts[:request_fun]
+
+    opts =
+      opts
+      |> Keyword.put(:request_fun, fn request ->
+        if String.contains?(request[:url], "/contents/package.json") do
+          assert String.ends_with?(request[:url], "?ref=" <> new_head)
+          assert {"authorization", "Bearer fresh-token"} in request[:headers]
+          send(self(), :new_contract_checked)
+          {:ok, %{status: 200, body: %{"scripts" => %{}}}}
+        else
+          fresh_request.(request)
+        end
+      end)
+      |> Keyword.put(:git_checkout_command_runner, fn _, _, _ -> flunk("unchecked head reached checkout") end)
+
+    assert {:error, :required_check_contract_missing} =
+             AgentRunner.post_claim_gate_for_test(aro196_context(), "unused", opts)
+
+    assert_received :new_contract_checked
+  end
+
+  for {status, body, reason, retry?} <- [
+        {200, %{"scripts" => %{}}, :required_check_contract_missing, false},
+        {200, "malformed-json", :required_check_contract_invalid, false},
+        {404, %{}, :required_check_contract_unreadable, true},
+        {403, %{"message" => "You have exceeded a secondary rate limit."}, :github_unavailable, true}
+      ] do
+    test "post-claim quality failure #{reason} stops effects and preserves scheduler classification" do
+      fixture = git_fixture!()
+      on_exit(fn -> File.rm_rf(fixture.root) end)
+      issue = profiled_issue("ARO-196-CONTRACT", "codex/aro-196-contract", "aroakpm-svg/aroak-central-brain")
+      write_workflow_file!(Workflow.workflow_file_path(), workspace_root: fixture.workspace_root)
+      opts = canonical_gate_options("contract-token", fixture.initial_sha)
+      successful = opts[:request_fun]
+
+      opts =
+        opts
+        |> Keyword.put(:request_fun, fn request ->
+          if String.contains?(request[:url], "/contents/package.json") do
+            {:ok, %{status: unquote(status), body: unquote(Macro.escape(body))}}
+          else
+            successful.(request)
+          end
+        end)
+        |> Keyword.put(:repository_bootstrap_command_runner, fn _, _, _ -> flunk("invalid contract reached bootstrap") end)
+        |> Keyword.put(:codex_session_starter, fn _, _ -> flunk("invalid contract reached Codex") end)
+
+      assert :ok = AgentRunner.run(issue, self(), opts)
+      assert_receive {:agent_hard_blocker, _, blocker}
+      assert blocker.kind == {:project_credential_unavailable, unquote(reason)}
+      refute File.exists?(Path.join([fixture.workspace_root, "central-brain", issue.identifier]))
+      {:noreply, state} = Orchestrator.handle_info({:agent_hard_blocker, issue.id, blocker}, running_orchestrator_state(issue))
+      refute :erlang.term_to_binary(state) =~ "contract-token"
+
+      if unquote(retry?) do
+        assert state.blocked == %{}
+        assert state.retry_attempts[issue.id].ownership == :unowned_backoff
+        Process.cancel_timer(state.retry_attempts[issue.id].timer_ref)
+      else
+        assert Map.has_key?(state.blocked, issue.id)
+        refute Map.has_key?(state.retry_attempts, issue.id)
+      end
+    end
+  end
+
   for {key, value} <- [
         {"remote.origin.pushurl", "https://github.com/aroakpm-svg/aroak-project-management.git"},
         {"remote.pushDefault", "other"},
@@ -82,6 +164,9 @@ defmodule SymphonyElixir.ReadinessGateAgentRunnerTest do
 
       response =
         case request[:url] do
+          "https://api.github.com/repos/aroakpm-svg/aroak-central-brain/contents/package.json?ref=" <> ^head ->
+            %{"scripts" => %{"typecheck" => "tsc", "build" => "build", "test" => "test"}}
+
           "https://api.github.com/installation/repositories?per_page=2" ->
             %{"total_count" => 1, "repositories" => [%{"full_name" => "aroakpm-svg/aroak-central-brain"}]}
 
@@ -1205,6 +1290,9 @@ defmodule SymphonyElixir.ReadinessGateAgentRunnerTest do
     request = fn request ->
       body =
         case request[:url] do
+          "https://api.github.com/repos/aroakpm-svg/aroak-central-brain/contents/package.json?ref=" <> ^head ->
+            %{"scripts" => %{"typecheck" => "tsc", "build" => "build", "test" => "test"}}
+
           "https://api.github.com/installation/repositories?per_page=2" ->
             %{"total_count" => 1, "repositories" => [%{"full_name" => "aroakpm-svg/aroak-central-brain"}]}
 

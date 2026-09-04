@@ -112,8 +112,20 @@ defmodule SymphonyElixir.ProjectRepoPreflight do
   end
 
   defp check_profile(profile, opts) do
+    with {:ok, _project, mapping} <- mapping_from_profile(profile),
+         {:ok, credential} <- GitHubCredentialResolver.resolve(mapping.credential_ref, opts) do
+      check_credential(profile, credential, opts)
+    else
+      :error -> invalid_profile(profile)
+      {:error, reason} -> blocker_for(reason)
+    end
+  end
+
+  @doc "Validates fresh authority and the quality contract at that exact head using one call-local credential."
+  @spec check_credential(ProjectProfiles.profile(), Credential.t(), keyword()) ::
+          {:ok, receipt()} | {:blocked, blocker()}
+  def check_credential(profile, credential, opts) do
     with {:ok, project, mapping} <- mapping_from_profile(profile),
-         {:ok, credential} <- GitHubCredentialResolver.resolve(mapping.credential_ref, opts),
          {:ok, authority} <- GitHubAuthorityClient.verify(profile, credential, opts),
          {:ok, scripts} <- package_scripts(mapping, authority.head_sha, credential, opts),
          :ok <- verify_required_scripts(mapping, scripts) do

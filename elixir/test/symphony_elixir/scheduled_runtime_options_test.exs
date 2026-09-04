@@ -261,7 +261,7 @@ defmodule SymphonyElixir.ScheduledRuntimeOptionsTest do
     assert_receive :runner_finished, 15_000
   end
 
-  for interruption <- [:none, :fetch, :remote_head] do
+  for interruption <- [:none, :fetch, :remote_head, :head_advance] do
     @tag timeout: 90_000, interruption: interruption
     test "scheduled pickup completes and reports with #{interruption} interruption", %{interruption: interruption} do
       parent = self()
@@ -279,6 +279,18 @@ defmodule SymphonyElixir.ScheduledRuntimeOptionsTest do
       git!(seed, ["add", "."])
       git!(seed, ["commit", "-m", "fixture"])
       head = git!(seed, ["rev-parse", "HEAD"])
+      old_head = head
+      {:ok, head_reads} = Agent.start_link(fn -> 0 end)
+
+      head =
+        if interruption == :head_advance do
+          File.write!(Path.join(seed, "README.md"), "Canonical branch advanced after preflight\n")
+          git!(seed, ["commit", "-am", "advance"])
+          git!(seed, ["rev-parse", "HEAD"])
+        else
+          head
+        end
+
       workspace = Path.join([root, "workspaces", @profile.key, issue.identifier])
       fake_codex = Path.join(root, "fake-codex")
 
@@ -315,13 +327,24 @@ defmodule SymphonyElixir.ScheduledRuntimeOptionsTest do
 
         callbacks
         |> Keyword.put(:request_fun, fn request ->
-          if String.contains?(request[:url], "/git/ref/") do
-            {:ok, %{status: 200, body: %{"ref" => "refs/heads/main", "object" => %{"sha" => head}}}}
-          else
-            original_request.(request)
+          cond do
+            String.contains?(request[:url], "/git/ref/") ->
+              count = Agent.get_and_update(head_reads, &{&1, &1 + 1})
+              observed_head = if interruption == :head_advance and count == 0, do: old_head, else: head
+              {:ok, %{status: 200, body: %{"ref" => "refs/heads/main", "object" => %{"sha" => observed_head}}}}
+
+            String.contains?(request[:url], "/contents/package.json?ref=") ->
+              checked_head = request[:url] |> String.split("?ref=") |> List.last()
+              Process.put(:quality_checked_head, checked_head)
+              send(parent, {:quality_head, checked_head})
+              original_request.(request)
+
+            true ->
+              original_request.(request)
           end
         end)
         |> Keyword.put(:repository_bootstrap_command_runner, fn args, _credential, _runtime ->
+          assert Process.get(:quality_checked_head) == head
           bootstrap_with_interruption(args, workspace, seed, failure_budget, interruption)
         end)
         |> Keyword.put(:git_checkout_command_runner, fn args, _credential, _runtime ->
@@ -342,7 +365,7 @@ defmodule SymphonyElixir.ScheduledRuntimeOptionsTest do
       send(server, :run_poll_cycle)
       assert_receive :claimed, 2_000
 
-      if interruption != :none do
+      if interruption in [:fetch, :remote_head] do
         assert_receive :runner_finished, 20_000
         state = await_retry(server, issue.id, 100)
         assert state.blocked == %{}
@@ -361,6 +384,8 @@ defmodule SymphonyElixir.ScheduledRuntimeOptionsTest do
       assert File.read!(Path.join(workspace, "codex-ran.marker")) == "launched"
       assert git!(workspace, ["branch", "--show-current"]) == issue.branch_name
       assert git!(workspace, ["rev-parse", "HEAD"]) == head
+      assert_received {:quality_head, ^head}
+      if interruption == :head_advance, do: assert_received({:quality_head, ^old_head})
       state = await_completed(server, issue.id, 100)
       assert state.blocked == %{}
       assert state.running == %{}

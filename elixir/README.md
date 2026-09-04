@@ -526,8 +526,13 @@ The source returns exactly one reference-bound credential for the current call. 
 `ProjectRepoPreflight` resolves it, validates actor/token scope/repository/pull/push/default branch/head, reads
 the quality contract at that verified head, and discards it. After claim,
 `SymphonyElixir.AgentRunner` resolves a second fresh credential and repeats full authority
-validation before `SymphonyElixir.GitCheckoutPreflight` checks that node-local runtime's namespaced
-checkout, origin, branch, remote head, and safe writable `.git` metadata. This includes Symphony
+and immutable-head quality-contract validation before `SymphonyElixir.GitCheckoutPreflight` checks that node-local runtime's namespaced
+checkout, origin, branch, remote head, and safe writable `.git` metadata. Both stages share
+`ProjectRepoPreflight.check_credential/3`, so a canonical branch advance between claim stages is
+accepted only after its new head's package scripts pass the same contract. The post-claim check
+uses the newly resolved worker credential and that worker's HTTP boundary; bootstrap and checkout
+then remain bound to that checked head. Missing/invalid scripts block before workspace effects,
+while unavailable package reads retain their existing retry classification. This includes Symphony
 running locally inside WSL; another runtime's credential evidence cannot authorize it.
 
 The complete pre-claim resolver, authority and package check runs in one monitored process with

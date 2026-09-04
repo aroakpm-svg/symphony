@@ -37,10 +37,20 @@ defmodule SymphonyElixir.AgentRunnerRollbackReportingTest do
       request = fn request ->
         body =
           case request[:url] do
-            "https://api.github.com/installation/repositories?per_page=2" -> %{"total_count" => 1, "repositories" => [%{"full_name" => profile.repository}]}
-            "https://api.github.com/graphql" -> %{"data" => %{"viewer" => %{"login" => "aroak-automation[bot]"}}}
-            "https://api.github.com/repos/aroakpm-svg/aroak-central-brain" -> %{"full_name" => profile.repository, "default_branch" => "main", "permissions" => %{"pull" => true, "push" => true}}
-            "https://api.github.com/repos/aroakpm-svg/aroak-central-brain/git/ref/heads/main" -> %{"ref" => "refs/heads/main", "object" => %{"sha" => String.duplicate("a", 40)}}
+            "https://api.github.com/repos/aroakpm-svg/aroak-central-brain/contents/package.json?ref=" <> _head ->
+              %{"scripts" => %{"typecheck" => "tsc", "build" => "build", "test" => "test"}}
+
+            "https://api.github.com/installation/repositories?per_page=2" ->
+              %{"total_count" => 1, "repositories" => [%{"full_name" => profile.repository}]}
+
+            "https://api.github.com/graphql" ->
+              %{"data" => %{"viewer" => %{"login" => "aroak-automation[bot]"}}}
+
+            "https://api.github.com/repos/aroakpm-svg/aroak-central-brain" ->
+              %{"full_name" => profile.repository, "default_branch" => "main", "permissions" => %{"pull" => true, "push" => true}}
+
+            "https://api.github.com/repos/aroakpm-svg/aroak-central-brain/git/ref/heads/main" ->
+              %{"ref" => "refs/heads/main", "object" => %{"sha" => String.duplicate("a", 40)}}
           end
 
         {:ok, %{status: 200, body: body}}
