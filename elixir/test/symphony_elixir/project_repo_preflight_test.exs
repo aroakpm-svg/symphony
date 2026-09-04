@@ -227,6 +227,74 @@ defmodule SymphonyElixir.ProjectRepoPreflightTest do
              ProjectRepoPreflight.check(%{key: "project-management"}, credential_source: source)
   end
 
+  for stage <- [:resolver, :authority, :package] do
+    test "bounds the complete preflight when #{stage} hangs" do
+      assert_bounded_preflight(unquote(stage))
+    end
+  end
+
+  test "caller termination also terminates a hung credential source" do
+    parent = self()
+
+    caller =
+      spawn(fn ->
+        ProjectRepoPreflight.check(@profile,
+          credential_source: fn _ ->
+            send(parent, {:hung_source, self()})
+            Process.sleep(:infinity)
+          end
+        )
+      end)
+
+    assert_receive {:hung_source, worker}
+    monitor = Process.monitor(worker)
+    on_exit(fn -> Process.exit(worker, :kill) end)
+    Process.exit(caller, :kill)
+    assert_receive {:DOWN, ^monitor, :process, ^worker, _}, 500
+  end
+
+  test "an uncatchable callback exit is sanitized and leaves the caller alive" do
+    assert {:blocked, %{code: :github_unavailable, detail: nil}} =
+             ProjectRepoPreflight.check(@profile,
+               credential_source: fn _ -> Process.exit(self(), :kill) end
+             )
+
+    refute_received {:DOWN, _, _, _, _}
+    assert {:ok, _receipt} = ProjectRepoPreflight.check(@profile, valid_options(self()))
+  end
+
+  defp assert_bounded_preflight(stage) do
+    parent = self()
+    base = request_fun(parent)
+
+    hang = fn ->
+      send(parent, {:hung, self()})
+      Process.sleep(:infinity)
+    end
+
+    opts = [
+      timeout: 25,
+      credential_source: fn ref -> if stage == :resolver, do: hang.(), else: credential(ref) end,
+      expected_actor: @actor,
+      request_fun: fn request ->
+        if stage == :authority or (stage == :package and request[:url] =~ "/contents/") do
+          hang.()
+        else
+          base.(request)
+        end
+      end
+    ]
+
+    task = Task.async(fn -> ProjectRepoPreflight.check(@profile, opts) end)
+    assert_receive {:hung, worker}, 1_000
+    result = Task.yield(task, 500) || Task.shutdown(task, :brutal_kill)
+    on_exit(fn -> if Process.alive?(worker), do: Process.exit(worker, :kill) end)
+    assert {:ok, {:blocked, %{code: :github_unavailable, detail: nil}}} = result
+    refute Process.alive?(worker)
+    refute_received {_, {:blocked, _}}
+    assert {:ok, _} = ProjectRepoPreflight.check(@profile, valid_options(parent))
+  end
+
   defp valid_options(parent, overrides \\ []) do
     [
       credential_source: fn ref -> credential(ref) end,

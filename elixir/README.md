@@ -519,6 +519,20 @@ validation before `SymphonyElixir.GitCheckoutPreflight` checks that node-local r
 checkout, origin, branch, remote head, and safe writable `.git` metadata. This includes Symphony
 running locally inside WSL; another runtime's credential evidence cannot authorize it.
 
+The complete pre-claim resolver, authority and package check runs in one monitored process with
+a shared 10-second deadline. An independent supervisor kills the check on expiry or caller exit;
+expiry returns the transient `github_unavailable` blocker. Trusted runtime option `preflight_timeout`
+may shorten this deadline; it cannot extend or
+disable it. The scheduler resumes processing its mailbox after that bounded wait.
+
+Options retained by a started orchestrator accept only callbacks with an empty captured environment
+(for example `&MyRuntime.request/1`) or module handles (for example a credential source module
+implementing `resolve/1`). Closures that capture values, and argument-bearing MFA tuples, are rejected
+with `{:unsafe_runtime_option, key}` before startup. This applies to all retained callbacks, including
+worker dependencies, and to both explicit options and application-configured orchestrator defaults.
+Resolve secrets inside the trusted source on each invocation; never capture a token or credential
+path in runtime configuration. Call-local test seams outside the scheduler are unaffected.
+
 Actor evidence uses the installation-token-compatible, fixed GraphQL `viewer.login` read; GraphQL
 errors (including partial responses) fail closed. Missing or hidden repositories/refs (HTTP 404)
 are permanent authority blockers, not transport retries.

@@ -15,6 +15,7 @@ defmodule SymphonyElixir.ProjectRepoPreflight do
     "project-management" => ["typecheck", "build", "db:test"]
   }
   @github_api "https://api.github.com"
+  @timeout_ms 10_000
   @blocker_next_steps %{
     credential_source_unconfigured: "Configure the one trusted credential source for this runtime.",
     credential_source_missing: "Configure the one trusted credential source for this runtime.",
@@ -45,7 +46,69 @@ defmodule SymphonyElixir.ProjectRepoPreflight do
 
   @spec check(ProjectProfiles.profile(), keyword()) :: {:ok, receipt()} | {:blocked, blocker()}
   def check(profile, opts \\ []) do
-    if is_list(opts), do: check_profile(profile, opts), else: invalid_profile(profile)
+    if is_list(opts), do: bounded_check(profile, opts), else: invalid_profile(profile)
+  end
+
+  defp bounded_check(profile, opts) do
+    caller = self()
+    tag = make_ref()
+
+    {pid, monitor} =
+      spawn_monitor(fn -> send(caller, {tag, supervise_check(caller, profile, opts)}) end)
+
+    receive do
+      {^tag, result} ->
+        Process.demonitor(monitor, [:flush])
+        result
+
+      {:DOWN, ^monitor, :process, ^pid, _reason} ->
+        blocker_for(:github_unavailable)
+    end
+  end
+
+  # The supervisor owns the deadline even if the scheduler dies during a callback.
+  # It never invokes credential-bearing code itself and only forwards sanitized results.
+  defp supervise_check(caller, profile, opts) do
+    owner_monitor = Process.monitor(caller)
+    supervisor = self()
+    tag = make_ref()
+    {worker, monitor} = spawn_monitor(fn -> send(supervisor, {tag, safe_check(profile, opts)}) end)
+
+    result =
+      receive do
+        {^tag, result} -> result
+        {:DOWN, ^owner_monitor, :process, ^caller, _reason} -> blocker_for(:github_unavailable)
+        {:DOWN, ^monitor, :process, ^worker, _reason} -> blocker_for(:github_unavailable)
+      after
+        preflight_timeout(opts) -> blocker_for(:github_unavailable)
+      end
+
+    # A fresh monitor also works if the result branch already consumed DOWN.
+    termination = Process.monitor(worker)
+    Process.exit(worker, :kill)
+
+    receive do
+      {:DOWN, ^termination, :process, ^worker, _reason} -> :ok
+    end
+
+    Process.demonitor(monitor, [:flush])
+    Process.demonitor(owner_monitor, [:flush])
+    result
+  end
+
+  defp safe_check(profile, opts) do
+    check_profile(profile, opts)
+  rescue
+    _exception -> blocker_for(:github_unavailable)
+  catch
+    _kind, _reason -> blocker_for(:github_unavailable)
+  end
+
+  defp preflight_timeout(opts) do
+    case Keyword.get(opts, :timeout, @timeout_ms) do
+      timeout when is_integer(timeout) and timeout > 0 and timeout <= @timeout_ms -> timeout
+      _invalid -> @timeout_ms
+    end
   end
 
   defp check_profile(profile, opts) do

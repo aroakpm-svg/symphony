@@ -117,6 +117,7 @@ defmodule SymphonyElixir.Orchestrator do
                            :track_worker_fun,
                            :health_fun,
                            :poll_timeout,
+                           :preflight_timeout,
                            :timer_fun,
                            :cancel_timer_fun,
                            :retry_delay_fun
@@ -152,8 +153,32 @@ defmodule SymphonyElixir.Orchestrator do
   def start_link(opts \\ []) do
     opts = Keyword.merge(configured_orchestrator_opts(), opts)
     name = Keyword.get(opts, :name, __MODULE__)
-    GenServer.start_link(__MODULE__, opts, name: name)
+
+    with :ok <- validate_runtime_options(opts) do
+      GenServer.start_link(__MODULE__, opts, name: name)
+    end
   end
+
+  # Rendering redaction cannot remove a closure's environment from raw process state.
+  # Validate before crossing the process boundary, and again for direct init callers.
+  defp validate_runtime_options(opts) do
+    case Enum.find(Keyword.take(opts, @runtime_option_keys), fn {key, value} ->
+           not safe_runtime_option?(key, value)
+         end) do
+      nil -> :ok
+      {key, _value} -> {:error, {:unsafe_runtime_option, key}}
+    end
+  end
+
+  defp safe_runtime_option?(:expected_actor, value), do: is_binary(value) or is_nil(value)
+
+  defp safe_runtime_option?(key, value) when key in [:max_turns, :poll_timeout, :preflight_timeout],
+    do: is_integer(value) and value > 0
+
+  defp safe_runtime_option?(_key, value) when is_function(value),
+    do: :erlang.fun_info(value, :env) == {:env, []}
+
+  defp safe_runtime_option?(_key, value), do: is_atom(value)
 
   @doc "Records the owning issue's completed Design 4 landing evidence for the next production poll."
   @spec finding_complete(String.t(), map(), GenServer.server()) :: :ok | {:error, :invalid_finding_complete}
@@ -167,6 +192,13 @@ defmodule SymphonyElixir.Orchestrator do
 
   @impl true
   def init(opts) do
+    case validate_runtime_options(opts) do
+      :ok -> init_validated_options(opts)
+      {:error, reason} -> {:stop, reason}
+    end
+  end
+
+  defp init_validated_options(opts) do
     case Config.validate_execution_topology() do
       :ok ->
         init_validated_settings(opts)
@@ -871,7 +903,11 @@ defmodule SymphonyElixir.Orchestrator do
 
   defp preflight_multi_project_candidate(state, issue, opts) do
     preflight_fun = Keyword.get(opts, :preflight_fun, &ProjectRepoPreflight.check/2)
-    preflight_opts = Keyword.take(opts, @preflight_option_keys)
+
+    preflight_opts =
+      opts
+      |> Keyword.take(@preflight_option_keys)
+      |> Keyword.put(:timeout, Keyword.get(opts, :preflight_timeout, 10_000))
 
     report_health(opts, {:stage, :preflight, health_issue_metadata(issue, :started)})
 
@@ -1079,7 +1115,7 @@ defmodule SymphonyElixir.Orchestrator do
       timer_ref: timer_ref
     }
 
-    Logger.warning("Retrying project profile=#{profile_key} in #{delay_ms}ms attempt=#{attempt} reason=#{reason}")
+    Logger.warning("Retrying project profile=#{profile_key} in #{delay_ms}ms attempt=#{attempt} reason=#{inspect(reason)}")
     %{state | profile_retry_attempts: Map.put(retries, profile_key, retry)}
   end
 
