@@ -13,6 +13,7 @@ defmodule SymphonyElixir.Orchestrator do
     CodexExecutionInputs,
     Config,
     DispatchCandidate,
+    GitHubCredentialResolver,
     MultiProjectPoll,
     ProjectExecutionContext,
     ProjectProfiles,
@@ -27,17 +28,49 @@ defmodule SymphonyElixir.Orchestrator do
   alias SymphonyElixir.Linear.Issue
 
   @permanent_preflight_blockers ~w(
+    profiled_ssh_topology_unsupported
     project_mapping_missing
     repository_mismatch
     default_branch_mismatch
     required_check_contract_invalid
     required_check_contract_missing
+    credential_source_unconfigured
+    credential_source_missing
+    credential_source_conflict
+    credential_reference_mismatch
+    credential_expired
+    credential_resolver_failed
+    codex_auth_home_unconfigured
+    codex_auth_home_invalid
+    codex_authentication_required
+    github_unauthorized
+    github_forbidden
+    github_unexpected_actor
+    github_repository_not_allowed
+    github_pull_authority_missing
+    github_push_authority_missing
+    github_response_invalid
+    github_authority_invalid
+    repository_bootstrap_failed
+    repository_rollback_failed
+    subprocess_home_rollback_failed
+    git_checkout_invalid
+    git_checkout_mismatch
+    git_remote_mismatch
+    git_branch_mismatch
+    github_remote_head_changed
+    git_metadata_missing
+    git_metadata_unsafe
+    git_metadata_unwritable
   )a
   @transient_preflight_blockers ~w(
+    codex_authentication_unavailable
     repository_unavailable
     repository_metadata_invalid
     default_branch_unresolvable
     required_check_contract_unreadable
+    github_unavailable
+    repository_bootstrap_unavailable
   )a
 
   @continuation_retry_delay_ms 1_000
@@ -56,17 +89,55 @@ defmodule SymphonyElixir.Orchestrator do
   @agent_runner_option_keys [
     :codex_session_starter,
     :credential_provider,
+    :credential_source,
     :effect_ledger_ready?,
+    :expected_actor,
+    :git_checkout_command_runner,
     :issue_state_fetcher,
     :max_turns,
-    :readiness_command_runner
+    :metadata_inspector,
+    :metadata_probe,
+    :readiness_command_runner,
+    :repository_bootstrap_command_runner,
+    :request_fun,
+    :worker_authority_request_fun,
+    :worker_credential_source,
+    :workspace_attestor,
+    :workspace_guard
   ]
+  @preflight_option_keys [:credential_source, :expected_actor, :request_fun]
+  # Trusted process-local dependencies/policy, never issue-selected authority or retry payloads.
+  @runtime_option_keys @agent_runner_option_keys ++
+                         [
+                           :fetcher,
+                           :refresh_fun,
+                           :profile_refresh_fun,
+                           :retry_fetch_fun,
+                           :route_reader,
+                           :preflight_fun,
+                           :claim_fun,
+                           :claim_release_fun,
+                           :worker_host_selector,
+                           :dispatch_fun,
+                           :task_start_fun,
+                           :bind_worker_fun,
+                           :terminate_task_fun,
+                           :finalize_claim_fun,
+                           :track_worker_fun,
+                           :health_fun,
+                           :poll_timeout,
+                           :preflight_timeout,
+                           :timer_fun,
+                           :cancel_timer_fun,
+                           :retry_delay_fun
+                         ]
 
   defmodule State do
     @moduledoc """
     Runtime state for the orchestrator polling loop.
     """
 
+    @derive {Inspect, except: [:runtime_options]}
     defstruct [
       :poll_interval_ms,
       :max_concurrent_agents,
@@ -74,6 +145,7 @@ defmodule SymphonyElixir.Orchestrator do
       :poll_check_in_progress,
       :tick_timer_ref,
       :tick_token,
+      runtime_options: [],
       running: %{},
       completed: MapSet.new(),
       claimed: MapSet.new(),
@@ -90,8 +162,38 @@ defmodule SymphonyElixir.Orchestrator do
   def start_link(opts \\ []) do
     opts = Keyword.merge(configured_orchestrator_opts(), opts)
     name = Keyword.get(opts, :name, __MODULE__)
-    GenServer.start_link(__MODULE__, opts, name: name)
+
+    with :ok <- validate_runtime_options(opts) do
+      GenServer.start_link(__MODULE__, opts, name: name)
+    end
   end
+
+  # Rendering redaction cannot remove a closure's environment from raw process state.
+  # Validate before crossing the process boundary, and again for direct init callers.
+  defp validate_runtime_options(opts) do
+    with :ok <- GitHubCredentialResolver.validate_application_source() do
+      validate_retained_options(opts)
+    end
+  end
+
+  defp validate_retained_options(opts) do
+    case Enum.find(Keyword.take(opts, @runtime_option_keys), fn {key, value} ->
+           not safe_runtime_option?(key, value)
+         end) do
+      nil -> :ok
+      {key, _value} -> {:error, {:unsafe_runtime_option, key}}
+    end
+  end
+
+  defp safe_runtime_option?(:expected_actor, value), do: is_binary(value) or is_nil(value)
+
+  defp safe_runtime_option?(key, value) when key in [:max_turns, :poll_timeout, :preflight_timeout],
+    do: is_integer(value) and value > 0
+
+  defp safe_runtime_option?(_key, value) when is_function(value),
+    do: :erlang.fun_info(value, :env) == {:env, []}
+
+  defp safe_runtime_option?(_key, value), do: is_atom(value)
 
   @doc "Records the owning issue's completed Design 4 landing evidence for the next production poll."
   @spec finding_complete(String.t(), map(), GenServer.server()) :: :ok | {:error, :invalid_finding_complete}
@@ -105,6 +207,24 @@ defmodule SymphonyElixir.Orchestrator do
 
   @impl true
   def init(opts) do
+    case validate_runtime_options(opts) do
+      :ok -> init_validated_options(opts)
+      {:error, reason} -> {:stop, reason}
+    end
+  end
+
+  defp init_validated_options(opts) do
+    case Config.validate_execution_topology() do
+      :ok ->
+        init_validated_settings(opts)
+
+      {:error, reason} ->
+        report_health(opts, {:stop, %{category: :startup_failure, failure_category: reason}})
+        {:stop, reason}
+    end
+  end
+
+  defp init_validated_settings(opts) do
     identity_validator = identity_validator(opts)
 
     case validate_startup_identity(identity_validator) do
@@ -120,6 +240,7 @@ defmodule SymphonyElixir.Orchestrator do
           poll_check_in_progress: false,
           tick_timer_ref: nil,
           tick_token: nil,
+          runtime_options: Keyword.take(opts, @runtime_option_keys),
           codex_totals: @empty_codex_totals,
           codex_rate_limits: nil
         }
@@ -134,6 +255,11 @@ defmodule SymphonyElixir.Orchestrator do
         report_health(opts, {:stop, %{category: :startup_failure, failure_category: reason}})
         {:stop, reason}
     end
+  end
+
+  @impl true
+  def format_status(status) do
+    Map.update!(status, :state, fn state -> %{state | runtime_options: []} end)
   end
 
   @impl true
@@ -174,7 +300,7 @@ defmodule SymphonyElixir.Orchestrator do
 
   def handle_info(:run_poll_cycle, state) do
     state = refresh_runtime_config(state)
-    state = maybe_dispatch(state)
+    state = maybe_dispatch(state, state.runtime_options)
     state = schedule_tick(state, state.poll_interval_ms)
     state = %{state | poll_check_in_progress: false}
 
@@ -268,20 +394,13 @@ defmodule SymphonyElixir.Orchestrator do
         {:noreply, state}
 
       running_entry ->
-        error = Map.get(blocker_info, :error) || "agent hard blocker"
-
         running_entry =
           running_entry
           |> maybe_put_runtime_value(:worker_host, Map.get(blocker_info, :worker_host))
           |> maybe_put_runtime_value(:workspace_path, Map.get(blocker_info, :workspace_path))
           |> maybe_put_runtime_value(:blocker_kind, Map.get(blocker_info, :kind))
 
-        Logger.warning("Agent reported hard blocker for issue_id=#{issue_id} issue_identifier=#{running_entry.identifier}: #{error}")
-
-        state =
-          state
-          |> record_session_completion_totals(running_entry)
-          |> block_issue_from_entry(issue_id, running_entry, error)
+        state = handle_agent_hard_blocker(state, issue_id, running_entry, blocker_info)
 
         notify_dashboard()
         {:noreply, state}
@@ -291,7 +410,7 @@ defmodule SymphonyElixir.Orchestrator do
   def handle_info({:retry_issue, issue_id, retry_token}, state) do
     result =
       case pop_retry_attempt_state(state, issue_id, retry_token) do
-        {:ok, attempt, metadata, state} -> handle_retry_issue(state, issue_id, attempt, metadata, [])
+        {:ok, attempt, metadata, state} -> handle_retry_issue(state, issue_id, attempt, metadata, state.runtime_options)
         :missing -> {:noreply, state}
       end
 
@@ -303,7 +422,7 @@ defmodule SymphonyElixir.Orchestrator do
 
   def handle_info({:retry_project_profile, profile_key, retry_token}, state)
       when is_binary(profile_key) and is_reference(retry_token) do
-    state = retry_project_profile(state, current_project_profiles(), profile_key, retry_token, [])
+    state = retry_project_profile(state, current_project_profiles(), profile_key, retry_token, state.runtime_options)
     notify_dashboard()
     {:noreply, state}
   end
@@ -312,6 +431,59 @@ defmodule SymphonyElixir.Orchestrator do
     Logger.debug("Orchestrator ignored message: #{inspect(msg)}")
     {:noreply, state}
   end
+
+  defp handle_agent_hard_blocker(
+         state,
+         issue_id,
+         running_entry,
+         %{kind: {:project_credential_unavailable, reason}}
+       ) do
+    safe_reason = safe_project_credential_reason(reason)
+    error = "project credential unavailable reason=#{safe_reason}"
+    running_entry = Map.put(running_entry, :blocker_kind, {:project_credential_unavailable, safe_reason})
+
+    Logger.warning("Agent reported hard blocker for issue_id=#{issue_id} issue_identifier=#{running_entry.identifier}: #{error}")
+
+    case preflight_blocker_disposition(safe_reason) do
+      :transient ->
+        retry_post_claim_credential_failure(state, issue_id, running_entry, error)
+
+      :permanent ->
+        state
+        |> record_session_completion_totals(running_entry)
+        |> block_issue_from_entry(issue_id, running_entry, error)
+    end
+  end
+
+  defp handle_agent_hard_blocker(state, issue_id, running_entry, blocker_info) do
+    error = Map.get(blocker_info, :error) || "agent hard blocker"
+    Logger.warning("Agent reported hard blocker for issue_id=#{issue_id} issue_identifier=#{running_entry.identifier}: #{error}")
+    state |> record_session_completion_totals(running_entry) |> block_issue_from_entry(issue_id, running_entry, error)
+  end
+
+  defp retry_post_claim_credential_failure(state, issue_id, running_entry, error) do
+    :ok = finalize_distributed_claim(issue_id, :release)
+
+    released_state = %{
+      record_session_completion_totals(state, running_entry)
+      | running: Map.delete(state.running, issue_id),
+        claimed: MapSet.delete(state.claimed, issue_id),
+        blocked: Map.delete(state.blocked, issue_id)
+    }
+
+    schedule_issue_retry(
+      released_state,
+      issue_id,
+      next_retry_attempt_from_running(running_entry),
+      running_retry_metadata(running_entry, %{error: error, ownership: :unowned_backoff})
+    )
+  end
+
+  defp safe_project_credential_reason(reason)
+       when reason in @permanent_preflight_blockers or reason in @transient_preflight_blockers,
+       do: reason
+
+  defp safe_project_credential_reason(_reason), do: :credential_provider_failed
 
   defp validate_startup_identity(identity_validator) when is_function(identity_validator, 0) do
     case identity_validator.() do
@@ -544,6 +716,13 @@ defmodule SymphonyElixir.Orchestrator do
   defp run_multi_project_poll(state, _profiles, [], _opts), do: state
 
   defp run_multi_project_poll(state, profiles, profiles_to_poll, opts) do
+    case Config.validate_execution_topology() do
+      :ok -> run_admitted_multi_project_poll(state, profiles, profiles_to_poll, opts)
+      {:error, _reason} -> state
+    end
+  end
+
+  defp run_admitted_multi_project_poll(state, profiles, profiles_to_poll, opts) do
     fetcher = Keyword.get(opts, :fetcher, &Tracker.fetch_candidate_issues/1)
     poll_opts = multi_project_poll_opts(opts)
 
@@ -613,6 +792,15 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   defp dispatch_multi_project_candidate(state, %Issue{} = candidate, profiles, opts) do
+    case Config.validate_execution_topology() do
+      :ok -> dispatch_admitted_multi_project_candidate(state, candidate, profiles, opts)
+      {:error, _reason} -> state
+    end
+  end
+
+  defp dispatch_multi_project_candidate(state, _candidate, _profiles, _opts), do: state
+
+  defp dispatch_admitted_multi_project_candidate(state, candidate, profiles, opts) do
     refresh_fun = Keyword.get(opts, :refresh_fun, &Tracker.fetch_issue_states_by_ids/1)
 
     report_health(opts, {:stage, :issue_refresh, health_issue_metadata(candidate, :started)})
@@ -668,8 +856,6 @@ defmodule SymphonyElixir.Orchestrator do
         transition_retry_transient(state, candidate, :refresh_unavailable, opts)
     end
   end
-
-  defp dispatch_multi_project_candidate(state, _candidate, _profiles, _opts), do: state
 
   defp authorize_multi_project_candidate(state, issue, profiles, opts) do
     route_reader = Keyword.get(opts, :route_reader, &ClaimService.exclusive_route/1)
@@ -731,13 +917,18 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   defp preflight_multi_project_candidate(state, issue, opts) do
-    preflight_fun = Keyword.get(opts, :preflight_fun, &ProjectRepoPreflight.check/1)
+    preflight_fun = Keyword.get(opts, :preflight_fun, &ProjectRepoPreflight.check/2)
+
+    preflight_opts =
+      opts
+      |> Keyword.take(@preflight_option_keys)
+      |> Keyword.put(:timeout, Keyword.get(opts, :preflight_timeout, 10_000))
 
     report_health(opts, {:stage, :preflight, health_issue_metadata(issue, :started)})
 
     preflight_result =
       observed_call(
-        fn -> preflight_fun.(issue.project_profile) end,
+        fn -> invoke_preflight(preflight_fun, issue.project_profile, preflight_opts) end,
         fn failure_category ->
           report_health(opts, {
             :stage,
@@ -773,6 +964,12 @@ defmodule SymphonyElixir.Orchestrator do
         transition_retry_transient(state, issue, :preflight_unavailable, opts)
     end
   end
+
+  defp invoke_preflight(preflight_fun, profile, opts) when is_function(preflight_fun, 2),
+    do: preflight_fun.(profile, opts)
+
+  defp invoke_preflight(preflight_fun, profile, _opts) when is_function(preflight_fun, 1),
+    do: preflight_fun.(profile)
 
   defp preflight_blocker_disposition(code) do
     case preflight_blocker_classification(code) do
@@ -933,7 +1130,7 @@ defmodule SymphonyElixir.Orchestrator do
       timer_ref: timer_ref
     }
 
-    Logger.warning("Retrying project profile=#{profile_key} in #{delay_ms}ms attempt=#{attempt} reason=#{reason}")
+    Logger.warning("Retrying project profile=#{profile_key} in #{delay_ms}ms attempt=#{attempt} reason=#{inspect(reason)}")
     %{state | profile_retry_attempts: Map.put(retries, profile_key, retry)}
   end
 
@@ -971,6 +1168,13 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   defp retry_profile_poll(state, profiles, profile, previous_retry, opts) do
+    case Config.validate_execution_topology() do
+      :ok -> retry_admitted_profile_poll(state, profiles, profile, previous_retry, opts)
+      {:error, _reason} -> state
+    end
+  end
+
+  defp retry_admitted_profile_poll(state, profiles, profile, previous_retry, opts) do
     fetcher = Keyword.get(opts, :fetcher, &Tracker.fetch_candidate_issues/1)
     result = MultiProjectPoll.fetch([profile], fetcher, multi_project_poll_opts(opts))
 
@@ -2390,12 +2594,12 @@ defmodule SymphonyElixir.Orchestrator do
   defp handle_retry_issue(%State{} = state, issue_id, attempt, metadata, opts) do
     opts = Keyword.merge(opts, issue_retry_attempt: attempt, retry_metadata: metadata)
 
-    case retry_issue_fetch(issue_id, metadata, opts) do
-      {:ok, issues} ->
-        issues
-        |> find_issue_by_id(issue_id)
-        |> handle_retry_issue_lookup(state, issue_id, attempt, metadata, opts)
-
+    with :ok <- Config.validate_execution_topology(),
+         {:ok, issues} <- retry_issue_fetch(issue_id, metadata, opts) do
+      issues
+      |> find_issue_by_id(issue_id)
+      |> handle_retry_issue_lookup(state, issue_id, attempt, metadata, opts)
+    else
       {:error, reason} ->
         Logger.warning("Retry poll failed for issue_id=#{issue_id} issue_identifier=#{metadata[:identifier] || issue_id}: #{inspect(reason)}")
 

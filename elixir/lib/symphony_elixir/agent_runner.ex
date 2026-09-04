@@ -5,10 +5,15 @@ defmodule SymphonyElixir.AgentRunner do
 
   require Logger
   alias SymphonyElixir.{ClaimService, Codex.AppServer, CodexExecutionInputs, Config, Linear.Issue}
-  alias SymphonyElixir.{ProjectCredentialProvider, ProjectExecutionContext}
+  alias SymphonyElixir.{GitCheckoutPreflight, ProjectRepoPreflight}
+  alias SymphonyElixir.{ProjectCredentialProvider, ProjectExecutionContext, RepositoryBootstrap}
   alias SymphonyElixir.{PromptBuilder, ReadinessGate, SubprocessEnvironment, Tracker, Workspace}
 
   @type worker_host :: String.t() | nil
+
+  @bootstrap_failures ~w(repository_bootstrap_failed repository_bootstrap_unavailable repository_rollback_failed)a
+  @codex_auth_failures ~w(codex_auth_home_unconfigured codex_auth_home_invalid
+                         codex_authentication_required codex_authentication_unavailable)a
 
   defmodule TurnContext do
     @moduledoc false
@@ -21,6 +26,17 @@ defmodule SymphonyElixir.AgentRunner do
   def continue_with_issue_for_test(%Issue{} = issue, issue_state_fetcher)
       when is_function(issue_state_fetcher, 1) do
     continue_with_issue?(issue, issue_state_fetcher)
+  end
+
+  @doc false
+  @spec post_claim_gate_for_test(ProjectExecutionContext.t(), Path.t(), keyword()) ::
+          {:ok, map()} | {:error, term()}
+  def post_claim_gate_for_test(%ProjectExecutionContext{} = context, workspace, opts)
+      when is_binary(workspace) and is_list(opts) do
+    with {:ok, credential, authority} <- fresh_worker_authority(context, opts),
+         :ok <- verify_worker_checkout(context, workspace, credential, authority, opts) do
+      ProjectCredentialProvider.environment(credential)
+    end
   end
 
   @spec run(Issue.t(), pid() | nil, keyword()) :: :ok | no_return()
@@ -44,18 +60,19 @@ defmodule SymphonyElixir.AgentRunner do
     Logger.info("Starting worker attempt for #{issue_context(issue)} worker_host=#{worker_host_for_log(worker_host)}")
 
     with {:ok, execution_context} <- execution_context(issue, opts),
+         :ok <- validate_worker_topology(execution_context, worker_host),
          {:ok, launch_env} <- codex_launch_environment(issue, execution_context),
-         {:ok, credential_env} <- credential_environment(execution_context, opts),
-         project_env <- Map.drop(credential_env, ["OPENAI_API_KEY"]),
-         {:ok, process_env} <- subprocess_environment(project_env, execution_context, launch_env) do
+         {:ok, credential, authority} <-
+           fresh_worker_authority(execution_context, Keyword.put(opts, :worker_host, worker_host)) do
       run_with_execution_context(
         issue,
         codex_update_recipient,
         opts,
         worker_host,
         execution_context,
-        process_env,
-        credential_env
+        launch_env,
+        credential,
+        authority
       )
     else
       {:error, {:multiple_codex_model_labels, labels}} ->
@@ -78,36 +95,177 @@ defmodule SymphonyElixir.AgentRunner do
     end
   end
 
+  defp validate_worker_topology(%ProjectExecutionContext{}, worker_host) when is_binary(worker_host),
+    do: {:error, :profiled_ssh_topology_unsupported}
+
+  defp validate_worker_topology(_execution_context, _worker_host), do: :ok
+
   defp run_with_execution_context(
          issue,
          codex_update_recipient,
          opts,
          worker_host,
          execution_context,
-         process_env,
-         credential_env
+         launch_env,
+         credential,
+         authority
        ) do
-    codex_env = Map.take(credential_env, ["OPENAI_API_KEY"])
+    {:ok, preparation_env} = subprocess_environment(%{}, execution_context, launch_env)
 
-    runtime_opts =
-      [
-        env: process_env,
-        sensitive_env_values: Map.values(credential_env),
-        codex_env: codex_env,
-        execution_context: execution_context
-      ]
-      |> maybe_put_subprocess_home_paths(execution_context)
+    runtime_opts = [
+      env: preparation_env,
+      sensitive_env_values: [],
+      execution_context: execution_context
+    ]
 
-    preparation_opts = Keyword.put(runtime_opts, :attest_preparation_errors, true)
+    runtime_opts = maybe_put_subprocess_home_paths(runtime_opts, execution_context)
+
+    preparation_opts =
+      runtime_opts
+      |> Keyword.put(:attest_preparation_errors, true)
+      |> Keyword.put(:defer_after_create, true)
 
     case Workspace.prepare_for_issue(issue, worker_host, execution_context, preparation_opts) do
       {:ok, preparation} ->
-        run_prepared_issue(preparation, issue, codex_update_recipient, opts, worker_host, runtime_opts)
+        finish_worker_preparation(
+          preparation,
+          issue,
+          codex_update_recipient,
+          opts,
+          worker_host,
+          {execution_context, launch_env, credential, authority, runtime_opts}
+        )
 
       {:error, reason} ->
         handle_preparation_error(reason, runtime_opts, issue, codex_update_recipient, worker_host)
     end
   end
+
+  defp finish_worker_preparation(
+         preparation,
+         issue,
+         recipient,
+         opts,
+         worker_host,
+         {execution_context, launch_env, credential, authority, runtime_opts}
+       ) do
+    with_private_home_preparation_capability(preparation.private_home_capability, fn ->
+      finish_worker_preparation_with_capability(
+        preparation,
+        issue,
+        recipient,
+        opts,
+        worker_host,
+        {execution_context, launch_env, credential, authority, runtime_opts}
+      )
+    end)
+    |> report_preparation_outcome(recipient, issue, worker_host, preparation.path)
+  end
+
+  defp report_preparation_outcome(
+         {:deferred_preparation_blocker, reason},
+         recipient,
+         issue,
+         worker_host,
+         workspace
+       ) do
+    handle_workspace_preflight_failure(recipient, issue, worker_host, workspace, reason)
+  end
+
+  defp report_preparation_outcome(
+         {:error, :subprocess_home_rollback_failed},
+         recipient,
+         issue,
+         worker_host,
+         workspace
+       ) do
+    handle_workspace_preflight_failure(
+      recipient,
+      issue,
+      worker_host,
+      workspace,
+      {:project_credential_unavailable, :subprocess_home_rollback_failed}
+    )
+  end
+
+  defp report_preparation_outcome(outcome, _recipient, _issue, _worker_host, _workspace), do: outcome
+
+  defp finish_worker_preparation_with_capability(
+         preparation,
+         issue,
+         recipient,
+         opts,
+         worker_host,
+         {execution_context, launch_env, credential, authority, runtime_opts}
+       ) do
+    checkout_opts =
+      opts
+      |> Keyword.put(:worker_host, worker_host)
+      |> Keyword.put(:workspace_attestation, preparation.workspace_attestation)
+      |> Keyword.put(:private_home_capability, preparation.private_home_capability)
+      |> Keyword.put(:created_now, preparation.created_now)
+      |> Keyword.put(:expected_issue_branch, issue.branch_name)
+
+    with :ok <-
+           bootstrap_worker_repository(
+             execution_context,
+             preparation,
+             credential,
+             authority,
+             checkout_opts
+           ),
+         :ok <-
+           verify_worker_checkout(
+             execution_context,
+             preparation.path,
+             credential,
+             authority,
+             checkout_opts
+           ),
+         {:ok, credential_env} <- credential_environment(credential),
+         {:ok, process_env} <- subprocess_environment(credential_env, execution_context, launch_env) do
+      effect_opts =
+        runtime_opts
+        |> Keyword.put(:env, process_env)
+        |> Keyword.put(:sensitive_env_values, Enum.filter([credential_env["GH_TOKEN"]], &is_binary/1))
+        |> Keyword.put(:workspace_attestation, preparation.workspace_attestation)
+        |> Keyword.put(:private_home_capability, preparation.private_home_capability)
+
+      case Workspace.run_deferred_after_create_hook(preparation, issue, worker_host, effect_opts) do
+        :ok ->
+          run_prepared_issue(preparation, issue, recipient, opts, worker_host, effect_opts)
+
+        {:error, reason} = error ->
+          rollback_worker_preparation(preparation, execution_context, worker_host, reason, error)
+      end
+    else
+      {:error, reason} ->
+        outcome = {:deferred_preparation_blocker, {:project_credential_unavailable, reason}}
+        rollback_worker_preparation(preparation, execution_context, worker_host, reason, outcome)
+    end
+  end
+
+  defp rollback_worker_preparation(preparation, context, worker_host, reason, outcome) do
+    outcome =
+      case rollback_pre_effect_repository(preparation, context, worker_host, reason) do
+        :ok -> outcome
+        {:error, rollback_reason} -> {:deferred_preparation_blocker, {:project_credential_unavailable, rollback_reason}}
+      end
+
+    {:private_home_preparation_failed, outcome}
+  end
+
+  defp rollback_pre_effect_repository(
+         %{created_now: true, workspace_attestation: attestation},
+         %ProjectExecutionContext{} = context,
+         worker_host,
+         reason
+       )
+       when reason not in @bootstrap_failures do
+    Workspace.rollback_failed_repository_bootstrap(context, worker_host, attestation)
+  end
+
+  defp rollback_pre_effect_repository(_preparation, _context, _worker_host, _reason), do: :ok
 
   defp run_prepared_issue(preparation, issue, recipient, opts, worker_host, runtime_opts) do
     %{
@@ -122,11 +280,9 @@ defmodule SymphonyElixir.AgentRunner do
       |> Keyword.put(:workspace_attestation, workspace_attestation)
       |> Keyword.put(:private_home_capability, private_home_capability)
 
-    with_private_home_capability(private_home_capability, fn ->
-      send_worker_runtime_info(recipient, issue, worker_host, workspace, workspace_attestation)
+    send_worker_runtime_info(recipient, issue, worker_host, workspace, workspace_attestation)
 
-      run_prepared_attempt(preparation, issue, recipient, opts, worker_host, effect_opts)
-    end)
+    run_prepared_attempt(preparation, issue, recipient, opts, worker_host, effect_opts)
   end
 
   defp run_prepared_attempt(preparation, issue, recipient, opts, worker_host, effect_opts) do
@@ -251,6 +407,37 @@ defmodule SymphonyElixir.AgentRunner do
     end
   end
 
+  defp with_private_home_preparation_capability(private_home_capability, callback)
+       when is_function(callback, 0) do
+    callback.()
+    |> finish_private_home_preparation_capability(private_home_capability)
+  rescue
+    error ->
+      _ = Workspace.finalize_private_home_capability(private_home_capability)
+      reraise error, __STACKTRACE__
+  catch
+    kind, reason ->
+      _ = Workspace.finalize_private_home_capability(private_home_capability)
+      :erlang.raise(kind, reason, __STACKTRACE__)
+  end
+
+  defp finish_private_home_preparation_capability(
+         {:private_home_preparation_failed, outcome},
+         private_home_capability
+       ) do
+    case Workspace.rollback_failed_private_home_capability(private_home_capability) do
+      :ok -> outcome
+      {:error, :subprocess_home_rollback_failed} = error -> error
+    end
+  end
+
+  defp finish_private_home_preparation_capability(outcome, private_home_capability) do
+    case Workspace.finalize_private_home_capability(private_home_capability) do
+      :ok -> outcome
+      {:error, :subprocess_home_finalize_failed} = error -> error
+    end
+  end
+
   defp execution_context(%Issue{project_profile: nil}, opts) do
     case Keyword.get(opts, :execution_context) do
       nil -> {:ok, nil}
@@ -268,13 +455,117 @@ defmodule SymphonyElixir.AgentRunner do
     end
   end
 
-  defp credential_environment(nil, _opts), do: {:ok, %{}}
+  defp fresh_worker_authority(nil, _opts), do: {:ok, nil, nil}
 
-  defp credential_environment(%ProjectExecutionContext{} = context, opts) do
-    ProjectCredentialProvider.resolve(context,
-      credential_provider: Keyword.get(opts, :credential_provider)
-    )
+  defp fresh_worker_authority(%ProjectExecutionContext{} = context, opts) do
+    with {:ok, credential} <- ProjectCredentialProvider.resolve(context, resolver_opts(opts)),
+         {:ok, authority} <-
+           ProjectRepoPreflight.check_credential(authority_profile(context), credential, authority_opts(opts)) do
+      {:ok, credential, authority}
+    else
+      {:blocked, %{code: code}} -> {:error, code}
+      {:error, _reason} = error -> error
+    end
   end
+
+  defp bootstrap_worker_repository(nil, _preparation, nil, nil, _opts), do: :ok
+
+  defp bootstrap_worker_repository(
+         %ProjectExecutionContext{} = context,
+         preparation,
+         credential,
+         authority,
+         opts
+       ) do
+    bootstrap_opts =
+      opts
+      |> Keyword.take([
+        :worker_host,
+        :workspace_attestation,
+        :private_home_capability
+      ])
+      |> maybe_put_bootstrap_runner(Keyword.get(opts, :repository_bootstrap_command_runner))
+
+    RepositoryBootstrap.ensure(context, preparation, credential, authority, bootstrap_opts)
+  end
+
+  defp verify_worker_checkout(nil, _workspace, nil, nil, _opts), do: :ok
+
+  defp verify_worker_checkout(%ProjectExecutionContext{} = context, workspace, credential, authority, opts) do
+    checkout_opts =
+      opts
+      |> Keyword.take([
+        :worker_host,
+        :workspace_root,
+        :workspace_attestation,
+        :workspace_attestor,
+        :workspace_guard,
+        :metadata_inspector,
+        :metadata_probe,
+        :created_now,
+        :expected_issue_branch
+      ])
+      |> Keyword.put(:expected_head_sha, authority.head_sha)
+      |> maybe_put_checkout_runner(Keyword.get(opts, :git_checkout_command_runner))
+
+    case GitCheckoutPreflight.check(context, workspace, credential, checkout_opts) do
+      {:ok, _receipt} -> :ok
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp credential_environment(nil), do: {:ok, %{}}
+  defp credential_environment(credential), do: ProjectCredentialProvider.environment(credential)
+
+  defp resolver_opts(opts) do
+    case Keyword.get(opts, :worker_host) do
+      nil ->
+        Keyword.take(opts, [:credential_source])
+
+      worker_host when is_binary(worker_host) ->
+        case Keyword.get(opts, :worker_credential_source) do
+          source when is_function(source, 1) -> [credential_scope: :worker, credential_source: source]
+          _missing -> [credential_scope: :worker, credential_source: nil]
+        end
+    end
+  end
+
+  defp authority_opts(opts) do
+    base = Keyword.take(opts, [:expected_actor])
+
+    case Keyword.get(opts, :worker_host) do
+      nil ->
+        Keyword.merge(base, Keyword.take(opts, [:request_fun]))
+
+      worker_host when is_binary(worker_host) ->
+        case Keyword.get(opts, :worker_authority_request_fun) do
+          request_fun when is_function(request_fun, 1) -> Keyword.put(base, :request_fun, request_fun)
+          _missing -> Keyword.put(base, :request_fun, nil)
+        end
+    end
+  end
+
+  defp authority_profile(%ProjectExecutionContext{} = context) do
+    %{
+      key: context.profile_key,
+      linear_project_id: context.linear_project_id,
+      repository: context.repository,
+      canonical_branch: context.canonical_branch,
+      workspace_namespace: context.workspace_namespace,
+      credential_ref: context.credential_ref,
+      environment: context.environment
+    }
+  end
+
+  defp maybe_put_checkout_runner(opts, runner) when is_function(runner, 3),
+    do: Keyword.put(opts, :command_runner, runner)
+
+  defp maybe_put_checkout_runner(opts, _runner), do: opts
+
+  defp maybe_put_bootstrap_runner(opts, runner) when is_function(runner, 3),
+    do: Keyword.put(opts, :command_runner, runner)
+
+  defp maybe_put_bootstrap_runner(opts, _runner), do: opts
 
   defp codex_launch_environment(%Issue{}, nil), do: {:ok, %{}}
 
@@ -398,14 +689,51 @@ defmodule SymphonyElixir.AgentRunner do
   defp hard_blocker_kind({:codex_model_label_conflict, labels}),
     do: {:codex_model_label_conflict, labels}
 
+  defp hard_blocker_kind({:project_credential_unavailable, reason}),
+    do: {:project_credential_unavailable, safe_credential_reason(reason)}
+
   defp hard_blocker_kind(_reason), do: nil
 
   defp safe_credential_reason(reason)
        when reason in [
               :credential_provider_unconfigured,
+              :codex_auth_home_unconfigured,
+              :codex_auth_home_invalid,
+              :codex_authentication_required,
+              :codex_authentication_unavailable,
+              :profiled_ssh_topology_unsupported,
               :credential_not_found,
               :credential_ambiguous,
+              :credential_source_unconfigured,
+              :credential_source_missing,
+              :credential_source_conflict,
               :credential_reference_mismatch,
+              :credential_expired,
+              :credential_resolver_failed,
+              :github_unauthorized,
+              :github_forbidden,
+              :github_unexpected_actor,
+              :github_repository_not_allowed,
+              :github_pull_authority_missing,
+              :github_push_authority_missing,
+              :github_response_invalid,
+              :github_authority_invalid,
+              :github_unavailable,
+              :required_check_contract_missing,
+              :required_check_contract_invalid,
+              :required_check_contract_unreadable,
+              :repository_bootstrap_failed,
+              :repository_rollback_failed,
+              :subprocess_home_rollback_failed,
+              :repository_bootstrap_unavailable,
+              :git_checkout_invalid,
+              :git_checkout_mismatch,
+              :git_remote_mismatch,
+              :git_branch_mismatch,
+              :github_remote_head_changed,
+              :git_metadata_missing,
+              :git_metadata_unsafe,
+              :git_metadata_unwritable,
               :invalid_credential_environment,
               :credential_provider_failed,
               :missing_project_profile,
@@ -549,8 +877,6 @@ defmodule SymphonyElixir.AgentRunner do
            session_starter.(
              workspace,
              runtime_opts
-             |> Keyword.update!(:env, &Map.merge(&1, runtime_opts[:codex_env]))
-             |> Keyword.delete(:codex_env)
              |> Keyword.merge(
                worker_host: worker_host,
                managed_session: managed_session,
@@ -572,6 +898,13 @@ defmodule SymphonyElixir.AgentRunner do
       after
         AppServer.stop_session(session)
       end
+    else
+      {:error, reason}
+      when reason in @codex_auth_failures ->
+        {:deferred_workspace_preflight_failure, {:project_credential_unavailable, reason}}
+
+      other ->
+        other
     end
   end
 

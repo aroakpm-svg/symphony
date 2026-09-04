@@ -4,11 +4,13 @@ defmodule SymphonyElixir.Codex.AppServer do
   """
 
   require Logger
-  alias SymphonyElixir.{Codex.DynamicTool, Config, PathSafety, SSH, Workspace}
+  alias SymphonyElixir.{Codex.DynamicTool, CodexAuthHome, Config, PathSafety, SSH, Workspace}
+  alias SymphonyElixir.SubprocessEnvironment
 
   @initialize_id 1
   @thread_start_id 2
   @turn_start_id 3
+  @account_read_id 4
   @port_line_bytes 1_048_576
   @max_stream_log_bytes 1_000
   @non_interactive_tool_input_answer "This is a non-interactive session. Operator input is unavailable."
@@ -51,8 +53,9 @@ defmodule SymphonyElixir.Codex.AppServer do
              Keyword.get(opts, :execution_context),
              Keyword.get(opts, :workspace_attestation)
            ),
+         {:ok, codex_home} <- CodexAuthHome.resolve(Keyword.get(opts, :execution_context)),
          {:ok, port_environment} <- port_environment(opts),
-         {:ok, port} <- start_port(expanded_workspace, worker_host, port_environment, opts) do
+         {:ok, port} <- start_port(expanded_workspace, worker_host, port_environment, opts, codex_home) do
       metadata = port_metadata(port, worker_host)
 
       with {:ok, session_policies} <- session_policies(expanded_workspace, worker_host),
@@ -63,7 +66,8 @@ defmodule SymphonyElixir.Codex.AppServer do
                expanded_workspace,
                session_policies,
                managed_session,
-               redaction_values
+               redaction_values,
+               codex_child_config(opts, codex_home)
              ) do
         {:ok,
          %{
@@ -269,7 +273,7 @@ defmodule SymphonyElixir.Codex.AppServer do
     end
   end
 
-  defp start_port(workspace, nil, port_environment, opts) do
+  defp start_port(workspace, nil, port_environment, opts, codex_home) do
     {shell_name, shell_flag} = local_shell_contract(:os.type())
     executable = System.find_executable(shell_name)
 
@@ -287,7 +291,7 @@ defmodule SymphonyElixir.Codex.AppServer do
           cd: String.to_charlist(workspace),
           line: @port_line_bytes
         ]
-        |> maybe_put_port_environment(port_environment)
+        |> maybe_put_port_environment(codex_port_environment(port_environment, codex_home))
 
       with {:ok, _revalidated_workspace} <-
              validate_workspace_cwd(
@@ -303,7 +307,8 @@ defmodule SymphonyElixir.Codex.AppServer do
                Keyword.get(opts, :execution_context),
                Keyword.get(opts, :workspace_attestation),
                opts
-             ) do
+             ),
+           {:ok, ^codex_home} <- CodexAuthHome.resolve(Keyword.get(opts, :execution_context)) do
         port =
           port_opener.(
             {:spawn_executable, String.to_charlist(executable)},
@@ -311,11 +316,14 @@ defmodule SymphonyElixir.Codex.AppServer do
           )
 
         {:ok, port}
+      else
+        {:ok, _changed_home} -> {:error, :codex_auth_home_invalid}
+        {:error, _reason} = error -> error
       end
     end
   end
 
-  defp start_port(workspace, worker_host, [], opts) when is_binary(worker_host) do
+  defp start_port(workspace, worker_host, [], opts, nil) when is_binary(worker_host) do
     remote_command =
       remote_launch_command(
         workspace,
@@ -326,12 +334,28 @@ defmodule SymphonyElixir.Codex.AppServer do
     SSH.start_port(worker_host, remote_command, line: @port_line_bytes)
   end
 
-  defp start_port(_workspace, worker_host, _port_environment, _opts)
+  defp start_port(_workspace, worker_host, _port_environment, _opts, _codex_home)
        when is_binary(worker_host),
        do: {:error, :remote_subprocess_environment_unsupported}
 
   defp local_shell_contract({:win32, _name}), do: {"sh", "-c"}
   defp local_shell_contract({:unix, _name}), do: {"bash", "-lc"}
+
+  defp codex_child_config(_opts, nil), do: nil
+
+  defp codex_child_config(opts, _home) do
+    paths = SubprocessEnvironment.private_home_paths(Keyword.fetch!(opts, :execution_context))
+    %{"shell_environment_policy.set" => %{"CODEX_HOME" => paths.codex}}
+  end
+
+  defp codex_port_environment(environment, nil), do: environment
+
+  defp codex_port_environment(environment, home) do
+    [
+      {~c"CODEX_HOME", String.to_charlist(home)}
+      | Enum.reject(environment, fn {key, _value} -> String.upcase(to_string(key)) == "CODEX_HOME" end)
+    ]
+  end
 
   defp port_environment(opts) do
     case Keyword.get(opts, :env, %{}) do
@@ -430,29 +454,83 @@ defmodule SymphonyElixir.Codex.AppServer do
     Config.codex_runtime_settings(workspace, remote: true)
   end
 
-  defp do_start_session(port, workspace, session_policies, managed_session, redaction_values) do
-    case send_initialize(port, redaction_values) do
-      :ok -> start_thread(port, workspace, session_policies, managed_session, redaction_values)
-      {:error, reason} -> {:error, reason}
+  defp do_start_session(port, workspace, session_policies, managed_session, redaction_values, child_config) do
+    with :ok <- send_initialize(port, redaction_values),
+         :ok <- authenticate_codex(port, child_config) do
+      start_thread(port, workspace, session_policies, managed_session, redaction_values, child_config)
     end
   end
+
+  defp authenticate_codex(_port, nil), do: :ok
+
+  defp authenticate_codex(port, _home) do
+    send_message(port, %{"id" => @account_read_id, "method" => "account/read", "params" => %{"refreshToken" => true}})
+    deadline = System.monotonic_time(:millisecond) + Config.settings!().codex.read_timeout_ms
+    await_authentication(port, deadline, "")
+  end
+
+  # Account responses can contain private details. Never log or return their raw payloads.
+  # Use one deadline, including partial lines and unrelated notifications.
+  defp await_authentication(port, deadline, pending) do
+    remaining = max(deadline - System.monotonic_time(:millisecond), 0)
+
+    receive do
+      {^port, {:data, {ending, chunk}}} ->
+        line = pending <> to_string(chunk)
+
+        cond do
+          byte_size(line) > @port_line_bytes or remaining == 0 ->
+            {:error, :codex_authentication_unavailable}
+
+          ending == :noeol ->
+            await_authentication(port, deadline, line)
+
+          true ->
+            case Jason.decode(line) do
+              {:ok, %{"id" => @account_read_id, "result" => result}} -> account_status(result)
+              {:ok, %{"id" => @account_read_id}} -> {:error, :codex_authentication_unavailable}
+              _other -> await_authentication(port, deadline, "")
+            end
+        end
+
+      {^port, {:exit_status, _status}} ->
+        {:error, :codex_authentication_unavailable}
+    after
+      remaining -> {:error, :codex_authentication_unavailable}
+    end
+  end
+
+  defp account_status(%{"requiresOpenaiAuth" => false}), do: :ok
+
+  defp account_status(%{"requiresOpenaiAuth" => true, "account" => %{"type" => type}})
+       when type in ["chatgpt", "apiKey"], do: :ok
+
+  defp account_status(%{"requiresOpenaiAuth" => true, "account" => nil}),
+    do: {:error, :codex_authentication_required}
+
+  defp account_status(_result), do: {:error, :codex_authentication_unavailable}
 
   defp start_thread(
          port,
          workspace,
          %{approval_policy: approval_policy, thread_sandbox: thread_sandbox},
          managed_session,
-         redaction_values
+         redaction_values,
+         child_config
        ) do
+    params = %{
+      "approvalPolicy" => approval_policy,
+      "sandbox" => thread_sandbox,
+      "cwd" => workspace,
+      "dynamicTools" => DynamicTool.tool_specs(managed_session: managed_session)
+    }
+
+    params = if is_nil(child_config), do: params, else: Map.put(params, "config", child_config)
+
     send_message(port, %{
       "method" => "thread/start",
       "id" => @thread_start_id,
-      "params" => %{
-        "approvalPolicy" => approval_policy,
-        "sandbox" => thread_sandbox,
-        "cwd" => workspace,
-        "dynamicTools" => DynamicTool.tool_specs(managed_session: managed_session)
-      }
+      "params" => params
     })
 
     case await_response(port, @thread_start_id, redaction_values) do

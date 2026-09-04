@@ -377,13 +377,26 @@ The observability UI now runs on a minimal Phoenix stack:
 
 ## Approved project repository preflight
 
-`SymphonyElixir.ProjectRepoPreflight.check/1` accepts one complete profile map from the validated
-`project_profiles` contract. It verifies GitHub CLI read authentication, repository identity, the
-`main` default branch and exact head, and the approved quality-script contract. The supported
+`SymphonyElixir.ProjectRepoPreflight.check/2` accepts one complete profile map from the validated
+`project_profiles` contract plus trusted runtime options. It resolves a short-lived credential
+through `SymphonyElixir.GitHubCredentialResolver`, verifies the configured dedicated actor and
+repository read/push authority through `SymphonyElixir.GitHubAuthorityClient`, then verifies the
+`main` default branch, exact head, and approved quality-script contract at that immutable head. It
+does not invoke ambient `gh` or Git credential discovery. The supported
 profiles are:
 
 - `aroakpm-svg/aroak-central-brain`: `typecheck`, `build`, and `test`
 - `aroakpm-svg/aroak-project-management`: `typecheck`, `build`, and `db:test`
+
+Each Orchestrator captures allowlisted trusted runtime options at startup. Explicit start options
+override `:orchestrator_opts` application defaults; scheduled polls, project retries, issue retries,
+and their node-local workers retain that instance's actor policy and dependencies. Later changes
+to application defaults do not change an existing instance. Credentials are resolved afresh per
+call, never retained with scheduler options; private callbacks are omitted from status and Inspect.
+
+Checkout identity uses the canonical configured workspace root plus the exact project namespace
+and issue directory. A linked root is supported; redirected namespace/issue paths and changed
+workspace attestations remain fail-closed.
 
 Run the dry check without starting a worker:
 
@@ -392,14 +405,16 @@ settings = SymphonyElixir.Config.settings!()
 
 settings.project_profiles
 |> SymphonyElixir.ProjectProfiles.list()
-|> Enum.map(&SymphonyElixir.ProjectRepoPreflight.check/1)
+|> Enum.map(&SymphonyElixir.ProjectRepoPreflight.check(&1,
+     credential_source: trusted_source,
+     expected_actor: "configured-dedicated-bot[bot]"))
 ```
 
 Each result is either `{:ok, receipt}` or `{:blocked, reason}` with one minimal human next step.
 Preflight is a necessary dispatch gate, but success is readiness evidence rather than authorization:
 it does not independently enable polling, dispatch, credentials, deployment authority, or automatic
-pickup permission. The selected profile is consumed by the ARO-286 execution context described
-below; preflight still does not resolve credentials by itself.
+pickup permission. The credential is discarded before capacity and claim; only the secret-free
+authority receipt continues with the selected ARO-286 execution context.
 
 ## Approved multi-project profile contract
 
@@ -428,9 +443,18 @@ evidence and does not stop another profile's candidates. Unknown, duplicated, ch
 wrong-node, non-exclusive, or repository-mismatched candidates fail closed and iteration continues.
 When `project_profiles` is absent, Symphony retains the legacy single-project tracker path.
 
+Amy, Matt, and Han each run their own node-local Symphony. Han runs Symphony locally inside WSL,
+not as Amy's SSH worker. Enabled `project_profiles` requires absent/empty `worker.ssh_hosts`.
+Startup and new-work poll/dispatch/retry admission reject nonempty hosts with
+`profiled_ssh_topology_unsupported`; direct profiled runner remote-host overrides fail before
+credential resolution. Runtime settings remain readable after a topology-invalid reload for
+active local reconciliation, lease, and cleanup obligations. Legacy unprofiled SSH is unchanged.
+Lower-level remote defensive/test seams do not prove supported profiled remote execution.
+
 This contract selects an approved repository but does not install credentials, clone repositories,
 grant deployment authority, or operate in Production. ARO-286 consumes the selected profile for
-workspace and subprocess isolation; ARO-195/ARO-196 still own the approved host credential source.
+workspace and subprocess isolation; ARO-196 defines the host-source interface, while ARO-197 owns
+provisioning and machine rollout.
 
 See the commented example in [`WORKFLOW.md`](WORKFLOW.md). Remove the comment
 markers only when intentionally configuring the exact approved set.
@@ -478,15 +502,169 @@ observability:
 ```
 
 `credential_ref` is an opaque approved handle, not a token, path, command, or environment value.
-`SymphonyElixir.ProjectCredentialProvider` has no ambient credential fallback: without an injected
-ARO-195/ARO-196-approved adapter it returns `:credential_provider_unconfigured` and the worker is
-hard-blocked before hooks or Codex. Missing, ambiguous, wrong-reference, invalid-environment, and
-provider failures return `:credential_not_found`, `:credential_ambiguous`,
-`:credential_reference_mismatch`, `:invalid_credential_environment`, or
-`:credential_provider_failed`. Resolved values are passed only through the selected Git/readiness/
-hook/Codex subprocess environment; they are never added to command arguments, application state,
-workspace readiness state, health, logs, or notifications. Context-aware SSH execution with
-credential material currently fails closed as `:remote_credential_environment_unsupported`.
+Only `github-central-brain` and `github-project-management` are accepted, for the two repositories
+listed above; these are the complete ARO-196 multi-project dispatch manifest. Separately, the
+ARO-195-approved GitHub App installation allowlist also includes `aroakpm-svg/symphony`, for a total
+of three repositories. That installation scope does not define or add a `symphony` dispatch
+profile. Each reference must resolve to a short-lived installation token restricted to exactly that
+profile's repository. ARO-197's trusted source must request that restriction when minting the token
+(`repositories` or `repository_ids`); an installation-wide token is not a valid child credential.
+Before and after claim, the authority client independently reads GitHub's
+`GET /installation/repositories?per_page=2` with the resolved token and requires `total_count: 1`
+plus exactly the selected repository. Missing, partial or broader scope evidence fails closed before
+checkout, hooks or child environment delivery. This checks the token's authority even if a child
+uses a direct Git URL or API call, which remote configuration checks cannot constrain. The list
+response is call-local and never stored in scheduler state. Actual token minting, provisioning and
+live cross-repository denial smoke remain ARO-197 operator work.
+
+The source's `expires_at` is optional metadata used to reject known-expired credentials early.
+It cannot extend GitHub's actual token lifetime: installation access tokens expire after one hour
+on GitHub. A missing or future timestamp never skips the mandatory installation-token authority
+checks before claim and before worker effects. Resolver success alone does not authorize child
+credential delivery. ARO-197 must obtain short-lived tokens on demand and, when supplying expiry
+metadata, use GitHub's issuance response. Its rotation/revocation smoke must verify that old
+credentials cannot start new work, independently of the local timestamp.
+
+Codex authentication has a separate operator-managed boundary. For profiled workers, trusted
+application configuration must set `:codex_auth_home_root` to an absolute, dedicated directory
+outside the workspace tree. The final Codex process uses `<root>/<profile_key>` as `CODEX_HOME`.
+Each profile directory must already exist, be owned and protected by the node operator, and have
+its own Codex-managed login. Missing configuration, overlapping workspace paths, redirected
+directories, or non-regular `auth.json`/`config.toml` entries fail closed. Symphony does not create
+these directories or read, copy, log, or transport their credential contents. Do not use copies or
+links to the desktop account's authentication files or another profile's login directory.
+
+The supported Codex `account/read` check runs with `refreshToken: true` after initialization and
+before `thread/start`. It accepts a provisioned ChatGPT or API-key login, or a provider explicitly
+reporting that OpenAI authentication is unnecessary. Codex owns normal token refresh. Missing login
+is a permanent operator blocker; unavailable/malformed account checks are transient. The account
+check has one bounded deadline, and raw account responses never enter diagnostics or receipts.
+
+Symphony's Git/readiness/hooks keep their issue-private environment. Codex's shell environment
+policy also restores the issue-private `CODEX_HOME` for commands it launches. This is environment
+separation, not an OS permission boundary against arbitrary commands reading files as the same
+user. ARO-197 owns directory permissions, per-profile login, runtime identity verification and live
+authentication smoke on each node; ARO-196 implements the consuming contract only. The setting
+cannot be selected by workflow front matter or issue text, and legacy unprofiled execution is
+unchanged. Linear API credentials remain separate and serve ticket pickup/reporting.
+
+Trusted application configuration supplies `:github_credential_source`; runtime
+options supply the expected dedicated actor and may inject the same source explicitly for packaging
+or tests. Configuring both same-runtime sources is a conflict. `WORKFLOW.md`, issue text, environment variables,
+ambient `gh`, Git Credential Manager, and other profiles cannot select or replace the source.
+
+The source returns exactly one reference-bound credential for the current call. Before claim,
+`ProjectRepoPreflight` resolves it, validates actor/token scope/repository/pull/push/default branch/head, reads
+the quality contract at that verified head, and discards it. After claim,
+`SymphonyElixir.AgentRunner` resolves a second fresh credential and repeats full authority
+and immutable-head quality-contract validation before `SymphonyElixir.GitCheckoutPreflight` checks that node-local runtime's namespaced
+checkout, origin, branch, remote head, and safe writable `.git` metadata. Both stages share
+`ProjectRepoPreflight.check_credential/3`, so a canonical branch advance between claim stages is
+accepted only after its new head's package scripts pass the same contract. The post-claim check
+uses the newly resolved worker credential and that worker's HTTP boundary; bootstrap and checkout
+then remain bound to that checked head. Missing/invalid scripts block before workspace effects,
+while unavailable package reads retain their existing retry classification. This includes Symphony
+running locally inside WSL; another runtime's credential evidence cannot authorize it.
+
+The complete pre-claim resolver, authority and package check runs in one monitored process with
+a shared 10-second deadline. An independent supervisor kills the check on expiry or caller exit;
+expiry returns the transient `github_unavailable` blocker. Trusted runtime option `preflight_timeout`
+may shorten this deadline; it cannot extend or
+disable it. The scheduler resumes processing its mailbox after that bounded wait.
+
+Options retained by a started orchestrator accept only callbacks with an empty captured environment
+(for example `&MyRuntime.request/1`) or module handles (for example a credential source module
+implementing `resolve/1`). Closures that capture values, and argument-bearing MFA tuples, are rejected
+with `{:unsafe_runtime_option, key}` before startup. This applies to all retained callbacks, including
+worker dependencies, and to both explicit options and application-configured orchestrator defaults.
+Resolve secrets inside the trusted source on each invocation; never capture a token or credential
+path in runtime configuration. Call-local test seams outside the scheduler are unaffected.
+
+The standalone application value `:github_credential_source` has the same module/empty-environment
+restriction. It is checked before scheduler startup and again whenever the application fallback
+is resolved, including after a runtime configuration replacement. Invalid sources return
+`credential_resolver_failed` without invocation. Configuration owners must replace rejected values;
+validation does not rewrite application configuration. Explicit call-local sources remain available
+for isolated tests, and competing controller sources still fail closed.
+
+Actor evidence uses the installation-token-compatible, fixed GraphQL `viewer.login` read; GraphQL
+errors (including partial responses) fail closed. Missing or hidden repositories/refs (HTTP 404)
+are permanent authority blockers, not transport retries. HTTP 403 with GitHub rate-limit evidence
+(remaining quota zero, Retry-After, or a secondary-limit response) uses the existing transient
+`github_unavailable` retry path; actual authorization denials remain permanent. Authority and
+package-contract reads share the same classifier, and raw responses never enter blocker state.
+
+Only canonical HTTPS GitHub origins are accepted, preventing ambient SSH-key authentication.
+ARO-197 owns migration of legacy SSH origins and cloning hooks; the runtime does not rewrite reused
+repository configuration. Fresh workspaces that fail checkout validation are rolled back through
+their exact ownership attestation; reused workspaces and pre-existing private homes are preserved.
+Post-claim preparation failures are reported to the scheduler only after private-home rollback
+finishes. Failed private-home rollback overrides a transient Git failure with the permanent
+`subprocess_home_rollback_failed` blocker; a successful rollback preserves the original retry
+classification. Raw cleanup errors and credential material are never sent to the scheduler.
+
+During fresh bootstrap, Git fetch execution failures and timeouts return the transient
+`repository_bootstrap_unavailable` reason. The owned fresh checkout is rolled back before the
+worker reports the failure; the scheduler releases ownership and schedules backoff. Retry starts
+with fresh pre-claim and post-claim authority checks before fetching again. Local init/config/checkout
+failures, invalid credentials or attestations, and malformed callback results remain permanent
+`repository_bootstrap_failed` blockers.
+
+Repository rollback is a strict prerequisite for automatic retry. Failed attestation, removal,
+readiness-state cleanup, or a failed/malformed cleanup callback returns `repository_rollback_failed`.
+Bootstrap, checkout, and deferred creation-hook failure paths preserve that reason instead of reporting the original
+transient outage, and the scheduler records an explicit blocker without scheduling a retry into
+the incomplete checkout. Recovery requires resolving the lock/permission or ownership problem and
+completing cleanup of the exact owned workspace and readiness state before requeuing the issue.
+Successful rollback still uses normal backoff; existing private homes and reused workspaces are
+preserved. General terminal cleanup retains its existing best-effort contract.
+
+A newly created profiled workspace is not initialized until its deferred `after_create` succeeds.
+Hook failure or timeout uses the same attested repository rollback as other preparation failures,
+followed by private-home rollback before the outcome reaches the scheduler. After successful
+cleanup, ordinary worker backoff remains available and a new attempt must bootstrap and run the
+creation hook again. `before_run`, Codex, and completion reporting cannot bypass a failed creation
+hook by reusing its leftover checkout. Cleanup skips `before_remove` because initialization never
+completed; it does not delete reused workspaces or claim to undo the hook's external side effects.
+
+Bootstrap fetch and checkout `ls-remote` share the `GitPreflightCommand` result contract.
+Remote-head execution failures/timeouts return `github_unavailable` and use the same release/backoff
+path; a successful response with a missing or changed head still fails checkout validation.
+Local Git failures and malformed results are never promoted to transport retries.
+
+Before any remote-head probe, hook or Codex turn, checkout validation reads all effective origin
+fetch and push URLs through `git remote get-url --all` and `git remote get-url --push --all`.
+Every URL must resolve to HTTPS GitHub and the selected profile's exact repository. This includes
+separate/multiple `pushurl` entries and Git's `insteadOf`/`pushInsteadOf` expansion. A canonical fetch
+URL alone is not sufficient push evidence. Missing, malformed or cross-repository destinations fail
+closed; matching explicit push URLs and normal fetch-URL fallback remain supported.
+
+Plain `git push` must also select that validated `origin`. The gate reads `remote.pushDefault`,
+`branch.<current>.pushRemote` and `branch.<current>.remote` through the same worker Git environment.
+Unset selectors default to `origin`; explicit `origin` is accepted. Any competing selector fails
+closed, including an overridden setting, a direct URL or the local `.` remote. This deliberately
+rejects separate publishing remotes instead of silently changing a reused checkout's configuration.
+
+Every local profiled Workspace subprocess applies `SubprocessEnvironment` isolation at the final
+spawn boundary, including bootstrap and checkout probes that supply only a credential overlay.
+Ambient Git tracing, shell startup hooks and other non-allowlisted environment variables are removed
+before the child receives the token. Existing explicit project environments and private-home
+capability checks remain in effect. Legacy commands without a project context retain their behavior.
+
+Only after these gates may `SymphonyElixir.ProjectCredentialProvider` produce the call-local
+`GH_TOKEN` plus fixed HTTPS-GitHub-only Git credential helper environment for readiness, hooks,
+and Codex. Isolated HOME and ambient credential denial remain active. Credentials and authorization headers never enter
+arguments, orchestrator state, retries, workspace state, health, logs, receipts, notifications, or
+durable files. `:github_unavailable` and repository transport/timeout blockers are transient.
+Source, expiry, 401/403, actor, allowlist, authority, checkout, remote-head, and Git-metadata
+failures are permanent until configuration changes; unknown failures fail closed. When
+`project_profiles` is absent, the legacy single-project path remains unchanged.
+
+ARO-196 does not create an App, key, token, credential file, or Scheduled Task and does not perform
+machine rollout. ARO-197 owns provisioning, installation on Amy/Matt/Han, rotation, revocation, and
+rollback for the three-repository App allowlist; it must preserve ARO-196's two-profile dispatch
+manifest. ARO-285 owns the live two-project acceptance. See
+[`docs/aro_196_acceptance.md`](docs/aro_196_acceptance.md) for the evidence map.
 
 Startup calls the existing Linear endpoint with the real read-only
 `query SymphonyLinearViewer { viewer { id } }` request before terminal cleanup or the first poll.
