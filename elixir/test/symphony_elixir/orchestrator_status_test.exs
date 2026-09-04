@@ -2045,8 +2045,8 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
 
       body =
         case request[:url] do
-          "https://api.github.com/user" ->
-            %{"login" => "aroak-symphony[bot]"}
+          "https://api.github.com/graphql" ->
+            %{"data" => %{"viewer" => %{"login" => "aroak-symphony[bot]"}}}
 
           "https://api.github.com/repos/aroakpm-svg/aroak-central-brain" ->
             %{

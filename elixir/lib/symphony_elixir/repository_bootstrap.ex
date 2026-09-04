@@ -74,10 +74,6 @@ defmodule SymphonyElixir.RepositoryBootstrap do
     _exception ->
       _ = cleanup(preparation, context, opts)
       {:error, :repository_bootstrap_failed}
-  catch
-    _kind, _reason ->
-      _ = cleanup(preparation, context, opts)
-      {:error, :repository_bootstrap_failed}
   end
 
   def ensure(_context, _preparation, _credential, _authority, _opts),
@@ -148,6 +144,10 @@ defmodule SymphonyElixir.RepositoryBootstrap do
       _invalid ->
         :ok
     end
+  rescue
+    _exception -> :ok
+  catch
+    _kind, _reason -> :ok
   end
 
   defp canonical_url(repository), do: "https://github.com/#{repository}.git"

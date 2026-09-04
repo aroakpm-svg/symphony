@@ -15,6 +15,8 @@ tracker:
 # Enabling the complete set activates approved multi-project polling and exclusive-only dispatch.
 # ARO-286 consumes these opaque references and namespaces. The default credential provider still
 # fails closed until an ARO-195/ARO-196-approved host adapter is injected.
+# Profiled workers require canonical HTTPS GitHub origins; ARO-197 owns legacy SSH-origin migration.
+# The runtime supplies one scoped installation credential and a fixed child Git helper, not ambient auth.
 # project_profiles:
 #   version: 1
 #   profiles:

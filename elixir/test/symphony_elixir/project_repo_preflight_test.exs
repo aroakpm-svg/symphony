@@ -45,7 +45,7 @@ defmodule SymphonyElixir.ProjectRepoPreflightTest do
              )
 
     assert_receive {:event, :resolved, "github-project-management"}
-    assert_receive {:event, :requested, "https://api.github.com/user"}
+    assert_receive {:event, :requested, "https://api.github.com/graphql"}
 
     assert receipt == %{
              actor: @actor,
@@ -261,8 +261,8 @@ defmodule SymphonyElixir.ProjectRepoPreflightTest do
       send(parent, {:event, :requested, url})
 
       case url do
-        "https://api.github.com/user" ->
-          {:ok, %{status: status, body: %{"login" => actor}}}
+        "https://api.github.com/graphql" ->
+          {:ok, %{status: status, body: %{"data" => %{"viewer" => %{"login" => actor}}}}}
 
         "https://api.github.com/repos/" <> repository when repository == profile.repository ->
           {:ok,

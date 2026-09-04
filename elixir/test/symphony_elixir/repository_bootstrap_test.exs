@@ -30,6 +30,31 @@ defmodule SymphonyElixir.RepositoryBootstrapTest do
     assert :ok = RepositoryBootstrap.ensure(context(), preparation(false), credential(), authority(), command_runner: runner)
   end
 
+  test "Orchestrator forwards the selected remote bootstrap boundary through to materialization" do
+    runner = fn args, credential, runtime ->
+      assert credential.token == @secret
+      refute inspect(args) =~ @secret
+      assert runtime[:worker_host] == "han-wsl"
+      send(self(), {:remote_command, hd(args)})
+      {:ok, ""}
+    end
+
+    options =
+      SymphonyElixir.Orchestrator.agent_runner_options_for_test(
+        [repository_bootstrap_command_runner: runner],
+        worker_host: "han-wsl"
+      )
+
+    assert :ok =
+             RepositoryBootstrap.ensure(context(), preparation(true), credential(), authority(),
+               worker_host: options[:worker_host],
+               command_runner: options[:repository_bootstrap_command_runner],
+               cleanup: fn _, _, _, _ -> :ok end
+             )
+
+    assert_receive {:remote_command, "checkout"}
+  end
+
   test "remote bootstrap requires worker runner and failed bootstrap invokes bounded cleanup" do
     parent = self()
 
@@ -45,6 +70,59 @@ defmodule SymphonyElixir.RepositoryBootstrapTest do
              )
 
     assert_receive {:cleanup, "/workers/central-brain/ARO-196", "han-wsl", %ProjectExecutionContext{}, %{id: "workspace"}}
+  end
+
+  test "failed commands stop bootstrap and clean exactly the attested fresh workspace" do
+    for result <- [:error, :raise, :throw] do
+      runner = fn _, _, _ ->
+        case result do
+          :error -> {:error, @secret}
+          :raise -> raise @secret
+          :throw -> throw(@secret)
+        end
+      end
+
+      assert {:error, :repository_bootstrap_failed} =
+               RepositoryBootstrap.ensure(context(), preparation(true), credential(), authority(),
+                 command_runner: runner,
+                 cleanup: fn path, host, received, attestation ->
+                   send(self(), {:failed_cleanup, path, host, received == context(), attestation})
+                   :ok
+                 end
+               )
+
+      assert_receive {:failed_cleanup, "/workers/central-brain/ARO-196", nil, true, %{id: "workspace"}}
+      refute_received {:failed_cleanup, _, _, _, _}
+    end
+  end
+
+  test "malformed authority and input cannot start bootstrap and cleanup failures stay contained" do
+    for authority <- [%{}, %{default_branch: "other", head_sha: @head}, %{default_branch: "main", head_sha: "bad"}] do
+      assert {:error, :repository_bootstrap_failed} =
+               RepositoryBootstrap.ensure(context(), preparation(true), credential(), authority, command_runner: fn _, _, _ -> flunk("invalid authority reached Git") end, cleanup: :invalid)
+    end
+
+    assert {:error, :repository_bootstrap_failed} = RepositoryBootstrap.ensure(nil, nil, nil, nil, nil)
+  end
+
+  test "native bootstrap refuses a workspace without matching ownership before issuing Git commands" do
+    assert {:error, :repository_bootstrap_failed} = RepositoryBootstrap.ensure(context(), preparation(true), credential(), authority(), [])
+  end
+
+  test "a cleanup callback crash is bounded and must not cause a second deletion attempt" do
+    for failure <- [:raise, :throw] do
+      assert {:error, :repository_bootstrap_failed} =
+               RepositoryBootstrap.ensure(context(), preparation(true), credential(), authority(),
+                 command_runner: fn _, _, _ -> {:error, :failed} end,
+                 cleanup: fn _, _, _, _ ->
+                   send(self(), :cleanup_attempt)
+                   if failure == :raise, do: raise(@secret), else: throw(@secret)
+                 end
+               )
+
+      assert_receive :cleanup_attempt
+      refute_received :cleanup_attempt
+    end
   end
 
   defp preparation(created?) do

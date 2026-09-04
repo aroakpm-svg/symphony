@@ -83,7 +83,9 @@ to immediate request or subprocess boundaries and are excluded from commands, or
 retries, workspace state, runtime health, logs, receipts, and notifications.
 
 ARO-196 defines and verifies this consuming contract only. ARO-197 owns GitHub App/Bot
-provisioning and rollout to the three machines. Its ARO-195-approved App installation allowlist is
+provisioning and rollout to the three machines. Canonical HTTPS-only Git authentication and
+installation-compatible actor verification apply before effects; ARO-197 owns legacy SSH-origin
+migration. Its ARO-195-approved App installation allowlist is
 `aroakpm-svg/symphony`, `aroakpm-svg/aroak-central-brain`, and
 `aroakpm-svg/aroak-project-management`; this does not add `symphony` as a third dispatch profile.
 ARO-196's dispatch manifest remains the two mappings above. ARO-285 owns live multi-project

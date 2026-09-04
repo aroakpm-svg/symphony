@@ -41,22 +41,6 @@ defmodule SymphonyElixir.GitCheckoutPreflight do
          :ok <- valid_bound_head(remote_head, expected_head, :github_remote_head_changed),
          :ok <- metadata_capability(workspace, opts) do
       {:ok, %{repository: repository, branch: branch, head: expected_head}}
-    else
-      {:error, reason}
-      when reason in [
-             :git_checkout_invalid,
-             :git_checkout_mismatch,
-             :git_remote_mismatch,
-             :git_branch_mismatch,
-             :github_remote_head_changed,
-             :git_metadata_missing,
-             :git_metadata_unsafe,
-             :git_metadata_unwritable
-           ] ->
-        {:error, reason}
-
-      _failure ->
-        {:error, :git_checkout_invalid}
     end
   rescue
     _exception -> {:error, :git_checkout_invalid}
@@ -211,24 +195,10 @@ defmodule SymphonyElixir.GitCheckoutPreflight do
   defp canonical_repository(output) do
     origin = String.trim(output)
 
-    repository =
-      cond do
-        Regex.match?(~r/\Ahttps:\/\/github\.com\/[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+(?:\.git)?\z/i, origin) ->
-          String.replace_prefix(origin, "https://github.com/", "")
-
-        Regex.match?(~r/\Agit@github\.com:[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+(?:\.git)?\z/i, origin) ->
-          String.replace_prefix(origin, "git@github.com:", "")
-
-        Regex.match?(~r/\Assh:\/\/git@github\.com\/[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+(?:\.git)?\z/i, origin) ->
-          String.replace_prefix(origin, "ssh://git@github.com/", "")
-
-        true ->
-          nil
-      end
-
-    case repository do
-      value when is_binary(value) -> {:ok, String.trim_trailing(value, ".git")}
-      _invalid -> {:error, :git_remote_mismatch}
+    if Regex.match?(~r/\Ahttps:\/\/github\.com\/[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+(?:\.git)?\z/, origin) do
+      {:ok, origin |> String.replace_prefix("https://github.com/", "") |> String.trim_trailing(".git")}
+    else
+      {:error, :git_remote_mismatch}
     end
   end
 

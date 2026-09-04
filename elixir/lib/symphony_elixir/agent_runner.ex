@@ -189,7 +189,7 @@ defmodule SymphonyElixir.AgentRunner do
       effect_opts =
         runtime_opts
         |> Keyword.put(:env, process_env)
-        |> Keyword.put(:sensitive_env_values, Map.values(credential_env))
+        |> Keyword.put(:sensitive_env_values, Enum.filter([credential_env["GH_TOKEN"]], &is_binary/1))
         |> Keyword.put(:workspace_attestation, preparation.workspace_attestation)
         |> Keyword.put(:private_home_capability, preparation.private_home_capability)
 
@@ -199,6 +199,8 @@ defmodule SymphonyElixir.AgentRunner do
       end
     else
       {:error, reason} ->
+        rollback_pre_effect_repository(preparation, execution_context, worker_host, reason)
+
         outcome =
           handle_workspace_preflight_failure(
             recipient,
@@ -211,6 +213,18 @@ defmodule SymphonyElixir.AgentRunner do
         {:private_home_preparation_failed, outcome}
     end
   end
+
+  defp rollback_pre_effect_repository(
+         %{created_now: true, workspace_attestation: attestation},
+         %ProjectExecutionContext{} = context,
+         worker_host,
+         reason
+       )
+       when reason != :repository_bootstrap_failed do
+    Workspace.rollback_failed_repository_bootstrap(context, worker_host, attestation)
+  end
+
+  defp rollback_pre_effect_repository(_preparation, _context, _worker_host, _reason), do: :ok
 
   defp run_prepared_issue(preparation, issue, recipient, opts, worker_host, runtime_opts) do
     %{
@@ -465,8 +479,8 @@ defmodule SymphonyElixir.AgentRunner do
 
       worker_host when is_binary(worker_host) ->
         case Keyword.get(opts, :worker_credential_source) do
-          source when is_function(source, 1) -> [credential_source: source]
-          _missing -> [credential_source: nil]
+          source when is_function(source, 1) -> [credential_scope: :worker, credential_source: source]
+          _missing -> [credential_scope: :worker, credential_source: nil]
         end
     end
   end

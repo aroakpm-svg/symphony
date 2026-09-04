@@ -552,6 +552,15 @@ checkout, origin, branch, remote head, and safe writable Git metadata. A remote 
 own credential source or request/checkout seam MUST fail closed; controller evidence MUST NOT
 authorize it.
 
+Controller and remote-worker sources MUST be resolved in separate explicit scopes, with no remote
+fallback. Actor evidence MUST use the installation-compatible fixed GraphQL viewer login read and
+reject partial/error responses. Missing or hidden repository/ref responses (404) MUST block rather
+than schedule transport retries. Checkout origins MUST be canonical HTTPS GitHub URLs, never SSH.
+The fixed Git credential-protocol environment MUST remain available to validated readiness, hook,
+and Codex child processes while preserving isolated HOME and ambient denial. A fresh attested
+workspace that fails pre-effect checkout validation MUST be rolled back; reused workspaces and
+pre-existing private homes MUST be preserved. ARO-197 owns legacy SSH-origin/config migration.
+
 Credentials, authorization headers, raw response bodies, credential paths, and secret-derived
 details MUST NOT be retained in commands, application state, retries, workspace state, health,
 errors, logs, receipts, or notifications. Transport unavailability is retryable; missing,

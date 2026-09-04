@@ -46,6 +46,14 @@ defmodule SymphonyElixir.GitHubCredentialResolver do
   defp approved_ref(_ref), do: {:error, :credential_resolver_failed}
 
   defp source(opts) do
+    case Keyword.get(opts, :credential_scope, :controller) do
+      :worker -> configured_source(Keyword.get(opts, :credential_source))
+      :controller -> controller_source(opts)
+      _invalid -> {:error, :credential_resolver_failed}
+    end
+  end
+
+  defp controller_source(opts) do
     option_configured? = Keyword.has_key?(opts, :credential_source)
     option_source = Keyword.get(opts, :credential_source)
     application_source = Application.get_env(:symphony_elixir, :github_credential_source)
@@ -84,11 +92,7 @@ defmodule SymphonyElixir.GitHubCredentialResolver do
   defp source_callback?(_source), do: false
 
   defp invoke_source(source, ref) do
-    cond do
-      is_function(source, 1) -> {:ok, source.(ref)}
-      is_atom(source) -> {:ok, source.resolve(ref)}
-      true -> {:error, :credential_resolver_failed}
-    end
+    if is_function(source, 1), do: {:ok, source.(ref)}, else: {:ok, source.resolve(ref)}
   rescue
     _error -> {:error, :credential_resolver_failed}
   catch
@@ -107,9 +111,6 @@ defmodule SymphonyElixir.GitHubCredentialResolver do
         else
           {:error, :credential_resolver_failed}
         end
-
-      %{credential_ref: _source_ref} ->
-        {:error, :credential_resolver_failed}
 
       _result ->
         {:error, :credential_resolver_failed}

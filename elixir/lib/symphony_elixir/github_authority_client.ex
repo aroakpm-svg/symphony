@@ -124,7 +124,19 @@ defmodule SymphonyElixir.GitHubAuthorityClient do
   end
 
   defp fetch_actor(request_fun, headers) do
-    with {:ok, %{"login" => actor}} <- github_get(request_fun, user_url(), headers),
+    response =
+      request_fun
+      |> invoke_request(
+        method: :post,
+        url: @github_api <> "/graphql",
+        headers: headers,
+        json: %{query: "query { viewer { login } }"},
+        redirect: false
+      )
+      |> classify_response()
+
+    with {:ok, %{"data" => %{"viewer" => %{"login" => actor}}} = body} <- response,
+         false <- Map.has_key?(body, "errors"),
          true <- valid_text?(actor) do
       {:ok, actor}
     else
@@ -189,11 +201,10 @@ defmodule SymphonyElixir.GitHubAuthorityClient do
   defp classify_response({:ok, %{status: 200, body: body}}) when is_map(body), do: {:ok, body}
   defp classify_response({:ok, %{status: 401}}), do: {:error, :github_unauthorized}
   defp classify_response({:ok, %{status: 403}}), do: {:error, :github_forbidden}
+  defp classify_response({:ok, %{status: 404}}), do: {:error, :github_repository_not_allowed}
   defp classify_response({:ok, %{status: status}}) when is_integer(status), do: {:error, :github_unavailable}
   defp classify_response({:error, _reason}), do: {:error, :github_unavailable}
   defp classify_response(_response), do: {:error, :github_response_invalid}
-
-  defp user_url, do: @github_api <> "/user"
 
   defp repository_url(%{repository: repository}), do: @github_api <> "/repos/" <> repository
 

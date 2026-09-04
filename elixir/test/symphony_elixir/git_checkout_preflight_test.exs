@@ -25,13 +25,18 @@ defmodule SymphonyElixir.GitCheckoutPreflightTest do
     refute inspect(receipt) =~ @secret
   end
 
-  test "canonicalizes GitHub SSH origins" do
+  test "rejects SSH origins before any network command can use ambient SSH keys" do
     for origin <- [
           "git@github.com:aroakpm-svg/aroak-central-brain.git\n",
           "ssh://git@github.com/aroakpm-svg/aroak-central-brain.git\n"
         ] do
-      {workspace, opts} = successful_seams(origin: origin)
-      assert {:ok, _receipt} = GitCheckoutPreflight.check(context(), workspace, credential(), opts)
+      runner = fn
+        ["remote", "get-url", "origin"], _, _ -> {:ok, origin}
+        args, _, _ -> flunk("SSH origin reached another Git command: #{inspect(args)}")
+      end
+
+      {workspace, opts} = successful_seams(command_runner: runner)
+      assert {:error, :git_remote_mismatch} = GitCheckoutPreflight.check(context(), workspace, credential(), opts)
     end
   end
 
@@ -283,6 +288,119 @@ defmodule SymphonyElixir.GitCheckoutPreflightTest do
 
     assert {:error, :git_checkout_invalid} =
              GitCheckoutPreflight.check(context(), workspace, other, opts)
+  end
+
+  test "invalid boundary inputs and missing heads cannot start Git" do
+    {workspace, opts} = successful_seams()
+    assert {:error, :git_checkout_invalid} = GitCheckoutPreflight.check(nil, nil, nil, nil)
+
+    for head <- [nil, "bad"] do
+      assert {:error, :git_checkout_invalid} = GitCheckoutPreflight.check(context(), workspace, credential(), Keyword.put(opts, :expected_head_sha, head))
+    end
+
+    assert {:error, :git_checkout_mismatch} = GitCheckoutPreflight.check(context(), workspace, credential(), Keyword.put(opts, :worker_host, 42))
+
+    for runner <- [nil, :invalid] do
+      assert {:error, :git_checkout_invalid} = GitCheckoutPreflight.check(context(), workspace, credential(), Keyword.put(opts, :command_runner, runner))
+    end
+  end
+
+  test "remote attestor and guard failures cannot fall back to local filesystem or commands" do
+    for overrides <- [
+          [workspace_attestor: :invalid],
+          [workspace_guard: :invalid],
+          [workspace_attestor: fn _, _, _ -> raise "synthetic-secret" end],
+          [workspace_attestor: fn _, _, _ -> throw("synthetic-secret") end],
+          [workspace_guard: fn _, _, _, _ -> raise "synthetic-secret" end],
+          [workspace_guard: fn _, _, _, _ -> throw("synthetic-secret") end]
+        ] do
+      {workspace, opts} =
+        successful_seams(
+          [
+            worker_host: "worker.example",
+            workspace_attestation: remote_attestation(),
+            workspace_attestor: remote_attestor(),
+            workspace_guard: remote_workspace_guard(),
+            metadata_inspector: remote_metadata_inspector(),
+            metadata_probe: remote_metadata_probe()
+          ]
+          |> Keyword.merge(overrides)
+        )
+
+      assert {:error, reason} = GitCheckoutPreflight.check(context(), workspace, credential(), opts)
+      assert reason in [:git_checkout_mismatch, :git_checkout_invalid]
+    end
+
+    {workspace, opts} =
+      successful_seams(
+        worker_host: "worker.example",
+        workspace_attestation: remote_attestation(),
+        workspace_attestor: remote_attestor(),
+        workspace_guard: remote_workspace_guard(),
+        command_runner: nil
+      )
+
+    assert {:error, :git_checkout_invalid} = GitCheckoutPreflight.check(context(), workspace, credential(), opts)
+  end
+
+  test "Git failures exceptions and non-text outputs cannot become checkout evidence" do
+    for runner <- [
+          fn _, _, _ -> {:error, "synthetic-secret"} end,
+          fn _, _, _ -> raise "synthetic-secret" end,
+          fn _, _, _ -> throw("synthetic-secret") end,
+          fn _, _, _ -> {:ok, nil} end,
+          fn
+            ["remote", "get-url", "origin"], _, _ -> {:ok, "https://github.com/aroakpm-svg/aroak-central-brain.git"}
+            _, _, _ -> {:ok, "two\nlines"}
+          end
+        ] do
+      {workspace, opts} = successful_seams(command_runner: runner)
+      assert {:error, :git_checkout_invalid} = GitCheckoutPreflight.check(context(), workspace, credential(), opts)
+    end
+
+    {workspace, opts} = successful_seams(remote_head: "invalid")
+    assert {:error, :github_remote_head_changed} = GitCheckoutPreflight.check(context(), workspace, credential(), opts)
+  end
+
+  test "invalid metadata adapters and disappearing metadata fail closed without probe artifacts" do
+    for overrides <- [
+          [metadata_inspector: :invalid],
+          [metadata_inspector: fn _ -> raise "synthetic-secret" end],
+          [metadata_probe: :invalid],
+          [metadata_probe: fn _ -> throw("synthetic-secret") end]
+        ] do
+      {workspace, opts} = successful_seams(overrides)
+      assert {:error, :git_metadata_unwritable} = GitCheckoutPreflight.check(context(), workspace, credential(), opts)
+    end
+
+    {workspace, opts} = successful_seams(metadata_inspector: nil)
+    assert {:error, :git_metadata_missing} = GitCheckoutPreflight.check(context(), workspace, credential(), opts)
+    {workspace, opts} = successful_seams(metadata_probe: nil)
+    assert {:error, :git_metadata_missing} = GitCheckoutPreflight.check(context(), workspace, credential(), opts)
+  end
+
+  test "remote metadata probes require worker-local success and contain raised or thrown secrets" do
+    for probe <- [nil, fn _, _ -> raise "synthetic-secret" end, fn _, _ -> throw("synthetic-secret") end] do
+      {workspace, opts} =
+        successful_seams(
+          worker_host: "worker.example",
+          workspace_attestation: remote_attestation(),
+          workspace_attestor: remote_attestor(),
+          workspace_guard: remote_workspace_guard(),
+          metadata_inspector: remote_metadata_inspector(),
+          metadata_probe: probe
+        )
+
+      assert {:error, :git_metadata_unwritable} = GitCheckoutPreflight.check(context(), workspace, credential(), opts)
+    end
+  end
+
+  test "real metadata inspection rejects a file in place of the Git directory" do
+    root = temporary_root!()
+    File.write!(Path.join(root, ".git"), "gitdir: outside")
+    workspace_root = root |> Path.dirname() |> Path.dirname()
+    {workspace, opts} = successful_seams(workspace: root, workspace_root: workspace_root, metadata_inspector: nil)
+    assert {:error, :git_metadata_unsafe} = GitCheckoutPreflight.check(context(), workspace, credential(), opts)
   end
 
   defp successful_seams(overrides \\ []) do

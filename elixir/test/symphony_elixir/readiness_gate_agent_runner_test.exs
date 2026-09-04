@@ -28,8 +28,8 @@ defmodule SymphonyElixir.ReadinessGateAgentRunnerTest do
 
       response =
         case request[:url] do
-          "https://api.github.com/user" ->
-            %{"login" => "aroak-automation[bot]"}
+          "https://api.github.com/graphql" ->
+            %{"data" => %{"viewer" => %{"login" => "aroak-automation[bot]"}}}
 
           "https://api.github.com/repos/aroakpm-svg/aroak-central-brain" ->
             %{"full_name" => context.repository, "default_branch" => "main", "permissions" => %{"pull" => true, "push" => true}}
@@ -54,7 +54,7 @@ defmodule SymphonyElixir.ReadinessGateAgentRunnerTest do
       end
     end
 
-    assert {:ok, %{"GH_TOKEN" => ^token}} =
+    assert {:ok, %{"GH_TOKEN" => ^token} = child_environment} =
              AgentRunner.post_claim_gate_for_test(context, workspace,
                credential_source: source,
                expected_actor: "aroak-automation[bot]",
@@ -67,9 +67,19 @@ defmodule SymphonyElixir.ReadinessGateAgentRunnerTest do
 
     assert Process.get(:aro196_resolution_count) == 2
     refute token == Process.get(:aro196_preclaim_token)
+    assert_validated_child_git_protocol(context, child_environment, root, token)
   end
 
   test "post-claim remote checkout uses only the selected worker seams" do
+    previous_source = Application.get_env(:symphony_elixir, :github_credential_source)
+    Application.put_env(:symphony_elixir, :github_credential_source, fn _ -> flunk("controller source ran on worker") end)
+
+    on_exit(fn ->
+      if previous_source,
+        do: Application.put_env(:symphony_elixir, :github_credential_source, previous_source),
+        else: Application.delete_env(:symphony_elixir, :github_credential_source)
+    end)
+
     token = "remote-worker-#{System.unique_integer([:positive, :monotonic])}"
     head = String.duplicate("b", 40)
     context = aro196_context()
@@ -84,7 +94,7 @@ defmodule SymphonyElixir.ReadinessGateAgentRunnerTest do
       assert runtime[:workspace_attestation] == attestation
 
       case args do
-        ["remote", "get-url", "origin"] -> {:ok, "git@github.com:aroakpm-svg/aroak-central-brain.git\n"}
+        ["remote", "get-url", "origin"] -> {:ok, "https://github.com/aroakpm-svg/aroak-central-brain.git\n"}
         ["branch", "--show-current"] -> {:ok, "main\n"}
         ["rev-parse", "--verify", "HEAD^{commit}"] -> {:ok, head <> "\n"}
         ["ls-remote", "--heads", "origin", "refs/heads/main"] -> {:ok, head <> "\trefs/heads/main\n"}
@@ -92,25 +102,31 @@ defmodule SymphonyElixir.ReadinessGateAgentRunnerTest do
     end
 
     assert {:ok, %{"GH_TOKEN" => ^token}} =
-             AgentRunner.post_claim_gate_for_test(context, workspace,
-               worker_credential_source: gate_opts[:credential_source],
-               expected_actor: gate_opts[:expected_actor],
-               request_fun: controller_request,
-               worker_authority_request_fun: gate_opts[:request_fun],
-               worker_host: "han-wsl",
-               workspace_root: "/workers",
-               workspace_attestation: attestation,
-               workspace_attestor: fn "ARO-196", "han-wsl", ^context -> {:ok, attestation} end,
-               workspace_guard: fn ^workspace, "han-wsl", ^context, ^attestation -> :ok end,
-               git_checkout_command_runner: runner,
-               metadata_inspector: fn _path, runtime ->
-                 assert runtime[:worker_host] == "han-wsl"
-                 {:ok, :directory}
-               end,
-               metadata_probe: fn _path, runtime ->
-                 assert runtime[:worker_host] == "han-wsl"
-                 :ok
-               end
+             AgentRunner.post_claim_gate_for_test(
+               context,
+               workspace,
+               Orchestrator.agent_runner_options_for_test(
+                 [
+                   worker_credential_source: gate_opts[:credential_source],
+                   expected_actor: gate_opts[:expected_actor],
+                   request_fun: controller_request,
+                   worker_authority_request_fun: gate_opts[:request_fun],
+                   workspace_attestor: fn "ARO-196", "han-wsl", ^context -> {:ok, attestation} end,
+                   workspace_guard: fn ^workspace, "han-wsl", ^context, ^attestation -> :ok end,
+                   git_checkout_command_runner: runner,
+                   metadata_inspector: fn _path, runtime ->
+                     assert runtime[:worker_host] == "han-wsl"
+                     {:ok, :directory}
+                   end,
+                   metadata_probe: fn _path, runtime ->
+                     assert runtime[:worker_host] == "han-wsl"
+                     :ok
+                   end
+                 ],
+                 worker_host: "han-wsl",
+                 workspace_root: "/workers",
+                 workspace_attestation: attestation
+               )
              )
   end
 
@@ -192,6 +208,7 @@ defmodule SymphonyElixir.ReadinessGateAgentRunnerTest do
     assert :binary.match(:erlang.term_to_binary(blocked_state), secret) == :nomatch
     refute File.exists?(marker)
     refute File.exists?(private_home)
+    refute File.exists?(Path.join([fixture.workspace_root, "central-brain", "ARO-196-CLEAN"]))
   end
 
   test "an actual transient post-claim credential failure releases into secret-free retry" do
@@ -254,6 +271,85 @@ defmodule SymphonyElixir.ReadinessGateAgentRunnerTest do
     refute inspect(retried) =~ secret
     assert :binary.match(:erlang.term_to_binary(retried), secret) == :nomatch
     refute log =~ secret
+  end
+
+  test "404 post-claim authority blockers do not enter an automatic retry loop" do
+    issue = profiled_issue("ARO-196-HIDDEN", "codex/aro-196-hidden", "aroakpm-svg/aroak-central-brain")
+    opts = canonical_gate_options("synthetic-404-token", String.duplicate("a", 40))
+    opts = Keyword.put(opts, :request_fun, fn _ -> {:ok, %{status: 404, body: "synthetic-404-token"}} end)
+    assert :ok = AgentRunner.run(issue, self(), opts)
+    assert_receive {:agent_hard_blocker, _, blocker}
+    assert blocker.kind == {:project_credential_unavailable, :github_repository_not_allowed}
+    {:noreply, state} = Orchestrator.handle_info({:agent_hard_blocker, issue.id, blocker}, running_orchestrator_state(issue))
+    assert Map.has_key?(state.blocked, issue.id)
+    refute Map.has_key?(state.retry_attempts, issue.id)
+    refute inspect(state) =~ "synthetic-404-token"
+  end
+
+  test "head drift rolls back a fresh checkout so retry bootstraps again while existing homes and reused work survive" do
+    fixture = git_fixture!()
+    on_exit(fn -> File.rm_rf(fixture.root) end)
+    issue = profiled_issue("ARO-196-DRIFT", "codex/aro-196-drift", "aroakpm-svg/aroak-central-brain")
+    workspace = Path.join([fixture.workspace_root, "central-brain", issue.identifier])
+    marker = Path.join(fixture.root, "effects.marker")
+    token = "synthetic-drift-token"
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      workspace_root: fixture.workspace_root,
+      hook_after_create: "printf ran > #{shell_escape(shell_path(marker))}; exit 42"
+    )
+
+    assert {:ok, context} = SymphonyElixir.ProjectExecutionContext.from_issue(issue)
+    assert {:ok, environment} = SymphonyElixir.SubprocessEnvironment.build(%{}, context)
+    paths = SymphonyElixir.SubprocessEnvironment.private_home_paths(context)
+    preparation_opts = [env: environment, subprocess_home_paths: paths, defer_after_create: true]
+    assert {:ok, preparation} = Workspace.prepare_for_issue(issue, nil, context, preparation_opts)
+    assert :ok = Workspace.finalize_private_home_capability(preparation.private_home_capability)
+    assert :ok = Workspace.rollback_failed_repository_bootstrap(context, nil, preparation.workspace_attestation)
+    assert File.dir?(paths.home)
+
+    bootstrap = real_bootstrap_runner(workspace, fixture.remote, token)
+    checkout = real_checkout_runner(workspace, fixture.remote, token)
+
+    drift = fn
+      ["ls-remote", "--heads", "origin", "refs/heads/main"], _, _ -> {:ok, String.duplicate("b", 40) <> "\trefs/heads/main\n"}
+      args, credential, runtime -> checkout.(args, credential, runtime)
+    end
+
+    opts =
+      canonical_gate_options(token, fixture.initial_sha) ++
+        [
+          repository_bootstrap_command_runner: fn args, credential, runtime ->
+            if hd(args) == "init", do: send(self(), :fresh_bootstrap)
+            bootstrap.(args, credential, runtime)
+          end,
+          git_checkout_command_runner: drift
+        ]
+
+    assert :ok = AgentRunner.run(issue, self(), Orchestrator.agent_runner_options_for_test(opts, []))
+    assert_receive :fresh_bootstrap
+    assert_receive {:agent_hard_blocker, _, %{kind: {:project_credential_unavailable, :github_remote_head_changed}}}
+    refute File.exists?(workspace)
+    refute File.exists?(marker)
+    assert File.dir?(paths.home)
+
+    retry_opts = Keyword.put(opts, :git_checkout_command_runner, checkout)
+
+    assert_raise RuntimeError, fn ->
+      AgentRunner.run(issue, self(), Orchestrator.agent_runner_options_for_test(retry_opts, []))
+    end
+
+    assert_receive :fresh_bootstrap
+    assert File.read!(marker) == "ran"
+    assert File.dir?(Path.join(workspace, ".git"))
+    assert File.dir?(paths.home)
+
+    File.write!(Path.join(workspace, "user-work.txt"), "preserve")
+    assert :ok = AgentRunner.run(issue, self(), opts)
+    assert_receive {:agent_hard_blocker, _, %{kind: {:project_credential_unavailable, :github_remote_head_changed}}}
+    refute_received :fresh_bootstrap
+    assert File.read!(Path.join(workspace, "user-work.txt")) == "preserve"
+    assert File.dir?(paths.home)
   end
 
   test "credential values emitted by a hook are redacted from failures before truncation" do
@@ -632,7 +728,8 @@ defmodule SymphonyElixir.ReadinessGateAgentRunnerTest do
     assert runtime_opts[:env]["SYMPHONY_CODEX_MODEL_SOURCE"] == "Linear label model:gpt-5.5"
     assert runtime_opts[:env]["GIT_CONFIG_NOSYSTEM"] == "1"
     assert runtime_opts[:env]["GIT_CONFIG_COUNT"] == "0"
-    assert runtime_opts[:env]["GIT_CONFIG_PARAMETERS"] == "'credential.helper='"
+    assert {:ok, context} = SymphonyElixir.ProjectExecutionContext.from_issue(issue)
+    assert_validated_child_git_protocol(context, runtime_opts[:env], fixture.root, env_value)
     assert runtime_opts[:env]["GIT_CONFIG_SYSTEM"] == git_null_device()
     assert runtime_opts[:env]["GIT_CONFIG_GLOBAL"] == git_null_device()
 
@@ -954,8 +1051,8 @@ defmodule SymphonyElixir.ReadinessGateAgentRunnerTest do
     request = fn request ->
       body =
         case request[:url] do
-          "https://api.github.com/user" ->
-            %{"login" => "aroak-automation[bot]"}
+          "https://api.github.com/graphql" ->
+            %{"data" => %{"viewer" => %{"login" => "aroak-automation[bot]"}}}
 
           "https://api.github.com/repos/aroakpm-svg/aroak-central-brain" ->
             %{
@@ -992,6 +1089,46 @@ defmodule SymphonyElixir.ReadinessGateAgentRunnerTest do
       retry_attempts: %{},
       codex_totals: %{input_tokens: 0, output_tokens: 0, total_tokens: 0, seconds_running: 0}
     }
+  end
+
+  defp assert_validated_child_git_protocol(context, provider_environment, root, token) do
+    assert {:ok, child} = SymphonyElixir.SubprocessEnvironment.build(provider_environment, context)
+    refute child["HOME"] == System.user_home!()
+    marker = Path.join(root, "ambient-helper.marker")
+    fake_config = Path.join(root, "synthetic.gitconfig")
+    File.write!(fake_config, "[credential]\n\thelper = !printf ambient > '#{shell_path(marker)}'\n")
+
+    safe_child =
+      child
+      |> Map.put("GIT_CONFIG_GLOBAL", fake_config)
+      |> Map.put("GIT_CONFIG_NOSYSTEM", "1")
+      |> Map.put("GIT_TERMINAL_PROMPT", "0")
+      |> Map.put("GIT_ASKPASS", false)
+      |> Map.put("SSH_ASKPASS", false)
+      |> Map.put("ENV", false)
+      |> Map.put("BASH_ENV", false)
+
+    for {host, accepted?} <- [{"github.com", true}, {"example.com", false}] do
+      input = Base.encode64("protocol=https\nhost=#{host}\n\n")
+
+      {output, status} =
+        System.cmd("sh", ["-c", "printf '%s' '#{input}' | base64 -d | git credential fill"],
+          cd: root,
+          env:
+            Enum.map(safe_child, fn
+              {key, false} -> {key, nil}
+              pair -> pair
+            end),
+          stderr_to_stdout: true
+        )
+
+      assert status == 0 == accepted?
+      canonical? = String.contains?(output, "password=" <> token)
+      assert canonical? == accepted?
+    end
+
+    refute File.exists?(marker)
+    refute File.exists?(Path.join(child["HOME"], ".git-credentials"))
   end
 
   defp real_bootstrap_runner(workspace, fixture_remote, expected_token) do

@@ -8,7 +8,7 @@ defmodule SymphonyElixir.ProjectCredentialProvider do
   alias SymphonyElixir.GitHubCredentialResolver.Credential
   alias SymphonyElixir.ProjectExecutionContext
 
-  @type environment :: %{optional(String.t()) => binary()}
+  @type environment :: %{optional(String.t()) => binary() | false}
 
   @spec resolve(ProjectExecutionContext.t(), keyword()) ::
           {:ok, Credential.t()} | {:error, GitHubCredentialResolver.reason()}
@@ -21,9 +21,10 @@ defmodule SymphonyElixir.ProjectCredentialProvider do
 
   @spec environment(Credential.t()) ::
           {:ok, environment()} | {:error, :credential_resolver_failed}
-  def environment(%Credential{token: token}) when is_binary(token) and byte_size(token) > 0 do
-    {:ok, %{"GH_TOKEN" => token}}
+  def environment(credential) do
+    case SymphonyElixir.GitCredentialEnvironment.build(credential) do
+      {:ok, environment} -> {:ok, environment}
+      {:error, :invalid_git_credential} -> {:error, :credential_resolver_failed}
+    end
   end
-
-  def environment(_credential), do: {:error, :credential_resolver_failed}
 end

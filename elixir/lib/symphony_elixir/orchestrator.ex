@@ -88,6 +88,7 @@ defmodule SymphonyElixir.Orchestrator do
     :metadata_inspector,
     :metadata_probe,
     :readiness_command_runner,
+    :repository_bootstrap_command_runner,
     :request_fun,
     :worker_authority_request_fun,
     :worker_credential_source,

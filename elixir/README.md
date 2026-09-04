@@ -490,7 +490,8 @@ ARO-195-approved GitHub App installation allowlist also includes `aroakpm-svg/sy
 of three repositories. That installation scope does not define or add a `symphony` dispatch
 profile. Trusted application configuration supplies `:github_credential_source`; runtime
 options supply the expected dedicated actor and may inject the same source explicitly for packaging
-or tests. Configuring both sources is a conflict. `WORKFLOW.md`, issue text, environment variables,
+or tests. Configuring both controller sources is a conflict. An explicitly selected remote worker
+source is independently scoped and never falls back to that controller source. `WORKFLOW.md`, issue text, environment variables,
 ambient `gh`, Git Credential Manager, and other profiles cannot select or replace the source.
 
 The source returns exactly one reference-bound credential for the current call. Before claim,
@@ -502,8 +503,18 @@ SSH worker's namespaced checkout, origin, branch, remote head, and safe writable
 Remote execution requires worker-local credential, GitHub-request, checkout-command, workspace
 attestation, and metadata seams; it never falls back to controller evidence.
 
-Only after these gates may `SymphonyElixir.ProjectCredentialProvider` produce the minimal
-`GH_TOKEN` child environment. Credentials and authorization headers are call-local and never enter
+Actor evidence uses the installation-token-compatible, fixed GraphQL `viewer.login` read; GraphQL
+errors (including partial responses) fail closed. Missing or hidden repositories/refs (HTTP 404)
+are permanent authority blockers, not transport retries.
+
+Only canonical HTTPS GitHub origins are accepted, preventing ambient SSH-key authentication.
+ARO-197 owns migration of legacy SSH origins and cloning hooks; the runtime does not rewrite reused
+repository configuration. Fresh workspaces that fail checkout validation are rolled back through
+their exact ownership attestation; reused workspaces and pre-existing private homes are preserved.
+
+Only after these gates may `SymphonyElixir.ProjectCredentialProvider` produce the call-local
+`GH_TOKEN` plus fixed HTTPS-GitHub-only Git credential helper environment for readiness, hooks,
+and Codex. Isolated HOME and ambient credential denial remain active. Credentials and authorization headers never enter
 arguments, orchestrator state, retries, workspace state, health, logs, receipts, notifications, or
 durable files. `:github_unavailable` and repository transport/timeout blockers are transient.
 Source, expiry, 401/403, actor, allowlist, authority, checkout, remote-head, and Git-metadata

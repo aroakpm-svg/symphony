@@ -7,6 +7,8 @@ It does not provision credentials or claim that a live three-machine deployment 
 
 - Trusted application/runtime configuration selects one credential source and the expected
   dedicated automation actor. Workflow and issue content contain only an approved opaque reference.
+- Controller and selected remote-worker sources have separate explicit scopes; duplicate controller
+  sources still conflict and a missing worker source never falls back to the controller.
 - The complete ARO-196 dispatch manifest has two mappings: `github-central-brain` to
   `aroakpm-svg/aroak-central-brain` and `github-project-management` to
   `aroakpm-svg/aroak-project-management`.
@@ -18,11 +20,16 @@ It does not provision credentials or claim that a live three-machine deployment 
 - A fresh credential validates actor, repository pull/push authority, default branch, exact head,
   and the quality contract before claim and is discarded. A second fresh credential repeats full
   authority validation inside the selected worker before checkout validation or lifecycle effects.
+- Actor evidence is the fixed installation-compatible GraphQL `viewer.login` read. Partial/errors
+  responses fail closed, and missing/hidden repositories or refs (404) are permanent blockers.
 - Newly-created profiled workspaces must first use the selected worker seam to bootstrap only the
   approved repository/canonical branch at the freshly verified head; partial attempts are removed
   through exact attested cleanup and arbitrary `after_create` runs only after validation.
 - Local, WSL, and SSH workers must validate their exact namespaced checkout, canonical origin,
   branch and head, remote head, and safe writable Git metadata through worker-local seams.
+- Origins must be canonical HTTPS GitHub URLs, never SSH. The fixed credential-protocol helper
+  accompanies the validated credential through readiness, hooks, and Codex while HOME stays isolated.
+  Checkout failure rolls back only fresh attested workspaces, preserving reused work and existing homes.
 - Credentials, headers, raw bodies, paths, and secret-derived details are excluded from state,
   retries, health, logs, receipts, commands, workspace artifacts, and durable files.
 
@@ -70,3 +77,6 @@ rollback, and actual runtime identity. It must not weaken the resolver, expected
 double-validation, worker-local, or secret-lifetime boundaries, and it must not add a `symphony`
 dispatch profile. ARO-285 performs the final live two-project acceptance. Neither activity is
 completed or authorized by this document.
+
+ARO-197 also owns explicit legacy SSH-origin and cloning-hook migration; runtime validation does
+not rewrite a reused repository's configuration automatically.

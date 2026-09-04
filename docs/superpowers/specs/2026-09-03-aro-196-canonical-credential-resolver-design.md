@@ -144,7 +144,7 @@ worker-side gate revalidates reference, actor, repository authority, canonical c
 remote HEAD, and `.git` writability in the actual local/WSL/SSH execution environment.
 
 On success, the existing `ProjectCredentialProvider` converts the validated material into the
-minimal subprocess environment (normally `GH_TOKEN`) and the existing
+call-local subprocess environment (`GH_TOKEN` plus the fixed HTTPS-GitHub credential helper) and the existing
 `SubprocessEnvironment` isolation passes it only to the selected Git/readiness/hook/Codex child
 processes. On failure, no effect starts and the hard blocker contains only a typed safe reason.
 
@@ -163,7 +163,7 @@ workspace cleanup boundary. Remote bootstrap requires an explicit worker command
 The worker-side preflight then composes with the existing workspace/readiness checks. It verifies:
 
 - checkout is the expected namespaced project workspace;
-- `origin` canonicalizes to the approved repository;
+- `origin` is canonical HTTPS GitHub for the approved repository; SSH is rejected before network use;
 - a newly-created checkout is on the canonical branch at the verified default-branch head;
 - a reused checkout is either still on that exact canonical head or on the exact tracker issue
   branch; readiness remains authoritative for continuation cleanliness and divergence;

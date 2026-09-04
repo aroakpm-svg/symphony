@@ -34,7 +34,7 @@ defmodule SymphonyElixir.GitHubAuthorityClientTest do
     assert Map.keys(receipt) |> Enum.sort() ==
              [:actor, :default_branch, :head_sha, :pull?, :push?, :repository]
 
-    assert_receive {:github_request, :get, "https://api.github.com/user", headers, false}
+    assert_receive {:github_request, :post, "https://api.github.com/graphql", headers, false}
     assert {"authorization", "Bearer " <> @token} in headers
     assert_receive {:github_request, :get, "https://api.github.com/repos/aroakpm-svg/aroak-central-brain", ^headers, false}
 
@@ -47,6 +47,43 @@ defmodule SymphonyElixir.GitHubAuthorityClientTest do
                expected_actor: @actor,
                request_fun: fn _request -> {:ok, %{status: 401, body: %{}}} end
              )
+  end
+
+  test "missing or hidden repositories and refs are permanent authority blockers" do
+    for suffix <- ["/aroak-central-brain", "/git/ref/heads/main"] do
+      successful = authority_request_fun(self())
+
+      request = fn request ->
+        if String.ends_with?(request[:url], suffix),
+          do: {:ok, %{status: 404, body: %{"message" => @token}}},
+          else: successful.(request)
+      end
+
+      assert {:error, :github_repository_not_allowed} = Client.verify(approved_profile(), credential(approved_profile()), expected_actor: @actor, request_fun: request)
+    end
+  end
+
+  test "GraphQL partial errors and malformed viewer identities never authorize an installation token" do
+    for body <- [
+          %{"errors" => [%{"message" => @token}], "data" => %{"viewer" => %{"login" => @actor}}},
+          %{"errors" => [], "data" => %{"viewer" => %{"login" => @actor}}},
+          %{"data" => nil},
+          %{"data" => %{"viewer" => nil}},
+          %{"data" => %{"viewer" => %{"login" => nil}}},
+          %{"data" => %{"viewer" => %{"login" => " "}}}
+        ] do
+      assert {:error, :github_response_invalid} =
+               Client.verify(approved_profile(), credential(approved_profile()),
+                 expected_actor: @actor,
+                 request_fun: fn request ->
+                   assert request[:method] == :post
+                   assert request[:url] == "https://api.github.com/graphql"
+                   assert request[:json] == %{query: "query { viewer { login } }"}
+                   assert request[:redirect] == false
+                   {:ok, %{status: 200, body: body}}
+                 end
+               )
+    end
   end
 
   test "normalizes a forbidden GitHub response" do
@@ -145,6 +182,64 @@ defmodule SymphonyElixir.GitHubAuthorityClientTest do
     refute log =~ secret
   end
 
+  test "invalid credential actor and transport callbacks are rejected without sending a request" do
+    for credential <- [
+          nil,
+          %Credential{credential_ref: "wrong", token: @token},
+          %Credential{credential_ref: "github-central-brain", token: ""},
+          %Credential{credential_ref: "github-central-brain", token: " \n"},
+          %Credential{credential_ref: "github-central-brain", token: <<0>>}
+        ] do
+      assert {:error, :github_authority_invalid} = Client.verify(approved_profile(), credential, expected_actor: @actor, request_fun: fn _ -> flunk("invalid credential requested authority") end)
+    end
+
+    for opts <- [[], [expected_actor: " "], [expected_actor: @actor, request_fun: nil]] do
+      assert {:error, :github_authority_invalid} = Client.verify(approved_profile(), credential(approved_profile()), opts)
+    end
+
+    assert {:error, :github_authority_invalid} = Client.verify(nil, nil, nil)
+  end
+
+  test "transport exceptions throws and malformed envelopes return bounded failures" do
+    for {request, reason} <- [
+          {fn _ -> raise @token end, :github_unavailable},
+          {fn _ -> throw(@token) end, :github_unavailable},
+          {fn _ -> {:error, @token} end, :github_unavailable},
+          {fn _ -> {:unexpected, @token} end, :github_response_invalid}
+        ] do
+      assert {:error, ^reason} = Client.verify(approved_profile(), credential(approved_profile()), expected_actor: @actor, request_fun: request)
+    end
+  end
+
+  test "repository identity permissions and head response must remain bound to the approved profile" do
+    repository = %{"full_name" => @repository, "default_branch" => @branch, "permissions" => %{"pull" => true, "push" => true}}
+
+    for {suffix, body, reason} <- [
+          {"/aroak-central-brain", %{}, :github_response_invalid},
+          {"/aroak-central-brain", %{repository | "full_name" => "other/repository"}, :github_repository_not_allowed},
+          {"/aroak-central-brain", %{repository | "default_branch" => "other"}, :github_repository_not_allowed},
+          {"/aroak-central-brain", %{repository | "permissions" => %{"pull" => "true", "push" => true}}, :github_repository_not_allowed},
+          {"/aroak-central-brain", %{repository | "permissions" => %{"pull" => false, "push" => true}}, :github_pull_authority_missing},
+          {"/git/ref/heads/main", %{}, :github_response_invalid},
+          {"/git/ref/heads/main", %{"ref" => "refs/heads/other", "object" => %{"sha" => @head_sha}}, :github_response_invalid},
+          {"/git/ref/heads/main", %{"ref" => "refs/heads/main", "object" => %{"sha" => nil}}, :github_response_invalid}
+        ] do
+      successful = authority_request_fun(self())
+
+      assert {:error, ^reason} =
+               Client.verify(approved_profile(), credential(approved_profile()),
+                 expected_actor: @actor,
+                 request_fun: fn request ->
+                   if String.ends_with?(request[:url], suffix) do
+                     {:ok, %{status: 200, body: body}}
+                   else
+                     successful.(request)
+                   end
+                 end
+               )
+    end
+  end
+
   defp approved_profile do
     %{
       key: "central-brain",
@@ -175,8 +270,8 @@ defmodule SymphonyElixir.GitHubAuthorityClientTest do
       send(parent, {:github_request, method, url, headers, redirect})
 
       case url do
-        "https://api.github.com/user" ->
-          {:ok, %{status: 200, body: %{"login" => actor}}}
+        "https://api.github.com/graphql" ->
+          {:ok, %{status: 200, body: %{"data" => %{"viewer" => %{"login" => actor}}}}}
 
         "https://api.github.com/repos/aroakpm-svg/aroak-central-brain" ->
           {:ok,
