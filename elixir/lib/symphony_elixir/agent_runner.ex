@@ -12,6 +12,8 @@ defmodule SymphonyElixir.AgentRunner do
   @type worker_host :: String.t() | nil
 
   @bootstrap_failures ~w(repository_bootstrap_failed repository_bootstrap_unavailable repository_rollback_failed)a
+  @codex_auth_failures ~w(codex_auth_home_unconfigured codex_auth_home_invalid
+                         codex_authentication_required codex_authentication_unavailable)a
 
   defmodule TurnContext do
     @moduledoc false
@@ -113,7 +115,6 @@ defmodule SymphonyElixir.AgentRunner do
     runtime_opts = [
       env: preparation_env,
       sensitive_env_values: [],
-      codex_env: %{},
       execution_context: execution_context
     ]
 
@@ -688,6 +689,10 @@ defmodule SymphonyElixir.AgentRunner do
   defp safe_credential_reason(reason)
        when reason in [
               :credential_provider_unconfigured,
+              :codex_auth_home_unconfigured,
+              :codex_auth_home_invalid,
+              :codex_authentication_required,
+              :codex_authentication_unavailable,
               :profiled_ssh_topology_unsupported,
               :credential_not_found,
               :credential_ambiguous,
@@ -864,8 +869,6 @@ defmodule SymphonyElixir.AgentRunner do
            session_starter.(
              workspace,
              runtime_opts
-             |> Keyword.update!(:env, &Map.merge(&1, runtime_opts[:codex_env]))
-             |> Keyword.delete(:codex_env)
              |> Keyword.merge(
                worker_host: worker_host,
                managed_session: managed_session,
@@ -887,6 +890,13 @@ defmodule SymphonyElixir.AgentRunner do
       after
         AppServer.stop_session(session)
       end
+    else
+      {:error, reason}
+      when reason in @codex_auth_failures ->
+        {:deferred_workspace_preflight_failure, {:project_credential_unavailable, reason}}
+
+      other ->
+        other
     end
   end
 

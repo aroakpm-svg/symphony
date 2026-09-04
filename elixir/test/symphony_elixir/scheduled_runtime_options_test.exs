@@ -261,7 +261,7 @@ defmodule SymphonyElixir.ScheduledRuntimeOptionsTest do
     assert_receive :runner_finished, 15_000
   end
 
-  for interruption <- [:none, :fetch, :remote_head, :head_advance] do
+  for interruption <- [:none, :fetch, :remote_head, :head_advance, :auth_missing] do
     @tag timeout: 90_000, interruption: interruption
     test "scheduled pickup completes and reports with #{interruption} interruption", %{interruption: interruption} do
       parent = self()
@@ -270,6 +270,20 @@ defmodule SymphonyElixir.ScheduledRuntimeOptionsTest do
       issue = candidate()
       opts = options(parent, ready, issue, "synthetic-instance[bot]")
       root = Path.dirname(Workflow.workflow_file_path())
+      auth_root = Path.join(root, "codex-auth")
+      auth_home = Path.expand(Path.join(auth_root, @profile.key))
+      File.mkdir_p!(auth_home)
+      previous_auth_root = Application.get_env(:symphony_elixir, :codex_auth_home_root)
+      Application.put_env(:symphony_elixir, :codex_auth_home_root, auth_root)
+
+      on_exit(fn ->
+        if previous_auth_root,
+          do: Application.put_env(:symphony_elixir, :codex_auth_home_root, previous_auth_root),
+          else: Application.delete_env(:symphony_elixir, :codex_auth_home_root)
+      end)
+
+      account = if interruption == :auth_missing, do: nil, else: %{"type" => "chatgpt"}
+      auth_response = Jason.encode!(%{"id" => 4, "result" => %{"account" => account, "requiresOpenaiAuth" => true}})
       seed = Path.join(root, "seed")
       File.mkdir_p!(seed)
       git!(seed, ["init", "-b", "main"])
@@ -296,15 +310,17 @@ defmodule SymphonyElixir.ScheduledRuntimeOptionsTest do
 
       File.write!(fake_codex, """
       #!/bin/sh
-      printf launched > codex-ran.marker
+      test "$CODEX_HOME" = #{shell_quote(shell_path(auth_home))} || exit 79
       count=0
       while IFS= read -r line; do
         count=$((count + 1))
         case "$count" in
           1) printf '%s\\n' '{"id":1,"result":{}}' ;;
           2) ;;
-          3) printf '%s\\n' '{"id":2,"result":{"thread":{"id":"thread-scheduled"}}}' ;;
-          4)
+          3) printf '%s\\n' '#{auth_response}' ;;
+          4) printf '%s\\n' '{"id":2,"result":{"thread":{"id":"thread-scheduled"}}}' ;;
+          5)
+            printf launched > codex-ran.marker
             printf '%s\\n' '{"id":3,"result":{"turn":{"id":"turn-scheduled"}}}'
             printf '%s\\n' '{"method":"turn/completed"}'
             exit 0 ;;
@@ -381,19 +397,28 @@ defmodule SymphonyElixir.ScheduledRuntimeOptionsTest do
 
       assert_receive :runner_finished, 30_000
       refute_received {:runner_exception, _}
-      assert File.read!(Path.join(workspace, "codex-ran.marker")) == "launched"
-      assert git!(workspace, ["branch", "--show-current"]) == issue.branch_name
-      assert git!(workspace, ["rev-parse", "HEAD"]) == head
-      assert_received {:quality_head, ^head}
-      if interruption == :head_advance, do: assert_received({:quality_head, ^old_head})
-      state = await_completed(server, issue.id, 100)
-      assert state.blocked == %{}
-      assert state.running == %{}
-      refute :erlang.term_to_binary(state) =~ "synthetic-only-token"
-      snapshot = GenServer.call(server, :snapshot)
-      assert snapshot.running == []
-      assert snapshot.blocked == []
-      assert Enum.any?(snapshot.retrying, &(&1.issue_id == issue.id and is_nil(&1.error)))
+
+      if interruption == :auth_missing do
+        state = :sys.get_state(server)
+        assert state.blocked[issue.id].error =~ "codex_authentication_required"
+        refute Map.has_key?(state.retry_attempts, issue.id)
+        refute File.exists?(Path.join(workspace, "codex-ran.marker"))
+      else
+        assert File.read!(Path.join(workspace, "codex-ran.marker")) == "launched"
+        assert git!(workspace, ["branch", "--show-current"]) == issue.branch_name
+        assert git!(workspace, ["rev-parse", "HEAD"]) == head
+        assert_received {:quality_head, ^head}
+        if interruption == :head_advance, do: assert_received({:quality_head, ^old_head})
+        state = await_completed(server, issue.id, 100)
+        assert state.blocked == %{}
+        assert state.running == %{}
+        refute :erlang.term_to_binary(state) =~ "synthetic-only-token"
+        snapshot = GenServer.call(server, :snapshot)
+        assert snapshot.running == []
+        assert snapshot.blocked == []
+        assert Enum.any?(snapshot.retrying, &(&1.issue_id == issue.id and is_nil(&1.error)))
+        refute :erlang.term_to_binary(state) =~ auth_home
+      end
     end
   end
 

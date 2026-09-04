@@ -525,6 +525,29 @@ credential delivery. ARO-197 must obtain short-lived tokens on demand and, when 
 metadata, use GitHub's issuance response. Its rotation/revocation smoke must verify that old
 credentials cannot start new work, independently of the local timestamp.
 
+Codex authentication has a separate operator-managed boundary. For profiled workers, trusted
+application configuration must set `:codex_auth_home_root` to an absolute, dedicated directory
+outside the workspace tree. The final Codex process uses `<root>/<profile_key>` as `CODEX_HOME`.
+Each profile directory must already exist, be owned and protected by the node operator, and have
+its own Codex-managed login. Missing configuration, overlapping workspace paths, redirected
+directories, or non-regular `auth.json`/`config.toml` entries fail closed. Symphony does not create
+these directories or read, copy, log, or transport their credential contents. Do not use copies or
+links to the desktop account's authentication files or another profile's login directory.
+
+The supported Codex `account/read` check runs with `refreshToken: true` after initialization and
+before `thread/start`. It accepts a provisioned ChatGPT or API-key login, or a provider explicitly
+reporting that OpenAI authentication is unnecessary. Codex owns normal token refresh. Missing login
+is a permanent operator blocker; unavailable/malformed account checks are transient. The account
+check has one bounded deadline, and raw account responses never enter diagnostics or receipts.
+
+Symphony's Git/readiness/hooks keep their issue-private environment. Codex's shell environment
+policy also restores the issue-private `CODEX_HOME` for commands it launches. This is environment
+separation, not an OS permission boundary against arbitrary commands reading files as the same
+user. ARO-197 owns directory permissions, per-profile login, runtime identity verification and live
+authentication smoke on each node; ARO-196 implements the consuming contract only. The setting
+cannot be selected by workflow front matter or issue text, and legacy unprofiled execution is
+unchanged. Linear API credentials remain separate and serve ticket pickup/reporting.
+
 Trusted application configuration supplies `:github_credential_source`; runtime
 options supply the expected dedicated actor and may inject the same source explicitly for packaging
 or tests. Configuring both same-runtime sources is a conflict. `WORKFLOW.md`, issue text, environment variables,

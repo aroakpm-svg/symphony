@@ -40,6 +40,9 @@ defmodule SymphonyElixir.Orchestrator do
     credential_reference_mismatch
     credential_expired
     credential_resolver_failed
+    codex_auth_home_unconfigured
+    codex_auth_home_invalid
+    codex_authentication_required
     github_unauthorized
     github_forbidden
     github_unexpected_actor
@@ -61,6 +64,7 @@ defmodule SymphonyElixir.Orchestrator do
     git_metadata_unwritable
   )a
   @transient_preflight_blockers ~w(
+    codex_authentication_unavailable
     repository_unavailable
     repository_metadata_invalid
     default_branch_unresolvable

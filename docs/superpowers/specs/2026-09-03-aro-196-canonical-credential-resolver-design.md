@@ -176,7 +176,21 @@ processes. On failure, no effect starts and the hard blocker contains only a typ
 Each runtime uses its own trusted local source. Lower-level remote defensive/test seams do not
 authorize profiled SSH or prove a complete remote lifecycle.
 
-### 5. Checkout and Git metadata validation
+### 5. Codex authentication compatibility
+
+Codex authentication compatibility clarification (2026-09-04): the strict GitHub credential result
+does not carry OpenAI credentials. The final Codex launcher resolves a separate trusted
+`:codex_auth_home_root/<profile_key>` binding outside the workspace tree. ARO-197 provisions and
+protects each dedicated profile home and its Codex-managed ChatGPT or API-key login; Symphony does
+not read/copy authentication files or pass tokens through its scheduler. This explicit external
+authentication store is distinct from the prohibition on Symphony persisting resolved credentials.
+After initialization, a bounded `account/read` with managed refresh must succeed before thread
+creation. No login is an operator blocker; account-service/transport failure remains retryable.
+Git/hooks retain issue-private homes, and thread shell policy restores that private `CODEX_HOME`
+for Codex-launched commands. This does not promise filesystem isolation between processes sharing
+an OS principal. Legacy unprofiled startup remains unchanged.
+
+### 6. Checkout and Git metadata validation
 
 For a newly-created profiled workspace, the worker first performs a bounded trusted bootstrap. This
 is not a second arbitrary clone hook: it accepts only the repository and canonical branch from the

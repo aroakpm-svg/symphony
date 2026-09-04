@@ -1661,6 +1661,7 @@ defmodule SymphonyElixir.CoreTest do
       :repository_metadata_invalid,
       :default_branch_unresolvable,
       :required_check_contract_unreadable,
+      :codex_authentication_unavailable,
       :github_unavailable
     ]
 
@@ -1676,6 +1677,9 @@ defmodule SymphonyElixir.CoreTest do
       :credential_reference_mismatch,
       :credential_expired,
       :credential_resolver_failed,
+      :codex_auth_home_unconfigured,
+      :codex_auth_home_invalid,
+      :codex_authentication_required,
       :github_unauthorized,
       :github_forbidden,
       :github_unexpected_actor,
