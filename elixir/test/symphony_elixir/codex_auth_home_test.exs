@@ -93,13 +93,19 @@ defmodule SymphonyElixir.CodexAuthHomeTest do
   end
 
   test "unrelated auth notifications do not extend the deadline or leak details", ctx do
-    script = protocol!(ctx, ~s({"method":"account/updated","params":{"detail":"SECRET_AUTH_DETAIL"}}))
+    notification = ~s({"method":"account/updated","params":{"detail":"SECRET_AUTH_DETAIL"}})
+    script = protocol!(ctx, notification)
+    body = File.read!(script)
+
+    File.write!(script, String.replace(body, "printf '%s\\n' '#{notification}'", "i=0; while [ $i -lt 100 ]; do printf '%s\\n' '#{notification}'; sleep 0.1; i=$((i + 1)); done"))
 
     write_workflow_file!(Workflow.workflow_file_path(),
       workspace_root: Path.dirname(Path.dirname(ctx.workspace)),
       codex_command: "sh '#{shell_path(script)}'",
-      codex_read_timeout_ms: 100
+      codex_read_timeout_ms: 2_000
     )
+
+    started = System.monotonic_time(:millisecond)
 
     log =
       capture_log(fn ->
@@ -107,6 +113,7 @@ defmodule SymphonyElixir.CodexAuthHomeTest do
                  AppServer.start_session(ctx.workspace, execution_context: ctx.context)
       end)
 
+    assert System.monotonic_time(:millisecond) - started < 8_000
     refute log =~ "SECRET_AUTH_DETAIL"
     refute File.read!(Path.join(ctx.root, "requests")) =~ "thread/start"
   end
