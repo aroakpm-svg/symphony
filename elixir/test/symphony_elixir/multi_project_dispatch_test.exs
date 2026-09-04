@@ -1374,6 +1374,7 @@ defmodule SymphonyElixir.MultiProjectDispatchTest do
     fn request ->
       {phase, body} =
         cond do
+          String.contains?(request[:url], "/installation/repositories") -> {:scope, %{"total_count" => 1, "repositories" => [%{"full_name" => @central_profile.repository}]}}
           String.ends_with?(request[:url], "/graphql") -> {:actor, %{"data" => %{"viewer" => %{"login" => "automation[bot]"}}}}
           String.contains?(request[:url], "/contents/") -> {:package, %{"scripts" => %{"typecheck" => "tsc", "build" => "build", "test" => "test"}}}
           String.contains?(request[:url], "/git/ref/") -> {:head, %{"ref" => "refs/heads/main", "object" => %{"sha" => String.duplicate("a", 40)}}}

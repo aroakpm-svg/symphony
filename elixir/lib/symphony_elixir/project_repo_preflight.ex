@@ -27,7 +27,7 @@ defmodule SymphonyElixir.ProjectRepoPreflight do
     github_push_authority_missing: "Grant the approved repository read and push authority to the automation identity.",
     github_unauthorized: "Renew or correct the canonical GitHub installation authority.",
     github_forbidden: "Renew or correct the canonical GitHub installation authority.",
-    github_repository_not_allowed: "Use only the approved project repository mapping.",
+    github_repository_not_allowed: "Use the approved project mapping and a token restricted to that repository.",
     github_unavailable: "Retry the credential-scoped GitHub preflight.",
     github_response_invalid: "Retry the credential-scoped GitHub preflight."
   }
@@ -238,7 +238,9 @@ defmodule SymphonyElixir.ProjectRepoPreflight do
        do: {:ok, body}
 
   defp classify_package_response({:ok, %{status: 401}}), do: {:error, :github_unauthorized}
-  defp classify_package_response({:ok, %{status: 403}}), do: {:error, :github_forbidden}
+
+  defp classify_package_response({:ok, %{status: 403} = response}),
+    do: SymphonyElixir.GitHubResponse.classify_forbidden(response)
 
   defp classify_package_response({:ok, %{status: 404}}),
     do: {:error, :required_check_contract_unreadable}

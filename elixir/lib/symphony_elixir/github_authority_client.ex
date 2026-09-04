@@ -59,6 +59,7 @@ defmodule SymphonyElixir.GitHubAuthorityClient do
          headers <- authorization_headers(credential),
          {:ok, actor} <- fetch_actor(request_fun, headers),
          :ok <- expected_actor(actor, expected_actor),
+         :ok <- verify_repository_scope(request_fun, headers, profile),
          {:ok, repository} <- fetch_repository(request_fun, headers, profile),
          :ok <- pull_authority(repository),
          :ok <- push_authority(repository),
@@ -165,6 +166,25 @@ defmodule SymphonyElixir.GitHubAuthorityClient do
     end
   end
 
+  defp verify_repository_scope(request_fun, headers, %{repository: repository}) do
+    # Ask GitHub about this token, not the installation's configured allowlist or a
+    # source-supplied label. A child can use GH_TOKEN directly without any Git remote.
+    case github_get(request_fun, @github_api <> "/installation/repositories?per_page=2", headers) do
+      {:ok, %{"total_count" => 1, "repositories" => [%{"full_name" => ^repository}]}} ->
+        :ok
+
+      {:ok, %{"total_count" => count, "repositories" => repositories}}
+      when is_integer(count) and is_list(repositories) ->
+        {:error, :github_repository_not_allowed}
+
+      {:ok, _invalid} ->
+        {:error, :github_response_invalid}
+
+      {:error, _reason} = error ->
+        error
+    end
+  end
+
   defp pull_authority(%{pull?: true}), do: :ok
   defp pull_authority(_repository), do: {:error, :github_pull_authority_missing}
 
@@ -200,7 +220,11 @@ defmodule SymphonyElixir.GitHubAuthorityClient do
 
   defp classify_response({:ok, %{status: 200, body: body}}) when is_map(body), do: {:ok, body}
   defp classify_response({:ok, %{status: 401}}), do: {:error, :github_unauthorized}
-  defp classify_response({:ok, %{status: 403}}), do: {:error, :github_forbidden}
+
+  defp classify_response({:ok, %{status: 403} = response}) do
+    SymphonyElixir.GitHubResponse.classify_forbidden(response)
+  end
+
   defp classify_response({:ok, %{status: 404}}), do: {:error, :github_repository_not_allowed}
   defp classify_response({:ok, %{status: status}}) when is_integer(status), do: {:error, :github_unavailable}
   defp classify_response({:error, _reason}), do: {:error, :github_unavailable}

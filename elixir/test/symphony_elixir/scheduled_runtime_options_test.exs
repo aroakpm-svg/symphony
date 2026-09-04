@@ -440,6 +440,9 @@ defmodule SymphonyElixir.ScheduledRuntimeOptionsTest do
     request = fn request ->
       body =
         cond do
+          String.contains?(request[:url], "/installation/repositories") ->
+            %{"total_count" => 1, "repositories" => [%{"full_name" => @profile.repository}]}
+
           String.ends_with?(request[:url], "/graphql") ->
             send(parent, {:authority, self()})
             %{"data" => %{"viewer" => %{"login" => actor}}}

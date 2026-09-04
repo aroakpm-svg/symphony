@@ -61,6 +61,33 @@ defmodule SymphonyElixir.ProjectRepoPreflightTest do
     refute inspect(receipt) =~ @token
   end
 
+  test "preclaim rejects a broadly scoped installation token before reading the package" do
+    successful = request_fun(self())
+
+    request = fn request ->
+      cond do
+        String.contains?(request[:url], "/installation/repositories") ->
+          {:ok,
+           %{
+             status: 200,
+             body: %{
+               "total_count" => 2,
+               "repositories" => [%{"full_name" => @profile.repository}, %{"full_name" => @central_profile.repository}]
+             }
+           }}
+
+        String.contains?(request[:url], "/contents/") ->
+          flunk("broad token reached package verification")
+
+        true ->
+          successful.(request)
+      end
+    end
+
+    assert {:blocked, %{code: :github_repository_not_allowed}} =
+             ProjectRepoPreflight.check(@profile, Keyword.put(valid_options(self()), :request_fun, request))
+  end
+
   test "reads package.json at the verified immutable head with the same credential" do
     assert {:ok, _receipt} = ProjectRepoPreflight.check(@profile, valid_options(self()))
 
@@ -329,6 +356,9 @@ defmodule SymphonyElixir.ProjectRepoPreflightTest do
       send(parent, {:event, :requested, url})
 
       case url do
+        "https://api.github.com/installation/repositories?per_page=2" ->
+          {:ok, %{status: status, body: %{"total_count" => 1, "repositories" => [%{"full_name" => profile.repository}]}}}
+
         "https://api.github.com/graphql" ->
           {:ok, %{status: status, body: %{"data" => %{"viewer" => %{"login" => actor}}}}}
 

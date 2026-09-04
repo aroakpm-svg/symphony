@@ -50,6 +50,7 @@ defmodule SymphonyElixir.Orchestrator do
     github_authority_invalid
     repository_bootstrap_failed
     repository_rollback_failed
+    subprocess_home_rollback_failed
     git_checkout_invalid
     git_checkout_mismatch
     git_remote_mismatch

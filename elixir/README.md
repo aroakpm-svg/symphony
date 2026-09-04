@@ -506,13 +506,24 @@ Only `github-central-brain` and `github-project-management` are accepted, for th
 listed above; these are the complete ARO-196 multi-project dispatch manifest. Separately, the
 ARO-195-approved GitHub App installation allowlist also includes `aroakpm-svg/symphony`, for a total
 of three repositories. That installation scope does not define or add a `symphony` dispatch
-profile. Trusted application configuration supplies `:github_credential_source`; runtime
+profile. Each reference must resolve to a short-lived installation token restricted to exactly that
+profile's repository. ARO-197's trusted source must request that restriction when minting the token
+(`repositories` or `repository_ids`); an installation-wide token is not a valid child credential.
+Before and after claim, the authority client independently reads GitHub's
+`GET /installation/repositories?per_page=2` with the resolved token and requires `total_count: 1`
+plus exactly the selected repository. Missing, partial or broader scope evidence fails closed before
+checkout, hooks or child environment delivery. This checks the token's authority even if a child
+uses a direct Git URL or API call, which remote configuration checks cannot constrain. The list
+response is call-local and never stored in scheduler state. Actual token minting, provisioning and
+live cross-repository denial smoke remain ARO-197 operator work.
+
+Trusted application configuration supplies `:github_credential_source`; runtime
 options supply the expected dedicated actor and may inject the same source explicitly for packaging
 or tests. Configuring both same-runtime sources is a conflict. `WORKFLOW.md`, issue text, environment variables,
 ambient `gh`, Git Credential Manager, and other profiles cannot select or replace the source.
 
 The source returns exactly one reference-bound credential for the current call. Before claim,
-`ProjectRepoPreflight` resolves it, validates actor/repository/pull/push/default branch/head, reads
+`ProjectRepoPreflight` resolves it, validates actor/token scope/repository/pull/push/default branch/head, reads
 the quality contract at that verified head, and discards it. After claim,
 `SymphonyElixir.AgentRunner` resolves a second fresh credential and repeats full authority
 validation before `SymphonyElixir.GitCheckoutPreflight` checks that node-local runtime's namespaced
@@ -542,12 +553,19 @@ for isolated tests, and competing controller sources still fail closed.
 
 Actor evidence uses the installation-token-compatible, fixed GraphQL `viewer.login` read; GraphQL
 errors (including partial responses) fail closed. Missing or hidden repositories/refs (HTTP 404)
-are permanent authority blockers, not transport retries.
+are permanent authority blockers, not transport retries. HTTP 403 with GitHub rate-limit evidence
+(remaining quota zero, Retry-After, or a secondary-limit response) uses the existing transient
+`github_unavailable` retry path; actual authorization denials remain permanent. Authority and
+package-contract reads share the same classifier, and raw responses never enter blocker state.
 
 Only canonical HTTPS GitHub origins are accepted, preventing ambient SSH-key authentication.
 ARO-197 owns migration of legacy SSH origins and cloning hooks; the runtime does not rewrite reused
 repository configuration. Fresh workspaces that fail checkout validation are rolled back through
 their exact ownership attestation; reused workspaces and pre-existing private homes are preserved.
+Post-claim preparation failures are reported to the scheduler only after private-home rollback
+finishes. Failed private-home rollback overrides a transient Git failure with the permanent
+`subprocess_home_rollback_failed` blocker; a successful rollback preserves the original retry
+classification. Raw cleanup errors and credential material are never sent to the scheduler.
 
 During fresh bootstrap, Git fetch execution failures and timeouts return the transient
 `repository_bootstrap_unavailable` reason. The owned fresh checkout is rolled back before the

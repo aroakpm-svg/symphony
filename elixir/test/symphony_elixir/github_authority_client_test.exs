@@ -94,6 +94,64 @@ defmodule SymphonyElixir.GitHubAuthorityClientTest do
              )
   end
 
+  test "primary and secondary HTTP 403 rate limits remain retryable at every authority endpoint" do
+    for response <- [
+          %{status: 403, headers: %{"x-ratelimit-remaining" => ["0"]}, body: %{}},
+          %{status: 403, headers: [{"X-RateLimit-Remaining", "0"}], body: %{}},
+          %{status: 403, headers: %{"retry-after" => ["60"]}, body: %{}},
+          %{status: 403, body: %{"message" => "You have exceeded a secondary rate limit. " <> @token}}
+        ],
+        suffix <- ["/graphql", "/installation/repositories?per_page=2", "/aroak-central-brain", "/git/ref/heads/main"] do
+      successful = authority_request_fun(self())
+
+      assert {:error, :github_unavailable} =
+               Client.verify(approved_profile(), credential(approved_profile()),
+                 expected_actor: @actor,
+                 request_fun: fn request ->
+                   if String.ends_with?(request[:url], suffix), do: {:ok, response}, else: successful.(request)
+                 end
+               )
+    end
+  end
+
+  test "authorization failures without rate-limit evidence remain permanent" do
+    for response <- [
+          %{status: 403, headers: %{"x-ratelimit-remaining" => ["100"]}, body: %{"message" => "Resource not accessible by integration"}},
+          %{status: 403, headers: %{"retry-after" => ["invalid"]}, body: %{}},
+          %{status: 403, headers: nil, body: nil}
+        ] do
+      assert {:error, :github_forbidden} =
+               Client.verify(approved_profile(), credential(approved_profile()),
+                 expected_actor: @actor,
+                 request_fun: fn _ -> {:ok, response} end
+               )
+    end
+  end
+
+  test "package preflight shares retryable rate-limit classification and permanent access failures" do
+    for {response, code} <- [
+          {%{status: 403, headers: %{"x-ratelimit-remaining" => ["0"]}, body: %{}}, :github_unavailable},
+          {%{status: 403, headers: %{"retry-after" => ["60"]}, body: "limited"}, :github_unavailable},
+          {%{status: 403, body: %{"message" => "You have exceeded a secondary rate limit."}}, :github_unavailable},
+          {%{status: 403, body: %{"message" => "Resource not accessible by integration"}}, :github_forbidden},
+          {%{status: 401, body: %{}}, :github_unauthorized},
+          {%{status: 404, body: %{}}, :required_check_contract_unreadable}
+        ] do
+      successful = authority_request_fun(self())
+
+      assert {:blocked, %{code: ^code, detail: nil}} =
+               SymphonyElixir.ProjectRepoPreflight.check(approved_profile(),
+                 expected_actor: @actor,
+                 credential_source: fn ref -> {:ok, %{credential_ref: ref, token: @token, expires_at: nil}} end,
+                 request_fun: fn request ->
+                   if String.contains?(request[:url], "/contents/package.json"),
+                     do: {:ok, response},
+                     else: successful.(request)
+                 end
+               )
+    end
+  end
+
   test "rejects a credential whose GitHub actor differs from the trusted actor" do
     assert {:error, :github_unexpected_actor} =
              Client.verify(approved_profile(), credential(approved_profile()),
@@ -270,6 +328,9 @@ defmodule SymphonyElixir.GitHubAuthorityClientTest do
       send(parent, {:github_request, method, url, headers, redirect})
 
       case url do
+        "https://api.github.com/installation/repositories?per_page=2" ->
+          {:ok, %{status: 200, body: %{"total_count" => 1, "repositories" => [%{"full_name" => @repository}]}}}
+
         "https://api.github.com/graphql" ->
           {:ok, %{status: 200, body: %{"data" => %{"viewer" => %{"login" => actor}}}}}
 

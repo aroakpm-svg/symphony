@@ -158,7 +158,36 @@ defmodule SymphonyElixir.AgentRunner do
         {execution_context, launch_env, credential, authority, runtime_opts}
       )
     end)
+    |> report_preparation_outcome(recipient, issue, worker_host, preparation.path)
   end
+
+  defp report_preparation_outcome(
+         {:deferred_preparation_blocker, reason},
+         recipient,
+         issue,
+         worker_host,
+         workspace
+       ) do
+    handle_workspace_preflight_failure(recipient, issue, worker_host, workspace, reason)
+  end
+
+  defp report_preparation_outcome(
+         {:error, :subprocess_home_rollback_failed},
+         recipient,
+         issue,
+         worker_host,
+         workspace
+       ) do
+    handle_workspace_preflight_failure(
+      recipient,
+      issue,
+      worker_host,
+      workspace,
+      {:project_credential_unavailable, :subprocess_home_rollback_failed}
+    )
+  end
+
+  defp report_preparation_outcome(outcome, _recipient, _issue, _worker_host, _workspace), do: outcome
 
   defp finish_worker_preparation_with_capability(
          preparation,
@@ -213,16 +242,7 @@ defmodule SymphonyElixir.AgentRunner do
             {:error, rollback_reason} -> rollback_reason
           end
 
-        outcome =
-          handle_workspace_preflight_failure(
-            recipient,
-            issue,
-            worker_host,
-            preparation.path,
-            {:project_credential_unavailable, reason}
-          )
-
-        {:private_home_preparation_failed, outcome}
+        {:private_home_preparation_failed, {:deferred_preparation_blocker, {:project_credential_unavailable, reason}}}
     end
   end
 
@@ -684,6 +704,7 @@ defmodule SymphonyElixir.AgentRunner do
               :github_unavailable,
               :repository_bootstrap_failed,
               :repository_rollback_failed,
+              :subprocess_home_rollback_failed,
               :repository_bootstrap_unavailable,
               :git_checkout_invalid,
               :git_checkout_mismatch,

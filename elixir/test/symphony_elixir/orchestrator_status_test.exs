@@ -2045,6 +2045,9 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
 
       body =
         case request[:url] do
+          "https://api.github.com/installation/repositories?per_page=2" ->
+            %{"total_count" => 1, "repositories" => [%{"full_name" => "aroakpm-svg/aroak-central-brain"}]}
+
           "https://api.github.com/graphql" ->
             %{"data" => %{"viewer" => %{"login" => "aroak-symphony[bot]"}}}
 

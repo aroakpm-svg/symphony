@@ -82,6 +82,9 @@ defmodule SymphonyElixir.ReadinessGateAgentRunnerTest do
 
       response =
         case request[:url] do
+          "https://api.github.com/installation/repositories?per_page=2" ->
+            %{"total_count" => 1, "repositories" => [%{"full_name" => "aroakpm-svg/aroak-central-brain"}]}
+
           "https://api.github.com/graphql" ->
             %{"data" => %{"viewer" => %{"login" => "aroak-automation[bot]"}}}
 
@@ -201,6 +204,27 @@ defmodule SymphonyElixir.ReadinessGateAgentRunnerTest do
              )
 
     refute inspect(:github_forbidden) =~ secret
+  end
+
+  test "fresh post-claim token scope must match the selected repository before child env is returned" do
+    opts = canonical_gate_options("synthetic-wide-token", String.duplicate("a", 40))
+    successful = opts[:request_fun]
+
+    request = fn request ->
+      if String.contains?(request[:url], "/installation/repositories") do
+        {:ok, %{status: 200, body: %{"total_count" => 3, "repositories" => [%{"full_name" => "aroakpm-svg/aroak-central-brain"}]}}}
+      else
+        successful.(request)
+      end
+    end
+
+    opts =
+      opts
+      |> Keyword.put(:request_fun, request)
+      |> Keyword.put(:git_checkout_command_runner, fn _, _, _ -> flunk("broad token reached checkout") end)
+
+    assert {:error, :github_repository_not_allowed} =
+             AgentRunner.post_claim_gate_for_test(aro196_context(), "unused", opts)
   end
 
   test "remote authority fails closed without a worker request seam and never uses controller HTTP" do
@@ -1181,6 +1205,9 @@ defmodule SymphonyElixir.ReadinessGateAgentRunnerTest do
     request = fn request ->
       body =
         case request[:url] do
+          "https://api.github.com/installation/repositories?per_page=2" ->
+            %{"total_count" => 1, "repositories" => [%{"full_name" => "aroakpm-svg/aroak-central-brain"}]}
+
           "https://api.github.com/graphql" ->
             %{"data" => %{"viewer" => %{"login" => "aroak-automation[bot]"}}}
 
