@@ -3,50 +3,58 @@ defmodule SymphonyElixir.ReadinessGateAgentRunnerTest do
 
   @central_project_id "d0acfb71-f68c-4a9f-8a1a-477265d3c3ec"
 
-  test "reused checkout with a cross-project pushurl blocks before hooks and Codex without removing work" do
-    fixture = git_fixture!()
-    on_exit(fn -> File.rm_rf(fixture.root) end)
-    issue = profiled_issue("ARO-196-PUSH", "codex/aro-196-push", "aroakpm-svg/aroak-central-brain")
-    workspace = Path.join([fixture.workspace_root, "central-brain", issue.identifier])
-    marker = Path.join(fixture.root, "effects.marker")
-    secret = "synthetic-push-token"
+  for {key, value} <- [
+        {"remote.origin.pushurl", "https://github.com/aroakpm-svg/aroak-project-management.git"},
+        {"remote.pushDefault", "other"},
+        {"branch.main.pushRemote", "other"},
+        {"branch.main.remote", "other"}
+      ] do
+    test "reused checkout with #{key} blocks before hooks and Codex without removing work" do
+      fixture = git_fixture!()
+      on_exit(fn -> File.rm_rf(fixture.root) end)
+      issue = profiled_issue("ARO-196-PUSH", "codex/aro-196-push", "aroakpm-svg/aroak-central-brain")
+      workspace = Path.join([fixture.workspace_root, "central-brain", issue.identifier])
+      marker = Path.join(fixture.root, "effects.marker")
+      secret = "synthetic-push-token"
 
-    write_workflow_file!(Workflow.workflow_file_path(),
-      workspace_root: fixture.workspace_root,
-      hook_after_create: "printf ran > #{shell_escape(shell_path(marker))}",
-      hook_before_run: "printf ran > #{shell_escape(shell_path(marker))}"
-    )
+      write_workflow_file!(Workflow.workflow_file_path(),
+        workspace_root: fixture.workspace_root,
+        hook_after_create: "printf ran > #{shell_escape(shell_path(marker))}",
+        hook_before_run: "printf ran > #{shell_escape(shell_path(marker))}"
+      )
 
-    {:ok, context} = SymphonyElixir.ProjectExecutionContext.from_issue(issue)
-    {:ok, _preparation} = Workspace.prepare_for_issue(issue, nil, context, defer_after_create: true)
-    cmd!("git", ["clone", fixture.remote, workspace])
-    git!(workspace, ["remote", "set-url", "origin", "https://github.com/aroakpm-svg/aroak-central-brain.git"])
-    git!(workspace, ["config", "remote.origin.pushurl", "https://github.com/aroakpm-svg/aroak-project-management.git"])
-    File.write!(Path.join(workspace, "uncommitted.txt"), "preserve this work")
+      {:ok, context} = SymphonyElixir.ProjectExecutionContext.from_issue(issue)
+      {:ok, _preparation} = Workspace.prepare_for_issue(issue, nil, context, defer_after_create: true)
+      cmd!("git", ["clone", fixture.remote, workspace])
+      git!(workspace, ["remote", "set-url", "origin", "https://github.com/aroakpm-svg/aroak-central-brain.git"])
+      git!(workspace, ["remote", "add", "other", "https://github.com/aroakpm-svg/aroak-project-management.git"])
+      git!(workspace, ["config", unquote(key), unquote(value)])
+      File.write!(Path.join(workspace, "uncommitted.txt"), "preserve this work")
 
-    runner = real_checkout_runner(workspace, fixture.remote, secret)
+      runner = real_checkout_runner(workspace, fixture.remote, secret)
 
-    opts =
-      canonical_gate_options(secret, fixture.initial_sha) ++
-        [
-          repository_bootstrap_command_runner: fn _, _, _ -> flunk("reused work was bootstrapped") end,
-          git_checkout_command_runner: fn args, credential, runtime ->
-            if "ls-remote" in args, do: send(self(), :remote_probe)
-            runner.(args, credential, runtime)
-          end,
-          codex_session_starter: fn _, _ -> flunk("wrong push repository reached Codex") end
-        ]
+      opts =
+        canonical_gate_options(secret, fixture.initial_sha) ++
+          [
+            repository_bootstrap_command_runner: fn _, _, _ -> flunk("reused work was bootstrapped") end,
+            git_checkout_command_runner: fn args, credential, runtime ->
+              if "ls-remote" in args, do: send(self(), :remote_probe)
+              runner.(args, credential, runtime)
+            end,
+            codex_session_starter: fn _, _ -> flunk("wrong push repository reached Codex") end
+          ]
 
-    assert :ok = AgentRunner.run(issue, self(), opts)
-    assert_receive {:agent_hard_blocker, _, blocker}
-    assert blocker.kind == {:project_credential_unavailable, :git_remote_mismatch}
-    refute_received :remote_probe
-    refute File.exists?(marker)
-    assert File.read!(Path.join(workspace, "uncommitted.txt")) == "preserve this work"
-    {:noreply, state} = Orchestrator.handle_info({:agent_hard_blocker, issue.id, blocker}, running_orchestrator_state(issue))
-    assert Map.has_key?(state.blocked, issue.id)
-    refute Map.has_key?(state.retry_attempts, issue.id)
-    refute :erlang.term_to_binary(state) =~ secret
+      assert :ok = AgentRunner.run(issue, self(), opts)
+      assert_receive {:agent_hard_blocker, _, blocker}
+      assert blocker.kind == {:project_credential_unavailable, :git_remote_mismatch}
+      refute_received :remote_probe
+      refute File.exists?(marker)
+      assert File.read!(Path.join(workspace, "uncommitted.txt")) == "preserve this work"
+      {:noreply, state} = Orchestrator.handle_info({:agent_hard_blocker, issue.id, blocker}, running_orchestrator_state(issue))
+      assert Map.has_key?(state.blocked, issue.id)
+      refute Map.has_key?(state.retry_attempts, issue.id)
+      refute :erlang.term_to_binary(state) =~ secret
+    end
   end
 
   test "post-claim gate freshly verifies authority before checkout and only then returns child env" do
@@ -94,6 +102,7 @@ defmodule SymphonyElixir.ReadinessGateAgentRunnerTest do
 
       case args do
         ["remote", "get-url" | _] -> {:ok, "https://github.com/aroakpm-svg/aroak-central-brain.git\n"}
+        ["config", "--get", "--default", "origin", _key] -> {:ok, "origin"}
         ["branch", "--show-current"] -> {:ok, "main\n"}
         ["rev-parse", "--verify", "HEAD^{commit}"] -> {:ok, head <> "\n"}
         ["ls-remote", "--heads", "origin", "refs/heads/main"] -> {:ok, head <> "\trefs/heads/main\n"}
@@ -141,6 +150,7 @@ defmodule SymphonyElixir.ReadinessGateAgentRunnerTest do
 
       case args do
         ["remote", "get-url" | _] -> {:ok, "https://github.com/aroakpm-svg/aroak-central-brain.git\n"}
+        ["config", "--get", "--default", "origin", _key] -> {:ok, "origin"}
         ["branch", "--show-current"] -> {:ok, "main\n"}
         ["rev-parse", "--verify", "HEAD^{commit}"] -> {:ok, head <> "\n"}
         ["ls-remote", "--heads", "origin", "refs/heads/main"] -> {:ok, head <> "\trefs/heads/main\n"}

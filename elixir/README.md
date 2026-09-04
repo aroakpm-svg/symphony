@@ -577,6 +577,12 @@ separate/multiple `pushurl` entries and Git's `insteadOf`/`pushInsteadOf` expans
 URL alone is not sufficient push evidence. Missing, malformed or cross-repository destinations fail
 closed; matching explicit push URLs and normal fetch-URL fallback remain supported.
 
+Plain `git push` must also select that validated `origin`. The gate reads `remote.pushDefault`,
+`branch.<current>.pushRemote` and `branch.<current>.remote` through the same worker Git environment.
+Unset selectors default to `origin`; explicit `origin` is accepted. Any competing selector fails
+closed, including an overridden setting, a direct URL or the local `.` remote. This deliberately
+rejects separate publishing remotes instead of silently changing a reused checkout's configuration.
+
 Every local profiled Workspace subprocess applies `SubprocessEnvironment` isolation at the final
 spawn boundary, including bootstrap and checkout probes that supply only a credential overlay.
 Ambient Git tracing, shell startup hooks and other non-allowlisted environment variables are removed

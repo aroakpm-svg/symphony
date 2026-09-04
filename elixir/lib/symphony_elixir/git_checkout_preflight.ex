@@ -35,6 +35,7 @@ defmodule SymphonyElixir.GitCheckoutPreflight do
          {:ok, runner} <- command_runner(workspace, context, opts),
          :ok <- validate_origin(runner, context.repository, credential, opts),
          {:ok, branch} <- run_text(runner, ["branch", "--show-current"], credential, opts),
+         :ok <- validate_push_selection(runner, branch, credential, opts),
          {:ok, local_head} <- run_text(runner, ["rev-parse", "--verify", "HEAD^{commit}"], credential, opts),
          :ok <- validate_local_checkout(branch, local_head, expected_head, context, opts),
          {:ok, remote_head} <- remote_head(runner, context, credential, opts),
@@ -213,6 +214,21 @@ defmodule SymphonyElixir.GitCheckoutPreflight do
          {:ok, push_urls} <- run(runner, ["remote", "get-url", "--push", "--all", "origin"], credential, opts) do
       validate_remote_urls(push_urls, repository)
     end
+  end
+
+  defp validate_push_selection(runner, branch, credential, opts) do
+    # Plain push can select a different remote at any of these three levels.
+    # Reject competing configuration even when another setting currently overrides it:
+    # the checkout contract authorizes origin, not a separate publishing remote.
+    keys = ["remote.pushDefault", "branch.#{branch}.pushRemote", "branch.#{branch}.remote"]
+
+    Enum.reduce_while(keys, :ok, fn key, :ok ->
+      case run(runner, ["config", "--get", "--default", "origin", key], credential, opts) do
+        {:ok, origin} when origin in ["origin", "origin\n", "origin\r\n"] -> {:cont, :ok}
+        {:ok, _other} -> {:halt, {:error, :git_remote_mismatch}}
+        {:error, _reason} = error -> {:halt, error}
+      end
+    end)
   end
 
   defp validate_remote_urls(output, repository) do

@@ -11,6 +11,47 @@ defmodule SymphonyElixir.GitCheckoutPreflightTest do
   @other_head String.duplicate("b", 40)
   @secret "github_pat_TASK4_SECRET_SENTINEL"
 
+  test "plain push selection cannot bypass the validated origin in real Git configuration" do
+    for key <- ["remote.pushDefault", "branch.main.pushRemote", "branch.main.remote"] do
+      workspace = temporary_root!()
+      root = workspace |> Path.dirname() |> Path.dirname()
+      write_workflow_file!(Workflow.workflow_file_path(), workspace_root: root)
+      {_, 0} = System.cmd("git", ["-C", workspace, "init", "-b", "main"])
+      {_, 0} = System.cmd("git", ["-C", workspace, "remote", "add", "origin", "https://github.com/aroakpm-svg/aroak-central-brain.git"])
+      {_, 0} = System.cmd("git", ["-C", workspace, "remote", "add", "other", "https://github.com/aroakpm-svg/aroak-project-management.git"])
+      {:ok, environment} = SymphonyElixir.GitCredentialEnvironment.build(credential())
+
+      runner = fn
+        [command | _] = args, _, _ when command in ["config", "remote"] ->
+          Workspace.run_git_command(workspace, args, nil, execution_context: context(), env: environment)
+
+        args, _, _ ->
+          command_result(args)
+      end
+
+      {_, opts} = successful_seams(workspace: workspace, workspace_root: root, command_runner: runner)
+      assert {:ok, _} = GitCheckoutPreflight.check(context(), workspace, credential(), opts)
+      {_, 0} = System.cmd("git", ["-C", workspace, "config", key, "other"])
+      assert {:error, :git_remote_mismatch} = GitCheckoutPreflight.check(context(), workspace, credential(), opts)
+      {_, 0} = System.cmd("git", ["-C", workspace, "config", key, "origin"])
+      assert {:ok, _} = GitCheckoutPreflight.check(context(), workspace, credential(), opts)
+    end
+  end
+
+  test "push selector queries fail closed and cannot expose raw failures" do
+    for result <- [{:error, @secret}, {:ok, ""}, {:ok, ".\n"}, {:ok, " origin \n"}, {:ok, "origin\nother"}, {:ok, "https://github.com/other/repo"}] do
+      runner = fn
+        ["config" | _], _, _ -> result
+        ["ls-remote" | _], _, _ -> flunk("unverified push selection reached remote probe")
+        args, _, _ -> command_result(args)
+      end
+
+      {workspace, opts} = successful_seams(command_runner: runner)
+      assert {:error, reason} = GitCheckoutPreflight.check(context(), workspace, credential(), opts)
+      assert reason in [:git_checkout_invalid, :git_remote_mismatch]
+    end
+  end
+
   test "all push destinations must match the selected repository" do
     canonical = "https://github.com/aroakpm-svg/aroak-central-brain.git"
     other = "https://github.com/aroakpm-svg/aroak-project-management.git"
@@ -274,7 +315,7 @@ defmodule SymphonyElixir.GitCheckoutPreflightTest do
       {workspace, opts} = successful_seams(overrides)
       assert {:ok, _receipt} = GitCheckoutPreflight.check(context(), workspace, credential(), opts)
 
-      for _ <- 1..5 do
+      for _ <- 1..8 do
         assert_receive {:ran, args, true, ^worker_host}
         refute inspect(args) =~ @secret
       end
@@ -627,6 +668,7 @@ defmodule SymphonyElixir.GitCheckoutPreflightTest do
     case args do
       ["remote", "get-url", "--all", "origin"] -> {:ok, Keyword.get(overrides, :origin, "https://github.com/aroakpm-svg/aroak-central-brain.git\n")}
       ["remote", "get-url", "--push", "--all", "origin"] -> {:ok, Keyword.get(overrides, :push_urls, "https://github.com/aroakpm-svg/aroak-central-brain.git\n")}
+      ["config", "--get", "--default", "origin", _key] -> {:ok, "origin"}
       ["branch", "--show-current"] -> {:ok, Keyword.get(overrides, :branch, "main\n")}
       ["rev-parse", "--verify", "HEAD^{commit}"] -> {:ok, Keyword.get(overrides, :local_head, @head <> "\n")}
       ["ls-remote", "--heads", "origin", "refs/heads/main"] -> {:ok, Keyword.get(overrides, :remote_head, @head <> "\trefs/heads/main\n")}
