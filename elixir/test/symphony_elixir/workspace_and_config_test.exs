@@ -356,6 +356,35 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
     end
   end
 
+  test "repository rollback reports failed validation and removal instead of best-effort success" do
+    root = Path.join(Path.dirname(Workflow.workflow_file_path()), "rollback-workspaces")
+    context = project_context("central-brain", "ARO-196-ROLLBACK-FAILURE")
+    write_workflow_file!(Workflow.workflow_file_path(), workspace_root: root)
+    preparation_opts = [defer_after_create: true]
+    assert {:ok, preparation} = Workspace.prepare_for_issue(context.issue_identifier, nil, context, preparation_opts)
+
+    assert {:error, :repository_rollback_failed} =
+             Workspace.rollback_failed_repository_bootstrap(context, nil, %{kind: :invalid})
+
+    assert File.dir?(preparation.path)
+
+    state_path = Workspace.readiness_state_path(preparation.path)
+    File.rm(state_path)
+    File.mkdir_p!(state_path)
+
+    assert {:error, :repository_rollback_failed} =
+             Workspace.rollback_failed_repository_bootstrap(context, nil, preparation.workspace_attestation)
+
+    assert File.dir?(state_path)
+    refute File.exists?(preparation.path)
+    File.rmdir!(state_path)
+
+    assert {:ok, %{created_now: true} = fresh} =
+             Workspace.prepare_for_issue(context.issue_identifier, nil, context, defer_after_create: true)
+
+    assert :ok = Workspace.rollback_failed_repository_bootstrap(context, nil, fresh.workspace_attestation)
+  end
+
   test "workspace path is deterministic per issue identifier" do
     workspace_root =
       Path.join(

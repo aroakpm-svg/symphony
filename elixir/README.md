@@ -556,6 +556,15 @@ with fresh pre-claim and post-claim authority checks before fetching again. Loca
 failures, invalid credentials or attestations, and malformed callback results remain permanent
 `repository_bootstrap_failed` blockers.
 
+Repository rollback is a strict prerequisite for automatic retry. Failed attestation, removal,
+readiness-state cleanup, or a failed/malformed cleanup callback returns `repository_rollback_failed`.
+Both bootstrap and checkout failure paths preserve that reason instead of reporting the original
+transient outage, and the scheduler records an explicit blocker without scheduling a retry into
+the incomplete checkout. Recovery requires resolving the lock/permission or ownership problem and
+completing cleanup of the exact owned workspace and readiness state before requeuing the issue.
+Successful rollback still uses normal backoff; existing private homes and reused workspaces are
+preserved. General terminal cleanup retains its existing best-effort contract.
+
 Bootstrap fetch and checkout `ls-remote` share the `GitPreflightCommand` result contract.
 Remote-head execution failures/timeouts return `github_unavailable` and use the same release/backoff
 path; a successful response with a missing or changed head still fails checkout validation.

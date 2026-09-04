@@ -13,7 +13,7 @@ defmodule SymphonyElixir.RepositoryBootstrap do
   @sha_pattern ~r/\A(?:[0-9a-fA-F]{40}|[0-9a-fA-F]{64})\z/
 
   @spec ensure(ProjectExecutionContext.t(), Workspace.preparation(), Credential.t(), map(), keyword()) ::
-          :ok | {:error, :repository_bootstrap_failed | :repository_bootstrap_unavailable}
+          :ok | {:error, :repository_bootstrap_failed | :repository_bootstrap_unavailable | :repository_rollback_failed}
   def ensure(%ProjectExecutionContext{}, %{created_now: false}, %Credential{}, _authority, _opts),
     do: :ok
 
@@ -69,13 +69,11 @@ defmodule SymphonyElixir.RepositoryBootstrap do
     if result == :ok do
       :ok
     else
-      _ = cleanup(preparation, context, opts)
-      result
+      rollback_result(preparation, context, opts, result)
     end
   rescue
     _exception ->
-      _ = cleanup(preparation, context, opts)
-      {:error, :repository_bootstrap_failed}
+      rollback_result(preparation, context, opts, {:error, :repository_bootstrap_failed})
   end
 
   def ensure(_context, _preparation, _credential, _authority, _opts),
@@ -128,6 +126,13 @@ defmodule SymphonyElixir.RepositoryBootstrap do
     Keyword.take(opts, [:worker_host, :workspace_attestation, :private_home_capability])
   end
 
+  defp rollback_result(preparation, context, opts, result) do
+    case cleanup(preparation, context, opts) do
+      :ok -> result
+      _failure -> {:error, :repository_rollback_failed}
+    end
+  end
+
   defp cleanup(preparation, context, opts) do
     case Keyword.get(opts, :cleanup) do
       cleanup when is_function(cleanup, 4) ->
@@ -141,12 +146,12 @@ defmodule SymphonyElixir.RepositoryBootstrap do
         )
 
       _invalid ->
-        :ok
+        {:error, :repository_rollback_failed}
     end
   rescue
-    _exception -> :ok
+    _exception -> {:error, :repository_rollback_failed}
   catch
-    _kind, _reason -> :ok
+    _kind, _reason -> {:error, :repository_rollback_failed}
   end
 
   defp canonical_url(repository), do: "https://github.com/#{repository}.git"

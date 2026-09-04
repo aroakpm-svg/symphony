@@ -7,6 +7,18 @@ defmodule SymphonyElixir.RepositoryBootstrapTest do
   @head String.duplicate("a", 40)
   @secret "bootstrap-secret-sentinel"
 
+  test "failed or malformed cleanup cannot authorize a transport retry" do
+    for result <- [{:error, :eacces, @secret}, {:error, @secret}, :invalid] do
+      assert {:error, :repository_rollback_failed} =
+               RepositoryBootstrap.ensure(context(), preparation(true), credential(), authority(),
+                 command_runner: fn args, _, _ ->
+                   if "fetch" in args, do: {:error, :timeout}, else: {:ok, ""}
+                 end,
+                 cleanup: fn _, _, _, _ -> result end
+               )
+    end
+  end
+
   test "new workspace is bootstrapped at the verified canonical head without token arguments" do
     parent = self()
 
@@ -44,7 +56,10 @@ defmodule SymphonyElixir.RepositoryBootstrapTest do
       result =
         RepositoryBootstrap.ensure(context(), preparation(true), credential(), authority(),
           command_runner: runner,
-          cleanup: fn path, host, _, attestation -> send(self(), {:cleaned, path, host, attestation}) end
+          cleanup: fn path, host, _, attestation ->
+            send(self(), {:cleaned, path, host, attestation})
+            :ok
+          end
         )
 
       assert result == {:error, :repository_bootstrap_unavailable}
@@ -145,7 +160,7 @@ defmodule SymphonyElixir.RepositoryBootstrapTest do
 
   test "malformed authority and input cannot start bootstrap and cleanup failures stay contained" do
     for authority <- [%{}, %{default_branch: "other", head_sha: @head}, %{default_branch: "main", head_sha: "bad"}] do
-      assert {:error, :repository_bootstrap_failed} =
+      assert {:error, :repository_rollback_failed} =
                RepositoryBootstrap.ensure(context(), preparation(true), credential(), authority, command_runner: fn _, _, _ -> flunk("invalid authority reached Git") end, cleanup: :invalid)
     end
 
@@ -153,12 +168,12 @@ defmodule SymphonyElixir.RepositoryBootstrapTest do
   end
 
   test "native bootstrap refuses a workspace without matching ownership before issuing Git commands" do
-    assert {:error, :repository_bootstrap_failed} = RepositoryBootstrap.ensure(context(), preparation(true), credential(), authority(), [])
+    assert {:error, :repository_rollback_failed} = RepositoryBootstrap.ensure(context(), preparation(true), credential(), authority(), [])
   end
 
   test "a cleanup callback crash is bounded and must not cause a second deletion attempt" do
     for failure <- [:raise, :throw] do
-      assert {:error, :repository_bootstrap_failed} =
+      assert {:error, :repository_rollback_failed} =
                RepositoryBootstrap.ensure(context(), preparation(true), credential(), authority(),
                  command_runner: fn _, _, _ -> {:error, :failed} end,
                  cleanup: fn _, _, _, _ ->

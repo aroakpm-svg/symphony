@@ -2253,14 +2253,21 @@ defmodule SymphonyElixir.Workspace do
   end
 
   @doc "Removes only a partial newly-created repository workspace without running lifecycle hooks."
-  @spec rollback_failed_repository_bootstrap(ProjectExecutionContext.t(), worker_host(), map()) :: :ok
+  @spec rollback_failed_repository_bootstrap(ProjectExecutionContext.t(), worker_host(), map()) ::
+          :ok | {:error, :repository_rollback_failed}
   def rollback_failed_repository_bootstrap(%ProjectExecutionContext{} = context, worker_host, attestation) do
-    remove_issue_workspaces(context.issue_identifier, worker_host, context,
-      workspace_attestation: attestation,
-      exact_worker_host: true,
-      skip_before_remove_hook: true,
-      preserve_private_home: true
-    )
+    # Rollback is a prerequisite for retry, unlike best-effort terminal cleanup.
+    case remove_issue_workspace(context.issue_identifier, worker_host, context, attestation,
+           skip_before_remove_hook: true,
+           preserve_private_home: true
+         ) do
+      {:ok, _removed} -> :ok
+      _failure -> {:error, :repository_rollback_failed}
+    end
+  rescue
+    _exception -> {:error, :repository_rollback_failed}
+  catch
+    _kind, _reason -> {:error, :repository_rollback_failed}
   end
 
   @spec attest_existing_issue_workspace(
@@ -2470,35 +2477,32 @@ defmodule SymphonyElixir.Workspace do
        ) do
     safe_id = safe_identifier(identifier)
 
-    _ =
-      with :ok <- validate_execution_context(execution_context),
-           :ok <- validate_cleanup_execution_context(identifier, execution_context),
-           :ok <- validate_cleanup_attestation(execution_context, workspace_attestation),
-           {:ok, workspace} <- workspace_path_for_issue(safe_id, worker_host, execution_context),
-           :ok <-
-             validate_execution_workspace(
-               workspace,
-               worker_host,
-               execution_context,
-               workspace_attestation
-             ),
-           {:ok, cleanup_opts} <-
-             cleanup_effect_opts(worker_host, execution_context, workspace_attestation) do
-        cleanup_opts =
-          cleanup_opts
-          |> Keyword.put(:skip_before_remove_hook, Keyword.get(opts, :skip_before_remove_hook, false))
-          |> Keyword.put(:preserve_private_home, Keyword.get(opts, :preserve_private_home, false))
+    with :ok <- validate_execution_context(execution_context),
+         :ok <- validate_cleanup_execution_context(identifier, execution_context),
+         :ok <- validate_cleanup_attestation(execution_context, workspace_attestation),
+         {:ok, workspace} <- workspace_path_for_issue(safe_id, worker_host, execution_context),
+         :ok <-
+           validate_execution_workspace(
+             workspace,
+             worker_host,
+             execution_context,
+             workspace_attestation
+           ),
+         {:ok, cleanup_opts} <-
+           cleanup_effect_opts(worker_host, execution_context, workspace_attestation) do
+      cleanup_opts =
+        cleanup_opts
+        |> Keyword.put(:skip_before_remove_hook, Keyword.get(opts, :skip_before_remove_hook, false))
+        |> Keyword.put(:preserve_private_home, Keyword.get(opts, :preserve_private_home, false))
 
-        remove_issue_workspace_path(
-          workspace,
-          worker_host,
-          execution_context,
-          workspace_attestation,
-          cleanup_opts
-        )
-      end
-
-    :ok
+      remove_issue_workspace_path(
+        workspace,
+        worker_host,
+        execution_context,
+        workspace_attestation,
+        cleanup_opts
+      )
+    end
   end
 
   defp validate_cleanup_attestation(nil, nil), do: :ok

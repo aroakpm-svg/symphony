@@ -286,11 +286,17 @@ defmodule SymphonyElixir.ReadinessGateAgentRunnerTest do
     refute inspect(state) =~ "synthetic-404-token"
   end
 
-  for {stage, reason} <- [fetch: :repository_bootstrap_unavailable, remote_head: :github_unavailable] do
-    @tag failure_stage: stage, failure_reason: reason
-    test "a failed #{stage} rolls back the checkout and releases the claimed issue for retry", %{
+  for {stage, reason, cleanup_fails?} <- [
+        {:fetch, :repository_bootstrap_unavailable, false},
+        {:remote_head, :github_unavailable, false},
+        {:fetch, :repository_rollback_failed, true},
+        {:remote_head, :repository_rollback_failed, true}
+      ] do
+    @tag failure_stage: stage, failure_reason: reason, cleanup_fails?: cleanup_fails?
+    test "#{stage} failure retries only after verified rollback; cleanup failure=#{cleanup_fails?}", %{
       failure_stage: stage,
-      failure_reason: expected_reason
+      failure_reason: expected_reason,
+      cleanup_fails?: cleanup_fails?
     } do
       fixture = git_fixture!()
       on_exit(fn -> File.rm_rf(fixture.root) end)
@@ -307,17 +313,27 @@ defmodule SymphonyElixir.ReadinessGateAgentRunnerTest do
       bootstrap = real_bootstrap_runner(workspace, fixture.remote, secret)
       checkout = real_checkout_runner(workspace, fixture.remote, secret)
 
+      failure = fn command ->
+        if cleanup_fails? do
+          state_path = Workspace.readiness_state_path(workspace)
+          File.rm(state_path)
+          File.mkdir_p!(state_path)
+        end
+
+        {:error, {:git_command_failed, command, 128, "connection reset #{secret}"}}
+      end
+
       opts =
         canonical_gate_options(secret, fixture.initial_sha) ++
           [
             repository_bootstrap_command_runner: fn args, credential, runtime ->
               if stage == :fetch and "fetch" in args,
-                do: {:error, {:git_command_failed, "git fetch", 128, "connection reset #{secret}"}},
+                do: failure.("git fetch"),
                 else: bootstrap.(args, credential, runtime)
             end,
             git_checkout_command_runner: fn args, credential, runtime ->
               if stage == :remote_head and "ls-remote" in args,
-                do: {:error, {:git_command_failed, "git ls-remote", 128, "connection reset #{secret}"}},
+                do: failure.("git ls-remote"),
                 else: checkout.(args, credential, runtime)
             end
           ]
@@ -329,11 +345,18 @@ defmodule SymphonyElixir.ReadinessGateAgentRunnerTest do
       refute File.exists?(marker)
       {:noreply, state} = Orchestrator.handle_info({:agent_hard_blocker, issue.id, blocker}, running_orchestrator_state(issue))
       assert state.running == %{}
-      assert state.blocked == %{}
-      refute MapSet.member?(state.claimed, issue.id)
-      assert state.retry_attempts[issue.id].ownership == :unowned_backoff
       refute :erlang.term_to_binary(state) =~ secret
-      Process.cancel_timer(state.retry_attempts[issue.id].timer_ref)
+
+      if cleanup_fails? do
+        assert Map.has_key?(state.blocked, issue.id)
+        refute Map.has_key?(state.retry_attempts, issue.id)
+        assert File.dir?(Workspace.readiness_state_path(workspace))
+      else
+        assert state.blocked == %{}
+        refute MapSet.member?(state.claimed, issue.id)
+        assert state.retry_attempts[issue.id].ownership == :unowned_backoff
+        Process.cancel_timer(state.retry_attempts[issue.id].timer_ref)
+      end
     end
   end
 

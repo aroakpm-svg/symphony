@@ -11,6 +11,8 @@ defmodule SymphonyElixir.AgentRunner do
 
   @type worker_host :: String.t() | nil
 
+  @bootstrap_failures ~w(repository_bootstrap_failed repository_bootstrap_unavailable repository_rollback_failed)a
+
   defmodule TurnContext do
     @moduledoc false
     defstruct [:app_session, :workspace, :recipient, :opts, :issue_state_fetcher, :runtime_opts, :max_turns]
@@ -205,7 +207,11 @@ defmodule SymphonyElixir.AgentRunner do
       end
     else
       {:error, reason} ->
-        rollback_pre_effect_repository(preparation, execution_context, worker_host, reason)
+        reason =
+          case rollback_pre_effect_repository(preparation, execution_context, worker_host, reason) do
+            :ok -> reason
+            {:error, rollback_reason} -> rollback_reason
+          end
 
         outcome =
           handle_workspace_preflight_failure(
@@ -226,7 +232,7 @@ defmodule SymphonyElixir.AgentRunner do
          worker_host,
          reason
        )
-       when reason not in [:repository_bootstrap_failed, :repository_bootstrap_unavailable] do
+       when reason not in @bootstrap_failures do
     Workspace.rollback_failed_repository_bootstrap(context, worker_host, attestation)
   end
 
@@ -677,6 +683,7 @@ defmodule SymphonyElixir.AgentRunner do
               :github_authority_invalid,
               :github_unavailable,
               :repository_bootstrap_failed,
+              :repository_rollback_failed,
               :repository_bootstrap_unavailable,
               :git_checkout_invalid,
               :git_checkout_mismatch,
