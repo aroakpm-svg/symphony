@@ -97,12 +97,37 @@ defmodule SymphonyElixir.Orchestrator do
     :workspace_guard
   ]
   @preflight_option_keys [:credential_source, :expected_actor, :request_fun]
+  # Trusted process-local dependencies/policy, never issue-selected authority or retry payloads.
+  @runtime_option_keys @agent_runner_option_keys ++
+                         [
+                           :fetcher,
+                           :refresh_fun,
+                           :profile_refresh_fun,
+                           :retry_fetch_fun,
+                           :route_reader,
+                           :preflight_fun,
+                           :claim_fun,
+                           :claim_release_fun,
+                           :worker_host_selector,
+                           :dispatch_fun,
+                           :task_start_fun,
+                           :bind_worker_fun,
+                           :terminate_task_fun,
+                           :finalize_claim_fun,
+                           :track_worker_fun,
+                           :health_fun,
+                           :poll_timeout,
+                           :timer_fun,
+                           :cancel_timer_fun,
+                           :retry_delay_fun
+                         ]
 
   defmodule State do
     @moduledoc """
     Runtime state for the orchestrator polling loop.
     """
 
+    @derive {Inspect, except: [:runtime_options]}
     defstruct [
       :poll_interval_ms,
       :max_concurrent_agents,
@@ -110,6 +135,7 @@ defmodule SymphonyElixir.Orchestrator do
       :poll_check_in_progress,
       :tick_timer_ref,
       :tick_token,
+      runtime_options: [],
       running: %{},
       completed: MapSet.new(),
       claimed: MapSet.new(),
@@ -167,6 +193,7 @@ defmodule SymphonyElixir.Orchestrator do
           poll_check_in_progress: false,
           tick_timer_ref: nil,
           tick_token: nil,
+          runtime_options: Keyword.take(opts, @runtime_option_keys),
           codex_totals: @empty_codex_totals,
           codex_rate_limits: nil
         }
@@ -181,6 +208,11 @@ defmodule SymphonyElixir.Orchestrator do
         report_health(opts, {:stop, %{category: :startup_failure, failure_category: reason}})
         {:stop, reason}
     end
+  end
+
+  @impl true
+  def format_status(status) do
+    Map.update!(status, :state, fn state -> %{state | runtime_options: []} end)
   end
 
   @impl true
@@ -221,7 +253,7 @@ defmodule SymphonyElixir.Orchestrator do
 
   def handle_info(:run_poll_cycle, state) do
     state = refresh_runtime_config(state)
-    state = maybe_dispatch(state)
+    state = maybe_dispatch(state, state.runtime_options)
     state = schedule_tick(state, state.poll_interval_ms)
     state = %{state | poll_check_in_progress: false}
 
@@ -331,7 +363,7 @@ defmodule SymphonyElixir.Orchestrator do
   def handle_info({:retry_issue, issue_id, retry_token}, state) do
     result =
       case pop_retry_attempt_state(state, issue_id, retry_token) do
-        {:ok, attempt, metadata, state} -> handle_retry_issue(state, issue_id, attempt, metadata, [])
+        {:ok, attempt, metadata, state} -> handle_retry_issue(state, issue_id, attempt, metadata, state.runtime_options)
         :missing -> {:noreply, state}
       end
 
@@ -343,7 +375,7 @@ defmodule SymphonyElixir.Orchestrator do
 
   def handle_info({:retry_project_profile, profile_key, retry_token}, state)
       when is_binary(profile_key) and is_reference(retry_token) do
-    state = retry_project_profile(state, current_project_profiles(), profile_key, retry_token, [])
+    state = retry_project_profile(state, current_project_profiles(), profile_key, retry_token, state.runtime_options)
     notify_dashboard()
     {:noreply, state}
   end

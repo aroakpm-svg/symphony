@@ -403,6 +403,64 @@ defmodule SymphonyElixir.GitCheckoutPreflightTest do
     assert {:error, :git_metadata_unsafe} = GitCheckoutPreflight.check(context(), workspace, credential(), opts)
   end
 
+  test "checkout accepts the actual Workspace canonical path below a linked configured root" do
+    {actual, linked} = linked_root_fixture!()
+    write_workflow_file!(Workflow.workflow_file_path(), tracker_kind: "memory", workspace_root: linked)
+    assert {:ok, preparation} = Workspace.prepare_for_issue("ARO-196", nil, context(), defer_after_create: true)
+    assert {:ok, expected} = SymphonyElixir.PathSafety.canonicalize(Path.join([actual, "central-brain", "ARO-196"]))
+    assert preparation.path == expected
+
+    {workspace, opts} =
+      successful_seams(
+        workspace: preparation.path,
+        workspace_root: linked,
+        workspace_attestation: preparation.workspace_attestation
+      )
+
+    assert {:ok, _receipt} = GitCheckoutPreflight.check(context(), workspace, credential(), opts)
+
+    invalid_attestation_opts = Keyword.put(opts, :workspace_attestation, %{kind: :invalid})
+
+    assert {:error, :git_checkout_mismatch} =
+             GitCheckoutPreflight.check(context(), workspace, credential(), invalid_attestation_opts)
+
+    replacement = Path.join(Path.dirname(actual), "replacement")
+    File.mkdir_p!(Path.join([replacement, "central-brain", "ARO-196"]))
+    if match?({:win32, _}, :os.type()), do: File.rmdir!(linked), else: File.rm!(linked)
+    create_directory_link!(replacement, linked)
+    assert {:error, :git_checkout_mismatch} = GitCheckoutPreflight.check(context(), workspace, credential(), opts)
+  end
+
+  test "canonical equality never authorizes redirected namespace or issue directories" do
+    for redirected <- [:namespace, :issue] do
+      {actual, linked} = linked_root_fixture!()
+      outside = Path.join(Path.dirname(actual), "outside")
+      File.mkdir_p!(outside)
+      expected = Path.join([linked, "central-brain", "ARO-196"])
+
+      if redirected == :namespace do
+        File.mkdir_p!(Path.join(outside, "ARO-196"))
+        create_directory_link!(outside, Path.join(actual, "central-brain"))
+      else
+        File.mkdir_p!(Path.join(actual, "central-brain"))
+        create_directory_link!(outside, Path.join([actual, "central-brain", "ARO-196"]))
+      end
+
+      {workspace, opts} = successful_seams(workspace: expected, workspace_root: linked)
+      assert {:error, :git_checkout_mismatch} = GitCheckoutPreflight.check(context(), workspace, credential(), opts)
+    end
+  end
+
+  defp linked_root_fixture! do
+    base = Path.join(System.tmp_dir!(), "checkout-link-#{System.unique_integer([:positive])}")
+    actual = Path.join(base, "actual")
+    linked = Path.join(base, "linked")
+    File.mkdir_p!(actual)
+    create_directory_link!(actual, linked)
+    on_exit(fn -> File.rm_rf(base) end)
+    {actual, linked}
+  end
+
   defp successful_seams(overrides \\ []) do
     workspace = Keyword.get(overrides, :workspace, "/runtime/workspaces/central-brain/ARO-196")
 

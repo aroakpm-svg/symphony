@@ -388,6 +388,16 @@ profiles are:
 - `aroakpm-svg/aroak-central-brain`: `typecheck`, `build`, and `test`
 - `aroakpm-svg/aroak-project-management`: `typecheck`, `build`, and `db:test`
 
+Each Orchestrator captures allowlisted trusted runtime options at startup. Explicit start options
+override `:orchestrator_opts` application defaults; scheduled polls, project retries, issue retries,
+and their node-local workers retain that instance's actor policy and dependencies. Later changes
+to application defaults do not change an existing instance. Credentials are resolved afresh per
+call, never retained with scheduler options; private callbacks are omitted from status and Inspect.
+
+Checkout identity uses the canonical configured workspace root plus the exact project namespace
+and issue directory. A linked root is supported; redirected namespace/issue paths and changed
+workspace attestations remain fail-closed.
+
 Run the dry check without starting a worker:
 
 ```elixir

@@ -65,22 +65,29 @@ defmodule SymphonyElixir.GitCheckoutPreflight do
     expected = Path.join([root, context.workspace_namespace, safe_identifier(context.issue_identifier)])
 
     case Keyword.get(opts, :worker_host) do
-      nil -> exact_local_workspace(workspace, expected)
+      nil -> exact_local_workspace(context, workspace, root, opts)
       worker_host when is_binary(worker_host) -> exact_remote_workspace(context, workspace, expected, worker_host, opts)
       _invalid -> {:error, :git_checkout_mismatch}
     end
   end
 
-  defp exact_local_workspace(workspace, expected) do
-    expected = normalize_path(expected)
-
+  defp exact_local_workspace(context, workspace, root, opts) do
     with {:ok, canonical_workspace} <- PathSafety.canonicalize(workspace),
-         {:ok, canonical_expected} <- PathSafety.canonicalize(expected),
-         true <- normalize_path(workspace) == expected,
-         true <- normalize_path(canonical_workspace) == normalize_path(canonical_expected) do
+         {:ok, canonical_root} <- PathSafety.canonicalize(root),
+         # Resolve only the root: namespace/issue links must not redefine the authorized checkout.
+         expected = Path.join([canonical_root, context.workspace_namespace, safe_identifier(context.issue_identifier)]),
+         true <- normalize_path(canonical_workspace) == normalize_path(expected),
+         :ok <- validate_local_attestation(context, workspace, opts) do
       :ok
     else
       _failure -> {:error, :git_checkout_mismatch}
+    end
+  end
+
+  defp validate_local_attestation(context, workspace, opts) do
+    case Keyword.get(opts, :workspace_attestation) do
+      nil -> :ok
+      attestation -> Workspace.validate_execution_workspace(workspace, nil, context, attestation)
     end
   end
 
