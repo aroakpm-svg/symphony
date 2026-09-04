@@ -118,6 +118,7 @@ defmodule SymphonyElixir.GitHubAuthorityClientTest do
     for response <- [
           %{status: 403, headers: %{"x-ratelimit-remaining" => ["100"]}, body: %{"message" => "Resource not accessible by integration"}},
           %{status: 403, headers: %{"retry-after" => ["invalid"]}, body: %{}},
+          %{status: 403, headers: [nil, {42, "0"}, {"retry-after", [nil]}], body: %{}},
           %{status: 403, headers: nil, body: nil}
         ] do
       assert {:error, :github_forbidden} =
