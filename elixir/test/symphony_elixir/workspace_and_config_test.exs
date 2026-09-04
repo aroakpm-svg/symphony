@@ -1185,6 +1185,7 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
     context = project_context("central-brain", "ARO-286")
     paths = private_home_paths(workspace_root, context)
     test_pid = self()
+    configure_codex_auth_home!(test_root, context)
 
     try do
       write_workflow_file!(Workflow.workflow_file_path(), workspace_root: workspace_root)
@@ -1705,6 +1706,7 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
       workspace_root = Path.join(test_root, "workspaces")
       cleanup_marker = Path.join(test_root, "before-remove-marker.txt")
       context = project_context("central-brain", "ARO-286")
+      configure_codex_auth_home!(test_root, context)
 
       File.mkdir_p!(template_repo)
       File.write!(Path.join(template_repo, "README.md"), "stable identity\n")
@@ -3557,6 +3559,19 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
     after
       File.rm_rf(test_root)
     end
+  end
+
+  defp configure_codex_auth_home!(test_root, context) do
+    auth_root = Path.join(test_root, "auth")
+    File.mkdir_p!(Path.join(auth_root, context.profile_key))
+    previous = Application.get_env(:symphony_elixir, :codex_auth_home_root)
+    Application.put_env(:symphony_elixir, :codex_auth_home_root, auth_root)
+
+    on_exit(fn ->
+      if previous,
+        do: Application.put_env(:symphony_elixir, :codex_auth_home_root, previous),
+        else: Application.delete_env(:symphony_elixir, :codex_auth_home_root)
+    end)
   end
 
   defp valid_project_profiles_config do
