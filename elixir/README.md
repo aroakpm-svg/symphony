@@ -556,6 +556,17 @@ with fresh pre-claim and post-claim authority checks before fetching again. Loca
 failures, invalid credentials or attestations, and malformed callback results remain permanent
 `repository_bootstrap_failed` blockers.
 
+Bootstrap fetch and checkout `ls-remote` share the `GitPreflightCommand` result contract.
+Remote-head execution failures/timeouts return `github_unavailable` and use the same release/backoff
+path; a successful response with a missing or changed head still fails checkout validation.
+Local Git failures and malformed results are never promoted to transport retries.
+
+Every local profiled Workspace subprocess applies `SubprocessEnvironment` isolation at the final
+spawn boundary, including bootstrap and checkout probes that supply only a credential overlay.
+Ambient Git tracing, shell startup hooks and other non-allowlisted environment variables are removed
+before the child receives the token. Existing explicit project environments and private-home
+capability checks remain in effect. Legacy commands without a project context retain their behavior.
+
 Only after these gates may `SymphonyElixir.ProjectCredentialProvider` produce the call-local
 `GH_TOKEN` plus fixed HTTPS-GitHub-only Git credential helper environment for readiness, hooks,
 and Codex. Isolated HOME and ambient credential denial remain active. Credentials and authorization headers never enter

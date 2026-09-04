@@ -11,6 +11,76 @@ defmodule SymphonyElixir.GitCheckoutPreflightTest do
   @other_head String.duplicate("b", 40)
   @secret "github_pat_TASK4_SECRET_SENTINEL"
 
+  test "remote probe execution failures are retryable but invalid evidence remains permanent" do
+    for failure <- [
+          {:git_command_failed, "git ls-remote", 128, @secret},
+          {:git_command_failed, "git ls-remote", @secret},
+          {:workspace_hook_timeout, "git ls-remote", 100},
+          :timeout
+        ] do
+      runner = fn
+        ["ls-remote" | _], _, _ -> {:error, failure}
+        args, _, _ -> command_result(args)
+      end
+
+      {workspace, opts} = successful_seams(command_runner: runner)
+      assert {:error, :github_unavailable} = GitCheckoutPreflight.check(context(), workspace, credential(), opts)
+    end
+
+    invalid_results = [{:error, :invalid_credential_environment}, {:error, :subprocess_home_unavailable}]
+
+    for result <- invalid_results ++ [{:ok, nil}, :invalid] do
+      runner = fn
+        ["ls-remote" | _], _, _ -> result
+        args, _, _ -> command_result(args)
+      end
+
+      {workspace, opts} = successful_seams(command_runner: runner)
+      assert {:error, :git_checkout_invalid} = GitCheckoutPreflight.check(context(), workspace, credential(), opts)
+    end
+  end
+
+  test "credential-bearing Git commands cannot inherit diagnostics or shell startup hooks" do
+    workspace = temporary_root!()
+    root = workspace |> Path.dirname() |> Path.dirname()
+    write_workflow_file!(Workflow.workflow_file_path(), workspace_root: root)
+    trace = Path.join(root, "trace.json")
+    startup = Path.join(root, "startup.sh")
+    marker = Path.join(root, "startup.marker")
+    File.write!(startup, "printf started > '#{String.replace(marker, "\\", "/")}'\n")
+
+    ambient = %{
+      "GIT_TRACE2_EVENT" => trace,
+      "GIT_TRACE2_ENV_VARS" => "GH_TOKEN",
+      "GIT_TRACE" => Path.join(root, "git.trace"),
+      "BASH_ENV" => startup,
+      "ENV" => startup
+    }
+
+    previous = Map.new(ambient, fn {key, _} -> {key, System.get_env(key)} end)
+
+    on_exit(fn ->
+      Enum.each(previous, fn
+        {key, nil} -> System.delete_env(key)
+        {key, value} -> System.put_env(key, value)
+      end)
+    end)
+
+    System.put_env(ambient)
+    {:ok, environment} = SymphonyElixir.GitCredentialEnvironment.build(credential())
+    opts = [execution_context: context(), env: environment]
+    assert {:ok, output} = Workspace.run_git_command(workspace, ["--version"], nil, opts)
+    assert output =~ "git version"
+    trace_output = if File.exists?(trace), do: File.read!(trace), else: ""
+    leaked? = String.contains?(trace_output, @secret)
+    refute leaked?, "Git diagnostics persisted the synthetic credential"
+    refute File.exists?(trace)
+    refute File.exists?(Path.join(root, "git.trace"))
+
+    assert {:ok, _} = Workspace.run_git_command(workspace, ["-c", "alias.startup=!sh -c true", "startup"], nil, opts)
+    refute File.exists?(marker)
+  end
+
   test "accepts an exact HTTPS checkout and returns only repository branch and head" do
     {workspace, opts} = successful_seams()
 

@@ -8,6 +8,7 @@ defmodule SymphonyElixir.GitCheckoutPreflight do
 
   alias SymphonyElixir.{Config, GitCredentialEnvironment, PathSafety, ProjectExecutionContext, Workspace}
   alias SymphonyElixir.GitHubCredentialResolver.Credential
+  alias SymphonyElixir.GitPreflightCommand
 
   @sha_pattern ~r/\A(?:[0-9a-fA-F]{40}|[0-9a-fA-F]{64})\z/
   @probe_prefix ".symphony-write-probe-"
@@ -19,6 +20,7 @@ defmodule SymphonyElixir.GitCheckoutPreflight do
           | :git_remote_mismatch
           | :git_branch_mismatch
           | :github_remote_head_changed
+          | :github_unavailable
           | :git_metadata_missing
           | :git_metadata_unsafe
           | :git_metadata_unwritable
@@ -176,15 +178,11 @@ defmodule SymphonyElixir.GitCheckoutPreflight do
     end
   end
 
-  defp run(runner, args, credential, opts) do
-    case runner.(args, credential, worker_runtime(opts)) do
-      {:ok, output} when is_binary(output) -> {:ok, output}
-      _failure -> {:error, :git_checkout_invalid}
+  defp run(runner, args, credential, opts, operation \\ :local) do
+    case GitPreflightCommand.run(runner, args, credential, worker_runtime(opts), operation) do
+      {:error, :command_failed} -> {:error, :git_checkout_invalid}
+      result -> result
     end
-  rescue
-    _exception -> {:error, :git_checkout_invalid}
-  catch
-    _kind, _reason -> {:error, :git_checkout_invalid}
   end
 
   defp run_text(runner, args, credential, opts) do
@@ -240,7 +238,7 @@ defmodule SymphonyElixir.GitCheckoutPreflight do
   defp remote_head(runner, context, credential, opts) do
     ref = "refs/heads/" <> context.canonical_branch
 
-    with {:ok, output} <- run(runner, ["ls-remote", "--heads", "origin", ref], credential, opts) do
+    with {:ok, output} <- run(runner, ["ls-remote", "--heads", "origin", ref], credential, opts, :remote) do
       case String.split(String.trim(output), ~r/\s+/, trim: true) do
         [sha, ^ref] when is_binary(sha) -> {:ok, sha}
         _invalid -> {:error, :github_remote_head_changed}

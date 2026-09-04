@@ -261,12 +261,12 @@ defmodule SymphonyElixir.ScheduledRuntimeOptionsTest do
     assert_receive :runner_finished, 15_000
   end
 
-  for fetch_failures <- [0, 1] do
-    @tag timeout: 90_000, fetch_failures: fetch_failures
-    test "scheduled pickup completes and reports after #{fetch_failures} fetch interruptions", %{fetch_failures: fetch_failures} do
+  for interruption <- [:none, :fetch, :remote_head] do
+    @tag timeout: 90_000, interruption: interruption
+    test "scheduled pickup completes and reports with #{interruption} interruption", %{interruption: interruption} do
       parent = self()
       {:ok, ready} = Agent.start_link(fn -> false end)
-      {:ok, failure_budget} = Agent.start_link(fn -> fetch_failures end)
+      {:ok, failure_budget} = Agent.start_link(fn -> if interruption == :none, do: 0, else: 1 end)
       issue = candidate()
       opts = options(parent, ready, issue, "synthetic-instance[bot]")
       root = Path.dirname(Workflow.workflow_file_path())
@@ -322,16 +322,10 @@ defmodule SymphonyElixir.ScheduledRuntimeOptionsTest do
           end
         end)
         |> Keyword.put(:repository_bootstrap_command_runner, fn args, _credential, _runtime ->
-          bootstrap_with_interruption(args, workspace, seed, failure_budget)
+          bootstrap_with_interruption(args, workspace, seed, failure_budget, interruption)
         end)
         |> Keyword.put(:git_checkout_command_runner, fn args, _credential, _runtime ->
-          args =
-            case args do
-              ["ls-remote", "--heads", "origin", ref] -> ["ls-remote", "--heads", seed, ref]
-              other -> other
-            end
-
-          {:ok, git!(workspace, args)}
+          checkout_with_interruption(args, workspace, seed, failure_budget, interruption)
         end)
       end)
 
@@ -348,13 +342,14 @@ defmodule SymphonyElixir.ScheduledRuntimeOptionsTest do
       send(server, :run_poll_cycle)
       assert_receive :claimed, 2_000
 
-      if fetch_failures > 0 do
+      if interruption != :none do
         assert_receive :runner_finished, 20_000
         state = await_retry(server, issue.id, 100)
         assert state.blocked == %{}
         refute MapSet.member?(state.claimed, issue.id)
         assert state.retry_attempts[issue.id].ownership == :unowned_backoff
-        assert state.retry_attempts[issue.id].error =~ "repository_bootstrap_unavailable"
+        reason = if interruption == :fetch, do: "repository_bootstrap_unavailable", else: "github_unavailable"
+        assert state.retry_attempts[issue.id].error =~ reason
         refute File.exists?(workspace)
         retry = state.retry_attempts[issue.id]
         send(server, {:retry_issue, issue.id, retry.retry_token})
@@ -377,8 +372,8 @@ defmodule SymphonyElixir.ScheduledRuntimeOptionsTest do
     end
   end
 
-  defp bootstrap_with_interruption(args, workspace, seed, failure_budget) do
-    fail? = "fetch" in args and Agent.get_and_update(failure_budget, &{&1 > 0, max(&1 - 1, 0)})
+  defp bootstrap_with_interruption(args, workspace, seed, failure_budget, interruption) do
+    fail? = interruption == :fetch and "fetch" in args and consume_failure(failure_budget)
 
     if fail? do
       {:error, {:git_command_failed, "git fetch", 128, "connection reset synthetic-only-token"}}
@@ -386,6 +381,24 @@ defmodule SymphonyElixir.ScheduledRuntimeOptionsTest do
       {:ok, git!(workspace, fixture_fetch_args(args, seed))}
     end
   end
+
+  defp checkout_with_interruption(args, workspace, seed, failure_budget, interruption) do
+    fail? = interruption == :remote_head and "ls-remote" in args and consume_failure(failure_budget)
+
+    if fail? do
+      {:error, {:workspace_hook_timeout, "git ls-remote", 100}}
+    else
+      args =
+        case args do
+          ["ls-remote", "--heads", "origin", ref] -> ["ls-remote", "--heads", seed, ref]
+          other -> other
+        end
+
+      {:ok, git!(workspace, args)}
+    end
+  end
+
+  defp consume_failure(budget), do: Agent.get_and_update(budget, &{&1 > 0, max(&1 - 1, 0)})
 
   defp fixture_fetch_args(args, seed) do
     if "fetch" in args, do: Enum.map(args, &if(&1 == "origin", do: seed, else: &1)), else: args
@@ -475,7 +488,7 @@ defmodule SymphonyElixir.ScheduledRuntimeOptionsTest do
           try do
             task.()
           rescue
-            exception -> send(parent, {:runner_exception, exception.__struct__})
+            exception -> send(parent, {:runner_exception, {exception.__struct__, Exception.message(exception)}})
           after
             send(parent, :runner_finished)
           end

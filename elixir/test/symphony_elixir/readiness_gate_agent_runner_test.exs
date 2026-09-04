@@ -286,43 +286,55 @@ defmodule SymphonyElixir.ReadinessGateAgentRunnerTest do
     refute inspect(state) =~ "synthetic-404-token"
   end
 
-  test "a failed bootstrap fetch rolls back the checkout and releases the claimed issue for retry" do
-    fixture = git_fixture!()
-    on_exit(fn -> File.rm_rf(fixture.root) end)
-    issue = profiled_issue("ARO-196-FETCH", "codex/aro-196-fetch", "aroakpm-svg/aroak-central-brain")
-    workspace = Path.join([fixture.workspace_root, "central-brain", issue.identifier])
-    marker = Path.join(fixture.root, "effects.marker")
-    secret = "synthetic-fetch-secret"
+  for {stage, reason} <- [fetch: :repository_bootstrap_unavailable, remote_head: :github_unavailable] do
+    @tag failure_stage: stage, failure_reason: reason
+    test "a failed #{stage} rolls back the checkout and releases the claimed issue for retry", %{
+      failure_stage: stage,
+      failure_reason: expected_reason
+    } do
+      fixture = git_fixture!()
+      on_exit(fn -> File.rm_rf(fixture.root) end)
+      issue = profiled_issue("ARO-196-FETCH", "codex/aro-196-fetch", "aroakpm-svg/aroak-central-brain")
+      workspace = Path.join([fixture.workspace_root, "central-brain", issue.identifier])
+      marker = Path.join(fixture.root, "effects.marker")
+      secret = "synthetic-fetch-secret"
 
-    write_workflow_file!(Workflow.workflow_file_path(),
-      workspace_root: fixture.workspace_root,
-      hook_after_create: "printf ran > #{shell_escape(shell_path(marker))}"
-    )
+      write_workflow_file!(Workflow.workflow_file_path(),
+        workspace_root: fixture.workspace_root,
+        hook_after_create: "printf ran > #{shell_escape(shell_path(marker))}"
+      )
 
-    bootstrap = real_bootstrap_runner(workspace, fixture.remote, secret)
+      bootstrap = real_bootstrap_runner(workspace, fixture.remote, secret)
+      checkout = real_checkout_runner(workspace, fixture.remote, secret)
 
-    opts =
-      canonical_gate_options(secret, fixture.initial_sha) ++
-        [
-          repository_bootstrap_command_runner: fn args, credential, runtime ->
-            if "fetch" in args,
-              do: {:error, {:git_command_failed, "git fetch", 128, "connection reset #{secret}"}},
-              else: bootstrap.(args, credential, runtime)
-          end
-        ]
+      opts =
+        canonical_gate_options(secret, fixture.initial_sha) ++
+          [
+            repository_bootstrap_command_runner: fn args, credential, runtime ->
+              if stage == :fetch and "fetch" in args,
+                do: {:error, {:git_command_failed, "git fetch", 128, "connection reset #{secret}"}},
+                else: bootstrap.(args, credential, runtime)
+            end,
+            git_checkout_command_runner: fn args, credential, runtime ->
+              if stage == :remote_head and "ls-remote" in args,
+                do: {:error, {:git_command_failed, "git ls-remote", 128, "connection reset #{secret}"}},
+                else: checkout.(args, credential, runtime)
+            end
+          ]
 
-    assert :ok = AgentRunner.run(issue, self(), opts)
-    assert_receive {:agent_hard_blocker, _, blocker}
-    assert blocker.kind == {:project_credential_unavailable, :repository_bootstrap_unavailable}
-    refute File.exists?(workspace)
-    refute File.exists?(marker)
-    {:noreply, state} = Orchestrator.handle_info({:agent_hard_blocker, issue.id, blocker}, running_orchestrator_state(issue))
-    assert state.running == %{}
-    assert state.blocked == %{}
-    refute MapSet.member?(state.claimed, issue.id)
-    assert state.retry_attempts[issue.id].ownership == :unowned_backoff
-    refute :erlang.term_to_binary(state) =~ secret
-    Process.cancel_timer(state.retry_attempts[issue.id].timer_ref)
+      assert :ok = AgentRunner.run(issue, self(), opts)
+      assert_receive {:agent_hard_blocker, _, blocker}
+      assert blocker.kind == {:project_credential_unavailable, expected_reason}
+      refute File.exists?(workspace)
+      refute File.exists?(marker)
+      {:noreply, state} = Orchestrator.handle_info({:agent_hard_blocker, issue.id, blocker}, running_orchestrator_state(issue))
+      assert state.running == %{}
+      assert state.blocked == %{}
+      refute MapSet.member?(state.claimed, issue.id)
+      assert state.retry_attempts[issue.id].ownership == :unowned_backoff
+      refute :erlang.term_to_binary(state) =~ secret
+      Process.cancel_timer(state.retry_attempts[issue.id].timer_ref)
+    end
   end
 
   test "head drift rolls back a fresh checkout so retry bootstraps again while existing homes and reused work survive" do

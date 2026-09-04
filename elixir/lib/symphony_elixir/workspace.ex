@@ -3570,9 +3570,17 @@ if [ -e "$workspace" ] || [ -L "$workspace" ]; then exit 1; fi>
   end
 
   defp system_command_environment(opts, defaults \\ []) do
-    opts
-    |> process_environment(defaults)
-    |> Enum.map(fn
+    environment = Map.new(process_environment(opts, defaults))
+
+    # Enforce isolation at the final spawn boundary, including preflight callers that
+    # supply only a credential overlay. Do not inherit trace or shell startup settings.
+    environment =
+      case Keyword.get(opts, :execution_context) do
+        %ProjectExecutionContext{} -> SubprocessEnvironment.isolated_runtime_environment(environment, :os.type())
+        _legacy -> environment
+      end
+
+    Enum.map(environment, fn
       {key, false} -> {key, nil}
       entry -> entry
     end)

@@ -8,7 +8,7 @@ defmodule SymphonyElixir.RepositoryBootstrap do
   """
 
   alias SymphonyElixir.{GitCredentialEnvironment, GitHubCredentialResolver.Credential}
-  alias SymphonyElixir.{ProjectExecutionContext, Workspace}
+  alias SymphonyElixir.{GitPreflightCommand, ProjectExecutionContext, Workspace}
 
   @sha_pattern ~r/\A(?:[0-9a-fA-F]{40}|[0-9a-fA-F]{64})\z/
 
@@ -50,7 +50,7 @@ defmodule SymphonyElixir.RepositoryBootstrap do
                ],
                credential,
                opts,
-               :fetch
+               :remote
              ),
            :ok <- execute(runner, ["config", "--local", "core.autocrlf", "false"], credential, opts),
            :ok <-
@@ -117,30 +117,12 @@ defmodule SymphonyElixir.RepositoryBootstrap do
   end
 
   defp execute(runner, args, credential, opts, phase \\ :local) do
-    case runner.(args, credential, worker_runtime(opts)) do
-      {:ok, output} when is_binary(output) -> :ok
-      {:error, reason} when phase == :fetch -> classify_fetch_failure(reason)
-      _failure -> {:error, :command_failed}
+    case GitPreflightCommand.run(runner, args, credential, worker_runtime(opts), phase) do
+      {:ok, _output} -> :ok
+      {:error, :github_unavailable} -> {:error, :repository_bootstrap_unavailable}
+      {:error, :command_failed} = error -> error
     end
-  rescue
-    _exception -> {:error, :command_failed}
-  catch
-    _kind, _reason -> {:error, :command_failed}
   end
-
-  # Fetch failures retry only after a fresh authority check. Local setup, integrity,
-  # credential-environment failures and malformed callback results still fail closed.
-  defp classify_fetch_failure({:git_command_failed, _command, _status, _output}),
-    do: {:error, :repository_bootstrap_unavailable}
-
-  defp classify_fetch_failure({:git_command_failed, _command, _reason}),
-    do: {:error, :repository_bootstrap_unavailable}
-
-  defp classify_fetch_failure({:workspace_hook_timeout, _command, _timeout}),
-    do: {:error, :repository_bootstrap_unavailable}
-
-  defp classify_fetch_failure(:timeout), do: {:error, :repository_bootstrap_unavailable}
-  defp classify_fetch_failure(_reason), do: {:error, :command_failed}
 
   defp worker_runtime(opts) do
     Keyword.take(opts, [:worker_host, :workspace_attestation, :private_home_capability])
