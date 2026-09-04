@@ -353,8 +353,13 @@ defmodule SymphonyElixir.Orchestrator do
     Logger.warning("Agent reported hard blocker for issue_id=#{issue_id} issue_identifier=#{running_entry.identifier}: #{error}")
 
     case preflight_blocker_disposition(safe_reason) do
-      :transient -> retry_post_claim_credential_failure(state, issue_id, running_entry, error)
-      :permanent -> state |> record_session_completion_totals(running_entry) |> block_issue_from_entry(issue_id, running_entry, error)
+      :transient ->
+        retry_post_claim_credential_failure(state, issue_id, running_entry, error)
+
+      :permanent ->
+        state
+        |> record_session_completion_totals(running_entry)
+        |> block_issue_from_entry(issue_id, running_entry, error)
     end
   end
 

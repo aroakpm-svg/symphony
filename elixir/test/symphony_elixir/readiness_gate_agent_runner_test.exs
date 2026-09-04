@@ -999,16 +999,19 @@ defmodule SymphonyElixir.ReadinessGateAgentRunnerTest do
       assert credential.token == expected_token
       refute Enum.any?(args, &String.contains?(&1, expected_token))
 
-      args =
-        if "fetch" in args,
-          do: Enum.map(args, &if(&1 == "origin", do: fixture_remote, else: &1)),
-          else: args
+      args = bootstrap_fixture_args(args, fixture_remote)
 
       case System.cmd("git", ["-C", workspace | args], stderr_to_stdout: true) do
         {output, 0} -> {:ok, output}
         {_output, _status} -> {:error, :git_failed}
       end
     end
+  end
+
+  defp bootstrap_fixture_args(args, fixture_remote) do
+    if "fetch" in args,
+      do: Enum.map(args, &if(&1 == "origin", do: fixture_remote, else: &1)),
+      else: args
   end
 
   defp real_checkout_runner(workspace, fixture_remote, expected_token) do
