@@ -546,14 +546,19 @@ credential and MUST NOT be selected by workflow or issue content.
 Before claim, a fresh credential MUST validate the expected actor, approved repository pull and
 push authority, canonical default branch, exact head, and quality contract at that verified head.
 That credential MUST then be discarded. After claim and before any hook or Codex effect, the
-selected local, WSL, or SSH worker MUST resolve a second fresh credential, repeat the full GitHub
-authority validation through a worker-local request seam, and validate the exact namespaced
-checkout, origin, branch, remote head, and safe writable Git metadata. A remote worker without its
-own credential source or request/checkout seam MUST fail closed; controller evidence MUST NOT
-authorize it.
+same node-local runtime MUST resolve a second fresh credential, repeat the full GitHub authority
+validation, and validate the exact namespaced checkout, origin, branch, remote head, and safe
+writable Git metadata. Amy, Matt, and Han each run their own Symphony; Han runs locally inside WSL,
+not as Amy's SSH worker. Enabled `project_profiles` requires absent/empty `worker.ssh_hosts`.
+Startup and new-work poll/dispatch/retry admission MUST reject nonempty hosts with
+`profiled_ssh_topology_unsupported`; direct profiled remote-host overrides MUST fail before
+credentials, without silently switching to local. Runtime settings MUST remain readable after
+a topology-invalid reload for active local reconciliation, lease, and cleanup obligations.
+Legacy unprofiled SSH is unchanged. Lower-level remote defensive/test seams do not prove a
+supported profiled remote lifecycle.
 
-Controller and remote-worker sources MUST be resolved in separate explicit scopes, with no remote
-fallback. Actor evidence MUST use the installation-compatible fixed GraphQL viewer login read and
+There MUST be no fallback to another runtime's source. Actor evidence MUST use the
+installation-compatible fixed GraphQL viewer login read and
 reject partial/error responses. Missing or hidden repository/ref responses (404) MUST block rather
 than schedule transport retries. Checkout origins MUST be canonical HTTPS GitHub URLs, never SSH.
 The fixed Git credential-protocol environment MUST remain available to validated readiness, hook,
@@ -2534,6 +2539,9 @@ Use the same validation profiles as Section 17:
   bind expectations on the target environment.
 
 ## Appendix A. SSH Worker Extension (OPTIONAL)
+
+This extension applies to legacy unprofiled execution. ARO-196's approved multi-project topology is
+node-local and rejects nonempty `worker.ssh_hosts`; Symphony running inside WSL executes locally.
 
 This appendix describes a common extension profile in which Symphony keeps one central
 orchestrator but executes worker runs on one or more remote hosts over SSH.

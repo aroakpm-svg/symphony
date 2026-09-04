@@ -77,10 +77,18 @@ credential resolver deliberately fails closed until a trusted application-level 
 expected dedicated automation actor are configured. It never falls back to environment tokens,
 GitHub CLI, Git credential helpers, or another profile. A fresh short-lived credential validates
 actor, repository read/push authority, default branch, and exact head before claim; a second fresh
-credential repeats authority validation inside the selected local, WSL, or SSH worker before its
+credential repeats authority validation inside the same node-local runtime before its
 checkout, origin, branch, remote head, and Git metadata are accepted. Resolved values are limited
 to immediate request or subprocess boundaries and are excluded from commands, orchestrator state,
 retries, workspace state, runtime health, logs, receipts, and notifications.
+
+Amy, Matt, and Han each run their own node-local Symphony. Han runs Symphony locally inside WSL,
+not as Amy's SSH worker. Enabled `project_profiles` requires absent/empty `worker.ssh_hosts`.
+Startup and new-work poll/dispatch/retry admission reject nonempty hosts with
+`profiled_ssh_topology_unsupported`; direct profiled runner remote-host overrides fail before
+credential resolution. Runtime settings remain readable after a topology-invalid reload for
+active local reconciliation, lease, and cleanup obligations. Legacy unprofiled SSH is unchanged.
+Lower-level remote defensive/test seams do not prove supported profiled remote execution.
 
 ARO-196 defines and verifies this consuming contract only. ARO-197 owns GitHub App/Bot
 provisioning and rollout to the three machines. Canonical HTTPS-only Git authentication and

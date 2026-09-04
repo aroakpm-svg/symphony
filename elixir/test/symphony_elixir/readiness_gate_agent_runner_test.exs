@@ -471,7 +471,7 @@ defmodule SymphonyElixir.ReadinessGateAgentRunnerTest do
     refute_received :ssh_called
   end
 
-  test "remote authority without a worker request seam fails before SSH or local private home" do
+  test "unsupported profiled remote topology fails before authority, SSH or local private home" do
     test_root =
       Path.join(
         System.tmp_dir!(),
@@ -505,7 +505,7 @@ defmodule SymphonyElixir.ReadinessGateAgentRunnerTest do
 
     gate_opts = canonical_gate_options(secret, String.duplicate("a", 40))
 
-    assert_raise RuntimeError, ~r/github_authority_invalid/, fn ->
+    assert_raise RuntimeError, ~r/profiled_ssh_topology_unsupported/, fn ->
       AgentRunner.run(issue, nil,
         worker_host: "worker-credential",
         worker_credential_source: gate_opts[:credential_source],

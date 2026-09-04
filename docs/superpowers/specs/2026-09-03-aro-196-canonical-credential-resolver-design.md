@@ -6,6 +6,19 @@
 
 ## Purpose
 
+Topology clarified 2026-09-04:
+
+Amy, Matt, and Han each run their own node-local Symphony. Han runs Symphony locally inside WSL,
+not as Amy's SSH worker. Enabled `project_profiles` requires absent/empty `worker.ssh_hosts`.
+Startup and new-work poll/dispatch/retry admission reject nonempty hosts with
+`profiled_ssh_topology_unsupported`; direct profiled runner remote-host overrides fail before
+credential resolution. Runtime settings remain readable after a topology-invalid reload for
+active local reconciliation, lease, and cleanup obligations. Legacy unprofiled SSH is unchanged.
+Lower-level remote defensive/test seams do not prove supported profiled remote execution.
+
+This user-confirmed topology supersedes earlier broad profiled SSH claims and the speculative
+2026-09-04 worker-lifecycle proposal. No remote credential transport is implemented.
+
 Implement one canonical, fail-closed GitHub credential-resolution and authority-preflight path for
 Symphony's approved multi-project workers. The implementation consumes the ARO-195 decision: a
 dedicated GitHub App/Bot identity, short-lived installation credentials, an explicit repository
@@ -141,15 +154,15 @@ failures release or block according to explicit classification; unknown errors f
 After claim, `AgentRunner` resolves a new short-lived credential for the selected immutable
 execution context. It does not reuse the preflight credential. Before hooks or Codex start, the
 worker-side gate revalidates reference, actor, repository authority, canonical checkout, origin,
-remote HEAD, and `.git` writability in the actual local/WSL/SSH execution environment.
+remote HEAD, and `.git` writability in the actual node-local environment, including WSL.
 
 On success, the existing `ProjectCredentialProvider` converts the validated material into the
 call-local subprocess environment (`GH_TOKEN` plus the fixed HTTPS-GitHub credential helper) and the existing
 `SubprocessEnvironment` isolation passes it only to the selected Git/readiness/hook/Codex child
 processes. On failure, no effect starts and the hard blocker contains only a typed safe reason.
 
-Remote execution must use a worker-aware source supplied on that host. A credential proven on the
-controller cannot authorize an SSH/WSL worker.
+Each runtime uses its own trusted local source. Lower-level remote defensive/test seams do not
+authorize profiled SSH or prove a complete remote lifecycle.
 
 ### 5. Checkout and Git metadata validation
 
@@ -158,7 +171,7 @@ is not a second arbitrary clone hook: it accepts only the repository and canonic
 approved execution context and the immutable head from fresh authority verification, passes the
 credential only to the immediate worker command environment, and leaves `origin` canonical and
 the checkout at that exact head. A partial bootstrap is removed through the attested, exact
-workspace cleanup boundary. Remote bootstrap requires an explicit worker command seam.
+workspace cleanup boundary. Profiled bootstrap runs locally on the owning Symphony instance.
 
 The worker-side preflight then composes with the existing workspace/readiness checks. It verifies:
 

@@ -140,6 +140,17 @@ defmodule SymphonyElixir.Orchestrator do
 
   @impl true
   def init(opts) do
+    case Config.validate_execution_topology() do
+      :ok ->
+        init_validated_settings(opts)
+
+      {:error, reason} ->
+        report_health(opts, {:stop, %{category: :startup_failure, failure_category: reason}})
+        {:stop, reason}
+    end
+  end
+
+  defp init_validated_settings(opts) do
     identity_validator = identity_validator(opts)
 
     case validate_startup_identity(identity_validator) do
@@ -625,6 +636,13 @@ defmodule SymphonyElixir.Orchestrator do
   defp run_multi_project_poll(state, _profiles, [], _opts), do: state
 
   defp run_multi_project_poll(state, profiles, profiles_to_poll, opts) do
+    case Config.validate_execution_topology() do
+      :ok -> run_admitted_multi_project_poll(state, profiles, profiles_to_poll, opts)
+      {:error, _reason} -> state
+    end
+  end
+
+  defp run_admitted_multi_project_poll(state, profiles, profiles_to_poll, opts) do
     fetcher = Keyword.get(opts, :fetcher, &Tracker.fetch_candidate_issues/1)
     poll_opts = multi_project_poll_opts(opts)
 
@@ -694,6 +712,15 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   defp dispatch_multi_project_candidate(state, %Issue{} = candidate, profiles, opts) do
+    case Config.validate_execution_topology() do
+      :ok -> dispatch_admitted_multi_project_candidate(state, candidate, profiles, opts)
+      {:error, _reason} -> state
+    end
+  end
+
+  defp dispatch_multi_project_candidate(state, _candidate, _profiles, _opts), do: state
+
+  defp dispatch_admitted_multi_project_candidate(state, candidate, profiles, opts) do
     refresh_fun = Keyword.get(opts, :refresh_fun, &Tracker.fetch_issue_states_by_ids/1)
 
     report_health(opts, {:stage, :issue_refresh, health_issue_metadata(candidate, :started)})
@@ -749,8 +776,6 @@ defmodule SymphonyElixir.Orchestrator do
         transition_retry_transient(state, candidate, :refresh_unavailable, opts)
     end
   end
-
-  defp dispatch_multi_project_candidate(state, _candidate, _profiles, _opts), do: state
 
   defp authorize_multi_project_candidate(state, issue, profiles, opts) do
     route_reader = Keyword.get(opts, :route_reader, &ClaimService.exclusive_route/1)
@@ -1059,6 +1084,13 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   defp retry_profile_poll(state, profiles, profile, previous_retry, opts) do
+    case Config.validate_execution_topology() do
+      :ok -> retry_admitted_profile_poll(state, profiles, profile, previous_retry, opts)
+      {:error, _reason} -> state
+    end
+  end
+
+  defp retry_admitted_profile_poll(state, profiles, profile, previous_retry, opts) do
     fetcher = Keyword.get(opts, :fetcher, &Tracker.fetch_candidate_issues/1)
     result = MultiProjectPoll.fetch([profile], fetcher, multi_project_poll_opts(opts))
 
@@ -2478,12 +2510,12 @@ defmodule SymphonyElixir.Orchestrator do
   defp handle_retry_issue(%State{} = state, issue_id, attempt, metadata, opts) do
     opts = Keyword.merge(opts, issue_retry_attempt: attempt, retry_metadata: metadata)
 
-    case retry_issue_fetch(issue_id, metadata, opts) do
-      {:ok, issues} ->
-        issues
-        |> find_issue_by_id(issue_id)
-        |> handle_retry_issue_lookup(state, issue_id, attempt, metadata, opts)
-
+    with :ok <- Config.validate_execution_topology(),
+         {:ok, issues} <- retry_issue_fetch(issue_id, metadata, opts) do
+      issues
+      |> find_issue_by_id(issue_id)
+      |> handle_retry_issue_lookup(state, issue_id, attempt, metadata, opts)
+    else
       {:error, reason} ->
         Logger.warning("Retry poll failed for issue_id=#{issue_id} issue_identifier=#{metadata[:identifier] || issue_id}: #{inspect(reason)}")
 

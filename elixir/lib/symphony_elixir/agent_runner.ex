@@ -56,6 +56,7 @@ defmodule SymphonyElixir.AgentRunner do
     Logger.info("Starting worker attempt for #{issue_context(issue)} worker_host=#{worker_host_for_log(worker_host)}")
 
     with {:ok, execution_context} <- execution_context(issue, opts),
+         :ok <- validate_worker_topology(execution_context, worker_host),
          {:ok, launch_env} <- codex_launch_environment(issue, execution_context),
          {:ok, credential, authority} <-
            fresh_worker_authority(execution_context, Keyword.put(opts, :worker_host, worker_host)) do
@@ -89,6 +90,11 @@ defmodule SymphonyElixir.AgentRunner do
         )
     end
   end
+
+  defp validate_worker_topology(%ProjectExecutionContext{}, worker_host) when is_binary(worker_host),
+    do: {:error, :profiled_ssh_topology_unsupported}
+
+  defp validate_worker_topology(_execution_context, _worker_host), do: :ok
 
   defp run_with_execution_context(
          issue,
@@ -652,6 +658,7 @@ defmodule SymphonyElixir.AgentRunner do
   defp safe_credential_reason(reason)
        when reason in [
               :credential_provider_unconfigured,
+              :profiled_ssh_topology_unsupported,
               :credential_not_found,
               :credential_ambiguous,
               :credential_source_unconfigured,

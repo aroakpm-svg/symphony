@@ -433,6 +433,14 @@ evidence and does not stop another profile's candidates. Unknown, duplicated, ch
 wrong-node, non-exclusive, or repository-mismatched candidates fail closed and iteration continues.
 When `project_profiles` is absent, Symphony retains the legacy single-project tracker path.
 
+Amy, Matt, and Han each run their own node-local Symphony. Han runs Symphony locally inside WSL,
+not as Amy's SSH worker. Enabled `project_profiles` requires absent/empty `worker.ssh_hosts`.
+Startup and new-work poll/dispatch/retry admission reject nonempty hosts with
+`profiled_ssh_topology_unsupported`; direct profiled runner remote-host overrides fail before
+credential resolution. Runtime settings remain readable after a topology-invalid reload for
+active local reconciliation, lease, and cleanup obligations. Legacy unprofiled SSH is unchanged.
+Lower-level remote defensive/test seams do not prove supported profiled remote execution.
+
 This contract selects an approved repository but does not install credentials, clone repositories,
 grant deployment authority, or operate in Production. ARO-286 consumes the selected profile for
 workspace and subprocess isolation; ARO-196 defines the host-source interface, while ARO-197 owns
@@ -490,18 +498,16 @@ ARO-195-approved GitHub App installation allowlist also includes `aroakpm-svg/sy
 of three repositories. That installation scope does not define or add a `symphony` dispatch
 profile. Trusted application configuration supplies `:github_credential_source`; runtime
 options supply the expected dedicated actor and may inject the same source explicitly for packaging
-or tests. Configuring both controller sources is a conflict. An explicitly selected remote worker
-source is independently scoped and never falls back to that controller source. `WORKFLOW.md`, issue text, environment variables,
+or tests. Configuring both same-runtime sources is a conflict. `WORKFLOW.md`, issue text, environment variables,
 ambient `gh`, Git Credential Manager, and other profiles cannot select or replace the source.
 
 The source returns exactly one reference-bound credential for the current call. Before claim,
 `ProjectRepoPreflight` resolves it, validates actor/repository/pull/push/default branch/head, reads
 the quality contract at that verified head, and discards it. After claim,
 `SymphonyElixir.AgentRunner` resolves a second fresh credential and repeats full authority
-validation before `SymphonyElixir.GitCheckoutPreflight` checks the actual selected local, WSL, or
-SSH worker's namespaced checkout, origin, branch, remote head, and safe writable `.git` metadata.
-Remote execution requires worker-local credential, GitHub-request, checkout-command, workspace
-attestation, and metadata seams; it never falls back to controller evidence.
+validation before `SymphonyElixir.GitCheckoutPreflight` checks that node-local runtime's namespaced
+checkout, origin, branch, remote head, and safe writable `.git` metadata. This includes Symphony
+running locally inside WSL; another runtime's credential evidence cannot authorize it.
 
 Actor evidence uses the installation-token-compatible, fixed GraphQL `viewer.login` read; GraphQL
 errors (including partial responses) fail closed. Missing or hidden repositories/refs (HTTP 404)

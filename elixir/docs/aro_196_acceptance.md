@@ -5,10 +5,20 @@ It does not provision credentials or claim that a live three-machine deployment 
 
 ## Contract
 
+Amy, Matt, and Han each run their own node-local Symphony. Han runs Symphony locally inside WSL,
+not as Amy's SSH worker. Enabled `project_profiles` requires absent/empty `worker.ssh_hosts`.
+Startup and new-work poll/dispatch/retry admission reject nonempty hosts with
+`profiled_ssh_topology_unsupported`; direct profiled runner remote-host overrides fail before
+credential resolution. Runtime settings remain readable after a topology-invalid reload for
+active local reconciliation, lease, and cleanup obligations. Legacy unprofiled SSH is unchanged.
+Lower-level remote defensive/test seams do not prove supported profiled remote execution.
+
+ARO-197 owns provisioning and rollout; ARO-285 owns live acceptance. Synthetic tests do not prove
+live WSL or three-machine acceptance.
+
 - Trusted application/runtime configuration selects one credential source and the expected
   dedicated automation actor. Workflow and issue content contain only an approved opaque reference.
-- Controller and selected remote-worker sources have separate explicit scopes; duplicate controller
-  sources still conflict and a missing worker source never falls back to the controller.
+- Duplicate same-runtime credential sources conflict. No fallback to another runtime is allowed.
 - The complete ARO-196 dispatch manifest has two mappings: `github-central-brain` to
   `aroakpm-svg/aroak-central-brain` and `github-project-management` to
   `aroakpm-svg/aroak-project-management`.
@@ -25,8 +35,8 @@ It does not provision credentials or claim that a live three-machine deployment 
 - Newly-created profiled workspaces must first use the selected worker seam to bootstrap only the
   approved repository/canonical branch at the freshly verified head; partial attempts are removed
   through exact attested cleanup and arbitrary `after_create` runs only after validation.
-- Local, WSL, and SSH workers must validate their exact namespaced checkout, canonical origin,
-  branch and head, remote head, and safe writable Git metadata through worker-local seams.
+- Each node-local runtime, including Symphony inside WSL, must validate its exact namespaced
+  checkout, canonical origin, branch and head, remote head, and safe writable Git metadata.
 - Origins must be canonical HTTPS GitHub URLs, never SSH. The fixed credential-protocol helper
   accompanies the validated credential through readiness, hooks, and Codex while HOME stays isolated.
   Checkout failure rolls back only fresh attested workspaces, preserving reused work and existing homes.
@@ -34,6 +44,9 @@ It does not provision credentials or claim that a live three-machine deployment 
   retries, health, logs, receipts, commands, workspace artifacts, and durable files.
 
 ## Acceptance criteria and evidence
+
+`local_profile_topology_test.exs` covers Config/startup admission, poll and both retry paths,
+active-local reconciliation after reload, explicit runner rejection, and legacy SSH compatibility.
 
 | Criterion | Implementation | Focused evidence |
 | --- | --- | --- |
