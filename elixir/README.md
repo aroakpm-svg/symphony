@@ -570,6 +570,13 @@ Remote-head execution failures/timeouts return `github_unavailable` and use the 
 path; a successful response with a missing or changed head still fails checkout validation.
 Local Git failures and malformed results are never promoted to transport retries.
 
+Before any remote-head probe, hook or Codex turn, checkout validation reads all effective origin
+fetch and push URLs through `git remote get-url --all` and `git remote get-url --push --all`.
+Every URL must resolve to HTTPS GitHub and the selected profile's exact repository. This includes
+separate/multiple `pushurl` entries and Git's `insteadOf`/`pushInsteadOf` expansion. A canonical fetch
+URL alone is not sufficient push evidence. Missing, malformed or cross-repository destinations fail
+closed; matching explicit push URLs and normal fetch-URL fallback remain supported.
+
 Every local profiled Workspace subprocess applies `SubprocessEnvironment` isolation at the final
 spawn boundary, including bootstrap and checkout probes that supply only a credential overlay.
 Ambient Git tracing, shell startup hooks and other non-allowlisted environment variables are removed

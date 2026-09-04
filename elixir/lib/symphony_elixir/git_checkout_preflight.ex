@@ -33,16 +33,14 @@ defmodule SymphonyElixir.GitCheckoutPreflight do
          :ok <- exact_workspace(context, workspace, opts),
          {:ok, expected_head} <- expected_head(opts),
          {:ok, runner} <- command_runner(workspace, context, opts),
-         {:ok, origin} <- run(runner, ["remote", "get-url", "origin"], credential, opts),
-         {:ok, repository} <- canonical_repository(origin),
-         :ok <- equal(repository, context.repository, :git_remote_mismatch),
+         :ok <- validate_origin(runner, context.repository, credential, opts),
          {:ok, branch} <- run_text(runner, ["branch", "--show-current"], credential, opts),
          {:ok, local_head} <- run_text(runner, ["rev-parse", "--verify", "HEAD^{commit}"], credential, opts),
          :ok <- validate_local_checkout(branch, local_head, expected_head, context, opts),
          {:ok, remote_head} <- remote_head(runner, context, credential, opts),
          :ok <- valid_bound_head(remote_head, expected_head, :github_remote_head_changed),
          :ok <- metadata_capability(workspace, opts) do
-      {:ok, %{repository: repository, branch: branch, head: expected_head}}
+      {:ok, %{repository: context.repository, branch: branch, head: expected_head}}
     end
   rescue
     _exception -> {:error, :git_checkout_invalid}
@@ -207,8 +205,23 @@ defmodule SymphonyElixir.GitCheckoutPreflight do
     end
   end
 
-  defp equal(value, value, _reason), do: :ok
-  defp equal(_actual, _expected, reason), do: {:error, reason}
+  defp validate_origin(runner, repository, credential, opts) do
+    # Git resolves insteadOf/pushInsteadOf here. A fetch URL cannot attest a push
+    # destination, and Git may push to every configured pushurl.
+    with {:ok, fetch_urls} <- run(runner, ["remote", "get-url", "--all", "origin"], credential, opts),
+         :ok <- validate_remote_urls(fetch_urls, repository),
+         {:ok, push_urls} <- run(runner, ["remote", "get-url", "--push", "--all", "origin"], credential, opts) do
+      validate_remote_urls(push_urls, repository)
+    end
+  end
+
+  defp validate_remote_urls(output, repository) do
+    urls = output |> String.trim() |> String.split(~r/\r?\n/)
+
+    if Enum.all?(urls, &(canonical_repository(&1) == {:ok, repository})),
+      do: :ok,
+      else: {:error, :git_remote_mismatch}
+  end
 
   defp valid_bound_head(head, expected, reason) do
     normalized = String.downcase(String.trim(head))
