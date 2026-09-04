@@ -612,12 +612,20 @@ failures, invalid credentials or attestations, and malformed callback results re
 
 Repository rollback is a strict prerequisite for automatic retry. Failed attestation, removal,
 readiness-state cleanup, or a failed/malformed cleanup callback returns `repository_rollback_failed`.
-Both bootstrap and checkout failure paths preserve that reason instead of reporting the original
+Bootstrap, checkout, and deferred creation-hook failure paths preserve that reason instead of reporting the original
 transient outage, and the scheduler records an explicit blocker without scheduling a retry into
 the incomplete checkout. Recovery requires resolving the lock/permission or ownership problem and
 completing cleanup of the exact owned workspace and readiness state before requeuing the issue.
 Successful rollback still uses normal backoff; existing private homes and reused workspaces are
 preserved. General terminal cleanup retains its existing best-effort contract.
+
+A newly created profiled workspace is not initialized until its deferred `after_create` succeeds.
+Hook failure or timeout uses the same attested repository rollback as other preparation failures,
+followed by private-home rollback before the outcome reaches the scheduler. After successful
+cleanup, ordinary worker backoff remains available and a new attempt must bootstrap and run the
+creation hook again. `before_run`, Codex, and completion reporting cannot bypass a failed creation
+hook by reusing its leftover checkout. Cleanup skips `before_remove` because initialization never
+completed; it does not delete reused workspaces or claim to undo the hook's external side effects.
 
 Bootstrap fetch and checkout `ls-remote` share the `GitPreflightCommand` result contract.
 Remote-head execution failures/timeouts return `github_unavailable` and use the same release/backoff

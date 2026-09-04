@@ -232,19 +232,27 @@ defmodule SymphonyElixir.AgentRunner do
         |> Keyword.put(:private_home_capability, preparation.private_home_capability)
 
       case Workspace.run_deferred_after_create_hook(preparation, issue, worker_host, effect_opts) do
-        :ok -> run_prepared_issue(preparation, issue, recipient, opts, worker_host, effect_opts)
-        {:error, _reason} = error -> {:private_home_preparation_failed, error}
+        :ok ->
+          run_prepared_issue(preparation, issue, recipient, opts, worker_host, effect_opts)
+
+        {:error, reason} = error ->
+          rollback_worker_preparation(preparation, execution_context, worker_host, reason, error)
       end
     else
       {:error, reason} ->
-        reason =
-          case rollback_pre_effect_repository(preparation, execution_context, worker_host, reason) do
-            :ok -> reason
-            {:error, rollback_reason} -> rollback_reason
-          end
-
-        {:private_home_preparation_failed, {:deferred_preparation_blocker, {:project_credential_unavailable, reason}}}
+        outcome = {:deferred_preparation_blocker, {:project_credential_unavailable, reason}}
+        rollback_worker_preparation(preparation, execution_context, worker_host, reason, outcome)
     end
+  end
+
+  defp rollback_worker_preparation(preparation, context, worker_host, reason, outcome) do
+    outcome =
+      case rollback_pre_effect_repository(preparation, context, worker_host, reason) do
+        :ok -> outcome
+        {:error, rollback_reason} -> {:deferred_preparation_blocker, {:project_credential_unavailable, rollback_reason}}
+      end
+
+    {:private_home_preparation_failed, outcome}
   end
 
   defp rollback_pre_effect_repository(

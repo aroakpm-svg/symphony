@@ -455,7 +455,8 @@ defmodule SymphonyElixir.ReadinessGateAgentRunnerTest do
         {:fetch, :repository_bootstrap_unavailable, false},
         {:remote_head, :github_unavailable, false},
         {:fetch, :repository_rollback_failed, true},
-        {:remote_head, :repository_rollback_failed, true}
+        {:remote_head, :repository_rollback_failed, true},
+        {:after_create, :repository_rollback_failed, true}
       ] do
     @tag failure_stage: stage, failure_reason: reason, cleanup_fails?: cleanup_fails?
     test "#{stage} failure retries only after verified rollback; cleanup failure=#{cleanup_fails?}", %{
@@ -469,10 +470,19 @@ defmodule SymphonyElixir.ReadinessGateAgentRunnerTest do
       workspace = Path.join([fixture.workspace_root, "central-brain", issue.identifier])
       marker = Path.join(fixture.root, "effects.marker")
       secret = "synthetic-fetch-secret"
+      hook = "printf ran > #{shell_escape(shell_path(marker))}"
+
+      hook =
+        if stage == :after_create do
+          state_path = shell_escape(shell_path(Workspace.readiness_state_path(workspace)))
+          hook <> "; rm -f #{state_path}; mkdir #{state_path}; exit 17"
+        else
+          hook
+        end
 
       write_workflow_file!(Workflow.workflow_file_path(),
         workspace_root: fixture.workspace_root,
-        hook_after_create: "printf ran > #{shell_escape(shell_path(marker))}"
+        hook_after_create: hook
       )
 
       bootstrap = real_bootstrap_runner(workspace, fixture.remote, secret)
@@ -507,7 +517,7 @@ defmodule SymphonyElixir.ReadinessGateAgentRunnerTest do
       assert_receive {:agent_hard_blocker, _, blocker}
       assert blocker.kind == {:project_credential_unavailable, expected_reason}
       refute File.exists?(workspace)
-      refute File.exists?(marker)
+      assert File.exists?(marker) == (stage == :after_create)
       {:noreply, state} = Orchestrator.handle_info({:agent_hard_blocker, issue.id, blocker}, running_orchestrator_state(issue))
       assert state.running == %{}
       refute :erlang.term_to_binary(state) =~ secret
@@ -580,9 +590,15 @@ defmodule SymphonyElixir.ReadinessGateAgentRunnerTest do
 
     assert_receive :fresh_bootstrap
     assert File.read!(marker) == "ran"
-    assert File.dir?(Path.join(workspace, ".git"))
+    refute File.exists?(workspace)
     assert File.dir?(paths.home)
 
+    # Build a separate valid continuation; a failed creation hook cannot supply one.
+    assert {:ok, continuation} = Workspace.prepare_for_issue(issue, nil, context, preparation_opts)
+    assert :ok = Workspace.finalize_private_home_capability(continuation.private_home_capability)
+    cmd!("git", ["clone", fixture.remote, workspace])
+    git!(workspace, ["remote", "set-url", "origin", "https://github.com/aroakpm-svg/aroak-central-brain.git"])
+    git!(workspace, ["checkout", "-b", issue.branch_name])
     File.write!(Path.join(workspace, "user-work.txt"), "preserve")
     assert :ok = AgentRunner.run(issue, self(), opts)
     assert_receive {:agent_hard_blocker, _, %{kind: {:project_credential_unavailable, :github_remote_head_changed}}}

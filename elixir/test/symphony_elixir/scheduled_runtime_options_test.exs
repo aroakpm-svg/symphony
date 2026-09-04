@@ -261,7 +261,15 @@ defmodule SymphonyElixir.ScheduledRuntimeOptionsTest do
     assert_receive :runner_finished, 15_000
   end
 
-  for interruption <- [:none, :fetch, :remote_head, :head_advance, :auth_missing] do
+  for interruption <- [
+        :none,
+        :fetch,
+        :remote_head,
+        :head_advance,
+        :auth_missing,
+        :after_create,
+        :after_create_timeout
+      ] do
     @tag timeout: 90_000, interruption: interruption
     test "scheduled pickup completes and reports with #{interruption} interruption", %{interruption: interruption} do
       parent = self()
@@ -334,7 +342,17 @@ defmodule SymphonyElixir.ScheduledRuntimeOptionsTest do
       config = Jason.decode!(frontmatter)
       config = Map.put(config, "codex", %{"command" => shell_quote(shell_path(fake_codex)) <> " app-server"})
       rewrite = "url.#{shell_path(seed)}.insteadOf"
-      config = Map.put(config, "hooks", %{"after_create" => "git config " <> shell_quote(rewrite) <> " https://github.com/aroakpm-svg/aroak-central-brain.git"})
+      hook_attempts = Path.join(root, "hook-attempts")
+      hook_failure = if interruption == :after_create_timeout, do: "sleep 10; exit 17", else: "exit 17"
+
+      hook_prefix =
+        if interruption in [:after_create, :after_create_timeout] do
+          "if [ ! -f #{shell_quote(shell_path(hook_attempts))} ]; then printf first > #{shell_quote(shell_path(hook_attempts))}; #{hook_failure}; fi\nprintf success >> #{shell_quote(shell_path(hook_attempts))}\n"
+        else
+          ""
+        end
+
+      config = Map.put(config, "hooks", %{"after_create" => hook_prefix <> "git config " <> shell_quote(rewrite) <> " https://github.com/aroakpm-svg/aroak-central-brain.git", "timeout_ms" => 2_000})
       File.write!(Workflow.workflow_file_path(), "---\n" <> Jason.encode!(config) <> "\n---\nSynthetic")
       :ok = WorkflowStore.force_reload()
 
@@ -381,13 +399,30 @@ defmodule SymphonyElixir.ScheduledRuntimeOptionsTest do
       send(server, :run_poll_cycle)
       assert_receive :claimed, 2_000
 
-      if interruption in [:fetch, :remote_head] do
+      if interruption in [:fetch, :remote_head, :after_create, :after_create_timeout] do
         assert_receive :runner_finished, 20_000
         state = await_retry(server, issue.id, 100)
         assert state.blocked == %{}
-        refute MapSet.member?(state.claimed, issue.id)
-        assert state.retry_attempts[issue.id].ownership == :unowned_backoff
-        reason = if interruption == :fetch, do: "repository_bootstrap_unavailable", else: "github_unavailable"
+
+        if interruption in [:fetch, :remote_head] do
+          refute MapSet.member?(state.claimed, issue.id)
+          assert state.retry_attempts[issue.id].ownership == :unowned_backoff
+        end
+
+        reason =
+          case interruption do
+            :fetch -> "repository_bootstrap_unavailable"
+            :remote_head -> "github_unavailable"
+            :after_create -> "workspace_hook_failed"
+            :after_create_timeout -> "workspace_hook_timeout"
+          end
+
+        if interruption in [:after_create, :after_create_timeout] do
+          assert_received {:runner_exception, _}
+          assert File.read!(hook_attempts) == "first"
+          refute File.exists?(Path.join(workspace, "codex-ran.marker"))
+        end
+
         assert state.retry_attempts[issue.id].error =~ reason
         refute File.exists?(workspace)
         retry = state.retry_attempts[issue.id]
@@ -405,6 +440,7 @@ defmodule SymphonyElixir.ScheduledRuntimeOptionsTest do
         refute File.exists?(Path.join(workspace, "codex-ran.marker"))
       else
         assert File.read!(Path.join(workspace, "codex-ran.marker")) == "launched"
+        if interruption in [:after_create, :after_create_timeout], do: assert(File.read!(hook_attempts) == "firstsuccess")
         assert git!(workspace, ["branch", "--show-current"]) == issue.branch_name
         assert git!(workspace, ["rev-parse", "HEAD"]) == head
         assert_received {:quality_head, ^head}
@@ -541,7 +577,9 @@ defmodule SymphonyElixir.ScheduledRuntimeOptionsTest do
           try do
             task.()
           rescue
-            exception -> send(parent, {:runner_exception, {exception.__struct__, Exception.message(exception)}})
+            exception ->
+              send(parent, {:runner_exception, {exception.__struct__, Exception.message(exception)}})
+              reraise exception, __STACKTRACE__
           after
             send(parent, :runner_finished)
           end

@@ -213,7 +213,11 @@ The worker-side preflight then composes with the existing workspace/readiness ch
 Any head change between authority receipt and workspace readiness invalidates the receipt and fails
 closed; it is not silently rebound.
 
-Only after this validation may the arbitrary `after_create` hook run. Profiled deployments must
+Only after this validation may the arbitrary `after_create` hook run. Its failure or timeout is
+fatal to fresh workspace preparation: the worker uses the same attested repository rollback and
+private-home rollback as earlier preparation failures. A cleanup failure blocks retry; successful
+cleanup permits a fresh attempt that must run the creation hook again. A reused workspace is never
+removed by this preparation rollback, and external hook side effects are not transactionally undone. Profiled deployments must
 remove repository cloning from `after_create` as an ARO-197 configuration migration; legacy
 non-profiled workspace behavior remains unchanged.
 
