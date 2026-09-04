@@ -517,6 +517,14 @@ uses a direct Git URL or API call, which remote configuration checks cannot cons
 response is call-local and never stored in scheduler state. Actual token minting, provisioning and
 live cross-repository denial smoke remain ARO-197 operator work.
 
+The source's `expires_at` is optional metadata used to reject known-expired credentials early.
+It cannot extend GitHub's actual token lifetime: installation access tokens expire after one hour
+on GitHub. A missing or future timestamp never skips the mandatory installation-token authority
+checks before claim and before worker effects. Resolver success alone does not authorize child
+credential delivery. ARO-197 must obtain short-lived tokens on demand and, when supplying expiry
+metadata, use GitHub's issuance response. Its rotation/revocation smoke must verify that old
+credentials cannot start new work, independently of the local timestamp.
+
 Trusted application configuration supplies `:github_credential_source`; runtime
 options supply the expected dedicated actor and may inject the same source explicitly for packaging
 or tests. Configuring both same-runtime sources is a conflict. `WORKFLOW.md`, issue text, environment variables,

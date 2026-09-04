@@ -106,6 +106,18 @@ or a typed non-secret error. The resolver rejects missing sources, multiple/comp
 reference mismatch, blank/NUL-bearing material, expired material, and unapproved references. It
 never returns the token inside an error or receipt.
 
+`expires_at` is optional source metadata, not an assertion of GitHub's actual token lifetime.
+When present, an expired timestamp causes early rejection; `nil` does not authorize a permanent
+credential, and a future timestamp does not extend the bearer token's server-enforced expiry.
+Resolution alone never authorizes child delivery. Both pre-claim and post-claim gates must verify
+the same resolved bearer through GitHub's installation-repositories endpoint, requiring exactly
+the selected repository, before worker preparation or child environment construction.
+[GitHub installation access tokens expire after one hour](https://docs.github.com/en/apps/creating-github-apps/authenticating-with-a-github-app/generating-an-installation-access-token-for-a-github-app).
+The [installation-repositories endpoint](https://docs.github.com/en/rest/apps/installations#list-repositories-accessible-to-the-app-installation)
+supports installation access tokens. Local expiry metadata cannot replace this authority check.
+Making the metadata mandatory or imposing an additional local lifetime limit would be a separate
+source-contract change, not a substitute for server-side validation.
+
 ARO-197 may later install a source implementation that exchanges GitHub App material for a
 short-lived installation token. ARO-196 defines and tests the consuming contract but does not
 perform that provisioning.
@@ -282,3 +294,8 @@ After ARO-196 merges, ARO-197 may provision the approved GitHub App/Bot and inst
 host source on Amy, Matt, and Han. It must verify actual runtime actor/source consistency,
 rotation/revocation, old-credential rejection, rollback, and masked receipts. No provisioning action
 is authorized by this design or by ARO-196.
+
+The source must obtain short-lived installation tokens on demand under the ARO-195 decision.
+If it supplies `expires_at`, use the expiry returned by GitHub's token-issuance response rather
+than synthesizing a local lifetime. ARO-197's existing old-credential rejection smoke must prove
+that rotation/revocation prevents new work; changing local expiry metadata is not that proof.
