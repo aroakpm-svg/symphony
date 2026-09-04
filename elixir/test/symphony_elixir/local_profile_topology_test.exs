@@ -190,7 +190,16 @@ defmodule SymphonyElixir.LocalProfileTopologyTest do
     configure(@profiles, %{})
     {:ok, settings} = Config.settings()
     profile = settings.project_profiles.profiles["central-brain"]
-    issue = %Issue{id: "active-local", identifier: "ARO-196-ACTIVE", state: "In Progress", title: "before", project_id: profile.linear_project_id, project_profile: profile}
+
+    issue = %Issue{
+      id: "active-local",
+      identifier: "ARO-196-ACTIVE",
+      state: "In Progress",
+      title: "before",
+      project_id: profile.linear_project_id,
+      project_profile: profile
+    }
+
     Application.put_env(:symphony_elixir, :memory_tracker_issues, [%{issue | title: "refreshed"}])
     started_at = DateTime.utc_now()
     entry = %{issue: issue, pid: self(), started_at: started_at, worker_host: nil}
@@ -232,7 +241,16 @@ defmodule SymphonyElixir.LocalProfileTopologyTest do
     configure(@profiles, %{})
     {:ok, settings} = Config.settings()
     profile = settings.project_profiles.profiles["central-brain"]
-    issue = %Issue{id: "pending-local", identifier: "ARO-196-PENDING", state: "In Progress", project_id: profile.linear_project_id, project_profile: profile, repository: profile.repository}
+
+    issue = %Issue{
+      id: "pending-local",
+      identifier: "ARO-196-PENDING",
+      state: "In Progress",
+      project_id: profile.linear_project_id,
+      project_profile: profile,
+      repository: profile.repository
+    }
+
     parent = self()
     state = %Orchestrator.State{max_concurrent_agents: 2}
 
