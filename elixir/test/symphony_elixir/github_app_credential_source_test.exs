@@ -81,6 +81,95 @@ defmodule SymphonyElixir.GitHubAppCredentialSourceTest do
     refute inspect(Application.get_all_env(:symphony_elixir)) =~ key_path
   end
 
+  test "runtime resolution and exceptional callbacks fail closed" do
+    key_path = write_private_key!()
+    keys = runtime_environment(key_path)
+    previous_env = Map.new(keys, fn {key, _value} -> {key, System.get_env(key)} end)
+    on_exit(fn -> Enum.each(previous_env, fn {key, value} -> restore_system_env(key, value) end) end)
+    Enum.each(keys, fn {key, value} -> System.put_env(key, value) end)
+    File.rm!(key_path)
+
+    assert {:error, :failed} = GitHubAppCredentialSource.resolve("github-central-brain")
+
+    key_path = write_private_key!()
+
+    assert {:error, :failed} =
+             GitHubAppCredentialSource.resolve(
+               "github-central-brain",
+               valid_options(key_path, fn _ -> raise "secret" end)
+             )
+
+    assert {:error, :failed} =
+             GitHubAppCredentialSource.resolve(
+               "github-central-brain",
+               valid_options(key_path, fn _ -> throw(:secret) end)
+             )
+  end
+
+  test "rejects invalid option types and identifiers" do
+    key_path = write_private_key!()
+    request = fn _ -> flunk("request made") end
+
+    successful_request = fn _ ->
+      {:ok, %{status: 201, body: %{"token" => "token", "expires_at" => "2030-01-01T00:00:00Z"}}}
+    end
+
+    assert {:ok, %{token: "token"}} =
+             GitHubAppCredentialSource.resolve(
+               "github-central-brain",
+               Keyword.put(valid_options(key_path, successful_request), :app_id, 123)
+             )
+
+    for opts <- [
+          Keyword.put(valid_options(key_path, request), :app_id, "bad"),
+          Keyword.put(valid_options(key_path, request), :installation_id, "0"),
+          Keyword.put(valid_options(key_path, request), :now, :invalid),
+          Keyword.put(valid_options(key_path, request), :private_key_path, nil),
+          Keyword.put(valid_options(key_path, request), :request_fun, :invalid)
+        ] do
+      assert {:error, :failed} = GitHubAppCredentialSource.resolve("github-central-brain", opts)
+    end
+
+    assert {:error, :failed} = GitHubAppCredentialSource.resolve(:invalid, %{})
+  end
+
+  test "explicit configuration rejects competing persistent settings" do
+    key_path = write_private_key!()
+    keys = runtime_environment(key_path)
+    previous_source = Application.get_env(:symphony_elixir, :github_credential_source)
+    previous_opts = Application.get_env(:symphony_elixir, :orchestrator_opts)
+    previous_env = Map.new(keys, fn {key, _value} -> {key, System.get_env(key)} end)
+
+    on_exit(fn ->
+      restore_application_env(:github_credential_source, previous_source)
+      restore_application_env(:orchestrator_opts, previous_opts)
+      Enum.each(previous_env, fn {key, value} -> restore_system_env(key, value) end)
+    end)
+
+    Enum.each(keys, fn {key, value} -> System.put_env(key, value) end)
+    Application.put_env(:symphony_elixir, :github_credential_source, __MODULE__)
+    assert {:error, :github_app_configuration_invalid} = GitHubAppCredentialSource.configure()
+
+    Application.put_env(:symphony_elixir, :github_credential_source, GitHubAppCredentialSource)
+    Application.put_env(:symphony_elixir, :orchestrator_opts, expected_actor: "other[bot]")
+    assert {:error, :github_app_configuration_invalid} = GitHubAppCredentialSource.configure()
+
+    Application.put_env(:symphony_elixir, :orchestrator_opts, %{invalid: true})
+    assert {:error, :github_app_configuration_invalid} = GitHubAppCredentialSource.configure()
+
+    Application.put_env(:symphony_elixir, :orchestrator_opts, [:invalid])
+    assert {:error, :github_app_configuration_invalid} = GitHubAppCredentialSource.configure()
+
+    Application.put_env(:symphony_elixir, :orchestrator_opts, [])
+    assert :ok = GitHubAppCredentialSource.configure()
+
+    Application.put_env(:symphony_elixir, :orchestrator_opts, expected_actor: "aroak-symphony[bot]")
+    assert :ok = GitHubAppCredentialSource.configure()
+
+    File.write!(key_path, "-----BEGIN RSA PRIVATE KEY-----\nAAAA\n-----END RSA PRIVATE KEY-----\n")
+    assert {:error, :github_app_configuration_invalid} = GitHubAppCredentialSource.configure()
+  end
+
   defp valid_options(key_path, request) do
     [app_id: "123", installation_id: "456", private_key_path: key_path, request_fun: request, now: ~U[2026-09-07 00:00:00Z]]
   end

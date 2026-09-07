@@ -33,8 +33,6 @@ defmodule SymphonyElixir.GitHubAppCredentialSource do
     else
       _invalid -> {:error, :github_app_configuration_invalid}
     end
-  rescue
-    _error -> {:error, :github_app_configuration_invalid}
   end
 
   @spec resolve(String.t()) :: result()
@@ -90,15 +88,22 @@ defmodule SymphonyElixir.GitHubAppCredentialSource do
 
   defp compatible_orchestrator_options(actor) do
     case Application.get_env(:symphony_elixir, :orchestrator_opts, []) do
-      opts when is_list(opts) ->
-        case Keyword.get(opts, :expected_actor) do
-          nil -> {:ok, opts}
-          ^actor -> {:ok, opts}
-          _other -> {:error, :conflict}
-        end
+      opts when is_list(opts) and opts != [] ->
+        if Keyword.keyword?(opts), do: compatible_expected_actor(opts, actor), else: {:error, :conflict}
+
+      [] ->
+        {:ok, []}
 
       _invalid ->
         {:error, :conflict}
+    end
+  end
+
+  defp compatible_expected_actor(opts, actor) do
+    case Keyword.get(opts, :expected_actor) do
+      nil -> {:ok, opts}
+      ^actor -> {:ok, opts}
+      _other -> {:error, :conflict}
     end
   end
 
@@ -128,6 +133,8 @@ defmodule SymphonyElixir.GitHubAppCredentialSource do
     else
       _invalid -> {:error, :invalid}
     end
+  rescue
+    _error -> {:error, :invalid}
   end
 
   defp private_key(_path), do: {:error, :invalid}
