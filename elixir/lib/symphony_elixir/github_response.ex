@@ -9,6 +9,13 @@ defmodule SymphonyElixir.GitHubResponse do
     if rate_limited?(response), do: {:error, :github_unavailable}, else: {:error, :github_forbidden}
   end
 
+  @spec reject_graphql_rate_limit(map()) :: :ok | {:error, :github_unavailable}
+  def reject_graphql_rate_limit(%{"errors" => errors}) when is_list(errors) do
+    if Enum.any?(errors, &graphql_rate_limit?/1), do: {:error, :github_unavailable}, else: :ok
+  end
+
+  def reject_graphql_rate_limit(_body), do: :ok
+
   defp rate_limited?(response) do
     header_values(response, "x-ratelimit-remaining") == ["0"] or
       Enum.any?(header_values(response, "retry-after"), &retry_delay?/1) or
@@ -44,4 +51,17 @@ defmodule SymphonyElixir.GitHubResponse do
     do: String.contains?(String.downcase(message), "secondary rate limit")
 
   defp secondary_rate_limit?(_body), do: false
+
+  defp graphql_rate_limit?(error) when is_map(error) do
+    rate_limit_code?(Map.get(error, "type")) or
+      extension_rate_limit?(Map.get(error, "extensions"))
+  end
+
+  defp graphql_rate_limit?(_error), do: false
+
+  defp extension_rate_limit?(%{"code" => code}), do: rate_limit_code?(code)
+  defp extension_rate_limit?(_extensions), do: false
+
+  defp rate_limit_code?("RATE_LIMITED"), do: true
+  defp rate_limit_code?(_code), do: false
 end

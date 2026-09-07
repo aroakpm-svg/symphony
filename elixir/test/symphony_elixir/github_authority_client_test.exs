@@ -67,6 +67,10 @@ defmodule SymphonyElixir.GitHubAuthorityClientTest do
     for body <- [
           %{"errors" => [%{"message" => @token}], "data" => %{"viewer" => %{"login" => @actor}}},
           %{"errors" => [], "data" => %{"viewer" => %{"login" => @actor}}},
+          %{"errors" => [%{"type" => "rate_limited", "message" => @token}], "data" => %{"viewer" => %{"login" => @actor}}},
+          %{"errors" => [%{"extensions" => @token}], "data" => %{"viewer" => %{"login" => @actor}}},
+          %{"errors" => [%{"extensions" => [@token]}], "data" => %{"viewer" => %{"login" => @actor}}},
+          %{"errors" => [%{"extensions" => %{"detail" => @token}}], "data" => %{"viewer" => %{"login" => @actor}}},
           %{"data" => nil},
           %{"data" => %{"viewer" => nil}},
           %{"data" => %{"viewer" => %{"login" => nil}}},
@@ -82,6 +86,36 @@ defmodule SymphonyElixir.GitHubAuthorityClientTest do
                    assert request[:redirect] == false
                    {:ok, %{status: 200, body: body}}
                  end
+               )
+    end
+  end
+
+  test "explicit GraphQL rate-limit errors remain transient before claim" do
+    for error <- [
+          %{"type" => "RATE_LIMITED", "message" => @token},
+          %{"extensions" => %{"code" => "RATE_LIMITED"}, "message" => @token}
+        ] do
+      request = fn _request ->
+        {:ok,
+         %{
+           status: 200,
+           body: %{"errors" => [error], "data" => %{"viewer" => %{"login" => @actor}}}
+         }}
+      end
+
+      assert {:error, :github_unavailable} =
+               Client.verify(approved_profile(), credential(approved_profile()),
+                 expected_actor: @actor,
+                 request_fun: request
+               )
+
+      assert {:blocked, %{code: :github_unavailable, detail: nil}} =
+               SymphonyElixir.ProjectRepoPreflight.check(approved_profile(),
+                 expected_actor: @actor,
+                 credential_source: fn ref ->
+                   {:ok, %{credential_ref: ref, token: @token, expires_at: nil}}
+                 end,
+                 request_fun: request
                )
     end
   end

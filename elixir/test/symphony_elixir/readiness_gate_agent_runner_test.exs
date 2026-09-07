@@ -399,7 +399,15 @@ defmodule SymphonyElixir.ReadinessGateAgentRunnerTest do
 
     request_fun = fn request ->
       assert {"authorization", "Bearer " <> ^secret} = List.keyfind(request[:headers], "authorization", 0)
-      {:error, :timeout}
+
+      {:ok,
+       %{
+         status: 200,
+         body: %{
+           "errors" => [%{"type" => "RATE_LIMITED", "message" => secret}],
+           "data" => %{"viewer" => %{"login" => "aroak-automation[bot]"}}
+         }
+       }}
     end
 
     log =

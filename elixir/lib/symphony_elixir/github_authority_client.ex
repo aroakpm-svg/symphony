@@ -136,7 +136,9 @@ defmodule SymphonyElixir.GitHubAuthorityClient do
       )
       |> classify_response()
 
-    with {:ok, %{"data" => %{"viewer" => %{"login" => actor}}} = body} <- response,
+    with {:ok, body} <- response,
+         :ok <- SymphonyElixir.GitHubResponse.reject_graphql_rate_limit(body),
+         %{"data" => %{"viewer" => %{"login" => actor}}} <- body,
          false <- Map.has_key?(body, "errors"),
          true <- valid_text?(actor) do
       {:ok, actor}
