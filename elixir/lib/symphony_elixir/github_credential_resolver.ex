@@ -27,6 +27,7 @@ defmodule SymphonyElixir.GitHubCredentialResolver do
           | :credential_source_conflict
           | :credential_reference_mismatch
           | :credential_expired
+          | :github_unavailable
           | :credential_resolver_failed
 
   @doc "Rejects unsafe persistent application sources without invoking or modifying them."
@@ -142,6 +143,7 @@ defmodule SymphonyElixir.GitHubCredentialResolver do
   defp normalize({:error, {:conflict, _detail}}, _ref), do: {:error, :credential_source_conflict}
   defp normalize({:error, :ambiguous}, _ref), do: {:error, :credential_source_conflict}
   defp normalize({:error, {:ambiguous, _detail}}, _ref), do: {:error, :credential_source_conflict}
+  defp normalize({:error, :unavailable}, _ref), do: {:error, :github_unavailable}
   defp normalize(_result, _ref), do: {:error, :credential_resolver_failed}
 
   defp valid_token?(token) do

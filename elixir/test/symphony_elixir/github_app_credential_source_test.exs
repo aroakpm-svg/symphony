@@ -55,6 +55,31 @@ defmodule SymphonyElixir.GitHubAppCredentialSourceTest do
     end
   end
 
+  test "preserves retryability for transport, throttling, and server failures" do
+    key_path = write_private_key!()
+
+    for response <- [
+          {:error, :timeout},
+          {:error, :nxdomain},
+          {:ok, %{status: 408, body: "secret"}},
+          {:ok, %{status: 429, body: "secret"}},
+          {:ok, %{status: 500, body: "secret"}},
+          {:ok, %{status: 599, body: "secret"}}
+        ] do
+      assert {:error, :unavailable} =
+               GitHubAppCredentialSource.resolve(
+                 "github-central-brain",
+                 valid_options(key_path, fn _ -> response end)
+               )
+    end
+
+    assert {:error, :failed} =
+             GitHubAppCredentialSource.resolve(
+               "github-central-brain",
+               valid_options(key_path, fn _ -> {:ok, %{status: 600, body: "secret"}} end)
+             )
+  end
+
   test "explicit configuration retains only the module and expected actor" do
     key_path = write_private_key!()
     previous_source = Application.get_env(:symphony_elixir, :github_credential_source)

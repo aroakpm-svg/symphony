@@ -13,7 +13,7 @@ defmodule SymphonyElixir.GitHubAppCredentialSource do
 
   @type result ::
           {:ok, %{credential_ref: String.t(), token: binary(), expires_at: DateTime.t()}}
-          | {:error, :missing | :failed}
+          | {:error, :missing | :unavailable | :failed}
 
   @doc "Enables this source from complete node-local runtime configuration."
   @spec configure() :: :ok | {:error, :github_app_configuration_invalid}
@@ -55,6 +55,7 @@ defmodule SymphonyElixir.GitHubAppCredentialSource do
          :gt <- DateTime.compare(expires_at, now) do
       {:ok, %{credential_ref: ref, token: token, expires_at: expires_at}}
     else
+      {:error, :unavailable} -> {:error, :unavailable}
       _failure -> {:error, :failed}
     end
   rescue
@@ -181,6 +182,12 @@ defmodule SymphonyElixir.GitHubAppCredentialSource do
              {:ok, parsed, 0} <- DateTime.from_iso8601(expires_at) do
           {:ok, token, parsed}
         end
+
+      {:ok, %{status: status}} when status == 408 or status == 429 or status in 500..599 ->
+        {:error, :unavailable}
+
+      {:error, _transport_reason} ->
+        {:error, :unavailable}
 
       _failure ->
         {:error, :invalid}

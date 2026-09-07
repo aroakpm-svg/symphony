@@ -58,6 +58,9 @@ session and keep it only on that node.
 Deploy a clean immutable runtime directory rather than modifying Amy's dirty legacy checkout.
 Provision the controller/Codex principal split and make the configured `codex.command` enter the
 Codex principal through the trusted launcher before executing `codex app-server`.
+Provision a narrowly scoped shared group/ACL on the workspace and per-profile Codex-home roots so
+controller-created descendants remain writable by Codex, while the key and runtime trees remain
+controller-only.
 Create protected, separate Codex homes for `central-brain` and `project-management`, complete the
 chosen ChatGPT login in each home, remove legacy clone hooks, migrate reused origins to canonical
 HTTPS, and keep the existing tasks disabled while dry preflight runs.
@@ -66,8 +69,14 @@ Roll out Amy, then Matt, then Han/WSL. For each node, record only actor, source 
 success/failure class, version, and timestamps. Prove both profile tokens are singleton-scoped,
 cross-repository access fails, the expected bot actor is seen inside the actual worker environment,
 the Codex worker reports a different principal from the controller and cannot list or read the key,
+the worker can create/edit/remove a workspace sentinel and the controller can re-attest afterward,
 old key material cannot start new work after revocation, and rollback restores the prior disabled
 runtime. ARO-285, not this work item, starts the live fleet workload and proves nine-slot capacity.
+
+Rotation must quiesce admissions, drain active work, stop the old BEAM process, switch the task
+environment, restart that exact task, and validate both profiles through the restarted process
+before the old key is revoked. A dry shell using the replacement key does not prove that the active
+runtime inherited it.
 
 ## Non-goals
 

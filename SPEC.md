@@ -589,7 +589,11 @@ The controller that reads the reusable App private key and the Codex worker MUST
 OS principals. The configured Codex launcher MUST fail closed instead of falling back to the
 controller principal. Before a node is enabled, an actual Codex turn MUST prove that its worker
 principal differs from the controller and cannot list or read the key. A Codex sandbox policy that
-grants full filesystem read access does not satisfy this boundary.
+grants full filesystem read access does not satisfy this boundary. A narrowly scoped shared
+group/ACL MUST keep controller-created workspace descendants writable by Codex without granting the
+Codex principal access to the App-key, runtime, health, or launcher-configuration trees. The same
+turn MUST prove create/edit/remove access in its issue workspace, followed by controller
+re-attestation.
 
 #### 5.3.1 `tracker` (object)
 

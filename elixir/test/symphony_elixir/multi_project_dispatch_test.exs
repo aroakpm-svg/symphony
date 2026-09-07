@@ -667,6 +667,7 @@ defmodule SymphonyElixir.MultiProjectDispatchTest do
       {[credential_source: nil], :credential_source_unconfigured, :permanent},
       {[credential_source: fn _ -> {:error, :missing} end], :credential_source_missing, :permanent},
       {[credential_source: fn _ -> {:error, :conflict} end], :credential_source_conflict, :permanent},
+      {[credential_source: fn _ -> {:error, :unavailable} end], :github_unavailable, :transient},
       {[credential_source: fn _ -> {:ok, %{credential_ref: "github-project-management"}} end], :credential_reference_mismatch, :permanent},
       {[credential_source: expired_source], :credential_expired, :permanent},
       {[credential_source: fn _ -> {:ok, %{}} end], :credential_resolver_failed, :permanent},
