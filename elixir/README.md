@@ -522,6 +522,13 @@ uses a direct Git URL or API call, which remote configuration checks cannot cons
 response is call-local and never stored in scheduler state. Actual token minting, provisioning and
 live cross-repository denial smoke remain ARO-197 operator work.
 
+The controller process that reads the reusable App private key and the Codex worker must use
+different OS principals. `codex.command` must enter the dedicated Codex principal through a trusted
+node-local launcher before starting app-server, and the worker must not inherit any
+`SYMPHONY_GITHUB_APP_*` value. A workspace sandbox with full read access is not an isolation boundary
+for a key readable by the same principal. Each node's rollout must prove, from an actual Codex turn,
+that the worker principal differs from the controller and cannot list or read the key.
+
 The source's `expires_at` is optional metadata used to reject known-expired credentials early.
 It cannot extend GitHub's actual token lifetime: installation access tokens expire after one hour
 on GitHub. A missing or future timestamp never skips the mandatory installation-token authority

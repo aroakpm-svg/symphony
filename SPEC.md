@@ -585,6 +585,12 @@ reported expiration and MUST NOT cache credentials or retain App IDs, installati
 material, JWTs, token values, or secret paths in scheduler state. Missing, conflicting, redirected,
 malformed, or unavailable source configuration MUST fail closed.
 
+The controller that reads the reusable App private key and the Codex worker MUST run as different
+OS principals. The configured Codex launcher MUST fail closed instead of falling back to the
+controller principal. Before a node is enabled, an actual Codex turn MUST prove that its worker
+principal differs from the controller and cannot list or read the key. A Codex sandbox policy that
+grants full filesystem read access does not satisfy this boundary.
+
 #### 5.3.1 `tracker` (object)
 
 Fields:

@@ -65,7 +65,7 @@
 - Produces: exact App settings, masked receipt schema, Amy/Matt/Han sequencing, smoke checks, stop conditions, and rollback steps.
 
 - [ ] Document the exact permissions and three-repository installation allowlist without secret values or secret paths.
-- [ ] Document separate per-node key creation, protected local storage requirements, two Codex profile homes, HTTPS/hook migration, and disabled-task dry preflight.
+- [x] Document separate per-node key creation, controller/Codex principal isolation, protected local storage requirements, two Codex profile homes, HTTPS/hook migration, and disabled-task dry preflight.
 - [ ] Document actor/source, cross-repo denial, rotation/revocation, old-key rejection, and rollback receipt fields.
 - [ ] Scan the diff for token/private-key literals and forbidden deployment or ARO-285 claims.
 - [ ] Commit the operator contract.

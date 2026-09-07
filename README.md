@@ -101,7 +101,9 @@ acceptance.
 
 ARO-197 supplies the node-local GitHub App source and rollout procedure in
 [`elixir/docs/aro_197_rollout.md`](elixir/docs/aro_197_rollout.md). The explicitly enabled source
-mints repository-narrowed installation tokens on demand and leaves ARO-196 policy unchanged.
+mints repository-narrowed installation tokens on demand and leaves ARO-196 policy unchanged. The
+controller that can read the App key and the Codex worker must run as different OS principals; the
+rollout must prove the actual Codex worker cannot list or read the key before enabling a node.
 
 Startup performs the real read-only Linear `viewer { id }` request before cleanup or polling. The
 runtime then exposes typed, secret-safe stage/dependency health and an immutable final-stop receipt.

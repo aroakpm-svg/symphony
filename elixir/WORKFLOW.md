@@ -242,7 +242,12 @@ codex:
     fi
     export CODEX_MODEL="$SELECTED_CODEX_MODEL"
     echo "Using Codex model: $CODEX_MODEL ($MODEL_SOURCE)" >&2
-    exec "$CODEX_BIN" --config shell_environment_policy.inherit=all --model "$CODEX_MODEL" app-server
+    CODEX_ISOLATED_LAUNCHER="C:/symphony/bin/codex-isolated-launcher.exe"
+    if [ ! -x "$CODEX_ISOLATED_LAUNCHER" ]; then
+      echo "Blocked before Codex dispatch because the trusted isolated launcher is unavailable." >&2
+      exit 1
+    fi
+    exec "$CODEX_ISOLATED_LAUNCHER" "$CODEX_BIN" --config shell_environment_policy.inherit=all --model "$CODEX_MODEL" app-server
   approval_policy: "never"
   thread_sandbox: "workspace-write"
   turn_sandbox_policy:

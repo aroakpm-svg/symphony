@@ -35,10 +35,13 @@ returns the existing secret-safe resolver failure.
 
 The private key must be a real regular file outside every workspace. All existing path components
 must be real directories, and Windows reparse points and Unix symlinks are rejected through the
-shared workspace path checks. Windows operators restrict the file ACL to the Scheduled Task user;
-Han stores a separate key inside the WSL filesystem with owner-only permissions. Each node receives
-its own App private key so one node can be revoked without distributing the same secret between
-machines. The App identity and installation remain common across all nodes.
+shared workspace path checks. The Symphony controller and the Codex worker MUST use different OS
+security principals. Only the controller principal may read the key; the Codex principal must be
+denied the key directory and file. A workspace sandbox with full filesystem read access is not this
+boundary. Windows therefore needs a trusted service/launcher that starts Codex under a dedicated
+unprivileged account; Han uses a distinct WSL user through a passwordless, command-restricted
+launcher. Each node receives its own App private key so one node can be revoked without distributing
+the same secret between machines. The App identity and installation remain common across all nodes.
 
 GitHub responses are accepted only for HTTP 201 with exactly a nonblank token and a valid future
 `expires_at`. Authentication, authorization, rate-limit, transport, malformed-response, key, and
@@ -53,6 +56,8 @@ read, and install it only on `aroakpm-svg/symphony`, `aroakpm-svg/aroak-central-
 session and keep it only on that node.
 
 Deploy a clean immutable runtime directory rather than modifying Amy's dirty legacy checkout.
+Provision the controller/Codex principal split and make the configured `codex.command` enter the
+Codex principal through the trusted launcher before executing `codex app-server`.
 Create protected, separate Codex homes for `central-brain` and `project-management`, complete the
 chosen ChatGPT login in each home, remove legacy clone hooks, migrate reused origins to canonical
 HTTPS, and keep the existing tasks disabled while dry preflight runs.
@@ -60,13 +65,15 @@ HTTPS, and keep the existing tasks disabled while dry preflight runs.
 Roll out Amy, then Matt, then Han/WSL. For each node, record only actor, source type, repository,
 success/failure class, version, and timestamps. Prove both profile tokens are singleton-scoped,
 cross-repository access fails, the expected bot actor is seen inside the actual worker environment,
+the Codex worker reports a different principal from the controller and cannot list or read the key,
 old key material cannot start new work after revocation, and rollback restores the prior disabled
 runtime. ARO-285, not this work item, starts the live fleet workload and proves nine-slot capacity.
 
 ## Non-goals
 
 - No third `symphony` dispatch profile.
-- No remote token broker, shared secret store, or second scheduler.
+- No remote token broker, shared secret store, or second scheduler. A local isolated Codex launcher
+  is part of the required host security boundary.
 - No change to ARO-196 resolver, authority, retry, or fail-closed policy.
 - No Production access, billing, automatic merge, Linear state mutation, or ARO-285 workload.
 
@@ -78,4 +85,5 @@ runtime. ARO-285, not this work item, starts the live fleet workload and proves 
   wiring, and unchanged legacy startup.
 - Path tests cover symlink/reparse and non-regular private-key rejection.
 - Linux `make all` and latest-head review pass before any rollout artifact is used.
-- Three masked node receipts prove provisioning, dry preflight, rotation/revocation, and rollback.
+- Three masked node receipts prove principal separation, key-read denial from the actual Codex
+  worker, provisioning, dry preflight, rotation/revocation, and rollback.
