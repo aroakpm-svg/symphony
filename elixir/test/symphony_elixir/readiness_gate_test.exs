@@ -139,6 +139,14 @@ defmodule SymphonyElixir.ReadinessGateTest do
     assert action =~ "authority"
     assert git!(fixture.workspace, ["branch", "--show-current"]) == "main"
     assert git!(fixture.workspace, ["for-each-ref", "--format=%(refname)", "refs/heads/#{issue.branch_name}"]) == ""
+
+    assert {:error, %Failure{code: :canonical_head_changed, detail: detail}} =
+             ReadinessGate.check(fixture.workspace, issue,
+               workspace_created_now: true,
+               verified_canonical_head: nil
+             )
+
+    assert detail =~ "invalid"
   end
 
   test "blocks a fresh workspace when the tracker issue branch is the canonical default" do
