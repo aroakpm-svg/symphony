@@ -230,6 +230,7 @@ defmodule SymphonyElixir.AgentRunner do
         |> Keyword.put(:sensitive_env_values, Enum.filter([credential_env["GH_TOKEN"]], &is_binary/1))
         |> Keyword.put(:workspace_attestation, preparation.workspace_attestation)
         |> Keyword.put(:private_home_capability, preparation.private_home_capability)
+        |> maybe_put_verified_canonical_head(authority)
 
       case Workspace.run_deferred_after_create_hook(preparation, issue, worker_host, effect_opts) do
         :ok ->
@@ -253,6 +254,46 @@ defmodule SymphonyElixir.AgentRunner do
       end
 
     {:private_home_preparation_failed, outcome}
+  end
+
+  defp rollback_initialized_worker_preparation(
+         %{created_now: true, path: workspace, workspace_attestation: attestation},
+         %ProjectExecutionContext{} = context,
+         worker_host,
+         effect_opts,
+         outcome
+       ) do
+    outcome =
+      case rollback_initialized_repository(
+             workspace,
+             context,
+             worker_host,
+             attestation,
+             effect_opts
+           ) do
+        :ok -> outcome
+        {:error, rollback_reason} -> {:deferred_preparation_blocker, {:project_credential_unavailable, rollback_reason}}
+      end
+
+    {:private_home_preparation_failed, outcome}
+  end
+
+  defp rollback_initialized_worker_preparation(preparation, context, worker_host, _effect_opts, outcome),
+    do: rollback_worker_preparation(preparation, context, worker_host, :canonical_head_changed, outcome)
+
+  defp rollback_initialized_repository(workspace, context, worker_host, attestation, effect_opts) do
+    with :ok <-
+           Workspace.run_initialized_before_remove_hook(
+             workspace,
+             context.issue_identifier,
+             worker_host,
+             effect_opts
+           ),
+         :ok <- Workspace.rollback_failed_repository_bootstrap(context, worker_host, attestation) do
+      :ok
+    else
+      {:error, _reason} -> {:error, :repository_rollback_failed}
+    end
   end
 
   defp rollback_pre_effect_repository(
@@ -297,11 +338,45 @@ defmodule SymphonyElixir.AgentRunner do
 
     case result do
       {:deferred_workspace_preflight_failure, reason} ->
-        handle_workspace_preflight_failure(recipient, issue, worker_host, workspace, reason)
+        report_prepared_failure(
+          preparation,
+          issue,
+          recipient,
+          worker_host,
+          effect_opts,
+          reason
+        )
 
       other ->
         other
     end
+  end
+
+  defp report_prepared_failure(
+         preparation,
+         _issue,
+         _recipient,
+         worker_host,
+         effect_opts,
+         {:readiness_gate_failed, %ReadinessGate.Failure{code: :canonical_head_changed}} = reason
+       ) do
+    rollback_initialized_worker_preparation(
+      preparation,
+      effect_opts[:execution_context],
+      worker_host,
+      effect_opts,
+      {:error, reason}
+    )
+  end
+
+  defp report_prepared_failure(preparation, issue, recipient, worker_host, _effect_opts, reason) do
+    handle_workspace_preflight_failure(
+      recipient,
+      issue,
+      worker_host,
+      preparation.path,
+      reason
+    )
   end
 
   defp execute_prepared_attempt(preparation, issue, recipient, opts, worker_host, effect_opts) do
@@ -760,6 +835,7 @@ defmodule SymphonyElixir.AgentRunner do
         worker_host: worker_host,
         execution_context: runtime_opts[:execution_context]
       ]
+      |> maybe_put_verified_canonical_head(runtime_opts[:verified_canonical_head])
       |> maybe_put_readiness_command_runner(
         Keyword.get(opts, :readiness_command_runner),
         runtime_opts
@@ -778,6 +854,14 @@ defmodule SymphonyElixir.AgentRunner do
         {:error, {:readiness_gate_failed, failure}}
     end
   end
+
+  defp maybe_put_verified_canonical_head(opts, %{head_sha: head_sha}) when is_binary(head_sha),
+    do: Keyword.put(opts, :verified_canonical_head, head_sha)
+
+  defp maybe_put_verified_canonical_head(opts, head_sha) when is_binary(head_sha),
+    do: Keyword.put(opts, :verified_canonical_head, head_sha)
+
+  defp maybe_put_verified_canonical_head(opts, _authority), do: opts
 
   defp persist_readiness(preparation, issue, receipt, worker_host, opts, runtime_opts) do
     persistence_opts =

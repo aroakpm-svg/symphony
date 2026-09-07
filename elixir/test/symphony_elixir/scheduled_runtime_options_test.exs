@@ -15,7 +15,8 @@ defmodule SymphonyElixir.ScheduledRuntimeOptionsTest do
           claim_fun: 2,
           task_start_fun: 1,
           repository_bootstrap_command_runner: 3,
-          git_checkout_command_runner: 3
+          git_checkout_command_runner: 3,
+          readiness_command_runner: 2
         ] do
       args = Macro.generate_arguments(arity, __MODULE__)
 
@@ -266,6 +267,8 @@ defmodule SymphonyElixir.ScheduledRuntimeOptionsTest do
         :fetch,
         :remote_head,
         :head_advance,
+        :readiness_head_advance,
+        :readiness_cleanup_failure,
         :auth_missing,
         :after_create,
         :after_create_timeout
@@ -304,14 +307,15 @@ defmodule SymphonyElixir.ScheduledRuntimeOptionsTest do
       old_head = head
       {:ok, head_reads} = Agent.start_link(fn -> 0 end)
 
-      head =
-        if interruption == :head_advance do
-          File.write!(Path.join(seed, "README.md"), "Canonical branch advanced after preflight\n")
-          git!(seed, ["commit", "-am", "advance"])
-          git!(seed, ["rev-parse", "HEAD"])
-        else
-          head
-        end
+      {:ok, readiness_advance_budget} =
+        Agent.start_link(fn ->
+          if interruption in [:readiness_head_advance, :readiness_cleanup_failure], do: 1, else: 0
+        end)
+
+      if interruption == :head_advance do
+        File.write!(Path.join(seed, "README.md"), "Canonical branch advanced after preflight\n")
+        git!(seed, ["commit", "-am", "advance"])
+      end
 
       workspace = Path.join([root, "workspaces", @profile.key, issue.identifier])
       fake_codex = Path.join(root, "fake-codex")
@@ -343,6 +347,13 @@ defmodule SymphonyElixir.ScheduledRuntimeOptionsTest do
       config = Map.put(config, "codex", %{"command" => shell_quote(shell_path(fake_codex)) <> " app-server"})
       rewrite = "url.#{shell_path(seed)}.insteadOf"
       hook_attempts = Path.join(root, "hook-attempts")
+      removal_marker = Path.join(root, "before-remove.marker")
+
+      removal_hook =
+        if interruption == :readiness_cleanup_failure,
+          do: "printf failed > #{shell_quote(shell_path(removal_marker))}; exit 19",
+          else: "printf removed > #{shell_quote(shell_path(removal_marker))}"
+
       hook_failure = if interruption == :after_create_timeout, do: "sleep 10; exit 17", else: "exit 17"
 
       hook_prefix =
@@ -352,7 +363,17 @@ defmodule SymphonyElixir.ScheduledRuntimeOptionsTest do
           ""
         end
 
-      config = Map.put(config, "hooks", %{"after_create" => hook_prefix <> "git config " <> shell_quote(rewrite) <> " https://github.com/aroakpm-svg/aroak-central-brain.git", "timeout_ms" => 2_000})
+      config =
+        Map.put(config, "hooks", %{
+          "after_create" =>
+            hook_prefix <>
+              "git config " <>
+              shell_quote(rewrite) <>
+              " https://github.com/aroakpm-svg/aroak-central-brain.git",
+          "before_remove" => removal_hook,
+          "timeout_ms" => 2_000
+        })
+
       File.write!(Workflow.workflow_file_path(), "---\n" <> Jason.encode!(config) <> "\n---\nSynthetic")
       :ok = WorkflowStore.force_reload()
 
@@ -364,7 +385,8 @@ defmodule SymphonyElixir.ScheduledRuntimeOptionsTest do
           cond do
             String.contains?(request[:url], "/git/ref/") ->
               count = Agent.get_and_update(head_reads, &{&1, &1 + 1})
-              observed_head = if interruption == :head_advance and count == 0, do: old_head, else: head
+              current_head = git!(seed, ["rev-parse", "HEAD"])
+              observed_head = if interruption == :head_advance and count == 0, do: old_head, else: current_head
               {:ok, %{status: 200, body: %{"ref" => "refs/heads/main", "object" => %{"sha" => observed_head}}}}
 
             String.contains?(request[:url], "/contents/package.json?ref=") ->
@@ -378,11 +400,19 @@ defmodule SymphonyElixir.ScheduledRuntimeOptionsTest do
           end
         end)
         |> Keyword.put(:repository_bootstrap_command_runner, fn args, _credential, _runtime ->
-          assert Process.get(:quality_checked_head) == head
+          assert Process.get(:quality_checked_head) == git!(seed, ["rev-parse", "HEAD"])
           bootstrap_with_interruption(args, workspace, seed, failure_budget, interruption)
         end)
         |> Keyword.put(:git_checkout_command_runner, fn args, _credential, _runtime ->
           checkout_with_interruption(args, workspace, seed, failure_budget, interruption)
+        end)
+        |> Keyword.put(:readiness_command_runner, fn args, runtime ->
+          if Agent.get_and_update(readiness_advance_budget, &{&1 > 0, max(&1 - 1, 0)}) do
+            File.write!(Path.join(seed, "README.md"), "Canonical branch advanced before readiness\n")
+            git!(seed, ["commit", "-am", "advance before readiness"])
+          end
+
+          Workspace.run_git_command(workspace, args, nil, runtime)
         end)
       end)
 
@@ -391,6 +421,7 @@ defmodule SymphonyElixir.ScheduledRuntimeOptionsTest do
         |> Keyword.put(:name, nil)
         |> Keyword.put(:effect_ledger_ready?, fn -> true end)
         |> Keyword.put(:git_checkout_command_runner, &Callbacks.git_checkout_command_runner/3)
+        |> Keyword.put(:readiness_command_runner, &Callbacks.readiness_command_runner/2)
 
       {:ok, server} = Orchestrator.start_link(opts)
       on_exit(fn -> if Process.alive?(server), do: GenServer.stop(server) end)
@@ -399,7 +430,7 @@ defmodule SymphonyElixir.ScheduledRuntimeOptionsTest do
       send(server, :run_poll_cycle)
       assert_receive :claimed, 2_000
 
-      if interruption in [:fetch, :remote_head, :after_create, :after_create_timeout] do
+      if interruption in [:fetch, :remote_head, :readiness_head_advance, :after_create, :after_create_timeout] do
         assert_receive :runner_finished, 20_000
         state = await_retry(server, issue.id, 100)
         assert state.blocked == %{}
@@ -413,6 +444,7 @@ defmodule SymphonyElixir.ScheduledRuntimeOptionsTest do
           case interruption do
             :fetch -> "repository_bootstrap_unavailable"
             :remote_head -> "github_unavailable"
+            :readiness_head_advance -> "canonical_head_changed"
             :after_create -> "workspace_hook_failed"
             :after_create_timeout -> "workspace_hook_timeout"
           end
@@ -420,6 +452,12 @@ defmodule SymphonyElixir.ScheduledRuntimeOptionsTest do
         if interruption in [:after_create, :after_create_timeout] do
           assert_received {:runner_exception, _}
           assert File.read!(hook_attempts) == "first"
+          refute File.exists?(Path.join(workspace, "codex-ran.marker"))
+        end
+
+        if interruption == :readiness_head_advance do
+          assert_received {:runner_exception, _}
+          assert File.read!(removal_marker) == "removed"
           refute File.exists?(Path.join(workspace, "codex-ran.marker"))
         end
 
@@ -433,27 +471,38 @@ defmodule SymphonyElixir.ScheduledRuntimeOptionsTest do
       assert_receive :runner_finished, 30_000
       refute_received {:runner_exception, _}
 
-      if interruption == :auth_missing do
-        state = :sys.get_state(server)
-        assert state.blocked[issue.id].error =~ "codex_authentication_required"
-        refute Map.has_key?(state.retry_attempts, issue.id)
-        refute File.exists?(Path.join(workspace, "codex-ran.marker"))
-      else
-        assert File.read!(Path.join(workspace, "codex-ran.marker")) == "launched"
-        if interruption in [:after_create, :after_create_timeout], do: assert(File.read!(hook_attempts) == "firstsuccess")
-        assert git!(workspace, ["branch", "--show-current"]) == issue.branch_name
-        assert git!(workspace, ["rev-parse", "HEAD"]) == head
-        assert_received {:quality_head, ^head}
-        if interruption == :head_advance, do: assert_received({:quality_head, ^old_head})
-        state = await_completed(server, issue.id, 100)
-        assert state.blocked == %{}
-        assert state.running == %{}
-        refute :erlang.term_to_binary(state) =~ "synthetic-only-token"
-        snapshot = GenServer.call(server, :snapshot)
-        assert snapshot.running == []
-        assert snapshot.blocked == []
-        assert Enum.any?(snapshot.retrying, &(&1.issue_id == issue.id and is_nil(&1.error)))
-        refute :erlang.term_to_binary(state) =~ auth_home
+      cond do
+        interruption == :auth_missing ->
+          state = :sys.get_state(server)
+          assert state.blocked[issue.id].error =~ "codex_authentication_required"
+          refute Map.has_key?(state.retry_attempts, issue.id)
+          refute File.exists?(Path.join(workspace, "codex-ran.marker"))
+
+        interruption == :readiness_cleanup_failure ->
+          state = :sys.get_state(server)
+          assert state.blocked[issue.id].error =~ "repository_rollback_failed"
+          refute Map.has_key?(state.retry_attempts, issue.id)
+          assert File.read!(removal_marker) == "failed"
+          assert File.exists?(workspace)
+          refute File.exists?(Path.join(workspace, "codex-ran.marker"))
+
+        true ->
+          assert File.read!(Path.join(workspace, "codex-ran.marker")) == "launched"
+          if interruption in [:after_create, :after_create_timeout], do: assert(File.read!(hook_attempts) == "firstsuccess")
+          assert git!(workspace, ["branch", "--show-current"]) == issue.branch_name
+          final_head = git!(seed, ["rev-parse", "HEAD"])
+          assert git!(workspace, ["rev-parse", "HEAD"]) == final_head
+          assert_received {:quality_head, ^final_head}
+          if interruption == :head_advance, do: assert_received({:quality_head, ^old_head})
+          state = await_completed(server, issue.id, 100)
+          assert state.blocked == %{}
+          assert state.running == %{}
+          refute :erlang.term_to_binary(state) =~ "synthetic-only-token"
+          snapshot = GenServer.call(server, :snapshot)
+          assert snapshot.running == []
+          assert snapshot.blocked == []
+          assert Enum.any?(snapshot.retrying, &(&1.issue_id == issue.id and is_nil(&1.error)))
+          refute :erlang.term_to_binary(state) =~ auth_home
       end
     end
   end

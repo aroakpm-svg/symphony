@@ -206,12 +206,17 @@ The worker-side preflight then composes with the existing workspace/readiness ch
 - a newly-created checkout is on the canonical branch at the verified default-branch head;
 - a reused checkout is either still on that exact canonical head or on the exact tracker issue
   branch; readiness remains authoritative for continuation cleanliness and divergence;
+- plain-push selectors for both the current branch and expected tracker issue branch resolve only
+  to the validated origin before readiness can switch branches;
 - `.git` is a real, non-reparse metadata location under the approved workspace;
 - the runtime principal can write Git metadata using a reversible/no-content probe or an existing
   platform capability check that leaves no artifact.
 
-Any head change between authority receipt and workspace readiness invalidates the receipt and fails
-closed; it is not silently rebound.
+The verified authority SHA is passed into readiness as call-local evidence. Any canonical head
+change between authority receipt and readiness invalidates the receipt before readiness creates or
+selects an issue branch; it is not silently rebound. A fresh workspace that already completed
+`after_create` runs the paired `before_remove` and attested deletion before retry. Either cleanup
+failure blocks retry; reused workspaces remain intact.
 
 Only after this validation may the arbitrary `after_create` hook run. Its failure or timeout is
 fatal to fresh workspace preparation: the worker uses the same attested repository rollback and

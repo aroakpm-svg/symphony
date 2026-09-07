@@ -12,7 +12,13 @@ defmodule SymphonyElixir.GitCheckoutPreflightTest do
   @secret "github_pat_TASK4_SECRET_SENTINEL"
 
   test "plain push selection cannot bypass the validated origin in real Git configuration" do
-    for key <- ["remote.pushDefault", "branch.main.pushRemote", "branch.main.remote"] do
+    for key <- [
+          "remote.pushDefault",
+          "branch.main.pushRemote",
+          "branch.main.remote",
+          "branch.codex/aro-196.pushRemote",
+          "branch.codex/aro-196.remote"
+        ] do
       workspace = temporary_root!()
       root = workspace |> Path.dirname() |> Path.dirname()
       write_workflow_file!(Workflow.workflow_file_path(), workspace_root: root)

@@ -35,7 +35,14 @@ defmodule SymphonyElixir.GitCheckoutPreflight do
          {:ok, runner} <- command_runner(workspace, context, opts),
          :ok <- validate_origin(runner, context.repository, credential, opts),
          {:ok, branch} <- run_text(runner, ["branch", "--show-current"], credential, opts),
-         :ok <- validate_push_selection(runner, branch, credential, opts),
+         :ok <-
+           validate_push_selection(
+             runner,
+             branch,
+             Keyword.get(opts, :expected_issue_branch),
+             credential,
+             opts
+           ),
          {:ok, local_head} <- run_text(runner, ["rev-parse", "--verify", "HEAD^{commit}"], credential, opts),
          :ok <- validate_local_checkout(branch, local_head, expected_head, context, opts),
          {:ok, remote_head} <- remote_head(runner, context, credential, opts),
@@ -216,11 +223,17 @@ defmodule SymphonyElixir.GitCheckoutPreflight do
     end
   end
 
-  defp validate_push_selection(runner, branch, credential, opts) do
+  defp validate_push_selection(runner, branch, issue_branch, credential, opts) do
     # Plain push can select a different remote at any of these three levels.
     # Reject competing configuration even when another setting currently overrides it:
     # the checkout contract authorizes origin, not a separate publishing remote.
-    keys = ["remote.pushDefault", "branch.#{branch}.pushRemote", "branch.#{branch}.remote"]
+    branch_keys =
+      [branch, issue_branch]
+      |> Enum.filter(&(is_binary(&1) and &1 != ""))
+      |> Enum.uniq()
+      |> Enum.flat_map(&["branch.#{&1}.pushRemote", "branch.#{&1}.remote"])
+
+    keys = ["remote.pushDefault" | branch_keys]
 
     Enum.reduce_while(keys, :ok, fn key, :ok ->
       case run(runner, ["config", "--get", "--default", "origin", key], credential, opts) do

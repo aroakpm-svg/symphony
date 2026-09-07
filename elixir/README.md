@@ -640,10 +640,20 @@ URL alone is not sufficient push evidence. Missing, malformed or cross-repositor
 closed; matching explicit push URLs and normal fetch-URL fallback remain supported.
 
 Plain `git push` must also select that validated `origin`. The gate reads `remote.pushDefault`,
-`branch.<current>.pushRemote` and `branch.<current>.remote` through the same worker Git environment.
+`branch.<current>.pushRemote`, `branch.<current>.remote`, and the corresponding selectors for the
+expected issue branch through the same worker Git environment. The issue-branch selectors are
+validated before readiness may create or switch to that branch.
 Unset selectors default to `origin`; explicit `origin` is accepted. Any competing selector fails
 closed, including an overridden setting, a direct URL or the local `.` remote. This deliberately
 rejects separate publishing remotes instead of silently changing a reused checkout's configuration.
+
+The post-claim authority head remains the canonical-head contract through readiness. After
+readiness fetches the canonical ref, it must match that exact verified SHA before any issue branch
+is created, selected, or persisted. Drift fails closed and restarts from authority verification;
+readiness cannot silently bind execution to a newer unreviewed quality contract. For a fresh
+workspace whose `after_create` already succeeded, retry first runs the paired `before_remove` as a
+strict operation and then performs attested deletion. Hook or deletion failure becomes
+`repository_rollback_failed` and blocks retry; reused workspaces are preserved.
 
 Every local profiled Workspace subprocess applies `SubprocessEnvironment` isolation at the final
 spawn boundary, including bootstrap and checkout probes that supply only a credential overlay.

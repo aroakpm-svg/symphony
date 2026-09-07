@@ -2252,6 +2252,27 @@ defmodule SymphonyElixir.Workspace do
     remove_issue_workspaces(identifier, worker_host, execution_context, [])
   end
 
+  @doc "Runs the paired removal hook as a strict prerequisite for initialized rollback."
+  @spec run_initialized_before_remove_hook(Path.t(), map() | String.t(), worker_host(), keyword()) ::
+          :ok | {:error, term()}
+  def run_initialized_before_remove_hook(workspace, issue_or_identifier, worker_host, opts)
+      when is_binary(workspace) and is_list(opts) do
+    case Config.settings!().hooks.before_remove do
+      nil ->
+        :ok
+
+      command ->
+        run_guarded_hook(
+          command,
+          workspace,
+          issue_context(issue_or_identifier, opts[:execution_context]),
+          "before_remove",
+          worker_host,
+          opts
+        )
+    end
+  end
+
   @doc "Removes only a partial newly-created repository workspace without running lifecycle hooks."
   @spec rollback_failed_repository_bootstrap(ProjectExecutionContext.t(), worker_host(), map()) ::
           :ok | {:error, :repository_rollback_failed}
