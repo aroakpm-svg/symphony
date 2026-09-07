@@ -117,6 +117,38 @@ defmodule SymphonyElixir.ReadinessGateTest do
     assert git!(fixture.workspace, ["rev-parse", "HEAD"]) == head_sha
   end
 
+  test "rejects a canonical head that changed after the worker authority contract was verified" do
+    fixture = git_fixture!("main")
+    on_exit(fn -> cleanup_fixture(fixture) end)
+    issue = issue("ARO-101-DRIFT", "codex/aro-101-drift")
+    verified_head = git!(fixture.workspace, ["rev-parse", "HEAD"])
+    advanced_head = advance_default!(fixture, "advanced after authority verification\n")
+
+    assert advanced_head != verified_head
+
+    assert {:error,
+            %Failure{
+              code: :canonical_head_changed,
+              operator_action: action
+            }} =
+             ReadinessGate.check(fixture.workspace, issue,
+               workspace_created_now: true,
+               verified_canonical_head: verified_head
+             )
+
+    assert action =~ "authority"
+    assert git!(fixture.workspace, ["branch", "--show-current"]) == "main"
+    assert git!(fixture.workspace, ["for-each-ref", "--format=%(refname)", "refs/heads/#{issue.branch_name}"]) == ""
+
+    assert {:error, %Failure{code: :canonical_head_changed, detail: detail}} =
+             ReadinessGate.check(fixture.workspace, issue,
+               workspace_created_now: true,
+               verified_canonical_head: nil
+             )
+
+    assert detail =~ "invalid"
+  end
+
   test "blocks a fresh workspace when the tracker issue branch is the canonical default" do
     fixture = git_fixture!("main")
     on_exit(fn -> cleanup_fixture(fixture) end)

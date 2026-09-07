@@ -16,6 +16,13 @@ defmodule SymphonyElixir.MultiProjectPollTest do
 
     assert Enum.map(candidates, & &1.id) == ["one", "two"]
     assert Enum.map(candidates, & &1.project_profile.key) == ["central-brain", "project-management"]
+
+    assert Enum.map(candidates, & &1.project_profile.credential_ref) == [
+             "github-central-brain",
+             "github-project-management"
+           ]
+
+    refute inspect(candidates) =~ "GH_TOKEN"
     assert outcomes == %{"central-brain" => %{status: :ok}, "project-management" => %{status: :ok}}
     assert ambiguous_issue_ids == MapSet.new()
   end
@@ -145,7 +152,13 @@ defmodule SymphonyElixir.MultiProjectPollTest do
     assert outcomes["project-management"] == %{status: :ok}
   end
 
-  defp profile(key), do: %{key: key, linear_project_id: "#{key}-linear-id"}
+  defp profile(key) do
+    %{
+      key: key,
+      linear_project_id: "#{key}-linear-id",
+      credential_ref: "github-#{key}"
+    }
+  end
 
   defp issue(id, project_id), do: %Issue{id: id, project_id: project_id}
 end

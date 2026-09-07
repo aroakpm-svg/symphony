@@ -532,13 +532,51 @@ configuration MUST fail validation. Both values are operator-provided and MUST b
 secret-free. Neither field grants deployment, Production, external-resource, or customer-message
 authority.
 
-The default multi-project credential provider MUST fail closed when no approved host adapter is
-configured. It MUST NOT fall back to ambient GitHub tokens, credential helpers, another profile,
-or repository state. A successful provider result MUST be scoped to the selected worker's immediate
-subprocess environment and MUST NOT be retained in commands, application state, workspace state,
-health, errors, logs, or notifications. ARO-195 owns the approved machine credential inventory and
-automation identity; ARO-196 owns the canonical GitHub credential-source resolver and authority
-preflight. This extension defines only their consuming boundary.
+The default multi-project credential resolver MUST fail closed when no approved host source or
+expected automation actor is configured through trusted application/runtime options. It MUST NOT
+fall back to ambient GitHub tokens, GitHub CLI, credential helpers, another profile, or repository
+state. The ARO-196 multi-project dispatch manifest has exactly two approved opaque references:
+`github-central-brain` and `github-project-management`. They bind respectively to
+`aroakpm-svg/aroak-central-brain` and `aroakpm-svg/aroak-project-management`. The separate
+ARO-195-approved GitHub App installation allowlist has three repositories: those two targets plus
+`aroakpm-svg/symphony`, which supports the orchestration repository but MUST NOT be interpreted as
+or create a third dispatch profile. The host source MUST return one reference-bound, short-lived
+credential and MUST NOT be selected by workflow or issue content.
+
+Before claim, a fresh credential MUST validate the expected actor, approved repository pull and
+push authority, canonical default branch, exact head, and quality contract at that verified head.
+That credential MUST then be discarded. After claim and before any hook or Codex effect, the
+same node-local runtime MUST resolve a second fresh credential, repeat the full GitHub authority
+validation, and validate the exact namespaced checkout, origin, branch, remote head, and safe
+writable Git metadata. Amy, Matt, and Han each run their own Symphony; Han runs locally inside WSL,
+not as Amy's SSH worker. Enabled `project_profiles` requires absent/empty `worker.ssh_hosts`.
+Startup and new-work poll/dispatch/retry admission MUST reject nonempty hosts with
+`profiled_ssh_topology_unsupported`; direct profiled remote-host overrides MUST fail before
+credentials, without silently switching to local. Runtime settings MUST remain readable after
+a topology-invalid reload for active local reconciliation, lease, and cleanup obligations.
+Legacy unprofiled SSH is unchanged. Lower-level remote defensive/test seams do not prove a
+supported profiled remote lifecycle.
+
+There MUST be no fallback to another runtime's source. Actor evidence MUST use the
+installation-compatible fixed GraphQL viewer login read and
+reject partial/error responses. Missing or hidden repository/ref responses (404) MUST block rather
+than schedule transport retries. Checkout origins MUST be canonical HTTPS GitHub URLs, never SSH.
+The fixed Git credential-protocol environment MUST remain available to validated readiness, hook,
+and Codex child processes while preserving isolated HOME and ambient denial. A fresh attested
+workspace that fails pre-effect checkout validation MUST be rolled back; reused workspaces and
+pre-existing private homes MUST be preserved. ARO-197 owns legacy SSH-origin/config migration.
+
+Credentials, authorization headers, raw response bodies, credential paths, and secret-derived
+details MUST NOT be retained in commands, application state, retries, workspace state, health,
+errors, logs, receipts, or notifications. Transport unavailability is retryable; missing,
+conflicting, expired, unauthorized, forbidden, identity, repository, authority, checkout, and Git
+metadata policy failures remain blocked until configuration changes. The legacy single-project
+path remains unchanged when `project_profiles` is absent.
+
+ARO-195 owns the approved inventory and identity decision. ARO-196 owns only this canonical
+resolver/preflight consuming boundary. ARO-197 owns App/Bot provisioning, three-machine rollout,
+rotation, revocation, and rollback across the three-repository installation allowlist; it MUST NOT
+expand the two-profile dispatch manifest. ARO-285 owns live multi-project acceptance.
 
 #### 5.3.1 `tracker` (object)
 
@@ -2501,6 +2539,9 @@ Use the same validation profiles as Section 17:
   bind expectations on the target environment.
 
 ## Appendix A. SSH Worker Extension (OPTIONAL)
+
+This extension applies to legacy unprofiled execution. ARO-196's approved multi-project topology is
+node-local and rejects nonempty `worker.ssh_hosts`; Symphony running inside WSL executes locally.
 
 This appendix describes a common extension profile in which Symphony keeps one central
 orchestrator but executes worker runs on one or more remote hosts over SSH.

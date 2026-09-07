@@ -260,6 +260,131 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
     end
   end
 
+  test "workspace preparation can defer after_create until the caller authorizes effects" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-workspace-deferred-hook-#{System.unique_integer([:positive])}"
+      )
+
+    try do
+      workspace_root = Path.join(test_root, "workspaces")
+      marker = Path.join(test_root, "after-create.marker")
+
+      write_workflow_file!(Workflow.workflow_file_path(),
+        workspace_root: workspace_root,
+        hook_after_create: "printf authorized > '#{shell_path(marker)}'"
+      )
+
+      assert {:ok, %{after_create_deferred: true} = preparation} =
+               Workspace.prepare_for_issue("ARO-196-DEFER", nil, nil, defer_after_create: true)
+
+      refute File.exists?(marker)
+
+      assert :ok =
+               Workspace.run_deferred_after_create_hook(
+                 preparation,
+                 "ARO-196-DEFER",
+                 nil,
+                 []
+               )
+
+      assert File.read!(marker) == "authorized"
+    after
+      File.rm_rf(test_root)
+    end
+  end
+
+  test "failed deferred preparation rolls back new private homes but preserves pre-existing homes" do
+    test_root = Path.join(System.tmp_dir!(), "aro196-deferred-rollback-#{System.unique_integer([:positive])}")
+    workspace_root = Path.join(test_root, "workspaces")
+    context = project_context("central-brain", "ARO-196-ROLLBACK")
+    paths = private_home_paths(workspace_root, context)
+
+    try do
+      write_workflow_file!(Workflow.workflow_file_path(), workspace_root: workspace_root)
+      assert {:ok, environment} = SubprocessEnvironment.build(%{}, context)
+
+      assert {:ok, %{private_home_capability: new_capability}} =
+               Workspace.prepare_for_issue("ARO-196-ROLLBACK", nil, context,
+                 env: environment,
+                 subprocess_home_paths: paths,
+                 defer_after_create: true
+               )
+
+      assert :ok = Workspace.rollback_failed_private_home_capability(new_capability)
+      assert Enum.all?(private_directories(paths), &(not File.exists?(&1)))
+
+      assert {:ok, %{private_home_capability: committed_capability}} =
+               Workspace.prepare_for_issue("ARO-196-ROLLBACK", nil, context,
+                 env: environment,
+                 subprocess_home_paths: paths,
+                 defer_after_create: true
+               )
+
+      assert :ok = Workspace.finalize_private_home_capability(committed_capability)
+
+      assert {:ok, %{private_home_capability: existing_capability} = existing_preparation} =
+               Workspace.prepare_for_issue("ARO-196-ROLLBACK", nil, context,
+                 env: environment,
+                 subprocess_home_paths: paths,
+                 defer_after_create: true
+               )
+
+      assert :ok = Workspace.rollback_failed_private_home_capability(existing_capability)
+      assert Enum.all?(private_directories(paths), &File.exists?/1)
+
+      before_remove_marker = Path.join(test_root, "before-remove.marker")
+
+      write_workflow_file!(Workflow.workflow_file_path(),
+        workspace_root: workspace_root,
+        hook_before_remove: "printf unsafe > '#{shell_path(before_remove_marker)}'"
+      )
+
+      assert :ok =
+               Workspace.rollback_failed_repository_bootstrap(
+                 context,
+                 nil,
+                 existing_preparation.workspace_attestation
+               )
+
+      refute File.exists?(existing_preparation.path)
+      refute File.exists?(before_remove_marker)
+      assert Enum.all?(private_directories(paths), &File.exists?/1)
+    after
+      File.rm_rf(test_root)
+    end
+  end
+
+  test "repository rollback reports failed validation and removal instead of best-effort success" do
+    root = Path.join(Path.dirname(Workflow.workflow_file_path()), "rollback-workspaces")
+    context = project_context("central-brain", "ARO-196-ROLLBACK-FAILURE")
+    write_workflow_file!(Workflow.workflow_file_path(), workspace_root: root)
+    preparation_opts = [defer_after_create: true]
+    assert {:ok, preparation} = Workspace.prepare_for_issue(context.issue_identifier, nil, context, preparation_opts)
+
+    assert {:error, :repository_rollback_failed} =
+             Workspace.rollback_failed_repository_bootstrap(context, nil, %{kind: :invalid})
+
+    assert File.dir?(preparation.path)
+
+    state_path = Workspace.readiness_state_path(preparation.path)
+    File.rm(state_path)
+    File.mkdir_p!(state_path)
+
+    assert {:error, :repository_rollback_failed} =
+             Workspace.rollback_failed_repository_bootstrap(context, nil, preparation.workspace_attestation)
+
+    assert File.dir?(state_path)
+    refute File.exists?(preparation.path)
+    File.rmdir!(state_path)
+
+    assert {:ok, %{created_now: true} = fresh} =
+             Workspace.prepare_for_issue(context.issue_identifier, nil, context, defer_after_create: true)
+
+    assert :ok = Workspace.rollback_failed_repository_bootstrap(context, nil, fresh.workspace_attestation)
+  end
+
   test "workspace path is deterministic per issue identifier" do
     workspace_root =
       Path.join(
@@ -1060,6 +1185,7 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
     context = project_context("central-brain", "ARO-286")
     paths = private_home_paths(workspace_root, context)
     test_pid = self()
+    configure_codex_auth_home!(test_root, context)
 
     try do
       write_workflow_file!(Workflow.workflow_file_path(), workspace_root: workspace_root)
@@ -1580,6 +1706,7 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
       workspace_root = Path.join(test_root, "workspaces")
       cleanup_marker = Path.join(test_root, "before-remove-marker.txt")
       context = project_context("central-brain", "ARO-286")
+      configure_codex_auth_home!(test_root, context)
 
       File.mkdir_p!(template_repo)
       File.write!(Path.join(template_repo, "README.md"), "stable identity\n")
@@ -3432,6 +3559,19 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
     after
       File.rm_rf(test_root)
     end
+  end
+
+  defp configure_codex_auth_home!(test_root, context) do
+    auth_root = Path.join(test_root, "auth")
+    File.mkdir_p!(Path.join(auth_root, context.profile_key))
+    previous = Application.get_env(:symphony_elixir, :codex_auth_home_root)
+    Application.put_env(:symphony_elixir, :codex_auth_home_root, auth_root)
+
+    on_exit(fn ->
+      if previous,
+        do: Application.put_env(:symphony_elixir, :codex_auth_home_root, previous),
+        else: Application.delete_env(:symphony_elixir, :codex_auth_home_root)
+    end)
   end
 
   defp valid_project_profiles_config do

@@ -61,6 +61,7 @@ defmodule SymphonyElixir.ReadinessGate do
     with {:ok, provenance} <- workspace_provenance(workspace, issue, opts),
          {:ok, issue_branch} <- issue_branch(workspace, issue, opts),
          {:ok, canonical} <- resolve_canonical(workspace, opts),
+         :ok <- validate_verified_canonical_head(canonical, opts),
          :ok <- validate_issue_branch_not_canonical(issue_branch, canonical),
          {:ok, state} <- inspect_workspace(workspace, issue_branch, opts),
          {:ok, remote_issue_branch} <- lookup_branch(workspace, issue_branch, opts) do
@@ -74,6 +75,33 @@ defmodule SymphonyElixir.ReadinessGate do
         remote_issue_branch,
         opts
       )
+    end
+  end
+
+  defp validate_verified_canonical_head(%GitReceipt{fetched_sha: fetched_sha}, opts) do
+    case Keyword.fetch(opts, :verified_canonical_head) do
+      :error ->
+        :ok
+
+      {:ok, verified_head} when is_binary(verified_head) ->
+        verified_head = verified_head |> String.trim() |> String.downcase()
+
+        if Regex.match?(@sha_pattern, verified_head) and verified_head == fetched_sha do
+          :ok
+        else
+          failure(
+            :canonical_head_changed,
+            "canonical head changed after worker authority verification",
+            "Retry from worker authority verification before creating or selecting the issue branch."
+          )
+        end
+
+      {:ok, _invalid} ->
+        failure(
+          :canonical_head_changed,
+          "verified worker authority head is invalid",
+          "Retry from worker authority verification before creating or selecting the issue branch."
+        )
     end
   end
 

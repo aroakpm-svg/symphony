@@ -650,31 +650,65 @@ defmodule SymphonyElixir.MultiProjectDispatchTest do
     end
   end
 
-  test "every ProjectRepoPreflight blocker code has an explicit retry classification" do
-    source = File.read!(Path.expand("../../lib/symphony_elixir/project_repo_preflight.ex", __DIR__))
+  test "real preflight failures retain only transient retries and release permanent blockers" do
+    source = fn ref -> {:ok, %{credential_ref: ref, token: "pr48-synthetic-token", expires_at: nil}} end
 
-    producer_codes =
-      ~r/blocked\(:(\w+)/
-      |> Regex.scan(source, capture: :all_but_first)
-      |> List.flatten()
-      |> Enum.map(&String.to_existing_atom/1)
-      |> MapSet.new()
+    expired_source = fn ref ->
+      {:ok, %{credential_ref: ref, token: "synthetic", expires_at: ~U[2000-01-01 00:00:00Z]}}
+    end
 
-    classified_codes =
-      producer_codes
-      |> Enum.map(&{&1, Orchestrator.preflight_blocker_classification_for_test(&1)})
-      |> Map.new()
+    repository = %{"full_name" => @central_profile.repository, "default_branch" => "main"}
+    no_pull = Map.put(repository, "permissions", %{"pull" => false, "push" => true})
+    no_push = Map.put(repository, "permissions", %{"pull" => true, "push" => false})
+    human_actor = preflight_contract_request(:actor, %{"data" => %{"viewer" => %{"login" => "human"}}})
 
-    assert MapSet.size(producer_codes) == 9
-    refute :unclassified in Map.values(classified_codes)
+    cases = [
+      {[profile: %{}], :project_mapping_missing, :permanent},
+      {[credential_source: nil], :credential_source_unconfigured, :permanent},
+      {[credential_source: fn _ -> {:error, :missing} end], :credential_source_missing, :permanent},
+      {[credential_source: fn _ -> {:error, :conflict} end], :credential_source_conflict, :permanent},
+      {[credential_source: fn _ -> {:ok, %{credential_ref: "github-project-management"}} end], :credential_reference_mismatch, :permanent},
+      {[credential_source: expired_source], :credential_expired, :permanent},
+      {[credential_source: fn _ -> {:ok, %{}} end], :credential_resolver_failed, :permanent},
+      {[expected_actor: nil], :github_authority_invalid, :permanent},
+      {[request_fun: preflight_contract_request(:repository, no_pull)], :github_pull_authority_missing, :permanent},
+      {[request_fun: preflight_contract_request(:repository, no_push)], :github_push_authority_missing, :permanent},
+      {[request_fun: preflight_contract_request(:package, "not-json")], :required_check_contract_invalid, :permanent},
+      {[request_fun: preflight_contract_request(:package, %{"scripts" => %{}})], :required_check_contract_missing, :permanent},
+      {[request_fun: preflight_contract_request(:package, nil, 404)], :required_check_contract_unreadable, :transient},
+      {[request_fun: fn _ -> {:ok, %{status: 401}} end], :github_unauthorized, :permanent},
+      {[request_fun: fn _ -> {:ok, %{status: 403}} end], :github_forbidden, :permanent},
+      {[request_fun: fn _ -> {:ok, %{status: 404}} end], :github_repository_not_allowed, :permanent},
+      {[request_fun: fn _ -> {:ok, %{status: 500}} end], :github_unavailable, :transient},
+      {[request_fun: fn _ -> {:error, :timeout} end], :github_unavailable, :transient},
+      {[request_fun: fn _ -> {:ok, %{status: 200, body: %{}}} end], :github_response_invalid, :permanent},
+      {[request_fun: human_actor], :github_unexpected_actor, :permanent}
+    ]
 
-    assert MapSet.new(for {code, :transient} <- classified_codes, do: code) ==
-             MapSet.new([
-               :repository_unavailable,
-               :repository_metadata_invalid,
-               :default_branch_unresolvable,
-               :required_check_contract_unreadable
-             ])
+    for {overrides, code, classification} <- cases do
+      producer_opts = Keyword.merge([credential_source: source, expected_actor: "automation[bot]"], overrides)
+      profile = Keyword.get(overrides, :profile, @central_profile)
+      assert {:blocked, %{code: ^code} = blocker} = SymphonyElixir.ProjectRepoPreflight.check(profile, producer_opts)
+      assert Orchestrator.preflight_blocker_classification_for_test(code) == classification
+
+      {:ok, events} = Agent.start_link(fn -> [] end)
+      candidate = %{issue("producer-#{code}", @central_profile, 1) | project_profile: @central_profile}
+      {state, token} = issue_retry_state(candidate, 1)
+
+      opts =
+        dispatch_opts(fn _ -> {:ok, []} end, %{candidate.id => candidate}, events,
+          project_profiles: @profiles,
+          retry_fetch_fun: fn _, _ -> {:ok, [candidate]} end,
+          profile_refresh_fun: fn _ -> {:ok, [candidate]} end,
+          preflight_fun: fn _ -> {:blocked, blocker} end,
+          claim_release_fun: fn state, id -> %{state | claimed: MapSet.delete(state.claimed, id)} end
+        )
+
+      result = Orchestrator.fire_issue_retry_for_test(state, candidate.id, token, opts)
+      assert Map.has_key?(result.retry_attempts, candidate.id) == (classification == :transient)
+      assert MapSet.member?(result.claimed, candidate.id) == (classification == :transient)
+      refute Map.has_key?(result.running, candidate.id)
+    end
   end
 
   test "claim loss retires a pending retry so its stale token cannot fetch or reschedule" do
@@ -1334,6 +1368,23 @@ defmodule SymphonyElixir.MultiProjectDispatchTest do
     ]
 
     Keyword.merge(defaults, overrides)
+  end
+
+  defp preflight_contract_request(failed_phase, failure_body, failure_status \\ 200) do
+    fn request ->
+      {phase, body} =
+        cond do
+          String.contains?(request[:url], "/installation/repositories") -> {:scope, %{"total_count" => 1, "repositories" => [%{"full_name" => @central_profile.repository}]}}
+          String.ends_with?(request[:url], "/graphql") -> {:actor, %{"data" => %{"viewer" => %{"login" => "automation[bot]"}}}}
+          String.contains?(request[:url], "/contents/") -> {:package, %{"scripts" => %{"typecheck" => "tsc", "build" => "build", "test" => "test"}}}
+          String.contains?(request[:url], "/git/ref/") -> {:head, %{"ref" => "refs/heads/main", "object" => %{"sha" => String.duplicate("a", 40)}}}
+          true -> {:repository, %{"full_name" => @central_profile.repository, "default_branch" => "main", "permissions" => %{"pull" => true, "push" => true}}}
+        end
+
+      if phase == failed_phase,
+        do: {:ok, %{status: failure_status, body: failure_body}},
+        else: {:ok, %{status: 200, body: body}}
+    end
   end
 
   defp callback_failure_overrides(:refresh, failure, first, refreshed_by_id, events) do

@@ -95,10 +95,22 @@ defmodule SymphonyElixir.Config do
 
   @spec validate!() :: :ok | {:error, term()}
   def validate! do
-    with {:ok, settings} <- settings() do
+    with {:ok, settings} <- settings(),
+         :ok <- validate_execution_topology(settings) do
       validate_semantics(settings)
     end
   end
+
+  @spec validate_execution_topology() :: :ok | {:error, term()}
+  def validate_execution_topology do
+    with {:ok, settings} <- settings() do
+      validate_execution_topology(settings)
+    end
+  end
+
+  defp validate_execution_topology(%{project_profiles: nil}), do: :ok
+  defp validate_execution_topology(%{worker: %{ssh_hosts: []}}), do: :ok
+  defp validate_execution_topology(_settings), do: {:error, :profiled_ssh_topology_unsupported}
 
   @spec codex_runtime_settings(Path.t() | nil, keyword()) ::
           {:ok, codex_runtime_settings()} | {:error, term()}
