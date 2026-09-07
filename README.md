@@ -99,6 +99,10 @@ migration. Its ARO-195-approved App installation allowlist is
 ARO-196's dispatch manifest remains the two mappings above. ARO-285 owns live multi-project
 acceptance.
 
+ARO-197 supplies the node-local GitHub App source and rollout procedure in
+[`elixir/docs/aro_197_rollout.md`](elixir/docs/aro_197_rollout.md). The explicitly enabled source
+mints repository-narrowed installation tokens on demand and leaves ARO-196 policy unchanged.
+
 Startup performs the real read-only Linear `viewer { id }` request before cleanup or polling. The
 runtime then exposes typed, secret-safe stage/dependency health and an immutable final-stop receipt.
 On Windows, the optional local watchdog can bound restart attempts and invoke one explicitly

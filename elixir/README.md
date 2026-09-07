@@ -377,6 +377,11 @@ The observability UI now runs on a minimal Phoenix stack:
 
 ## Approved project repository preflight
 
+ARO-197's built-in host adapter is `SymphonyElixir.GitHubAppCredentialSource`. Operators explicitly
+enable it with `--github-app`; it mints a fresh installation token narrowed to one approved repository
+for every resolver call and does not cache credentials. See [`docs/aro_197_rollout.md`](docs/aro_197_rollout.md)
+for provisioning, rotation, revocation, and rollback.
+
 `SymphonyElixir.ProjectRepoPreflight.check/2` accepts one complete profile map from the validated
 `project_profiles` contract plus trusted runtime options. It resolves a short-lived credential
 through `SymphonyElixir.GitHubCredentialResolver`, verifies the configured dedicated actor and

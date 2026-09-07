@@ -578,6 +578,13 @@ resolver/preflight consuming boundary. ARO-197 owns App/Bot provisioning, three-
 rotation, revocation, and rollback across the three-repository installation allowlist; it MUST NOT
 expand the two-profile dispatch manifest. ARO-285 owns live multi-project acceptance.
 
+ARO-197's built-in host source MUST be explicitly enabled by the operator. For each resolution it
+MUST read node-local App material afresh, sign a short-lived App JWT, and request an installation
+token narrowed to exactly the repository bound to the opaque reference. It MUST preserve GitHub's
+reported expiration and MUST NOT cache credentials or retain App IDs, installation IDs, private-key
+material, JWTs, token values, or secret paths in scheduler state. Missing, conflicting, redirected,
+malformed, or unavailable source configuration MUST fail closed.
+
 #### 5.3.1 `tracker` (object)
 
 Fields:
