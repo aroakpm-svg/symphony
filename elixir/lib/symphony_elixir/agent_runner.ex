@@ -543,7 +543,6 @@ defmodule SymphonyElixir.AgentRunner do
     case ProjectRepoPreflight.refresh(authority_profile(context), resolver, refresh_opts) do
       {:ok, credential, authority} -> {:ok, credential, authority}
       {:blocked, %{code: code}} -> {:error, code}
-      {:error, _reason} = error -> error
     end
   end
 
