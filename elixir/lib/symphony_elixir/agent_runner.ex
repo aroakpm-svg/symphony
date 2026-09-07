@@ -533,11 +533,15 @@ defmodule SymphonyElixir.AgentRunner do
   defp fresh_worker_authority(nil, _opts), do: {:ok, nil, nil}
 
   defp fresh_worker_authority(%ProjectExecutionContext{} = context, opts) do
-    with {:ok, credential} <- ProjectCredentialProvider.resolve(context, resolver_opts(opts)),
-         {:ok, authority} <-
-           ProjectRepoPreflight.check_credential(authority_profile(context), credential, authority_opts(opts)) do
-      {:ok, credential, authority}
-    else
+    refresh_opts =
+      opts
+      |> authority_opts()
+      |> Keyword.put(:timeout, Keyword.get(opts, :preflight_timeout, 10_000))
+
+    resolver = fn -> ProjectCredentialProvider.resolve(context, resolver_opts(opts)) end
+
+    case ProjectRepoPreflight.refresh(authority_profile(context), resolver, refresh_opts) do
+      {:ok, credential, authority} -> {:ok, credential, authority}
       {:blocked, %{code: code}} -> {:error, code}
       {:error, _reason} = error -> error
     end

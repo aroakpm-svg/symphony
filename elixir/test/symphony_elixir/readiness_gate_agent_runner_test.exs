@@ -4,6 +4,7 @@ defmodule SymphonyElixir.ReadinessGateAgentRunnerTest do
   @central_project_id "d0acfb71-f68c-4a9f-8a1a-477265d3c3ec"
 
   test "a newly resolved worker head must pass its own quality contract before checkout" do
+    parent = self()
     old_head = String.duplicate("a", 40)
     new_head = String.duplicate("b", 40)
     old_opts = canonical_gate_options("old-token", old_head)
@@ -27,7 +28,7 @@ defmodule SymphonyElixir.ReadinessGateAgentRunnerTest do
         if String.contains?(request[:url], "/contents/package.json") do
           assert String.ends_with?(request[:url], "?ref=" <> new_head)
           assert {"authorization", "Bearer fresh-token"} in request[:headers]
-          send(self(), :new_contract_checked)
+          send(parent, :new_contract_checked)
           {:ok, %{status: 200, body: %{"scripts" => %{}}}}
         else
           fresh_request.(request)
@@ -149,17 +150,15 @@ defmodule SymphonyElixir.ReadinessGateAgentRunnerTest do
     preclaim_token = "discarded-preclaim-#{System.unique_integer([:positive, :monotonic])}"
     head = String.duplicate("a", 40)
     context = aro196_context()
-    Process.put(:aro196_resolution_count, 1)
-    Process.put(:aro196_preclaim_token, preclaim_token)
+    {:ok, state} = Agent.start_link(fn -> %{resolution_count: 1, resolved?: false, authority_verified?: false} end)
 
     source = fn "github-central-brain" ->
-      Process.put(:aro196_resolution_count, Process.get(:aro196_resolution_count) + 1)
-      Process.put(:aro196_resolved, true)
+      Agent.update(state, fn value -> %{value | resolution_count: value.resolution_count + 1, resolved?: true} end)
       {:ok, %{credential_ref: "github-central-brain", token: token, expires_at: nil}}
     end
 
     request = fn request ->
-      assert Process.get(:aro196_resolved)
+      assert Agent.get(state, & &1.resolved?)
       assert {"authorization", "Bearer " <> token} in request[:headers]
 
       response =
@@ -177,7 +176,7 @@ defmodule SymphonyElixir.ReadinessGateAgentRunnerTest do
             %{"full_name" => context.repository, "default_branch" => "main", "permissions" => %{"pull" => true, "push" => true}}
 
           "https://api.github.com/repos/aroakpm-svg/aroak-central-brain/git/ref/heads/main" ->
-            Process.put(:aro196_authority_verified, true)
+            Agent.update(state, &%{&1 | authority_verified?: true})
             %{"ref" => "refs/heads/main", "object" => %{"sha" => head}}
         end
 
@@ -185,7 +184,7 @@ defmodule SymphonyElixir.ReadinessGateAgentRunnerTest do
     end
 
     runner = fn args, credential, _runtime ->
-      assert Process.get(:aro196_authority_verified)
+      assert Agent.get(state, & &1.authority_verified?)
       assert credential.token == token
 
       case args do
@@ -208,8 +207,8 @@ defmodule SymphonyElixir.ReadinessGateAgentRunnerTest do
                metadata_probe: fn _path -> :ok end
              )
 
-    assert Process.get(:aro196_resolution_count) == 2
-    refute token == Process.get(:aro196_preclaim_token)
+    assert Agent.get(state, & &1.resolution_count) == 2
+    refute token == preclaim_token
     assert_validated_child_git_protocol(context, child_environment, root, token)
   end
 
@@ -444,6 +443,38 @@ defmodule SymphonyElixir.ReadinessGateAgentRunnerTest do
     refute inspect(retried) =~ secret
     assert :binary.match(:erlang.term_to_binary(retried), secret) == :nomatch
     refute log =~ secret
+  end
+
+  test "a blocked post-claim credential refresh is killed and releases into retry" do
+    fixture = git_fixture!()
+    on_exit(fn -> File.rm_rf(fixture.root) end)
+    issue = profiled_issue("ARO-196-REFRESH-TIMEOUT", "codex/aro-196-refresh-timeout", "aroakpm-svg/aroak-central-brain")
+    parent = self()
+
+    opts = [
+      expected_actor: "aroak-automation[bot]",
+      preflight_timeout: 25,
+      credential_source: fn _ref ->
+        send(parent, {:blocked_post_claim_source, self()})
+        Process.sleep(:infinity)
+      end
+    ]
+
+    runner = Task.async(fn -> AgentRunner.run(issue, parent, opts) end)
+    assert_receive {:blocked_post_claim_source, source}, 2_000
+    assert :ok = Task.await(runner, 2_000)
+    refute Process.alive?(source)
+    assert_receive {:agent_hard_blocker, _, blocker}
+    assert blocker.kind == {:project_credential_unavailable, :github_unavailable}
+
+    {:noreply, state} =
+      Orchestrator.handle_info(
+        {:agent_hard_blocker, issue.id, blocker},
+        running_orchestrator_state(issue)
+      )
+
+    assert state.retry_attempts[issue.id].ownership == :unowned_backoff
+    Process.cancel_timer(state.retry_attempts[issue.id].timer_ref)
   end
 
   test "404 post-claim authority blockers do not enter an automatic retry loop" do

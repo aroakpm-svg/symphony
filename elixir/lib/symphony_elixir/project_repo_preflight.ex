@@ -46,15 +46,25 @@ defmodule SymphonyElixir.ProjectRepoPreflight do
 
   @spec check(ProjectProfiles.profile(), keyword()) :: {:ok, receipt()} | {:blocked, blocker()}
   def check(profile, opts \\ []) do
-    if is_list(opts), do: bounded_check(profile, opts), else: invalid_profile(profile)
+    if is_list(opts), do: bounded_run(opts, fn -> check_profile(profile, opts) end), else: invalid_profile(profile)
   end
 
-  defp bounded_check(profile, opts) do
+  @doc "Resolves and validates one post-claim credential within the shared preflight deadline."
+  @spec refresh(ProjectProfiles.profile(), (-> {:ok, Credential.t()} | {:error, atom()}), keyword()) ::
+          {:ok, Credential.t(), receipt()} | {:blocked, blocker()}
+  def refresh(profile, resolver, opts)
+      when is_function(resolver, 0) and is_list(opts) do
+    bounded_run(opts, fn -> refresh_profile(profile, resolver, opts) end)
+  end
+
+  def refresh(profile, _resolver, _opts), do: invalid_profile(profile)
+
+  defp bounded_run(opts, operation) do
     caller = self()
     tag = make_ref()
 
     {pid, monitor} =
-      spawn_monitor(fn -> send(caller, {tag, supervise_check(caller, profile, opts)}) end)
+      spawn_monitor(fn -> send(caller, {tag, supervise_operation(caller, opts, operation)}) end)
 
     receive do
       {^tag, result} ->
@@ -68,11 +78,11 @@ defmodule SymphonyElixir.ProjectRepoPreflight do
 
   # The supervisor owns the deadline even if the scheduler dies during a callback.
   # It never invokes credential-bearing code itself and only forwards sanitized results.
-  defp supervise_check(caller, profile, opts) do
+  defp supervise_operation(caller, opts, operation) do
     owner_monitor = Process.monitor(caller)
     supervisor = self()
     tag = make_ref()
-    {worker, monitor} = spawn_monitor(fn -> send(supervisor, {tag, safe_check(profile, opts)}) end)
+    {worker, monitor} = spawn_monitor(fn -> send(supervisor, {tag, safe_run(operation)}) end)
 
     result =
       receive do
@@ -96,8 +106,8 @@ defmodule SymphonyElixir.ProjectRepoPreflight do
     result
   end
 
-  defp safe_check(profile, opts) do
-    check_profile(profile, opts)
+  defp safe_run(operation) do
+    operation.()
   rescue
     _exception -> blocker_for(:github_unavailable)
   catch
@@ -117,6 +127,16 @@ defmodule SymphonyElixir.ProjectRepoPreflight do
       check_credential(profile, credential, opts)
     else
       :error -> invalid_profile(profile)
+      {:error, reason} -> blocker_for(reason)
+    end
+  end
+
+  defp refresh_profile(profile, resolver, opts) do
+    with {:ok, credential} <- resolver.(),
+         {:ok, authority} <- check_credential(profile, credential, opts) do
+      {:ok, credential, authority}
+    else
+      {:blocked, _blocker} = blocked -> blocked
       {:error, reason} -> blocker_for(reason)
     end
   end
