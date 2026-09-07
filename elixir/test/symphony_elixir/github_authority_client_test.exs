@@ -71,6 +71,7 @@ defmodule SymphonyElixir.GitHubAuthorityClientTest do
           %{"errors" => [%{"extensions" => @token}], "data" => %{"viewer" => %{"login" => @actor}}},
           %{"errors" => [%{"extensions" => [@token]}], "data" => %{"viewer" => %{"login" => @actor}}},
           %{"errors" => [%{"extensions" => %{"detail" => @token}}], "data" => %{"viewer" => %{"login" => @actor}}},
+          %{"errors" => [@token], "data" => %{"viewer" => %{"login" => @actor}}},
           %{"data" => nil},
           %{"data" => %{"viewer" => nil}},
           %{"data" => %{"viewer" => %{"login" => nil}}},
