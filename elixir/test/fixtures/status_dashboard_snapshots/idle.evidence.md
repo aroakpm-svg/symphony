@@ -7,6 +7,7 @@
 │ Rate Limits: unavailable
 │ Health: poll=unknown linear=unknown claim_store=unknown stop=unknown
 │ Project: https://linear.app/project/project/issues
+│ Admission: paused | claimed 1
 │ Next refresh: n/a
 ├─ Running
 │

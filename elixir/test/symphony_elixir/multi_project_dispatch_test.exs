@@ -86,6 +86,51 @@ defmodule SymphonyElixir.MultiProjectDispatchTest do
     assert base_state() ==
              Orchestrator.multi_project_dispatch_for_test(base_state(), @profiles, fetcher: fn _ -> flunk("candidate fetch ran while admission was paused") end)
 
+    retry_candidate = issue("paused-retry", @central_profile, 1)
+    {retry_state, retry_token} = issue_retry_state(retry_candidate, 2)
+    {:ok, retry_events} = Agent.start_link(fn -> [] end)
+
+    deferred_issue =
+      Orchestrator.fire_issue_retry_for_test(retry_state, retry_candidate.id, retry_token,
+        retry_fetch_fun: fn _, _ -> flunk("issue retry fetched while admission was paused") end,
+        timer_fun: fn message, delay ->
+          record(retry_events, {:timer, message, delay})
+          make_ref()
+        end
+      )
+
+    assert deferred_issue.retry_attempts[retry_candidate.id].attempt == 2
+    assert deferred_issue.retry_attempts[retry_candidate.id].retry_token == retry_token
+    assert {:timer, {:retry_issue, retry_candidate.id, retry_token}, 1_000} in Agent.get(retry_events, & &1)
+
+    profile_token = make_ref()
+
+    profile_state = %{
+      base_state()
+      | profile_retry_attempts: %{
+          @central_profile.key => %{
+            attempt: 3,
+            due_at_ms: 0,
+            reason: :poll_timeout,
+            retry_token: profile_token,
+            timer_ref: make_ref()
+          }
+        }
+    }
+
+    deferred_profile =
+      Orchestrator.retry_project_profile_for_test(profile_state, @profiles, @central_profile.key, profile_token,
+        fetcher: fn _ -> flunk("profile retry fetched while admission was paused") end,
+        timer_fun: fn message, delay ->
+          record(retry_events, {:timer, message, delay})
+          make_ref()
+        end
+      )
+
+    assert deferred_profile.profile_retry_attempts[@central_profile.key].attempt == 3
+    assert deferred_profile.profile_retry_attempts[@central_profile.key].retry_token == profile_token
+    assert {:timer, {:retry_project_profile, @central_profile.key, profile_token}, 1_000} in Agent.get(retry_events, & &1)
+
     File.rm!(gate)
     {:ok, events} = Agent.start_link(fn -> [] end)
     candidate = issue("gate-race", @central_profile, 1)

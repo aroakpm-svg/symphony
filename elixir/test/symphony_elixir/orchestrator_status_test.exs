@@ -144,6 +144,7 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
 
     snapshot = GenServer.call(pid, :snapshot)
     assert %{running: [snapshot_entry]} = snapshot
+    assert snapshot.claimed == [issue_id]
     assert snapshot_entry.issue_id == issue_id
     assert snapshot_entry.issue_url == "https://example.org/issues/MT-188"
     assert snapshot_entry.session_id == "thread-live-turn-live"

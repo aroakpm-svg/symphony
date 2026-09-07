@@ -81,6 +81,7 @@ defmodule SymphonyElixir.Orchestrator do
   @worker_kill_grace_ms 1_000
   # Slightly above the dashboard render interval so "checking now…" can render.
   @poll_transition_render_delay_ms 20
+  @paused_retry_delay_ms 1_000
   @empty_codex_totals %{
     input_tokens: 0,
     output_tokens: 0,
@@ -410,11 +411,7 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   def handle_info({:retry_issue, issue_id, retry_token}, state) do
-    result =
-      case pop_retry_attempt_state(state, issue_id, retry_token) do
-        {:ok, attempt, metadata, state} -> handle_retry_issue(state, issue_id, attempt, metadata, state.runtime_options)
-        :missing -> {:noreply, state}
-      end
+    result = retry_issue_from_timer(state, issue_id, retry_token, state.runtime_options)
 
     notify_dashboard()
     result
@@ -1157,6 +1154,14 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   defp retry_project_profile(state, profiles, profile_key, retry_token, opts) do
+    if AdmissionGate.paused?() do
+      defer_profile_retry(state, profile_key, retry_token, opts)
+    else
+      run_profile_retry(state, profiles, profile_key, retry_token, opts)
+    end
+  end
+
+  defp run_profile_retry(state, profiles, profile_key, retry_token, opts) do
     case Map.get(Map.get(state, :profile_retry_attempts, %{}), profile_key) do
       %{retry_token: ^retry_token} = previous_retry ->
         state = %{
@@ -1303,14 +1308,8 @@ defmodule SymphonyElixir.Orchestrator do
   @spec fire_issue_retry_for_test(term(), String.t(), reference(), keyword()) :: term()
   def fire_issue_retry_for_test(%State{} = state, issue_id, retry_token, opts)
       when is_binary(issue_id) and is_reference(retry_token) and is_list(opts) do
-    case pop_retry_attempt_state(state, issue_id, retry_token) do
-      {:ok, attempt, metadata, state} ->
-        {:noreply, updated_state} = handle_retry_issue(state, issue_id, attempt, metadata, opts)
-        updated_state
-
-      :missing ->
-        state
-    end
+    {:noreply, updated_state} = retry_issue_from_timer(state, issue_id, retry_token, opts)
+    updated_state
   end
 
   @doc false
@@ -2617,6 +2616,55 @@ defmodule SymphonyElixir.Orchestrator do
     end
   end
 
+  defp retry_issue_from_timer(state, issue_id, retry_token, opts) do
+    if AdmissionGate.paused?() do
+      {:noreply, defer_issue_retry(state, issue_id, retry_token, opts)}
+    else
+      case pop_retry_attempt_state(state, issue_id, retry_token) do
+        {:ok, attempt, metadata, state} -> handle_retry_issue(state, issue_id, attempt, metadata, opts)
+        :missing -> {:noreply, state}
+      end
+    end
+  end
+
+  defp defer_issue_retry(state, issue_id, retry_token, opts) do
+    case Map.get(state.retry_attempts, issue_id) do
+      %{retry_token: ^retry_token} = retry ->
+        timer_fun = Keyword.get(opts, :timer_fun, &Process.send_after(self(), &1, &2))
+        timer_ref = timer_fun.({:retry_issue, issue_id, retry_token}, @paused_retry_delay_ms)
+
+        deferred =
+          Map.merge(retry, %{
+            timer_ref: timer_ref,
+            due_at_ms: System.monotonic_time(:millisecond) + @paused_retry_delay_ms
+          })
+
+        %{state | retry_attempts: Map.put(state.retry_attempts, issue_id, deferred)}
+
+      _stale_or_missing ->
+        state
+    end
+  end
+
+  defp defer_profile_retry(state, profile_key, retry_token, opts) do
+    case Map.get(Map.get(state, :profile_retry_attempts, %{}), profile_key) do
+      %{retry_token: ^retry_token} = retry ->
+        timer_fun = Keyword.get(opts, :timer_fun, &Process.send_after(self(), &1, &2))
+        timer_ref = timer_fun.({:retry_project_profile, profile_key, retry_token}, @paused_retry_delay_ms)
+
+        deferred =
+          Map.merge(retry, %{
+            timer_ref: timer_ref,
+            due_at_ms: System.monotonic_time(:millisecond) + @paused_retry_delay_ms
+          })
+
+        %{state | profile_retry_attempts: Map.put(state.profile_retry_attempts, profile_key, deferred)}
+
+      _stale_or_missing ->
+        state
+    end
+  end
+
   defp handle_retry_issue(%State{} = state, issue_id, attempt, metadata, opts) do
     opts = Keyword.merge(opts, issue_retry_attempt: attempt, retry_metadata: metadata)
 
@@ -3514,6 +3562,7 @@ defmodule SymphonyElixir.Orchestrator do
     {:reply,
      %{
        running: running,
+       claimed: state.claimed |> MapSet.to_list() |> Enum.sort(),
        retrying: retrying,
        profile_retries: profile_retries,
        blocked: blocked,

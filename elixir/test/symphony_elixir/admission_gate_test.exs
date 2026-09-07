@@ -46,6 +46,11 @@ defmodule SymphonyElixir.AdmissionGateTest do
     System.put_env(@environment, missing_parent)
     assert {:error, :admission_gate_invalid} = AdmissionGate.validate_configuration()
     assert AdmissionGate.paused?()
+
+    assert :absent = AdmissionGate.gate_entry_for_test("ignored", fn _ -> {:error, :enoent} end)
+
+    assert {:error, :admission_gate_invalid} =
+             AdmissionGate.gate_entry_for_test("ignored", fn _ -> {:error, :eacces} end)
   end
 
   defp restore_environment(nil), do: System.delete_env(@environment)
