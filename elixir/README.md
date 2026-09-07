@@ -529,8 +529,9 @@ node-local launcher before starting app-server, and the worker must not inherit 
 for a key readable by the same principal. Each node's rollout must prove, from an actual Codex turn,
 that the worker principal differs from the controller and cannot list or read the key.
 Windows may provide workspace access with a narrow ACL. Han must instead use the trusted launcher
-to create a private mount/user namespace with identity-mapped views of only the selected workspace
-and profile authentication home. This keeps Symphony's controller-owned `0700` issue-private homes
+to create a private mount/user namespace with separate identity-mapped views of only the current
+issue workspace, its exact issue-private-home subtree, and selected profile authentication home.
+Workspace/profile roots that contain sibling work are never mapped. This keeps Symphony's controller-owned `0700` issue-private homes
 unchanged on the host while making the same paths usable by the Codex UID inside its namespace.
 Shared-group, default-ACL, and ordinary-bind fallbacks are unsupported because they either fail the
 private-home re-attestation or leave the worker unable to traverse the directories.

@@ -53,6 +53,21 @@ defmodule SymphonyElixir.AdmissionGateTest do
              AdmissionGate.gate_entry_for_test("ignored", fn _ -> {:error, :eacces} end)
   end
 
+  test "every gate ancestor is validated and a redirected ancestor fails closed" do
+    leaf = Path.join([System.tmp_dir!(), "trusted", "current", "runtime"])
+    redirected = Path.dirname(leaf)
+    caller = self()
+
+    assert {:error, :admission_gate_invalid} =
+             AdmissionGate.validate_parent_directories_for_test(leaf, fn path ->
+               send(caller, {:validated, path})
+               if path == redirected, do: {:error, :unsafe_private_home_path}, else: :ok
+             end)
+
+    assert_receive {:validated, ^leaf}
+    assert_receive {:validated, ^redirected}
+  end
+
   defp restore_environment(nil), do: System.delete_env(@environment)
   defp restore_environment(value), do: System.put_env(@environment, value)
 end

@@ -32,16 +32,36 @@ defmodule SymphonyElixir.AdmissionGate do
   def gate_entry_for_test(path, lstat_fun) when is_binary(path) and is_function(lstat_fun, 1),
     do: gate_entry(path, lstat_fun)
 
+  @doc false
+  @spec validate_parent_directories_for_test(Path.t(), (Path.t() -> :ok | {:error, term()})) ::
+          :ok | {:error, :admission_gate_invalid}
+  def validate_parent_directories_for_test(path, validator)
+      when is_binary(path) and is_function(validator, 1),
+      do: validate_parent_directories(path, validator)
+
   defp status do
     with path when is_binary(path) and path != "" <- System.get_env(@environment),
          true <- Path.type(path) == :absolute,
-         :ok <- SymphonyElixir.Workspace.validate_non_reparse_directory_for_worker(Path.dirname(path)),
+         :ok <- validate_parent_directories(Path.dirname(path), &validate_directory/1),
          entry when entry in [:absent, :present] <- gate_entry(path, &File.lstat/1) do
       {:ok, if(entry == :present, do: :paused, else: :open)}
     else
       _invalid -> {:error, :admission_gate_invalid}
     end
   end
+
+  defp validate_parent_directories(path, validator) do
+    parent = Path.dirname(path)
+
+    case validator.(path) do
+      :ok when parent == path -> :ok
+      :ok -> validate_parent_directories(parent, validator)
+      {:error, _reason} -> {:error, :admission_gate_invalid}
+    end
+  end
+
+  defp validate_directory(path),
+    do: SymphonyElixir.Workspace.validate_non_reparse_directory_for_worker(path)
 
   defp gate_entry(path, lstat_fun) do
     case lstat_fun.(path) do

@@ -50,8 +50,11 @@ both ACL trees.
 Han MUST NOT use a shared group or default ACL for the workspace. Symphony deliberately creates
 each issue-private `.symphony-subprocess` home as controller-owned `0700` and re-attests that exact
 owner and mode. The trusted, root-owned launcher must therefore enter a private mount and user
-namespace, expose identity-mapped bind mounts of only the selected workspace root and selected
-profile Codex home at their original absolute paths, and then change to the dedicated Codex UID.
+namespace, expose separate identity-mapped bind mounts of only the current issue workspace, that
+issue's exact `<workspace-root>/<profile>/.symphony-subprocess/<issue>-rN` private-home subtree, and
+the selected profile authentication home at their original absolute paths, and then change to the
+dedicated Codex UID. Never map the workspace or profile root: doing so exposes sibling issues or
+profiles.
 Inside that namespace the mapped paths must appear owned by the Codex UID while the host view keeps
 the controller ownership and `0700` modes. The App-key, runtime, health, and launcher-configuration
 trees must not be mounted into that namespace. Restrict passwordless elevation to this immutable
@@ -71,7 +74,8 @@ secret-free configuration fingerprint.
 
 Run dry preflight for both profiles. On Han, first prove from both namespace views that a synthetic
 controller-owned `0700` issue-private home remains controller-owned `0700` on the host and appears
-Codex-owned `0700` only inside the worker namespace. Require the expected bot actor, exact repository, canonical main
+Codex-owned `0700` only inside the worker namespace. Prove a sibling issue and sibling profile are
+absent from that namespace. Require the expected bot actor, exact repository, canonical main
 branch, pull/push authority, singleton token scope, and quality contract. Probe an unauthorized repo
 and require fail-closed denial. From an actual Codex turn, record the worker principal, verify it is
 different from the controller, require both directory listing and direct key reads to fail, and

@@ -591,8 +591,9 @@ controller principal. Before a node is enabled, an actual Codex turn MUST prove 
 principal differs from the controller and cannot list or read the key. A Codex sandbox policy that
 grants full filesystem read access does not satisfy this boundary. Windows MUST use narrowly scoped
 workspace ACLs. Han MUST preserve the controller-owned `0700` issue-private-home contract by
-launching Codex in a private mount/user namespace containing identity-mapped views of only the
-selected workspace and selected profile home. Shared groups, default ACLs, or ordinary bind mounts
+launching Codex in a private mount/user namespace containing separate identity-mapped views of only
+the current issue workspace, that issue's exact private-home subtree, and selected profile
+authentication home. Workspace/profile roots that include sibling work MUST NOT be mapped. Shared groups, default ACLs, or ordinary bind mounts
 that change or bypass the host owner/mode contract are not valid fallbacks. The App-key, runtime,
 health, and launcher-configuration trees MUST remain outside the worker namespace. The same turn
 MUST prove create/edit/remove access in its issue workspace, followed by controller re-attestation,
