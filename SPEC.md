@@ -589,11 +589,14 @@ The controller that reads the reusable App private key and the Codex worker MUST
 OS principals. The configured Codex launcher MUST fail closed instead of falling back to the
 controller principal. Before a node is enabled, an actual Codex turn MUST prove that its worker
 principal differs from the controller and cannot list or read the key. A Codex sandbox policy that
-grants full filesystem read access does not satisfy this boundary. A narrowly scoped shared
-group/ACL MUST keep controller-created workspace descendants writable by Codex without granting the
-Codex principal access to the App-key, runtime, health, or launcher-configuration trees. The same
-turn MUST prove create/edit/remove access in its issue workspace, followed by controller
-re-attestation.
+grants full filesystem read access does not satisfy this boundary. Windows MUST use narrowly scoped
+workspace ACLs. Han MUST preserve the controller-owned `0700` issue-private-home contract by
+launching Codex in a private mount/user namespace containing identity-mapped views of only the
+selected workspace and selected profile home. Shared groups, default ACLs, or ordinary bind mounts
+that change or bypass the host owner/mode contract are not valid fallbacks. The App-key, runtime,
+health, and launcher-configuration trees MUST remain outside the worker namespace. The same turn
+MUST prove create/edit/remove access in its issue workspace, followed by controller re-attestation,
+while host and worker views prove their respective ownership and `0700` mode.
 
 ARO-197 runtime configuration MUST include one absolute, controller-only admission-pause file path.
 An absent file admits work. A present regular file MUST block fetch, retry, claim, and post-claim

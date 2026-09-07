@@ -45,11 +45,19 @@ and must fail closed rather than falling back to the controller principal.
 Give both principals access only to the workspace and Codex-home roots they share. On Windows,
 create a node-local workspace group, grant that group Modify on the workspace root, grant each
 profile home only to the controller and Codex principals, and keep the App-key directory outside
-both ACL trees. On Han, create a dedicated group containing both principals, make the workspace
-root setgid and group-writable, apply an equivalent default ACL so new descendants stay writable,
-and grant the two profile homes to that group. Keep the key directory controller-owned `0700` and
-the key `0600`, without the shared group. Do not grant the Codex principal access to the runtime,
-health, launcher configuration, or key trees merely to make workspace writes succeed.
+both ACL trees.
+
+Han MUST NOT use a shared group or default ACL for the workspace. Symphony deliberately creates
+each issue-private `.symphony-subprocess` home as controller-owned `0700` and re-attests that exact
+owner and mode. The trusted, root-owned launcher must therefore enter a private mount and user
+namespace, expose identity-mapped bind mounts of only the selected workspace root and selected
+profile Codex home at their original absolute paths, and then change to the dedicated Codex UID.
+Inside that namespace the mapped paths must appear owned by the Codex UID while the host view keeps
+the controller ownership and `0700` modes. The App-key, runtime, health, and launcher-configuration
+trees must not be mounted into that namespace. Restrict passwordless elevation to this immutable
+launcher and fixed roots; reject arbitrary path arguments, missing identity-mount support, a mount
+whose host ownership or mode changes, or any fallback to an ordinary bind mount/shared ACL. Keep the
+key directory controller-owned `0700` and the key `0600`.
 
 Enable the complete two-profile block from `WORKFLOW.md`, remove `worker.ssh_hosts`, remove repository
 cloning from `after_create`, and use canonical HTTPS origins. Provision separate protected Codex homes
@@ -61,7 +69,9 @@ Keep the Scheduled Task disabled. Install a clean immutable build beside the pre
 overwrite a dirty checkout. Capture the prior task action, enabled state, runtime version, and a
 secret-free configuration fingerprint.
 
-Run dry preflight for both profiles. Require the expected bot actor, exact repository, canonical main
+Run dry preflight for both profiles. On Han, first prove from both namespace views that a synthetic
+controller-owned `0700` issue-private home remains controller-owned `0700` on the host and appears
+Codex-owned `0700` only inside the worker namespace. Require the expected bot actor, exact repository, canonical main
 branch, pull/push authority, singleton token scope, and quality contract. Probe an unauthorized repo
 and require fail-closed denial. From an actual Codex turn, record the worker principal, verify it is
 different from the controller, require both directory listing and direct key reads to fail, and
@@ -89,7 +99,8 @@ state. Preserve dirty legacy checkouts and pre-existing homes.
 
 ## Masked receipt
 
-Record node name, controller principal, Codex principal, key-read denial, workspace write/re-attest
+Record node name, controller principal, Codex principal, key-read denial, Han identity-mount host and
+worker ownership/mode proof, workspace write/re-attest
 result, admission-paused observation, zero-running/zero-claimed drain, OS/runtime boundary, App slug and bot actor, source type, installation repository names,
 runtime commit, dry-preflight result classes, denied-repo result, restarted-process identity during
 rotation, rotation/revocation result, rollback result, task state, and timestamps. Record no secret

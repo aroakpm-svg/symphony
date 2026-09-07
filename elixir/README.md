@@ -528,6 +528,12 @@ node-local launcher before starting app-server, and the worker must not inherit 
 `SYMPHONY_GITHUB_APP_*` value. A workspace sandbox with full read access is not an isolation boundary
 for a key readable by the same principal. Each node's rollout must prove, from an actual Codex turn,
 that the worker principal differs from the controller and cannot list or read the key.
+Windows may provide workspace access with a narrow ACL. Han must instead use the trusted launcher
+to create a private mount/user namespace with identity-mapped views of only the selected workspace
+and profile authentication home. This keeps Symphony's controller-owned `0700` issue-private homes
+unchanged on the host while making the same paths usable by the Codex UID inside its namespace.
+Shared-group, default-ACL, and ordinary-bind fallbacks are unsupported because they either fail the
+private-home re-attestation or leave the worker unable to traverse the directories.
 
 The source's `expires_at` is optional metadata used to reject known-expired credentials early.
 It cannot extend GitHub's actual token lifetime: installation access tokens expire after one hour

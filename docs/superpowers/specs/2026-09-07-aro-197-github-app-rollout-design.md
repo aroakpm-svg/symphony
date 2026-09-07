@@ -63,9 +63,13 @@ session and keep it only on that node.
 Deploy a clean immutable runtime directory rather than modifying Amy's dirty legacy checkout.
 Provision the controller/Codex principal split and make the configured `codex.command` enter the
 Codex principal through the trusted launcher before executing `codex app-server`.
-Provision a narrowly scoped shared group/ACL on the workspace and per-profile Codex-home roots so
-controller-created descendants remain writable by Codex, while the key and runtime trees remain
-controller-only.
+On Windows, provision narrowly scoped workspace and per-profile Codex-home ACLs. On Han, the
+trusted launcher instead uses a private mount/user namespace with identity-mapped bind mounts for
+only the selected workspace and profile home. This preserves the controller-owned `0700`
+issue-private homes in the host view while presenting them as Codex-owned `0700` inside the worker
+namespace. Fail rollout when identity-mount support is missing or when an ordinary bind,
+shared-group, or default-ACL fallback would change the enforced private-home contract. Keep the key,
+runtime, health, and launcher trees outside the namespace.
 Create protected, separate Codex homes for `central-brain` and `project-management`, complete the
 chosen ChatGPT login in each home, remove legacy clone hooks, migrate reused origins to canonical
 HTTPS, and keep the existing tasks disabled while dry preflight runs.
