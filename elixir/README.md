@@ -529,8 +529,10 @@ Codex authentication has a separate operator-managed boundary. For profiled work
 application configuration must set `:codex_auth_home_root` to an absolute, dedicated directory
 outside the workspace tree. The final Codex process uses `<root>/<profile_key>` as `CODEX_HOME`.
 Each profile directory must already exist, be owned and protected by the node operator, and have
-its own Codex-managed login. Missing configuration, overlapping workspace paths, redirected
-directories, or non-regular `auth.json`/`config.toml` entries fail closed. Symphony does not create
+its own Codex-managed login. Every directory component must be a real directory rather than a
+symlink or Windows reparse point. Missing configuration, overlapping workspace paths, redirected
+directories, or linked, reparse, or non-regular `auth.json`/`config.toml` entries fail closed.
+Symphony does not create
 these directories or read, copy, log, or transport their credential contents. Do not use copies or
 links to the desktop account's authentication files or another profile's login directory.
 

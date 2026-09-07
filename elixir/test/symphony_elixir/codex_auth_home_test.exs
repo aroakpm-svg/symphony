@@ -66,6 +66,35 @@ defmodule SymphonyElixir.CodexAuthHomeTest do
     assert {:error, :codex_auth_home_invalid} == CodexAuthHome.resolve(ctx.context)
   end
 
+  for filename <- ["auth.json", "config.toml"] do
+    test "a redirected #{filename} cannot borrow another profile", ctx do
+      outside = Path.join(ctx.root, "other-#{unquote(filename)}")
+      selected = Path.join(ctx.home, unquote(filename))
+      File.write!(outside, "synthetic other-profile authentication")
+
+      case File.ln_s(outside, selected) do
+        :ok ->
+          assert {:error, :codex_auth_home_invalid} == CodexAuthHome.resolve(ctx.context)
+
+        {:error, :eperm} ->
+          assert {:win32, _name} = :os.type()
+
+          assert {:error, :unsafe_private_home_path} ==
+                   Workspace.validate_non_reparse_regular_file_for_test(outside, fn ^outside ->
+                     Workspace.classify_windows_reparse_query_for_test("reparse data", 0)
+                   end)
+      end
+    end
+  end
+
+  test "a redirected auth-root component cannot enter the workspace tree", ctx do
+    redirected_root = Path.join(ctx.root, "redirected-auth")
+    create_directory_link!(Path.dirname(Path.dirname(ctx.workspace)), redirected_root)
+    Application.put_env(:symphony_elixir, :codex_auth_home_root, redirected_root)
+
+    assert {:error, :codex_auth_home_invalid} == CodexAuthHome.resolve(ctx.context)
+  end
+
   test "unconfigured profile never launches a Codex process", ctx do
     Application.delete_env(:symphony_elixir, :codex_auth_home_root)
 

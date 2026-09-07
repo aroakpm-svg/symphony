@@ -1841,6 +1841,36 @@ defmodule SymphonyElixir.Workspace do
     end
   end
 
+  @doc false
+  @spec validate_non_reparse_regular_file_for_worker(Path.t()) ::
+          :ok | {:error, :enoent | :unsafe_private_home_path}
+  def validate_non_reparse_regular_file_for_worker(path) when is_binary(path) do
+    validate_non_reparse_regular_file(path, &validate_platform_reparse_state/1)
+  end
+
+  @doc false
+  @spec validate_non_reparse_regular_file_for_test(
+          Path.t(),
+          (Path.t() -> :ok | {:error, :unsafe_private_home_path})
+        ) :: :ok | {:error, :enoent | :unsafe_private_home_path}
+  def validate_non_reparse_regular_file_for_test(path, reparse_validator)
+      when is_binary(path) and is_function(reparse_validator, 1) do
+    validate_non_reparse_regular_file(path, reparse_validator)
+  end
+
+  defp validate_non_reparse_regular_file(path, reparse_validator) do
+    case File.lstat(path) do
+      {:error, :enoent} ->
+        {:error, :enoent}
+
+      {:ok, %File.Stat{type: :regular}} ->
+        reparse_validator.(path)
+
+      _unsafe ->
+        {:error, :unsafe_private_home_path}
+    end
+  end
+
   defp validate_platform_reparse_state(path) do
     case :os.type() do
       {:unix, _name} -> :ok

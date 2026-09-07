@@ -182,8 +182,10 @@ Codex authentication compatibility clarification (2026-09-04): the strict GitHub
 does not carry OpenAI credentials. The final Codex launcher resolves a separate trusted
 `:codex_auth_home_root/<profile_key>` binding outside the workspace tree. ARO-197 provisions and
 protects each dedicated profile home and its Codex-managed ChatGPT or API-key login; Symphony does
-not read/copy authentication files or pass tokens through its scheduler. This explicit external
-authentication store is distinct from the prohibition on Symphony persisting resolved credentials.
+not read/copy authentication files or pass tokens through its scheduler. Every path component is
+validated as a non-link, non-reparse directory before launch, including on Windows; optional
+`auth.json` and `config.toml` entries must likewise be non-reparse regular files. This explicit
+external authentication store is distinct from the prohibition on Symphony persisting resolved credentials.
 After initialization, a bounded `account/read` with managed refresh must succeed before thread
 creation. No login is an operator blocker; account-service/transport failure remains retryable.
 Git/hooks retain issue-private homes, and thread shell policy restores that private `CODEX_HOME`

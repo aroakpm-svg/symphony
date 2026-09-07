@@ -6,7 +6,7 @@ defmodule SymphonyElixir.CodexAuthHome do
   issue-private homes; this binding is consumed only by the final Codex launcher.
   """
 
-  alias SymphonyElixir.{Config, PathSafety, ProjectExecutionContext}
+  alias SymphonyElixir.{Config, PathSafety, ProjectExecutionContext, Workspace}
 
   @spec resolve(ProjectExecutionContext.t() | nil) ::
           {:ok, Path.t() | nil} | {:error, :codex_auth_home_unconfigured | :codex_auth_home_invalid}
@@ -43,13 +43,13 @@ defmodule SymphonyElixir.CodexAuthHome do
     |> Path.split()
     |> Enum.scan(&Path.join(&2, &1))
     |> Enum.all?(fn component ->
-      match?({:ok, %File.Stat{type: :directory}}, File.lstat(component))
+      Workspace.validate_non_reparse_directory_for_worker(component) == :ok
     end)
   end
 
   defp safe_optional_file?(path) do
-    case File.lstat(path) do
-      {:ok, %File.Stat{type: :regular}} -> true
+    case Workspace.validate_non_reparse_regular_file_for_worker(path) do
+      :ok -> true
       {:error, :enoent} -> true
       _unsafe -> false
     end
