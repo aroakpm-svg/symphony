@@ -64,7 +64,10 @@ defmodule SymphonyElixir.GitHubAppCredentialSourceTest do
           {:ok, %{status: 408, body: "secret"}},
           {:ok, %{status: 429, body: "secret"}},
           {:ok, %{status: 500, body: "secret"}},
-          {:ok, %{status: 599, body: "secret"}}
+          {:ok, %{status: 599, body: "secret"}},
+          {:ok, %{status: 403, headers: %{"x-ratelimit-remaining" => "0"}, body: "secret"}},
+          {:ok, %{status: 403, headers: %{"retry-after" => "1"}, body: "secret"}},
+          {:ok, %{status: 403, body: %{"message" => "You have exceeded a secondary rate limit"}}}
         ] do
       assert {:error, :unavailable} =
                GitHubAppCredentialSource.resolve(
@@ -77,6 +80,12 @@ defmodule SymphonyElixir.GitHubAppCredentialSourceTest do
              GitHubAppCredentialSource.resolve(
                "github-central-brain",
                valid_options(key_path, fn _ -> {:ok, %{status: 600, body: "secret"}} end)
+             )
+
+    assert {:error, :failed} =
+             GitHubAppCredentialSource.resolve(
+               "github-central-brain",
+               valid_options(key_path, fn _ -> {:ok, %{status: 403, body: "forbidden"}} end)
              )
   end
 
@@ -204,7 +213,8 @@ defmodule SymphonyElixir.GitHubAppCredentialSourceTest do
       "SYMPHONY_GITHUB_APP_ID" => "123",
       "SYMPHONY_GITHUB_APP_INSTALLATION_ID" => "456",
       "SYMPHONY_GITHUB_APP_EXPECTED_ACTOR" => "aroak-symphony[bot]",
-      "SYMPHONY_GITHUB_APP_PRIVATE_KEY_FILE" => key_path
+      "SYMPHONY_GITHUB_APP_PRIVATE_KEY_FILE" => key_path,
+      "SYMPHONY_ADMISSION_PAUSE_FILE" => key_path <> ".pause"
     }
   end
 

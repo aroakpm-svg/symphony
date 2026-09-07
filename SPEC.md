@@ -595,6 +595,12 @@ Codex principal access to the App-key, runtime, health, or launcher-configuratio
 turn MUST prove create/edit/remove access in its issue workspace, followed by controller
 re-attestation.
 
+ARO-197 runtime configuration MUST include one absolute, controller-only admission-pause file path.
+An absent file admits work. A present regular file MUST block fetch, retry, claim, and post-claim
+dispatch without terminating active workers; invalid configured paths MUST fail closed. Runtime
+status MUST expose the observed pause state. Rotation MUST observe that state with no poll in flight
+and zero running or claimed work before stopping the old process.
+
 #### 5.3.1 `tracker` (object)
 
 Fields:

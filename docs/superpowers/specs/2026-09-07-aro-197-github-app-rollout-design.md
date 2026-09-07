@@ -33,6 +33,11 @@ responses never enter Orchestrator state, command arguments, logs, health, recei
 Missing, conflicting, malformed, redirected, or inaccessible configuration fails before startup or
 returns the existing secret-safe resolver failure.
 
+ARO-197 additionally configures one controller-only `SYMPHONY_ADMISSION_PAUSE_FILE`. Missing gate
+files admit work; an existing regular file stops fetch, retry, claim, and post-claim dispatch without
+terminating active workers. An invalid configured path fails closed, and runtime status exposes the
+observed pause so rotation can prove admission is frozen before waiting for zero active claims.
+
 The private key must be a real regular file outside every workspace. All existing path components
 must be real directories, and Windows reparse points and Unix symlinks are rejected through the
 shared workspace path checks. The Symphony controller and the Codex worker MUST use different OS
@@ -73,10 +78,11 @@ the worker can create/edit/remove a workspace sentinel and the controller can re
 old key material cannot start new work after revocation, and rollback restores the prior disabled
 runtime. ARO-285, not this work item, starts the live fleet workload and proves nine-slot capacity.
 
-Rotation must quiesce admissions, drain active work, stop the old BEAM process, switch the task
-environment, restart that exact task, and validate both profiles through the restarted process
-before the old key is revoked. A dry shell using the replacement key does not prove that the active
-runtime inherited it.
+Rotation must create the gate, observe the paused status with no poll in flight, drain to zero
+running and claimed work, stop the old BEAM process, switch the task environment, restart that exact
+task behind the still-present gate, and validate both profiles through the restarted process before
+the old key is revoked. A dry shell using the replacement key does not prove that the active runtime
+inherited it. The gate is removed only after old-key rejection is proven.
 
 ## Non-goals
 

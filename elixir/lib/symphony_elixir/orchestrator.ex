@@ -8,6 +8,7 @@ defmodule SymphonyElixir.Orchestrator do
   import Bitwise, only: [<<<: 2]
 
   alias SymphonyElixir.{
+    AdmissionGate,
     AgentRunner,
     ClaimService,
     CodexExecutionInputs,
@@ -608,6 +609,10 @@ defmodule SymphonyElixir.Orchestrator do
       |> reconcile_running_issues()
       |> reconcile_blocked_issues()
 
+    if AdmissionGate.paused?(), do: state, else: dispatch_when_admitted(state, opts)
+  end
+
+  defp dispatch_when_admitted(state, opts) do
     with {:ok, settings} <- Config.settings(),
          state <- reconcile_review_convergence(state),
          :ok <- Config.validate!() do
@@ -717,9 +722,13 @@ defmodule SymphonyElixir.Orchestrator do
   defp run_multi_project_poll(state, _profiles, [], _opts), do: state
 
   defp run_multi_project_poll(state, profiles, profiles_to_poll, opts) do
-    case Config.validate_execution_topology() do
-      :ok -> run_admitted_multi_project_poll(state, profiles, profiles_to_poll, opts)
-      {:error, _reason} -> state
+    if AdmissionGate.paused?() do
+      state
+    else
+      case Config.validate_execution_topology() do
+        :ok -> run_admitted_multi_project_poll(state, profiles, profiles_to_poll, opts)
+        {:error, _reason} -> state
+      end
     end
   end
 
@@ -2050,6 +2059,14 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   defp dispatch_issue(%State{} = state, issue, attempt \\ nil, preferred_worker_host \\ nil) do
+    if AdmissionGate.paused?() do
+      state
+    else
+      dispatch_revalidated_issue(state, issue, attempt, preferred_worker_host)
+    end
+  end
+
+  defp dispatch_revalidated_issue(state, issue, attempt, preferred_worker_host) do
     case revalidate_issue_for_dispatch(issue, &Tracker.fetch_issue_states_by_ids/1, terminal_state_set()) do
       {:ok, %Issue{} = refreshed_issue} ->
         do_dispatch_issue(state, refreshed_issue, attempt, preferred_worker_host)
@@ -2132,6 +2149,14 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   defp dispatch_acquired_claim(dispatch_fun, state, issue, attempt, recipient, worker_host, claim, opts) do
+    if AdmissionGate.paused?() do
+      cleanup_acquired_dispatch_failure(state, issue, attempt, worker_host, :admission_paused, opts)
+    else
+      dispatch_claimed_issue(dispatch_fun, state, issue, attempt, recipient, worker_host, claim, opts)
+    end
+  end
+
+  defp dispatch_claimed_issue(dispatch_fun, state, issue, attempt, recipient, worker_host, claim, opts) do
     report_health(opts, {:stage, :dispatch, health_issue_metadata(issue, :started)})
 
     case dispatch_fun.(state, issue, attempt, recipient, worker_host, claim) do
@@ -3497,6 +3522,7 @@ defmodule SymphonyElixir.Orchestrator do
        rate_limits: Map.get(state, :codex_rate_limits),
        health: runtime_health_snapshot(),
        polling: %{
+         admission_paused?: AdmissionGate.paused?(),
          checking?: state.poll_check_in_progress == true,
          next_poll_in_ms: next_poll_in_ms(state.next_poll_due_at_ms, now_ms),
          poll_interval_ms: state.poll_interval_ms

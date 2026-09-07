@@ -68,6 +68,48 @@ defmodule SymphonyElixir.MultiProjectDispatchTest do
     end
   end
 
+  test "admission gate blocks fetch and releases a claim acquired during the gate race" do
+    gate = Path.join(System.tmp_dir!(), "symphony-admission-#{System.unique_integer([:positive])}")
+    previous = System.get_env("SYMPHONY_ADMISSION_PAUSE_FILE")
+    System.put_env("SYMPHONY_ADMISSION_PAUSE_FILE", gate)
+
+    on_exit(fn ->
+      File.rm(gate)
+
+      if previous,
+        do: System.put_env("SYMPHONY_ADMISSION_PAUSE_FILE", previous),
+        else: System.delete_env("SYMPHONY_ADMISSION_PAUSE_FILE")
+    end)
+
+    File.write!(gate, "paused\n")
+
+    assert base_state() ==
+             Orchestrator.multi_project_dispatch_for_test(base_state(), @profiles, fetcher: fn _ -> flunk("candidate fetch ran while admission was paused") end)
+
+    File.rm!(gate)
+    {:ok, events} = Agent.start_link(fn -> [] end)
+    candidate = issue("gate-race", @central_profile, 1)
+
+    state =
+      run_cycle([candidate], %{candidate.id => candidate}, events,
+        claim_fun: fn issue, _owner ->
+          record(events, {:claim, issue.id})
+          File.write!(gate, "paused\n")
+          {:ok, %{claim_id: "claim-#{issue.id}", generation: 1}}
+        end,
+        finalize_claim_fun: fn issue_id, action ->
+          record(events, {:finalize, issue_id, action})
+          :ok
+        end,
+        dispatch_fun: fn _state, _issue, _attempt, _recipient, _worker_host, _claim ->
+          flunk("dispatch ran after admission pause")
+        end
+      )
+
+    refute Map.has_key?(state.running, candidate.id)
+    assert {:finalize, candidate.id, :release} in Agent.get(events, & &1)
+  end
+
   test "wrong-node candidate does not block a later eligible candidate" do
     {:ok, events} = Agent.start_link(fn -> [] end)
     first = issue("first-wrong-node", @central_profile, 1)

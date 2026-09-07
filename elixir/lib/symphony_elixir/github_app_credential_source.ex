@@ -25,6 +25,7 @@ defmodule SymphonyElixir.GitHubAppCredentialSource do
          {:ok, _app_id} <- positive_identifier(opts[:app_id]),
          {:ok, _installation_id} <- positive_identifier(opts[:installation_id]),
          {:ok, _key} <- private_key(opts[:private_key_path]),
+         :ok <- SymphonyElixir.AdmissionGate.validate_configuration(),
          :ok <- compatible_source(),
          {:ok, orchestrator_opts} <- compatible_orchestrator_options(actor) do
       Application.put_env(:symphony_elixir, :github_credential_source, __MODULE__)
@@ -174,27 +175,33 @@ defmodule SymphonyElixir.GitHubAppCredentialSource do
         receive_timeout: 8_000
       )
 
-    case response do
-      {:ok, %{status: 201, body: %{"token" => token, "expires_at" => expires_at}}}
-      when is_binary(token) and byte_size(token) > 0 ->
-        with false <- Enum.all?(:binary.bin_to_list(token), &(&1 in [9, 10, 11, 12, 13, 32])),
-             :nomatch <- :binary.match(token, <<0>>),
-             {:ok, parsed, 0} <- DateTime.from_iso8601(expires_at) do
-          {:ok, token, parsed}
-        end
-
-      {:ok, %{status: status}} when status == 408 or status == 429 or status in 500..599 ->
-        {:error, :unavailable}
-
-      {:error, _transport_reason} ->
-        {:error, :unavailable}
-
-      _failure ->
-        {:error, :invalid}
-    end
+    classify_mint_response(response)
   end
 
   defp mint(_installation_id, _repository, _jwt, _request_fun), do: {:error, :invalid}
+
+  defp classify_mint_response({:ok, %{status: 201, body: %{"token" => token, "expires_at" => expires_at}}})
+       when is_binary(token) and byte_size(token) > 0 do
+    with false <- Enum.all?(:binary.bin_to_list(token), &(&1 in [9, 10, 11, 12, 13, 32])),
+         :nomatch <- :binary.match(token, <<0>>),
+         {:ok, parsed, 0} <- DateTime.from_iso8601(expires_at) do
+      {:ok, token, parsed}
+    end
+  end
+
+  defp classify_mint_response({:ok, %{status: status}})
+       when status == 408 or status == 429 or status in 500..599,
+       do: {:error, :unavailable}
+
+  defp classify_mint_response({:ok, %{status: 403} = forbidden}) do
+    case SymphonyElixir.GitHubResponse.classify_forbidden(forbidden) do
+      {:error, :github_unavailable} -> {:error, :unavailable}
+      {:error, :github_forbidden} -> {:error, :invalid}
+    end
+  end
+
+  defp classify_mint_response({:error, _transport_reason}), do: {:error, :unavailable}
+  defp classify_mint_response(_failure), do: {:error, :invalid}
 
   defp base64url(value), do: Base.url_encode64(value, padding: false)
 end
