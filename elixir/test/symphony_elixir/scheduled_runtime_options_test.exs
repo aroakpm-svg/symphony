@@ -227,6 +227,43 @@ defmodule SymphonyElixir.ScheduledRuntimeOptionsTest do
     assert_receive :runner_finished, 10_000
   end
 
+  test "scheduled workers honor the retained post-claim preflight timeout" do
+    parent = self()
+    {:ok, ready} = Agent.start_link(fn -> false end)
+    {:ok, resolutions} = Agent.start_link(fn -> 0 end)
+    issue = candidate()
+    opts = options(parent, ready, issue, "synthetic-instance[bot]")
+    original_source = Agent.get(Callbacks, &Keyword.fetch!(&1, :credential_source))
+
+    Agent.update(Callbacks, fn callbacks ->
+      Keyword.put(callbacks, :credential_source, fn ref ->
+        case Agent.get_and_update(resolutions, &{&1, &1 + 1}) do
+          0 ->
+            original_source.(ref)
+
+          _post_claim ->
+            send(parent, {:hung_post_claim_source, self()})
+            Process.sleep(:infinity)
+        end
+      end)
+    end)
+
+    {:ok, server} = Orchestrator.start_link(Keyword.put(opts, :name, nil) |> Keyword.put(:preflight_timeout, 25))
+    on_exit(fn -> if Process.alive?(server), do: GenServer.stop(server) end)
+    assert_receive {:fetched, "project-management"}, 2_000
+    Agent.update(ready, fn _ -> true end)
+    send(server, :run_poll_cycle)
+    assert_receive :claimed, 2_000
+    assert_receive {:hung_post_claim_source, source}, 2_000
+    assert_receive :runner_finished, 2_000
+    refute Process.alive?(source)
+
+    state = await_retry(server, issue.id, 100)
+    assert state.retry_attempts[issue.id].ownership == :unowned_backoff
+    assert state.retry_attempts[issue.id].error =~ "github_unavailable"
+    Process.cancel_timer(state.retry_attempts[issue.id].timer_ref)
+  end
+
   test "scheduled polling rejects a captured application source installed after startup" do
     previous = Application.get_env(:symphony_elixir, :github_credential_source)
 

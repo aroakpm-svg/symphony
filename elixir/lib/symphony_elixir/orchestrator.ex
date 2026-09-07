@@ -97,6 +97,7 @@ defmodule SymphonyElixir.Orchestrator do
     :max_turns,
     :metadata_inspector,
     :metadata_probe,
+    :preflight_timeout,
     :readiness_command_runner,
     :repository_bootstrap_command_runner,
     :request_fun,
