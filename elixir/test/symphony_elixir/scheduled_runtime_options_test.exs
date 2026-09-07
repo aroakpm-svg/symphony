@@ -306,6 +306,7 @@ defmodule SymphonyElixir.ScheduledRuntimeOptionsTest do
       head = git!(seed, ["rev-parse", "HEAD"])
       old_head = head
       {:ok, head_reads} = Agent.start_link(fn -> 0 end)
+      {:ok, quality_checked_head} = Agent.start_link(fn -> nil end)
 
       {:ok, readiness_advance_budget} =
         Agent.start_link(fn ->
@@ -391,7 +392,7 @@ defmodule SymphonyElixir.ScheduledRuntimeOptionsTest do
 
             String.contains?(request[:url], "/contents/package.json?ref=") ->
               checked_head = request[:url] |> String.split("?ref=") |> List.last()
-              Process.put(:quality_checked_head, checked_head)
+              Agent.update(quality_checked_head, fn _current -> checked_head end)
               send(parent, {:quality_head, checked_head})
               original_request.(request)
 
@@ -400,7 +401,7 @@ defmodule SymphonyElixir.ScheduledRuntimeOptionsTest do
           end
         end)
         |> Keyword.put(:repository_bootstrap_command_runner, fn args, _credential, _runtime ->
-          assert Process.get(:quality_checked_head) == git!(seed, ["rev-parse", "HEAD"])
+          assert Agent.get(quality_checked_head, & &1) == git!(seed, ["rev-parse", "HEAD"])
           bootstrap_with_interruption(args, workspace, seed, failure_budget, interruption)
         end)
         |> Keyword.put(:git_checkout_command_runner, fn args, _credential, _runtime ->
