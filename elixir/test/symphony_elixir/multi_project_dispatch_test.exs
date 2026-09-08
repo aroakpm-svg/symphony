@@ -173,6 +173,26 @@ defmodule SymphonyElixir.MultiProjectDispatchTest do
     assert MapSet.member?(retained.claimed, release_failed.id)
     refute Map.has_key?(retained.running, release_failed.id)
     assert retained.retry_attempts[release_failed.id].ownership == :retained_owner
+
+    first_token = retained.retry_attempts[release_failed.id].retry_token
+
+    still_retained =
+      Orchestrator.fire_issue_retry_for_test(retained, release_failed.id, first_token, finalize_claim_fun: fn _issue_id, :release -> {:error, :timeout} end)
+
+    assert MapSet.member?(still_retained.claimed, release_failed.id)
+    assert still_retained.retry_attempts[release_failed.id].finalization_action == :release
+    refute still_retained.retry_attempts[release_failed.id].retry_token == first_token
+
+    released =
+      Orchestrator.fire_issue_retry_for_test(
+        still_retained,
+        release_failed.id,
+        still_retained.retry_attempts[release_failed.id].retry_token,
+        finalize_claim_fun: fn _issue_id, :release -> :ok end
+      )
+
+    refute MapSet.member?(released.claimed, release_failed.id)
+    refute Map.has_key?(released.retry_attempts, release_failed.id)
   end
 
   test "wrong-node candidate does not block a later eligible candidate" do

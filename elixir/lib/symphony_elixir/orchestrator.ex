@@ -1097,8 +1097,10 @@ defmodule SymphonyElixir.Orchestrator do
 
   defp transition_retry_release_id(state, issue_id, opts) do
     if retry_dispatch?(opts) do
-      release_fun = Keyword.get(opts, :claim_release_fun, &release_issue_claim/2)
-      release_fun.(state, issue_id)
+      case Keyword.get(opts, :claim_release_fun) do
+        release_fun when is_function(release_fun, 2) -> release_fun.(state, issue_id)
+        _default -> release_issue_claim(state, issue_id, opts)
+      end
     else
       state
     end
@@ -1682,13 +1684,21 @@ defmodule SymphonyElixir.Orchestrator do
             finalize_distributed_claim(issue_id, :release)
           end
 
-        %{
+        finalized_state = %{
           state
           | running: Map.delete(state.running, issue_id),
             claimed: update_claimed_after_finalization(state.claimed, issue_id, finalization_result),
             blocked: Map.delete(state.blocked, issue_id),
             retry_attempts: Map.delete(state.retry_attempts, issue_id)
         }
+
+        retain_finalization_retry(
+          finalized_state,
+          issue_id,
+          running_entry,
+          if(termination_policy == :complete, do: :complete, else: :release),
+          finalization_result
+        )
 
       _ ->
         release_issue_claim(state, issue_id)
@@ -1890,7 +1900,7 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   defp block_issue_from_entry(%State{} = state, issue_id, running_entry, error) do
-    :ok = finalize_distributed_claim(issue_id, :release)
+    _release_result = finalize_distributed_claim(issue_id, :release)
 
     blocked_entry = %{
       issue_id: issue_id,
@@ -2475,7 +2485,7 @@ defmodule SymphonyElixir.Orchestrator do
     metadata =
       issue
       |> dispatch_failure_retry_metadata(worker_host, error, opts)
-      |> Map.put(:ownership, :retained_owner)
+      |> Map.merge(%{ownership: :retained_owner, finalization_action: :release})
 
     schedule_issue_retry(state, issue.id, attempt, metadata)
   end
@@ -2591,6 +2601,7 @@ defmodule SymphonyElixir.Orchestrator do
     project_profile = retry_value(metadata, previous_retry, :project_profile)
     execution_context = retry_value(metadata, previous_retry, :execution_context)
     ownership = retry_ownership(state, issue_id, metadata, previous_retry)
+    finalization_action = retry_value(metadata, previous_retry, :finalization_action)
 
     if is_reference(old_timer) do
       Process.cancel_timer(old_timer)
@@ -2618,7 +2629,8 @@ defmodule SymphonyElixir.Orchestrator do
             workspace_attestation: workspace_attestation,
             execution_context: execution_context,
             project_profile: project_profile,
-            ownership: ownership
+            ownership: ownership,
+            finalization_action: finalization_action
           })
     }
   end
@@ -2647,6 +2659,7 @@ defmodule SymphonyElixir.Orchestrator do
           workspace_attestation: Map.get(retry_entry, :workspace_attestation),
           execution_context: Map.get(retry_entry, :execution_context),
           project_profile: Map.get(retry_entry, :project_profile),
+          finalization_action: Map.get(retry_entry, :finalization_action),
           ownership:
             Map.get(retry_entry, :ownership) ||
               if(MapSet.member?(state.claimed, issue_id), do: :retained_owner, else: :unowned_backoff)
@@ -2660,15 +2673,53 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   defp retry_issue_from_timer(state, issue_id, retry_token, opts) do
+    case Map.get(state.retry_attempts, issue_id) do
+      %{retry_token: ^retry_token, finalization_action: action} when action in [:release, :complete] ->
+        retry_claim_finalization(state, issue_id, retry_token, opts)
+
+      _ordinary_retry ->
+        retry_ordinary_issue_from_timer(state, issue_id, retry_token, opts)
+    end
+  end
+
+  defp retry_ordinary_issue_from_timer(state, issue_id, retry_token, opts) do
     if AdmissionGate.paused?() do
       {:noreply, defer_issue_retry(state, issue_id, retry_token, opts)}
     else
-      case pop_retry_attempt_state(state, issue_id, retry_token) do
-        {:ok, attempt, metadata, state} -> handle_retry_issue(state, issue_id, attempt, metadata, opts)
-        :missing -> {:noreply, state}
-      end
+      pop_retry_attempt_state(state, issue_id, retry_token)
+      |> continue_ordinary_issue_retry(state, issue_id, opts)
     end
   end
+
+  defp continue_ordinary_issue_retry({:ok, attempt, metadata, state}, _old_state, issue_id, opts),
+    do: handle_retry_issue(state, issue_id, attempt, metadata, opts)
+
+  defp continue_ordinary_issue_retry(:missing, state, _issue_id, _opts), do: {:noreply, state}
+
+  defp retry_claim_finalization(state, issue_id, retry_token, opts) do
+    case pop_retry_attempt_state(state, issue_id, retry_token) do
+      {:ok, attempt, %{finalization_action: action} = metadata, state} ->
+        finalize_fun = Keyword.get(opts, :finalize_claim_fun, &finalize_distributed_claim/2)
+
+        invoke_cleanup_step(fn -> finalize_fun.(issue_id, action) end)
+        |> continue_claim_finalization(state, issue_id, attempt, metadata)
+
+      _missing_or_changed ->
+        {:noreply, state}
+    end
+  end
+
+  defp continue_claim_finalization({:ok, :ok}, state, issue_id, _attempt, _metadata) do
+    {:noreply,
+     %{
+       state
+       | claimed: MapSet.delete(state.claimed, issue_id),
+         retry_attempts: Map.delete(state.retry_attempts, issue_id)
+     }}
+  end
+
+  defp continue_claim_finalization(_failed, state, issue_id, attempt, metadata),
+    do: {:noreply, schedule_issue_retry(state, issue_id, attempt + 1, metadata)}
 
   defp defer_issue_retry(state, issue_id, retry_token, opts) do
     case Map.get(state.retry_attempts, issue_id) do
@@ -3199,18 +3250,54 @@ defmodule SymphonyElixir.Orchestrator do
     end
   end
 
-  defp release_issue_claim(%State{} = state, issue_id) do
+  defp release_issue_claim(%State{} = state, issue_id, opts \\ []) do
     release_result = ClaimService.release(issue_id)
 
     if match?({:error, _reason}, release_result),
       do: Logger.warning("Unable to release database claim issue_id=#{issue_id} category=release_rejected")
 
-    %{
+    released_state = %{
       state
       | claimed: update_claimed_after_finalization(state.claimed, issue_id, release_result),
         blocked: Map.delete(state.blocked, issue_id),
         retry_attempts: Map.delete(state.retry_attempts, issue_id)
     }
+
+    retain_release_retry(released_state, issue_id, opts, release_result)
+  end
+
+  defp retain_finalization_retry(state, _issue_id, _running_entry, _action, :ok), do: state
+
+  defp retain_finalization_retry(state, issue_id, running_entry, action, {:error, _reason}) do
+    metadata =
+      running_retry_metadata(running_entry, %{
+        error: "claim finalization pending",
+        ownership: :retained_owner,
+        finalization_action: action
+      })
+
+    schedule_issue_retry(state, issue_id, next_retry_attempt_from_running(running_entry), metadata)
+  end
+
+  defp retain_release_retry(state, _issue_id, _opts, :ok), do: state
+
+  defp retain_release_retry(state, issue_id, opts, {:error, _reason}) do
+    if retry_dispatch?(opts) do
+      attempt = Keyword.fetch!(opts, :issue_retry_attempt)
+
+      metadata =
+        opts
+        |> Keyword.get(:retry_metadata, %{})
+        |> Map.merge(%{
+          error: "claim release pending",
+          ownership: :retained_owner,
+          finalization_action: :release
+        })
+
+      schedule_issue_retry(state, issue_id, attempt + 1, metadata)
+    else
+      state
+    end
   end
 
   defp retire_lost_claim(%State{} = state, issue_id) do
