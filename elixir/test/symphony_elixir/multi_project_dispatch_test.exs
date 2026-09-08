@@ -153,6 +153,26 @@ defmodule SymphonyElixir.MultiProjectDispatchTest do
 
     refute Map.has_key?(state.running, candidate.id)
     assert {:finalize, candidate.id, :release} in Agent.get(events, & &1)
+
+    File.rm!(gate)
+    release_failed = issue("gate-race-release-failed", @central_profile, 2)
+
+    retained =
+      run_cycle([release_failed], %{release_failed.id => release_failed}, events,
+        claim_fun: fn issue, _owner ->
+          File.write!(gate, "paused\n")
+          {:ok, %{claim_id: "claim-#{issue.id}", generation: 1}}
+        end,
+        finalize_claim_fun: fn _issue_id, :release -> {:error, :timeout} end,
+        timer_fun: fn _message, _delay -> make_ref() end,
+        dispatch_fun: fn _state, _issue, _attempt, _recipient, _worker_host, _claim ->
+          flunk("dispatch ran after admission pause")
+        end
+      )
+
+    assert MapSet.member?(retained.claimed, release_failed.id)
+    refute Map.has_key?(retained.running, release_failed.id)
+    assert retained.retry_attempts[release_failed.id].ownership == :retained_owner
   end
 
   test "wrong-node candidate does not block a later eligible candidate" do
@@ -1078,8 +1098,14 @@ defmodule SymphonyElixir.MultiProjectDispatchTest do
       refute Process.alive?(worker)
       assert Enum.count(Agent.get(events, & &1), &match?({:finalize, _, :release}, &1)) == 1
       refute Map.has_key?(failed.running, candidate.id)
-      refute MapSet.member?(failed.claimed, candidate.id)
-      refute Map.has_key?(failed.retry_attempts, candidate.id)
+
+      if stage == :finalize do
+        assert MapSet.member?(failed.claimed, candidate.id)
+        assert failed.retry_attempts[candidate.id].ownership == :retained_owner
+      else
+        refute MapSet.member?(failed.claimed, candidate.id)
+        refute Map.has_key?(failed.retry_attempts, candidate.id)
+      end
     end
   end
 

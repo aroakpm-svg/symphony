@@ -162,11 +162,7 @@ defmodule SymphonyElixir.ClaimService do
 
       {:ok, claim} ->
         function = if action == :complete, do: "complete_claim", else: "release_claim"
-
-        case terminal_query(state, function, claim) do
-          :ok -> {:reply, :ok, %{state | claims: Map.delete(state.claims, issue_id)}}
-          {:error, reason} -> {:reply, {:error, reason}, %{state | claims: Map.delete(state.claims, issue_id)}}
-        end
+        terminal_reply(state, issue_id, terminal_query(state, function, claim))
     end
   end
 
@@ -241,6 +237,18 @@ defmodule SymphonyElixir.ClaimService do
         {:reply, {:error, :claim_not_owned}, state}
     end
   end
+
+  @doc false
+  @spec terminal_reply_for_test(struct(), String.t(), :ok | {:error, term()}) ::
+          {:reply, :ok | {:error, term()}, struct()}
+  def terminal_reply_for_test(%__MODULE__{} = state, issue_id, result),
+    do: terminal_reply(state, issue_id, result)
+
+  defp terminal_reply(state, issue_id, :ok),
+    do: {:reply, :ok, %{state | claims: Map.delete(state.claims, issue_id)}}
+
+  defp terminal_reply(state, _issue_id, {:error, reason}),
+    do: {:reply, {:error, reason}, state}
 
   @impl true
   def handle_info(:heartbeat, state) do
