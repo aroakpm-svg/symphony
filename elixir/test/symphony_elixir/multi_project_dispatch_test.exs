@@ -219,6 +219,34 @@ defmodule SymphonyElixir.MultiProjectDispatchTest do
     assert Map.has_key?(state.running, "later-eligible")
   end
 
+  test "blocked reconciliation release failures always create a finalization owner" do
+    issue_id = "blocked-release-failed"
+
+    state = %{
+      base_state()
+      | claimed: MapSet.new([issue_id]),
+        blocked: %{
+          issue_id => %{
+            identifier: "ARO-BLOCKED",
+            worker_host: "matt",
+            project_profile: @central_profile
+          }
+        }
+    }
+
+    retained =
+      Orchestrator.release_issue_claim_for_test(state, issue_id, fn ^issue_id ->
+        {:error, :timeout}
+      end)
+
+    assert MapSet.member?(retained.claimed, issue_id)
+    refute Map.has_key?(retained.blocked, issue_id)
+    assert retained.retry_attempts[issue_id].attempt == 1
+    assert retained.retry_attempts[issue_id].ownership == :retained_owner
+    assert retained.retry_attempts[issue_id].finalization_action == :release
+    assert retained.retry_attempts[issue_id].identifier == "ARO-BLOCKED"
+  end
+
   for stage <- [:refresh, :route, :preflight, :claim], failure <- [:raise, :throw, :exit] do
     test "isolates #{failure} from the first candidate's #{stage} callback" do
       stage = unquote(stage)

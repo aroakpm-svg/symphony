@@ -1323,6 +1323,12 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   @doc false
+  @spec release_issue_claim_for_test(term(), String.t(), (String.t() -> :ok | {:error, term()})) :: term()
+  def release_issue_claim_for_test(%State{} = state, issue_id, release_fun)
+      when is_binary(issue_id) and is_function(release_fun, 1),
+      do: release_issue_claim(state, issue_id, [], release_fun)
+
+  @doc false
   @spec report_runtime_health_for_test(term()) :: :ok
   def report_runtime_health_for_test(event), do: report_runtime_health(event)
 
@@ -3250,8 +3256,9 @@ defmodule SymphonyElixir.Orchestrator do
     end
   end
 
-  defp release_issue_claim(%State{} = state, issue_id, opts \\ []) do
-    release_result = ClaimService.release(issue_id)
+  defp release_issue_claim(%State{} = state, issue_id, opts \\ [], release_fun \\ &ClaimService.release/1) do
+    release_result = release_fun.(issue_id)
+    {retry_attempt, retry_metadata} = release_retry_context(state, issue_id, opts)
 
     if match?({:error, _reason}, release_result),
       do: Logger.warning("Unable to release database claim issue_id=#{issue_id} category=release_rejected")
@@ -3263,7 +3270,7 @@ defmodule SymphonyElixir.Orchestrator do
         retry_attempts: Map.delete(state.retry_attempts, issue_id)
     }
 
-    retain_release_retry(released_state, issue_id, opts, release_result)
+    retain_release_retry(released_state, issue_id, retry_attempt, retry_metadata, release_result)
   end
 
   defp retain_finalization_retry(state, _issue_id, _running_entry, _action, :ok), do: state
@@ -3279,25 +3286,40 @@ defmodule SymphonyElixir.Orchestrator do
     schedule_issue_retry(state, issue_id, next_retry_attempt_from_running(running_entry), metadata)
   end
 
-  defp retain_release_retry(state, _issue_id, _opts, :ok), do: state
+  defp retain_release_retry(state, _issue_id, _attempt, _metadata, :ok), do: state
 
-  defp retain_release_retry(state, issue_id, opts, {:error, _reason}) do
-    if retry_dispatch?(opts) do
-      attempt = Keyword.fetch!(opts, :issue_retry_attempt)
+  defp retain_release_retry(state, issue_id, attempt, metadata, {:error, _reason}) do
+    metadata =
+      Map.merge(metadata, %{
+        error: "claim release pending",
+        ownership: :retained_owner,
+        finalization_action: :release
+      })
 
-      metadata =
-        opts
-        |> Keyword.get(:retry_metadata, %{})
-        |> Map.merge(%{
-          error: "claim release pending",
-          ownership: :retained_owner,
-          finalization_action: :release
-        })
+    schedule_issue_retry(state, issue_id, attempt + 1, metadata)
+  end
 
-      schedule_issue_retry(state, issue_id, attempt + 1, metadata)
-    else
-      state
-    end
+  defp release_retry_context(state, issue_id, opts) do
+    opts_metadata = Keyword.get(opts, :retry_metadata, %{})
+    previous_retry = Map.get(state.retry_attempts, issue_id, %{})
+    blocked_entry = Map.get(state.blocked, issue_id, %{})
+
+    metadata =
+      blocked_entry
+      |> Map.take([
+        :identifier,
+        :issue_url,
+        :worker_host,
+        :workspace_path,
+        :workspace_attestation,
+        :execution_context,
+        :project_profile
+      ])
+      |> Map.merge(Map.take(previous_retry, Map.keys(previous_retry)))
+      |> Map.merge(opts_metadata)
+
+    attempt = Keyword.get(opts, :issue_retry_attempt) || Map.get(previous_retry, :attempt, 0)
+    {attempt, metadata}
   end
 
   defp retire_lost_claim(%State{} = state, issue_id) do
