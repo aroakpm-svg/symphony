@@ -116,8 +116,10 @@ try {
     if (-not (Test-Path -LiteralPath $state -PathType Leaf)) { throw 'state_missing' }
     $saved = Get-Content -LiteralPath $state -Raw | ConvertFrom-Json
     if ($saved.schema -ne 2 -or $saved.node -ne $Node -or $saved.runtime_commit -ne $RuntimeCommit) { throw 'state_mismatch' }
+    $saved.created.state = $false
     Remove-CreatedResources $saved.created $saved.previous_acl
-    if (Test-Path -LiteralPath $state) { Remove-Item -LiteralPath $state -Force }
+    $stage = 'rollback_state'
+    Remove-Item -LiteralPath $state -Force
     Write-Receipt 'PASS' $true; exit 0
   }
   foreach ($path in @($RuntimeSource, $BrokerArtifacts, $CodexExe, $WorkspaceRoot, $PrivateHomeRoot, $CodexHomeRoot)) { Assert-PlainAbsolutePath $path }
@@ -176,6 +178,9 @@ try {
   if ((Get-Service -Name $serviceName).Status -ne 'Stopped') { throw 'service_not_stopped' }
   Write-Receipt 'PASS' $true
 } catch {
-  Remove-CreatedResources $created ([pscustomobject]$previousAcl)
-  Write-Receipt 'FAIL' $false "install_failed_$stage"; exit 21
+  $failedStage = $stage
+  $failureType = $_.Exception.GetType().Name
+  try { Remove-CreatedResources $created ([pscustomobject]$previousAcl) }
+  catch { Write-Receipt 'FAIL' $false "cleanup_failed_$($stage)_$($_.Exception.GetType().Name)"; exit 22 }
+  Write-Receipt 'FAIL' $false "install_failed_$($failedStage)_$failureType"; exit 21
 }
