@@ -145,10 +145,12 @@ try {
   $settings = [ordered]@{ schema = 1; node = $Node; pipe_name = "aroak-symphony-codex-$($Node.ToLowerInvariant())"; controller_sid = $controllerSid; workspace_root = [IO.Path]::GetFullPath($WorkspaceRoot); private_home_root = [IO.Path]::GetFullPath($PrivateHomeRoot); codex_home_root = [IO.Path]::GetFullPath($CodexHomeRoot); codex_exe = $installedCodexExe }
   $settings | ConvertTo-Json | Set-Content -LiteralPath $brokerConfig -Encoding UTF8; $created.config = $true
   ('codex.command: "\"{0}\" --client --pipe {1} --profile <profile> --workspace <issue-workspace> --private-home <issue-private-home> --codex-home <profile-codex-home>"' -f $brokerExe, $settings.pipe_name) | Set-Content -LiteralPath $commandExample -Encoding UTF8
-  $stage = 'service'
+  $stage = 'service_create'
   New-Service -Name $serviceName -BinaryPathName ('"{0}" --service --config "{1}"' -f $brokerExe, $brokerConfig) -StartupType Manual -DisplayName "AROAK Symphony Codex Broker ($Node)" | Out-Null
   $created.service = $true
-  & sc.exe config $serviceName obj= $serviceIdentity password= '' | Out-Null; if ($LASTEXITCODE -ne 0) { throw 'service_identity_failed' }
+  $stage = 'service_identity'
+  & sc.exe config $serviceName obj= $serviceIdentity | Out-Null; if ($LASTEXITCODE -ne 0) { throw 'service_identity_failed' }
+  $stage = 'service_sid'
   & sc.exe sidtype $serviceName restricted | Out-Null; if ($LASTEXITCODE -ne 0) { throw 'service_sid_failed' }
   $stage = 'shared_acls'
   foreach ($path in @($WorkspaceRoot, $PrivateHomeRoot, $CodexHomeRoot)) {
