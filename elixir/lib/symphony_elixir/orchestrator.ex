@@ -1316,6 +1316,19 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   @doc false
+  @spec block_issue_from_entry_for_test(
+          term(),
+          String.t(),
+          map(),
+          String.t(),
+          (String.t(), atom() -> :ok | {:error, term()})
+        ) :: term()
+  def block_issue_from_entry_for_test(%State{} = state, issue_id, running_entry, error, finalize_fun)
+      when is_binary(issue_id) and is_map(running_entry) and is_binary(error) and is_function(finalize_fun, 2) do
+    block_issue_from_entry(state, issue_id, running_entry, error, finalize_fun)
+  end
+
+  @doc false
   @spec retry_issue_fetch_for_test(String.t(), map(), ([String.t()] -> term())) :: term()
   def retry_issue_fetch_for_test(issue_id, metadata, fetch_fun \\ &Tracker.fetch_issue_states_by_ids/1)
       when is_binary(issue_id) and is_map(metadata) and is_function(fetch_fun, 1) do
@@ -1906,7 +1919,11 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   defp block_issue_from_entry(%State{} = state, issue_id, running_entry, error) do
-    _release_result = finalize_distributed_claim(issue_id, :release)
+    block_issue_from_entry(state, issue_id, running_entry, error, &finalize_distributed_claim/2)
+  end
+
+  defp block_issue_from_entry(%State{} = state, issue_id, running_entry, error, finalize_fun) do
+    release_result = finalize_fun.(issue_id, :release)
 
     blocked_entry = %{
       issue_id: issue_id,
@@ -1925,13 +1942,15 @@ defmodule SymphonyElixir.Orchestrator do
       last_codex_timestamp: Map.get(running_entry, :last_codex_timestamp)
     }
 
-    %{
+    blocked_state = %{
       state
       | running: Map.delete(state.running, issue_id),
         retry_attempts: Map.delete(state.retry_attempts, issue_id),
-        claimed: MapSet.put(state.claimed, issue_id),
+        claimed: update_claimed_after_finalization(state.claimed, issue_id, release_result),
         blocked: Map.put(state.blocked, issue_id, blocked_entry)
     }
+
+    retain_finalization_retry(blocked_state, issue_id, running_entry, :release, release_result)
   end
 
   defp choose_issues(issues, state) do

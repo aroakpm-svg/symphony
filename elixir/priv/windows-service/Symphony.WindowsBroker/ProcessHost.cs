@@ -7,7 +7,8 @@ public sealed class CodexProcessFactory : IBrokerProcessFactory
 {
     public IBrokerProcess Start(BrokerRequest request, BrokerOptions options)
     {
-        var start = new ProcessStartInfo(options.CodexExecutable, "app-server") { UseShellExecute=false, RedirectStandardInput=true, RedirectStandardOutput=true, RedirectStandardError=true, WorkingDirectory=request.Workspace, CreateNoWindow=true };
+        var start = new ProcessStartInfo(options.CodexExecutable) { UseShellExecute=false, RedirectStandardInput=true, RedirectStandardOutput=true, RedirectStandardError=true, WorkingDirectory=request.Workspace, CreateNoWindow=true };
+        foreach (var argument in BrokerPolicy.CodexArguments(request)) start.ArgumentList.Add(argument);
         start.Environment.Clear();
         var host = Environment.GetEnvironmentVariables().Cast<DictionaryEntry>().ToDictionary(e => (string)e.Key, e => (string)e.Value!, StringComparer.OrdinalIgnoreCase);
         foreach (var pair in BrokerPolicy.WorkerEnvironment(request, host)) start.Environment[pair.Key] = pair.Value;
@@ -17,7 +18,16 @@ public sealed class CodexProcessFactory : IBrokerProcessFactory
 sealed class BrokerProcess : IBrokerProcess
 {
     readonly Process process; readonly KillOnCloseJob job = new();
-    public BrokerProcess(Process process) { this.process=process; job.Add(process); }
+    public BrokerProcess(Process process)
+    {
+        this.process=process;
+        try { job.Add(process); }
+        catch
+        {
+            try { if (!process.HasExited) process.Kill(true); } catch (InvalidOperationException) { }
+            process.Dispose(); job.Dispose(); throw;
+        }
+    }
     public Stream StandardInput => process.StandardInput.BaseStream; public Stream StandardOutput => process.StandardOutput.BaseStream; public Stream StandardError => process.StandardError.BaseStream;
     public async Task<int> WaitForExitAsync(CancellationToken token) { await process.WaitForExitAsync(token); return process.ExitCode; }
     public void TerminateTree() { try { if (!process.HasExited) process.Kill(true); } catch (InvalidOperationException) { } finally { job.Dispose(); } }

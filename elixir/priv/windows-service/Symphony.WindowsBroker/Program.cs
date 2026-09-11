@@ -22,7 +22,13 @@ public static class Program
     static async Task<int> RunClientAsync(string[] args)
     {
         string Required(string name) => Value(args, name) ?? throw new ArgumentException($"missing_{name.TrimStart('-')}");
-        var request = new BrokerRequest(Required("--profile"), Required("--workspace"), Required("--private-home"), Required("--codex-home"));
+        var request = new BrokerRequest(
+            Required("--profile"),
+            Required("--workspace"),
+            Required("--private-home"),
+            Required("--codex-home"),
+            Environment.GetEnvironmentVariable("GH_TOKEN"),
+            Environment.GetEnvironmentVariable("CODEX_DEFAULT_MODEL"));
         return await BrokerClient.RunAsync(Required("--pipe"), request, Console.OpenStandardInput(), Console.OpenStandardOutput(), Console.OpenStandardError(), CancellationToken.None);
     }
     static string? Value(string[] args, string name) { var index = Array.FindIndex(args, value => value.Equals(name, StringComparison.OrdinalIgnoreCase)); return index >= 0 && index + 1 < args.Length ? args[index + 1] : null; }

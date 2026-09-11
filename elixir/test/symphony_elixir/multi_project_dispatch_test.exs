@@ -247,6 +247,46 @@ defmodule SymphonyElixir.MultiProjectDispatchTest do
     assert retained.retry_attempts[issue_id].identifier == "ARO-BLOCKED"
   end
 
+  test "permanent blockers count claimed only while release finalization is retained" do
+    candidate = issue("blocked-finalization", @central_profile, 1)
+    candidate_id = candidate.id
+
+    running_entry = %{
+      issue: candidate,
+      identifier: candidate.identifier,
+      worker_host: "amy",
+      workspace_path: "workspace",
+      project_profile: @central_profile
+    }
+
+    released =
+      Orchestrator.block_issue_from_entry_for_test(
+        %{base_state() | claimed: MapSet.new([candidate_id]), running: %{candidate_id => running_entry}},
+        candidate_id,
+        running_entry,
+        "agent hard blocker",
+        fn ^candidate_id, :release -> :ok end
+      )
+
+    refute MapSet.member?(released.claimed, candidate_id)
+    assert released.blocked[candidate_id].error == "agent hard blocker"
+    refute Map.has_key?(released.retry_attempts, candidate_id)
+
+    retained =
+      Orchestrator.block_issue_from_entry_for_test(
+        %{base_state() | claimed: MapSet.new([candidate_id]), running: %{candidate_id => running_entry}},
+        candidate_id,
+        running_entry,
+        "agent hard blocker",
+        fn ^candidate_id, :release -> {:error, :timeout} end
+      )
+
+    assert MapSet.member?(retained.claimed, candidate_id)
+    assert retained.blocked[candidate_id].error == "agent hard blocker"
+    assert retained.retry_attempts[candidate_id].ownership == :retained_owner
+    assert retained.retry_attempts[candidate_id].finalization_action == :release
+  end
+
   for stage <- [:refresh, :route, :preflight, :claim], failure <- [:raise, :throw, :exit] do
     test "isolates #{failure} from the first candidate's #{stage} callback" do
       stage = unquote(stage)

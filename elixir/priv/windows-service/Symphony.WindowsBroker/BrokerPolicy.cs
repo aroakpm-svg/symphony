@@ -1,6 +1,6 @@
 using System.Text.RegularExpressions;
 namespace Symphony.WindowsBroker;
-public sealed record BrokerRequest(string Profile, string Workspace, string PrivateHome, string CodexHome);
+public sealed record BrokerRequest(string Profile, string Workspace, string PrivateHome, string CodexHome, string? GitHubToken = null, string? Model = null);
 public sealed record ProfileRoots(string PrivateHome, string CodexHome);
 public sealed class BrokerPolicy(string workspaceRoot, IReadOnlyDictionary<string, ProfileRoots> profiles)
 {
@@ -8,20 +8,30 @@ public sealed class BrokerPolicy(string workspaceRoot, IReadOnlyDictionary<strin
     public BrokerRequest Validate(BrokerRequest request)
     {
         if (!profiles.TryGetValue(request.Profile, out var profile)) throw new InvalidDataException("profile_denied");
-        return request with { Workspace = CanonicalUnder(Path.Combine(workspaceRoot, request.Profile), request.Workspace), PrivateHome = CanonicalUnder(profile.PrivateHome, request.PrivateHome), CodexHome = CanonicalExact(profile.CodexHome, request.CodexHome) };
+        ValidateOptionalSecret(request.GitHubToken, "github_token_invalid");
+        ValidateOptionalModel(request.Model);
+        return request with { Workspace = CanonicalUnder(Path.Combine(workspaceRoot, request.Profile), request.Workspace), PrivateHome = CanonicalUnder(profile.PrivateHome, request.PrivateHome), CodexHome = CanonicalUnder(profile.CodexHome, request.CodexHome) };
     }
     public static Dictionary<string, string> WorkerEnvironment(BrokerRequest request, IReadOnlyDictionary<string, string> host)
     {
         var result = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
         foreach (var key in new[] { "SystemRoot", "WINDIR", "TEMP", "TMP", "PATH", "PATHEXT", "COMSPEC" }) if (host.TryGetValue(key, out var value) && !SecretName.IsMatch(key)) result[key] = value;
         result["HOME"] = request.PrivateHome; result["USERPROFILE"] = request.PrivateHome; result["CODEX_HOME"] = request.CodexHome;
+        if (!string.IsNullOrWhiteSpace(request.GitHubToken)) result["GH_TOKEN"] = request.GitHubToken!;
         return result;
     }
-    static string CanonicalExact(string expected, string supplied)
+    public static string[] CodexArguments(BrokerRequest request) =>
+        string.IsNullOrWhiteSpace(request.Model)
+            ? new[] { "app-server" }
+            : new[] { "--config", $"model=\"{request.Model}\"", "app-server" };
+    static void ValidateOptionalSecret(string? value, string reason)
     {
-        var a = Canonical(expected); var b = Canonical(supplied);
-        if (!StringComparer.OrdinalIgnoreCase.Equals(a, b)) throw new InvalidDataException("profile_path_denied");
-        return b;
+        if (value is not null && (value.Length > 8192 || value.Contains('\0') || value.Contains('\r') || value.Contains('\n'))) throw new InvalidDataException(reason);
+    }
+    static void ValidateOptionalModel(string? model)
+    {
+        if (model is null) return;
+        if (string.IsNullOrWhiteSpace(model) || !Regex.IsMatch(model, @"\A[a-zA-Z0-9][a-zA-Z0-9._:-]{0,63}\z")) throw new InvalidDataException("model_denied");
     }
     static string CanonicalUnder(string root, string supplied)
     {

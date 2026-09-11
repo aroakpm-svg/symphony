@@ -34,19 +34,21 @@ The schema-1 JSON configuration is secret-free and matches the Windows installer
 
 Only `Amy` and `Matt` nodes and the `central-brain` and `project-management` profiles are accepted.
 The workspace must be below `<workspace_root>/<profile>`, the issue-private home must be below
-`<private_home_root>/<profile>`, and the Codex home must exactly equal
-`<codex_home_root>/<profile>`. Every existing path component is checked for reparse points before
-Codex starts.
+`<private_home_root>/<profile>`, and the issue-scoped Codex home must be below
+`<codex_home_root>/<profile>`. The client derives the profile from the workspace namespace, not from
+the Codex home leaf. Every existing path component is checked for reparse points before Codex starts.
 
 The pipe DACL permits only SYSTEM and the configured controller SID and explicitly denies network
 tokens. The server also impersonates every connected client and compares its SID with the configured
 controller SID. Frames have a fixed 5-byte header and a 1 MiB payload limit. Standard input, output,
 and error are proxied without interpreting app-server messages.
 
-The broker always starts the configured executable with the sole argument `app-server`. It rebuilds
-the environment from a small operating-system allowlist, sets only the selected HOME, USERPROFILE,
-and CODEX_HOME values, and does not inherit Linear, GitHub App, token, JWT, claim, controller,
-password, or key variables. A kill-on-close Job Object owns every Codex process tree. Client
+The broker always starts the configured executable as `codex app-server`, adding only the validated
+model argument selected by Symphony launch inputs. It rebuilds the environment from a small
+operating-system allowlist, sets the selected HOME, USERPROFILE, and CODEX_HOME values, and forwards
+only the call-local `GH_TOKEN` carried by that broker request. It does not inherit Linear, GitHub
+App, JWT, claim, controller, password, or key variables from the service process. A kill-on-close Job
+Object owns every Codex process tree. Client
 disconnect, service stop, idle timeout (default 15 minutes), and absolute timeout (default 4 hours)
 terminate that entire tree. Up to eight pipe instances allow the node's configured Symphony slots to
 run concurrently.

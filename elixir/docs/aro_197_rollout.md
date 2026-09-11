@@ -102,7 +102,12 @@ absolute values for `-CodexExe`, `-WorkspaceRoot`, `-PrivateHomeRoot`, and `-Cod
 broker configuration contains only the controller SID, pipe name, executable and allowed roots. It
 contains no App credential, token, installation identifier, password, or authentication material.
 The broker fixes the executable to `codex app-server`; client requests may select only an allowed
-profile and canonical paths beneath those configured roots.
+profile, canonical paths beneath those configured roots, the call-local `GH_TOKEN`, and the
+validated Codex model selected by the existing launch inputs. The token and model are forwarded only
+to that brokered `codex app-server` process and are not stored in the service configuration or
+machine environment. The generated command derives the profile from the current workspace namespace
+and grants the broker service Modify rights only to that invocation's workspace, private home, and
+Codex home, removing those explicit grants after the brokered Codex process exits.
 
 Rollback requires the same node and commit. It reads the protected state manifest and removes only
 the runtime directory, broker directory, configuration, service, and manifest recorded as created

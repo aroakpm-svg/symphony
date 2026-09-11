@@ -40,8 +40,9 @@ public sealed class BrokerTests : IDisposable
         var workspace = MakeDirectory("workspace");
         var privateRoot = MakeDirectory("private", "central-brain");
         var privateHome = MakeDirectory("private", "central-brain", "ARO-1-r1");
-        var codexHome = MakeDirectory("codex", "central-brain");
-        var policy = Policy(workspace, privateRoot, codexHome);
+        var codexRoot = MakeDirectory("codex", "central-brain");
+        var codexHome = MakeDirectory("codex", "central-brain", "ARO-1-r1");
+        var policy = Policy(workspace, privateRoot, codexRoot);
         var valid = policy.Validate(new BrokerRequest("central-brain", MakeDirectory("workspace", "central-brain", "ARO-1"), privateHome, codexHome));
         Assert.Equal("central-brain", valid.Profile);
         Assert.Throws<InvalidDataException>(() => policy.Validate(valid with { Profile = "unknown" }));
@@ -59,7 +60,7 @@ public sealed class BrokerTests : IDisposable
     [Fact]
     public void Worker_environment_is_minimal_and_drops_secrets()
     {
-        var request = new BrokerRequest("central-brain", root, Path.Combine(root, "private"), Path.Combine(root, "codex"));
+        var request = new BrokerRequest("central-brain", root, Path.Combine(root, "private"), Path.Combine(root, "codex"), "call-local-token");
         var host = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
         {
             ["SystemRoot"] = @"C:\Windows", ["PATH"] = "safe", ["LINEAR_API_KEY"] = "secret",
@@ -68,8 +69,26 @@ public sealed class BrokerTests : IDisposable
         var environment = BrokerPolicy.WorkerEnvironment(request, host);
         Assert.Equal("safe", environment["PATH"]);
         Assert.Equal(request.CodexHome, environment["CODEX_HOME"]);
-        Assert.DoesNotContain(environment.Keys, key => key.Contains("TOKEN", StringComparison.OrdinalIgnoreCase));
+        Assert.Equal("call-local-token", environment["GH_TOKEN"]);
+        Assert.DoesNotContain(environment, pair => pair.Key.Contains("TOKEN", StringComparison.OrdinalIgnoreCase) && pair.Key != "GH_TOKEN");
         Assert.DoesNotContain("UNRELATED", environment.Keys);
+    }
+
+    [Fact]
+    public void Policy_validates_call_local_secret_and_model_inputs()
+    {
+        var workspace = MakeDirectory("workspace");
+        var privateRoot = MakeDirectory("private", "central-brain");
+        var privateHome = MakeDirectory("private", "central-brain", "ARO-1-r1");
+        var codexRoot = MakeDirectory("codex", "central-brain");
+        var codexHome = MakeDirectory("codex", "central-brain", "ARO-1-r1");
+        var policy = Policy(workspace, privateRoot, codexRoot);
+        var valid = new BrokerRequest("central-brain", MakeDirectory("workspace", "central-brain", "ARO-1"), privateHome, codexHome, "token", "gpt-5.5");
+
+        Assert.Equal("gpt-5.5", policy.Validate(valid).Model);
+        Assert.Equal(new[] { "--config", "model=\"gpt-5.5\"", "app-server" }, BrokerPolicy.CodexArguments(valid));
+        Assert.Throws<InvalidDataException>(() => policy.Validate(valid with { GitHubToken = "bad\nsecret" }));
+        Assert.Throws<InvalidDataException>(() => policy.Validate(valid with { Model = "bad model" }));
     }
 
     [Fact]
@@ -222,7 +241,8 @@ public sealed class BrokerTests : IDisposable
     {
         var workspace = MakeDirectory("workspace", "central-brain", "ARO-1");
         var privateHome = MakeDirectory("private", "central-brain", "ARO-1-r1");
-        var codexHome = MakeDirectory("codex", "central-brain");
+        MakeDirectory("codex", "central-brain");
+        var codexHome = MakeDirectory("codex", "central-brain", "ARO-1-r1");
         return new("central-brain", workspace, privateHome, codexHome);
     }
 
@@ -230,7 +250,7 @@ public sealed class BrokerTests : IDisposable
     {
         var request = ValidRequest();
         return new(pipe, WindowsIdentity.GetCurrent().User!.Value, Path.Combine(root, "codex.exe"),
-            Path.Combine(root, "workspace"), new Dictionary<string, ProfileRoots> { ["central-brain"] = new(Path.GetDirectoryName(request.PrivateHome)!, request.CodexHome) }, idle, absolute);
+            Path.Combine(root, "workspace"), new Dictionary<string, ProfileRoots> { ["central-brain"] = new(Path.GetDirectoryName(request.PrivateHome)!, Path.GetDirectoryName(request.CodexHome)!) }, idle, absolute);
     }
 
     BrokerPolicy Policy(string workspace, string privateHome, string codexHome) =>
