@@ -68,6 +68,50 @@ for `central-brain` and `project-management`, then complete Codex-managed ChatGP
 
 ## Per-node sequence
 
+### Windows administrator installer
+
+Amy and Matt share `priv/install_aro_197_windows.ps1`. `Plan` is the only mode permitted without an
+elevated token and emits a masked, non-mutating JSON receipt. `Install` and `Rollback` require a real
+elevated token. The installer accepts only `Amy` or `Matt`, a full 40-character runtime commit, an
+absolute clean source checkout at that exact commit, a reviewed broker publish directory, and plain
+non-reparse roots. It clones the reviewed commit into an independent checkout beside legacy runtimes,
+never into the legacy `runtime` directory and never with a worktree link back to the source. The node controller account must already exist; account lifecycle remains an operator
+responsibility. The broker runs as its passwordless node-specific virtual service identity.
+
+The installer has one identity-transition path. It installs the immutable runtime, broker publish
+artifacts, secret-free broker configuration, protected ACLs, and a Manual Windows service that stays
+Stopped. It also copies and hash-verifies the selected `codex.exe` into that protected broker version,
+so the service never depends on a user-profile executable. Before mutation it requires the App key to
+have protected ACLs whose readable principals are limited to the controller, SYSTEM, and local
+Administrators. It does not create a worker Scheduled Task, an S4U task, a PowerShell identity launcher, or
+another scheduler. The existing Symphony Scheduled Task remains responsible for orchestration and
+uses the existing `codex.command` extension point to invoke the installed broker executable in
+`--client` mode. The generated `codex-command.example.txt` is an operator aid; applying it to the
+reviewed runtime configuration remains part of node validation.
+
+Run the non-mutating check first:
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\priv\install_aro_197_windows.ps1 `
+  -Node Amy -RuntimeCommit <full-reviewed-sha> -Mode Plan
+```
+
+After exact-head review, invoke `Install` from an administrator prompt and supply `-RuntimeSource`
+as the clean reviewed checkout, `-BrokerArtifacts` as the reviewed `dotnet publish` output, and
+absolute values for `-CodexExe`, `-WorkspaceRoot`, `-PrivateHomeRoot`, and `-CodexHomeRoot`. The
+broker configuration contains only the controller SID, pipe name, executable and allowed roots. It
+contains no App credential, token, installation identifier, password, or authentication material.
+The broker fixes the executable to `codex app-server`; client requests may select only an allowed
+profile and canonical paths beneath those configured roots.
+
+Rollback requires the same node and commit. It reads the protected state manifest and removes only
+the runtime directory, broker directory, configuration, service, and manifest recorded as created
+by that install, and restores the exact prior ACLs for pre-existing workspace and profile roots.
+It never disables, stops, rewrites, or removes any Scheduled Task, legacy runtime, dirty checkout,
+pre-existing account, or pre-existing service. Keep the broker service Manual and
+Stopped until all dry acceptance gates below pass. Repository scripts are unsigned development
+artifacts; Authenticode-sign the reviewed release copy before an `AllSigned` production invocation.
+
 Keep the Scheduled Task disabled. Install a clean immutable build beside the previous runtime; never
 overwrite a dirty checkout. Capture the prior task action, enabled state, runtime version, and a
 secret-free configuration fingerprint.

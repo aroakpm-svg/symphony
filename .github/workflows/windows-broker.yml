@@ -1,0 +1,57 @@
+name: windows-broker
+on: [pull_request]
+jobs:
+  test:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: actions/setup-dotnet@67a3573c9a986a3f9c594539f4ab511d57bb3ce9 # v4
+        with: { dotnet-version: '8.0.x' }
+      - run: dotnet test elixir/priv/windows-service/Symphony.WindowsBroker.Tests/Symphony.WindowsBroker.Tests.csproj --configuration Release
+      - run: dotnet publish elixir/priv/windows-service/Symphony.WindowsBroker/Symphony.WindowsBroker.csproj --configuration Release --runtime win-x64 --self-contained false
+      - shell: pwsh
+        run: |
+          $errors=$null
+          [Management.Automation.Language.Parser]::ParseFile((Resolve-Path elixir/priv/install_aro_197_windows.ps1),[ref]$null,[ref]$errors)|Out-Null
+          if($errors){throw ($errors|Out-String)}
+      - name: Install and roll back the broker boundary
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $node = 'Amy'
+          $controller = 'SymphonyCtlAmy'
+          $root = Join-Path $env:RUNNER_TEMP 'aro197-integration'
+          $install = Join-Path $root 'install'
+          $key = Join-Path $root 'app-key.pem'
+          $workspace = Join-Path $root 'workspace'
+          $private = Join-Path $root 'private'
+          $codexHome = Join-Path $root 'codex-home'
+          $publish = Resolve-Path 'elixir/priv/windows-service/Symphony.WindowsBroker/bin/Release/net8.0-windows/win-x64/publish'
+          $binary = Join-Path $publish 'Symphony.WindowsBroker.exe'
+          try {
+            New-LocalUser -Name $controller -NoPassword | Out-Null
+            New-Item -ItemType Directory -Force -Path $root,$workspace,$private,$codexHome | Out-Null
+            foreach ($profile in 'central-brain','project-management') {
+              New-Item -ItemType Directory -Force -Path (Join-Path $workspace $profile),(Join-Path $private $profile),(Join-Path $codexHome $profile) | Out-Null
+            }
+            Set-Content -LiteralPath $key -Value 'disposable-test-key'
+            & icacls.exe $key /inheritance:r /grant:r "SYSTEM:(F)" "Administrators:(F)" "${env:COMPUTERNAME}\${controller}:(R)" | Out-Null
+            if ($LASTEXITCODE) { throw 'key ACL setup failed' }
+            [Environment]::SetEnvironmentVariable('SYMPHONY_GITHUB_APP_PRIVATE_KEY_FILE', $key, 'Machine')
+            $sha = (git rev-parse HEAD).Trim()
+            $common = @('-Node',$node,'-RuntimeCommit',$sha,'-InstallRoot',$install)
+            & ./elixir/priv/install_aro_197_windows.ps1 @common -Mode Install -RuntimeSource $env:GITHUB_WORKSPACE -BrokerArtifacts $publish -CodexExe $binary -WorkspaceRoot $workspace -PrivateHomeRoot $private -CodexHomeRoot $codexHome
+            if ($LASTEXITCODE) { throw 'install failed' }
+            if ((Get-Service AROAKSymphonyCodexAmy).Status -ne 'Stopped') { throw 'service unexpectedly started' }
+            if ((git -C (Join-Path $install "runtime-$sha") rev-parse HEAD).Trim() -ne $sha) { throw 'runtime attestation failed' }
+            & ./elixir/priv/install_aro_197_windows.ps1 @common -Mode Rollback
+            if ($LASTEXITCODE) { throw 'rollback failed' }
+            if (Test-Path $install) {
+              $remaining = @(Get-ChildItem -Force $install)
+              if ($remaining.Count) { throw 'rollback left installed resources' }
+            }
+          } finally {
+            [Environment]::SetEnvironmentVariable('SYMPHONY_GITHUB_APP_PRIVATE_KEY_FILE', $null, 'Machine')
+            Remove-LocalUser -Name $controller -ErrorAction SilentlyContinue
+            Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue
+          }

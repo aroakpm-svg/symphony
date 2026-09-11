@@ -1,0 +1,3 @@
+.tools/
+elixir/priv/windows-service/**/bin/
+elixir/priv/windows-service/**/obj/
