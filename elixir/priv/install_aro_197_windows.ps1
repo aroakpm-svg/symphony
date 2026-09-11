@@ -55,6 +55,15 @@ function Set-ProtectedAcl([string]$path, [string[]]$principals, [string]$rights 
   }
   Set-Acl -LiteralPath $path -AclObject $acl; Assert-AreAllAccessRulesProtected $path
 }
+function Set-ProtectedAclRules([string]$path, [object[]]$rules) {
+  $acl = Get-Acl -LiteralPath $path; $acl.SetAccessRuleProtection($true, $false)
+  foreach ($rule in @($acl.Access)) { $null = $acl.RemoveAccessRuleAll($rule) }
+  $inheritance = if ((Get-Item -LiteralPath $path -Force) -is [IO.DirectoryInfo]) { 'ContainerInherit,ObjectInherit' } else { 'None' }
+  foreach ($rule in $rules) {
+    $acl.AddAccessRule([Security.AccessControl.FileSystemAccessRule]::new([string]$rule.Principal, [string]$rule.Rights, $inheritance, 'None', 'Allow'))
+  }
+  Set-Acl -LiteralPath $path -AclObject $acl; Assert-AreAllAccessRulesProtected $path
+}
 function Resolve-AccountSid([string]$name) {
   try { ([Security.Principal.NTAccount]::new($name)).Translate([Security.Principal.SecurityIdentifier]).Value }
   catch { throw 'controller_principal_missing' }
@@ -167,9 +176,19 @@ try {
   Set-ProtectedAcl $CodexHomeRoot @('BUILTIN\Administrators', "${env:COMPUTERNAME}\$controller", $serviceIdentity) 'Modify'
   $created.acls = $true
   $stage = 'installed_acls'
-  Set-ProtectedAcl $runtime @('BUILTIN\Administrators', "${env:COMPUTERNAME}\$controller") 'ReadAndExecute'
-  Set-ProtectedAcl $brokerRoot @('BUILTIN\Administrators', "${env:COMPUTERNAME}\$controller", $serviceIdentity) 'ReadAndExecute'
-  Set-ProtectedAcl $brokerConfig @('BUILTIN\Administrators', $serviceIdentity) 'ReadAndExecute'
+  Set-ProtectedAclRules $runtime @(
+    @{ Principal = 'BUILTIN\Administrators'; Rights = 'FullControl' },
+    @{ Principal = "${env:COMPUTERNAME}\$controller"; Rights = 'ReadAndExecute' }
+  )
+  Set-ProtectedAclRules $brokerRoot @(
+    @{ Principal = 'BUILTIN\Administrators'; Rights = 'FullControl' },
+    @{ Principal = "${env:COMPUTERNAME}\$controller"; Rights = 'ReadAndExecute' },
+    @{ Principal = $serviceIdentity; Rights = 'ReadAndExecute' }
+  )
+  Set-ProtectedAclRules $brokerConfig @(
+    @{ Principal = 'BUILTIN\Administrators'; Rights = 'FullControl' },
+    @{ Principal = $serviceIdentity; Rights = 'ReadAndExecute' }
+  )
   $stage = 'state'
   $document = [ordered]@{ schema = 2; node = $Node; runtime_commit = $RuntimeCommit; created = $created; previous_acl = $previousAcl }
   $created.state = $true; $document.created.state = $true
