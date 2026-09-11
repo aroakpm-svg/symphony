@@ -136,4 +136,39 @@ defmodule SymphonyElixir.CLITest do
 
     assert :ok = CLI.evaluate([@ack_flag, "WORKFLOW.md"], deps)
   end
+
+  test "explicitly configures the GitHub App source before application startup" do
+    parent = self()
+
+    deps = %{
+      file_regular?: fn _path -> true end,
+      set_workflow_file_path: fn _path -> :ok end,
+      set_logs_root: fn _path -> :ok end,
+      set_server_port_override: fn _port -> :ok end,
+      configure_github_app: fn ->
+        send(parent, :github_app_configured)
+        :ok
+      end,
+      ensure_all_started: fn ->
+        assert_received :github_app_configured
+        {:ok, [:symphony_elixir]}
+      end
+    }
+
+    assert :ok = CLI.evaluate([@ack_flag, "--github-app", "WORKFLOW.md"], deps)
+  end
+
+  test "does not start when explicit GitHub App configuration is invalid" do
+    deps = %{
+      file_regular?: fn _path -> true end,
+      set_workflow_file_path: fn _path -> :ok end,
+      set_logs_root: fn _path -> :ok end,
+      set_server_port_override: fn _port -> :ok end,
+      configure_github_app: fn -> {:error, :github_app_configuration_invalid} end,
+      ensure_all_started: fn -> flunk("application started") end
+    }
+
+    assert {:error, "GitHub App runtime configuration is invalid"} =
+             CLI.evaluate([@ack_flag, "--github-app", "WORKFLOW.md"], deps)
+  end
 end

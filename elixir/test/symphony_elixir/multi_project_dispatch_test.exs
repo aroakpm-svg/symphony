@@ -68,6 +68,133 @@ defmodule SymphonyElixir.MultiProjectDispatchTest do
     end
   end
 
+  test "admission gate blocks fetch and releases a claim acquired during the gate race" do
+    gate = Path.join(System.tmp_dir!(), "symphony-admission-#{System.unique_integer([:positive])}")
+    previous = System.get_env("SYMPHONY_ADMISSION_PAUSE_FILE")
+    System.put_env("SYMPHONY_ADMISSION_PAUSE_FILE", gate)
+
+    on_exit(fn ->
+      File.rm(gate)
+
+      if previous,
+        do: System.put_env("SYMPHONY_ADMISSION_PAUSE_FILE", previous),
+        else: System.delete_env("SYMPHONY_ADMISSION_PAUSE_FILE")
+    end)
+
+    File.write!(gate, "paused\n")
+
+    assert base_state() ==
+             Orchestrator.multi_project_dispatch_for_test(base_state(), @profiles, fetcher: fn _ -> flunk("candidate fetch ran while admission was paused") end)
+
+    retry_candidate = issue("paused-retry", @central_profile, 1)
+    {retry_state, retry_token} = issue_retry_state(retry_candidate, 2)
+    {:ok, retry_events} = Agent.start_link(fn -> [] end)
+
+    deferred_issue =
+      Orchestrator.fire_issue_retry_for_test(retry_state, retry_candidate.id, retry_token,
+        retry_fetch_fun: fn _, _ -> flunk("issue retry fetched while admission was paused") end,
+        timer_fun: fn message, delay ->
+          record(retry_events, {:timer, message, delay})
+          make_ref()
+        end
+      )
+
+    assert deferred_issue.retry_attempts[retry_candidate.id].attempt == 2
+    assert deferred_issue.retry_attempts[retry_candidate.id].retry_token == retry_token
+    assert {:timer, {:retry_issue, retry_candidate.id, retry_token}, 1_000} in Agent.get(retry_events, & &1)
+
+    profile_token = make_ref()
+
+    profile_state = %{
+      base_state()
+      | profile_retry_attempts: %{
+          @central_profile.key => %{
+            attempt: 3,
+            due_at_ms: 0,
+            reason: :poll_timeout,
+            retry_token: profile_token,
+            timer_ref: make_ref()
+          }
+        }
+    }
+
+    deferred_profile =
+      Orchestrator.retry_project_profile_for_test(profile_state, @profiles, @central_profile.key, profile_token,
+        fetcher: fn _ -> flunk("profile retry fetched while admission was paused") end,
+        timer_fun: fn message, delay ->
+          record(retry_events, {:timer, message, delay})
+          make_ref()
+        end
+      )
+
+    assert deferred_profile.profile_retry_attempts[@central_profile.key].attempt == 3
+    assert deferred_profile.profile_retry_attempts[@central_profile.key].retry_token == profile_token
+    assert {:timer, {:retry_project_profile, @central_profile.key, profile_token}, 1_000} in Agent.get(retry_events, & &1)
+
+    File.rm!(gate)
+    {:ok, events} = Agent.start_link(fn -> [] end)
+    candidate = issue("gate-race", @central_profile, 1)
+
+    state =
+      run_cycle([candidate], %{candidate.id => candidate}, events,
+        claim_fun: fn issue, _owner ->
+          record(events, {:claim, issue.id})
+          File.write!(gate, "paused\n")
+          {:ok, %{claim_id: "claim-#{issue.id}", generation: 1}}
+        end,
+        finalize_claim_fun: fn issue_id, action ->
+          record(events, {:finalize, issue_id, action})
+          :ok
+        end,
+        dispatch_fun: fn _state, _issue, _attempt, _recipient, _worker_host, _claim ->
+          flunk("dispatch ran after admission pause")
+        end
+      )
+
+    refute Map.has_key?(state.running, candidate.id)
+    assert {:finalize, candidate.id, :release} in Agent.get(events, & &1)
+
+    File.rm!(gate)
+    release_failed = issue("gate-race-release-failed", @central_profile, 2)
+
+    retained =
+      run_cycle([release_failed], %{release_failed.id => release_failed}, events,
+        claim_fun: fn issue, _owner ->
+          File.write!(gate, "paused\n")
+          {:ok, %{claim_id: "claim-#{issue.id}", generation: 1}}
+        end,
+        finalize_claim_fun: fn _issue_id, :release -> {:error, :timeout} end,
+        timer_fun: fn _message, _delay -> make_ref() end,
+        dispatch_fun: fn _state, _issue, _attempt, _recipient, _worker_host, _claim ->
+          flunk("dispatch ran after admission pause")
+        end
+      )
+
+    assert MapSet.member?(retained.claimed, release_failed.id)
+    refute Map.has_key?(retained.running, release_failed.id)
+    assert retained.retry_attempts[release_failed.id].ownership == :retained_owner
+
+    first_token = retained.retry_attempts[release_failed.id].retry_token
+
+    still_retained =
+      Orchestrator.fire_issue_retry_for_test(retained, release_failed.id, first_token, finalize_claim_fun: fn _issue_id, :release -> {:error, :timeout} end)
+
+    assert MapSet.member?(still_retained.claimed, release_failed.id)
+    assert still_retained.retry_attempts[release_failed.id].finalization_action == :release
+    refute still_retained.retry_attempts[release_failed.id].retry_token == first_token
+
+    released =
+      Orchestrator.fire_issue_retry_for_test(
+        still_retained,
+        release_failed.id,
+        still_retained.retry_attempts[release_failed.id].retry_token,
+        finalize_claim_fun: fn _issue_id, :release -> :ok end
+      )
+
+    refute MapSet.member?(released.claimed, release_failed.id)
+    refute Map.has_key?(released.retry_attempts, release_failed.id)
+  end
+
   test "wrong-node candidate does not block a later eligible candidate" do
     {:ok, events} = Agent.start_link(fn -> [] end)
     first = issue("first-wrong-node", @central_profile, 1)
@@ -90,6 +217,74 @@ defmodule SymphonyElixir.MultiProjectDispatchTest do
     assert dispatched_ids == ["later-eligible"]
     assert claim_calls == ["later-eligible"]
     assert Map.has_key?(state.running, "later-eligible")
+  end
+
+  test "blocked reconciliation release failures always create a finalization owner" do
+    issue_id = "blocked-release-failed"
+
+    state = %{
+      base_state()
+      | claimed: MapSet.new([issue_id]),
+        blocked: %{
+          issue_id => %{
+            identifier: "ARO-BLOCKED",
+            worker_host: "matt",
+            project_profile: @central_profile
+          }
+        }
+    }
+
+    retained =
+      Orchestrator.release_issue_claim_for_test(state, issue_id, fn ^issue_id ->
+        {:error, :timeout}
+      end)
+
+    assert MapSet.member?(retained.claimed, issue_id)
+    refute Map.has_key?(retained.blocked, issue_id)
+    assert retained.retry_attempts[issue_id].attempt == 1
+    assert retained.retry_attempts[issue_id].ownership == :retained_owner
+    assert retained.retry_attempts[issue_id].finalization_action == :release
+    assert retained.retry_attempts[issue_id].identifier == "ARO-BLOCKED"
+  end
+
+  test "permanent blockers count claimed only while release finalization is retained" do
+    candidate = issue("blocked-finalization", @central_profile, 1)
+    candidate_id = candidate.id
+
+    running_entry = %{
+      issue: candidate,
+      identifier: candidate.identifier,
+      worker_host: "amy",
+      workspace_path: "workspace",
+      project_profile: @central_profile
+    }
+
+    released =
+      Orchestrator.block_issue_from_entry_for_test(
+        %{base_state() | claimed: MapSet.new([candidate_id]), running: %{candidate_id => running_entry}},
+        candidate_id,
+        running_entry,
+        "agent hard blocker",
+        fn ^candidate_id, :release -> :ok end
+      )
+
+    refute MapSet.member?(released.claimed, candidate_id)
+    assert released.blocked[candidate_id].error == "agent hard blocker"
+    refute Map.has_key?(released.retry_attempts, candidate_id)
+
+    retained =
+      Orchestrator.block_issue_from_entry_for_test(
+        %{base_state() | claimed: MapSet.new([candidate_id]), running: %{candidate_id => running_entry}},
+        candidate_id,
+        running_entry,
+        "agent hard blocker",
+        fn ^candidate_id, :release -> {:error, :timeout} end
+      )
+
+    assert MapSet.member?(retained.claimed, candidate_id)
+    assert retained.blocked[candidate_id].error == "agent hard blocker"
+    assert retained.retry_attempts[candidate_id].ownership == :retained_owner
+    assert retained.retry_attempts[candidate_id].finalization_action == :release
   end
 
   for stage <- [:refresh, :route, :preflight, :claim], failure <- [:raise, :throw, :exit] do
@@ -667,6 +862,7 @@ defmodule SymphonyElixir.MultiProjectDispatchTest do
       {[credential_source: nil], :credential_source_unconfigured, :permanent},
       {[credential_source: fn _ -> {:error, :missing} end], :credential_source_missing, :permanent},
       {[credential_source: fn _ -> {:error, :conflict} end], :credential_source_conflict, :permanent},
+      {[credential_source: fn _ -> {:error, :unavailable} end], :github_unavailable, :transient},
       {[credential_source: fn _ -> {:ok, %{credential_ref: "github-project-management"}} end], :credential_reference_mismatch, :permanent},
       {[credential_source: expired_source], :credential_expired, :permanent},
       {[credential_source: fn _ -> {:ok, %{}} end], :credential_resolver_failed, :permanent},
@@ -990,8 +1186,14 @@ defmodule SymphonyElixir.MultiProjectDispatchTest do
       refute Process.alive?(worker)
       assert Enum.count(Agent.get(events, & &1), &match?({:finalize, _, :release}, &1)) == 1
       refute Map.has_key?(failed.running, candidate.id)
-      refute MapSet.member?(failed.claimed, candidate.id)
-      refute Map.has_key?(failed.retry_attempts, candidate.id)
+
+      if stage == :finalize do
+        assert MapSet.member?(failed.claimed, candidate.id)
+        assert failed.retry_attempts[candidate.id].ownership == :retained_owner
+      else
+        refute MapSet.member?(failed.claimed, candidate.id)
+        refute Map.has_key?(failed.retry_attempts, candidate.id)
+      end
     end
   end
 

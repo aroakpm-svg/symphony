@@ -15,6 +15,7 @@ defmodule SymphonyElixirWeb.Presenter do
           generated_at: generated_at,
           counts: %{
             running: length(snapshot.running),
+            claimed: length(Map.get(snapshot, :claimed, [])),
             retrying: length(snapshot.retrying),
             blocked: length(Map.get(snapshot, :blocked, []))
           },
@@ -23,6 +24,7 @@ defmodule SymphonyElixirWeb.Presenter do
           blocked: Enum.map(Map.get(snapshot, :blocked, []), &blocked_entry_payload/1),
           codex_totals: snapshot.codex_totals,
           rate_limits: snapshot.rate_limits,
+          polling: Map.get(snapshot, :polling),
           health: Map.get(snapshot, :health, unknown_health())
         }
 

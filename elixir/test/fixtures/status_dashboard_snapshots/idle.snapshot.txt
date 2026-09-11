@@ -6,6 +6,7 @@
 \e[1m│ Rate Limits: \e[0m\e[90munavailable\e[0m
 │ Health: poll=unknown linear=unknown claim_store=unknown stop=unknown
 \e[1m│ Project: \e[0m\e[36mhttps://linear.app/project/project/issues\e[0m
+\e[1m│ Admission: \e[0m\e[33mpaused\e[0m\e[90m | claimed 1\e[0m
 \e[1m│ Next refresh: \e[0m\e[90mn/a\e[0m
 \e[1m├─ Running\e[0m
 │

@@ -144,6 +144,7 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
 
     snapshot = GenServer.call(pid, :snapshot)
     assert %{running: [snapshot_entry]} = snapshot
+    assert snapshot.claimed == [issue_id]
     assert snapshot_entry.issue_id == issue_id
     assert snapshot_entry.issue_url == "https://example.org/issues/MT-188"
     assert snapshot_entry.session_id == "thread-live-turn-live"
@@ -1133,7 +1134,7 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
     refute Process.alive?(worker_pid)
     refute Map.has_key?(state.running, issue_id)
     refute Map.has_key?(state.retry_attempts, issue_id)
-    assert MapSet.member?(state.claimed, issue_id)
+    refute MapSet.member?(state.claimed, issue_id)
 
     assert %{
              identifier: "MT-MCP",
@@ -1199,7 +1200,7 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
 
     refute Map.has_key?(state.running, issue_id)
     refute Map.has_key?(state.retry_attempts, issue_id)
-    assert MapSet.member?(state.claimed, issue_id)
+    refute MapSet.member?(state.claimed, issue_id)
 
     assert %{
              identifier: "MT-INPUT",
@@ -1249,7 +1250,7 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
     refute Map.has_key?(state.running, issue_id)
     refute Map.has_key?(state.retry_attempts, issue_id)
     refute MapSet.member?(state.completed, issue_id)
-    assert MapSet.member?(state.claimed, issue_id)
+    refute MapSet.member?(state.claimed, issue_id)
 
     assert %{
              identifier: "MT-INPUT-NORMAL",

@@ -7,6 +7,7 @@
 │ Rate Limits: gpt-5 | primary 12,345/20,000 reset 30s | secondary 45/60 reset 12s | credits 9876.50
 │ Health: poll=unknown linear=unknown claim_store=unknown stop=unknown
 │ Project: https://linear.app/project/project/issues
+│ Admission: unknown | claimed 0
 │ Next refresh: n/a
 ├─ Running
 │

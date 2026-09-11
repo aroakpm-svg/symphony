@@ -409,7 +409,7 @@ defmodule SymphonyElixir.ExtensionsTest do
 
     assert state_payload == %{
              "generated_at" => state_payload["generated_at"],
-             "counts" => %{"running" => 1, "retrying" => 1, "blocked" => 1},
+             "counts" => %{"running" => 1, "claimed" => 2, "retrying" => 1, "blocked" => 1},
              "running" => [
                %{
                  "issue_id" => "issue-http",
@@ -462,6 +462,12 @@ defmodule SymphonyElixir.ExtensionsTest do
                "seconds_running" => 42.5
              },
              "rate_limits" => %{"primary" => %{"remaining" => 11}},
+             "polling" => %{
+               "checking?" => false,
+               "next_poll_in_ms" => nil,
+               "poll_interval_ms" => 30_000,
+               "admission_paused?" => true
+             },
              "health" => %{
                "last_successful_poll_at" => "unknown",
                "dependencies" => %{
@@ -767,7 +773,13 @@ defmodule SymphonyElixir.ExtensionsTest do
 
     response = Req.get!("http://127.0.0.1:#{port}/api/v1/state")
     assert response.status == 200
-    assert response.body["counts"] == %{"running" => 1, "retrying" => 1, "blocked" => 1}
+
+    assert response.body["counts"] == %{
+             "running" => 1,
+             "claimed" => 2,
+             "retrying" => 1,
+             "blocked" => 1
+           }
 
     dashboard_css = Req.get!("http://127.0.0.1:#{port}/dashboard.css")
     assert dashboard_css.status == 200
@@ -811,6 +823,7 @@ defmodule SymphonyElixir.ExtensionsTest do
 
   defp static_snapshot do
     %{
+      claimed: ["issue-http", "issue-claimed-before-dispatch"],
       running: [
         %{
           issue_id: "issue-http",
@@ -860,7 +873,13 @@ defmodule SymphonyElixir.ExtensionsTest do
         }
       ],
       codex_totals: %{input_tokens: 4, output_tokens: 8, total_tokens: 12, seconds_running: 42.5},
-      rate_limits: %{"primary" => %{"remaining" => 11}}
+      rate_limits: %{"primary" => %{"remaining" => 11}},
+      polling: %{
+        checking?: false,
+        next_poll_in_ms: nil,
+        poll_interval_ms: 30_000,
+        admission_paused?: true
+      }
     }
   end
 

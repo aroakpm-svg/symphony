@@ -234,6 +234,22 @@ defmodule SymphonyElixir.ClaimServiceTest do
     assert unchanged.claims == state.claims
   end
 
+  test "release failure retains the local claim until durable release is confirmed" do
+    claim = %{
+      claim_id: "11111111-1111-4111-8111-111111111111",
+      generation: 3,
+      owner: self(),
+      worker: nil
+    }
+
+    state = %ClaimService{claims: %{"issue-1" => claim}}
+
+    assert {:reply, {:error, :timeout}, unchanged} =
+             ClaimService.terminal_reply_for_test(state, "issue-1", {:error, :timeout})
+
+    assert unchanged.claims == state.claims
+  end
+
   test "supervisor shutdown drains claims and stops immediately" do
     state = %ClaimService{connection: make_ref(), claims: %{"issue-1" => %{owner: self()}}}
 
