@@ -106,6 +106,7 @@ if (-not (Test-Elevated)) { Write-Receipt 'FAIL' $false 'elevation_required'; ex
 Assert-PlainAbsolutePath $InstallRoot
 $created = [ordered]@{ runtime = $false; broker = $false; config = $false; service = $false; state = $false; acls = $false }
 $previousAcl = [ordered]@{}
+$stage = 'validate'
 try {
   if ($Mode -eq 'Rollback') {
     if (-not (Test-Path -LiteralPath $state -PathType Leaf)) { throw 'state_missing' }
@@ -128,6 +129,7 @@ try {
   if (Test-Path -LiteralPath $brokerRoot) { throw 'broker_already_exists' }
   if (Get-Service -Name $serviceName -ErrorAction SilentlyContinue) { throw 'service_already_exists' }
   $controllerSid = Resolve-AccountSid "${env:COMPUTERNAME}\$controller"; Assert-ControllerSecretBoundary $controllerSid
+  $stage = 'runtime'
   New-Item -ItemType Directory -Path $InstallRoot -Force | Out-Null
   & git clone --no-local --no-checkout -- $RuntimeSource $runtime | Out-Null
   if ($LASTEXITCODE -ne 0) { throw 'runtime_copy_failed' }
@@ -136,16 +138,19 @@ try {
   if ($LASTEXITCODE -ne 0 -or (git -C $runtime rev-parse HEAD).Trim() -ne $RuntimeCommit -or (git -C $runtime status --porcelain)) {
     throw 'runtime_attestation_failed'
   }
+  $stage = 'broker_files'
   Copy-Item -LiteralPath $BrokerArtifacts -Destination $brokerRoot -Recurse; $created.broker = $true
   Copy-Item -LiteralPath $CodexExe -Destination $installedCodexExe
   if ((Get-FileHash -Algorithm SHA256 -LiteralPath $CodexExe).Hash -ne (Get-FileHash -Algorithm SHA256 -LiteralPath $installedCodexExe).Hash) { throw 'codex_copy_attestation_failed' }
   $settings = [ordered]@{ schema = 1; node = $Node; pipe_name = "aroak-symphony-codex-$($Node.ToLowerInvariant())"; controller_sid = $controllerSid; workspace_root = [IO.Path]::GetFullPath($WorkspaceRoot); private_home_root = [IO.Path]::GetFullPath($PrivateHomeRoot); codex_home_root = [IO.Path]::GetFullPath($CodexHomeRoot); codex_exe = $installedCodexExe }
   $settings | ConvertTo-Json | Set-Content -LiteralPath $brokerConfig -Encoding UTF8; $created.config = $true
   ('codex.command: "\"{0}\" --client --pipe {1} --profile <profile> --workspace <issue-workspace> --private-home <issue-private-home> --codex-home <profile-codex-home>"' -f $brokerExe, $settings.pipe_name) | Set-Content -LiteralPath $commandExample -Encoding UTF8
+  $stage = 'service'
   New-Service -Name $serviceName -BinaryPathName ('"{0}" --service --config "{1}"' -f $brokerExe, $brokerConfig) -StartupType Manual -DisplayName "AROAK Symphony Codex Broker ($Node)" | Out-Null
   $created.service = $true
   & sc.exe config $serviceName obj= $serviceIdentity password= '' | Out-Null; if ($LASTEXITCODE -ne 0) { throw 'service_identity_failed' }
   & sc.exe sidtype $serviceName restricted | Out-Null; if ($LASTEXITCODE -ne 0) { throw 'service_sid_failed' }
+  $stage = 'shared_acls'
   foreach ($path in @($WorkspaceRoot, $PrivateHomeRoot, $CodexHomeRoot)) {
     $previousAcl[$path] = (Get-Acl -LiteralPath $path).Sddl
   }
@@ -153,9 +158,11 @@ try {
   Set-ProtectedAcl $PrivateHomeRoot @('BUILTIN\Administrators', "${env:COMPUTERNAME}\$controller", $serviceIdentity) 'Modify'
   Set-ProtectedAcl $CodexHomeRoot @('BUILTIN\Administrators', "${env:COMPUTERNAME}\$controller", $serviceIdentity) 'Modify'
   $created.acls = $true
+  $stage = 'installed_acls'
   Set-ProtectedAcl $runtime @('BUILTIN\Administrators', "${env:COMPUTERNAME}\$controller") 'ReadAndExecute'
   Set-ProtectedAcl $brokerRoot @('BUILTIN\Administrators', "${env:COMPUTERNAME}\$controller", $serviceIdentity) 'ReadAndExecute'
   Set-ProtectedAcl $brokerConfig @('BUILTIN\Administrators', $serviceIdentity) 'ReadAndExecute'
+  $stage = 'state'
   $document = [ordered]@{ schema = 2; node = $Node; runtime_commit = $RuntimeCommit; created = $created; previous_acl = $previousAcl }
   $created.state = $true; $document.created.state = $true
   $document | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath $state -Encoding UTF8
@@ -164,5 +171,5 @@ try {
   Write-Receipt 'PASS' $true
 } catch {
   Remove-CreatedResources $created ([pscustomobject]$previousAcl)
-  Write-Receipt 'FAIL' $false 'install_failed'; exit 21
+  Write-Receipt 'FAIL' $false "install_failed_$stage"; exit 21
 }
