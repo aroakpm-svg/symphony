@@ -192,9 +192,10 @@ try {
 if ([string]::IsNullOrWhiteSpace(`$privateHome)) { `$privateHome = [Environment]::GetEnvironmentVariable('USERPROFILE', 'Process') }
 if ([string]::IsNullOrWhiteSpace(`$codexHome)) { throw 'codex_home_missing' }
 if ([string]::IsNullOrWhiteSpace(`$privateHome)) { throw 'private_home_missing' }
-`$workspace = (Get-Location).ProviderPath
-`$relativeWorkspace = [IO.Path]::GetRelativePath(`$workspaceRoot, `$workspace)
-if (`$relativeWorkspace.StartsWith('..') -or [IO.Path]::IsPathRooted(`$relativeWorkspace)) { throw 'workspace_outside_root' }
+`$workspace = [IO.Path]::GetFullPath((Get-Location).ProviderPath).TrimEnd([IO.Path]::DirectorySeparatorChar, [IO.Path]::AltDirectorySeparatorChar)
+`$workspaceRootFull = [IO.Path]::GetFullPath(`$workspaceRoot).TrimEnd([IO.Path]::DirectorySeparatorChar, [IO.Path]::AltDirectorySeparatorChar)
+if (`$workspace.Length -le `$workspaceRootFull.Length -or !`$workspace.StartsWith(`$workspaceRootFull + [IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase)) { throw 'workspace_outside_root' }
+`$relativeWorkspace = `$workspace.Substring(`$workspaceRootFull.Length).TrimStart([IO.Path]::DirectorySeparatorChar, [IO.Path]::AltDirectorySeparatorChar)
 `$profile = (`$relativeWorkspace -split '[\\/]')[0]
 if (`$profile -notin @('central-brain', 'project-management')) { throw 'profile_denied' }
 `$grantPaths = @(`$workspace, `$privateHome, `$codexHome)

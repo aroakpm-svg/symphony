@@ -17,30 +17,17 @@ public sealed class BrokerServer(BrokerOptions options, IBrokerProcessFactory pr
     }
     public async Task RunAsync(CancellationToken stop)
     {
-        var sessions = new List<Task>();
-        try
-        {
-            while (!stop.IsCancellationRequested)
-            {
-                sessions.RemoveAll(task => task.IsCompleted);
-                var accepted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-                sessions.Add(AcceptAndRunAsync(accepted, stop));
-                await accepted.Task.WaitAsync(stop);
-            }
-        }
-        finally { await Task.WhenAll(sessions); }
-    }
-    async Task AcceptAndRunAsync(TaskCompletionSource accepted, CancellationToken stop)
-    {
         var sid = new SecurityIdentifier(options.ControllerSid);
-        await using var pipe = PipeFactory.Create(options.PipeName, sid);
-        await pipe.WaitForConnectionAsync(stop);
-        accepted.TrySetResult();
-        try { PipeFactory.DemandController(pipe, sid); await RunSessionAsync(pipe, stop); }
-        catch (OperationCanceledException) when (!stop.IsCancellationRequested) { }
-        catch (Exception error) when (!stop.IsCancellationRequested)
+        while (!stop.IsCancellationRequested)
         {
-            try { await Frame.WriteAsync(pipe, FrameKind.Error, Encoding.UTF8.GetBytes(error.Message), stop); } catch (IOException) { }
+            await using var pipe = PipeFactory.Create(options.PipeName, sid);
+            await pipe.WaitForConnectionAsync(stop);
+            try { PipeFactory.DemandController(pipe, sid); await RunSessionAsync(pipe, stop); }
+            catch (OperationCanceledException) when (!stop.IsCancellationRequested) { }
+            catch (Exception error) when (!stop.IsCancellationRequested)
+            {
+                try { await Frame.WriteAsync(pipe, FrameKind.Error, Encoding.UTF8.GetBytes(error.Message), stop); } catch (IOException) { }
+            }
         }
     }
     async Task RunSessionAsync(Stream pipe, CancellationToken stop)

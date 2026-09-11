@@ -37,6 +37,8 @@ sealed class SuspendedBrokerProcess : IBrokerProcess
     const uint CreateSuspended = 0x00000004;
     const uint CreateNoWindow = 0x08000000;
     const uint CreateUnicodeEnvironment = 0x00000400;
+    const uint ExtendedStartupInfoPresent = 0x00080000;
+    static readonly UIntPtr ProcThreadAttributeHandleList = new(0x00020002);
     const uint HandleFlagInherit = 0x00000001;
     readonly Process process;
     readonly KillOnCloseJob job;
@@ -71,6 +73,8 @@ sealed class SuspendedBrokerProcess : IBrokerProcess
         var threadHandle = InvalidHandle();
         var processHandle = InvalidHandle();
         var environmentBlock = IntPtr.Zero;
+        var attributeList = IntPtr.Zero;
+        GCHandle inheritedHandleList = default;
         var job = new KillOnCloseJob();
         var processStarted = false;
 
@@ -85,18 +89,23 @@ sealed class SuspendedBrokerProcess : IBrokerProcess
             DisableInheritance(stderrRead);
 
             environmentBlock = BuildEnvironmentBlock(environment);
-            var startup = new StartupInfo
+            var startup = new StartupInfoEx
             {
-                cb = Marshal.SizeOf<StartupInfo>(),
-                dwFlags = StartfUseStdHandles,
-                hStdInput = stdinRead.DangerousGetHandle(),
-                hStdOutput = stdoutWrite.DangerousGetHandle(),
-                hStdError = stderrWrite.DangerousGetHandle()
+                StartupInfo = new StartupInfo
+                {
+                    cb = Marshal.SizeOf<StartupInfoEx>(),
+                    dwFlags = StartfUseStdHandles,
+                    hStdInput = stdinRead.DangerousGetHandle(),
+                    hStdOutput = stdoutWrite.DangerousGetHandle(),
+                    hStdError = stderrWrite.DangerousGetHandle()
+                }
             };
+            attributeList = BuildInheritedHandleList(new[] { stdinRead, stdoutWrite, stderrWrite }, out inheritedHandleList);
+            startup.lpAttributeList = attributeList;
 
             var commandLine = new StringBuilder(BuildCommandLine(executable, arguments));
             if (!CreateProcessW(null, commandLine, IntPtr.Zero, IntPtr.Zero, true,
-                    CreateSuspended | CreateNoWindow | CreateUnicodeEnvironment, environmentBlock, workingDirectory,
+                    CreateSuspended | CreateNoWindow | CreateUnicodeEnvironment | ExtendedStartupInfoPresent, environmentBlock, workingDirectory,
                     ref startup, out var processInformation))
                 throw new Win32Exception();
 
@@ -115,9 +124,9 @@ sealed class SuspendedBrokerProcess : IBrokerProcess
                 process,
                 processHandle,
                 job,
-                new FileStream(stdinWrite, FileAccess.Write, 4096, true),
-                new FileStream(stdoutRead, FileAccess.Read, 4096, true),
-                new FileStream(stderrRead, FileAccess.Read, 4096, true));
+                new FileStream(stdinWrite, FileAccess.Write, 4096, false),
+                new FileStream(stdoutRead, FileAccess.Read, 4096, false),
+                new FileStream(stderrRead, FileAccess.Read, 4096, false));
         }
         catch
         {
@@ -130,6 +139,8 @@ sealed class SuspendedBrokerProcess : IBrokerProcess
         finally
         {
             threadHandle.Dispose();
+            if (attributeList != IntPtr.Zero) { DeleteProcThreadAttributeList(attributeList); Marshal.FreeHGlobal(attributeList); }
+            if (inheritedHandleList.IsAllocated) inheritedHandleList.Free();
             if (environmentBlock != IntPtr.Zero) Marshal.FreeHGlobal(environmentBlock);
         }
     }
@@ -157,6 +168,27 @@ sealed class SuspendedBrokerProcess : IBrokerProcess
     }
 
     static SafeFileHandle InvalidHandle() => new(IntPtr.Zero, false);
+
+    static IntPtr BuildInheritedHandleList(IReadOnlyList<SafeFileHandle> handles, out GCHandle pinnedHandles)
+    {
+        var rawHandles = handles.Select(handle => handle.DangerousGetHandle()).ToArray();
+        pinnedHandles = GCHandle.Alloc(rawHandles, GCHandleType.Pinned);
+        var size = IntPtr.Zero;
+        InitializeProcThreadAttributeList(IntPtr.Zero, 1, 0, ref size);
+        var attributeList = Marshal.AllocHGlobal(size);
+        try
+        {
+            if (!InitializeProcThreadAttributeList(attributeList, 1, 0, ref size)) throw new Win32Exception();
+            if (!UpdateProcThreadAttribute(attributeList, 0, ProcThreadAttributeHandleList, pinnedHandles.AddrOfPinnedObject(), (IntPtr)(IntPtr.Size * rawHandles.Length), IntPtr.Zero, IntPtr.Zero)) throw new Win32Exception();
+            return attributeList;
+        }
+        catch
+        {
+            Marshal.FreeHGlobal(attributeList);
+            pinnedHandles.Free();
+            throw;
+        }
+    }
 
     static void CreatePipe(out SafeFileHandle readPipe, out SafeFileHandle writePipe, ref SecurityAttributes security, uint size)
     {
@@ -205,11 +237,15 @@ sealed class SuspendedBrokerProcess : IBrokerProcess
 
     [StructLayout(LayoutKind.Sequential)] struct SecurityAttributes { public int Length; public IntPtr SecurityDescriptor; [MarshalAs(UnmanagedType.Bool)] public bool InheritHandle; }
     [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)] struct StartupInfo { public int cb; public string? lpReserved; public string? lpDesktop; public string? lpTitle; public int dwX; public int dwY; public int dwXSize; public int dwYSize; public int dwXCountChars; public int dwYCountChars; public int dwFillAttribute; public int dwFlags; public short wShowWindow; public short cbReserved2; public IntPtr lpReserved2; public IntPtr hStdInput; public IntPtr hStdOutput; public IntPtr hStdError; }
+    [StructLayout(LayoutKind.Sequential)] struct StartupInfoEx { public StartupInfo StartupInfo; public IntPtr lpAttributeList; }
     [StructLayout(LayoutKind.Sequential)] struct ProcessInformation { public SafeFileHandle hProcess; public SafeFileHandle hThread; public int dwProcessId; public int dwThreadId; }
 
     [DllImport("kernel32.dll", SetLastError = true, EntryPoint = "CreatePipe")] static extern bool CreatePipeNative(out SafeFileHandle hReadPipe, out SafeFileHandle hWritePipe, ref SecurityAttributes lpPipeAttributes, uint nSize);
     [DllImport("kernel32.dll", SetLastError = true)] static extern bool SetHandleInformation(SafeFileHandle hObject, uint dwMask, uint dwFlags);
-    [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Unicode)] static extern bool CreateProcessW(string? lpApplicationName, StringBuilder lpCommandLine, IntPtr lpProcessAttributes, IntPtr lpThreadAttributes, bool bInheritHandles, uint dwCreationFlags, IntPtr lpEnvironment, string lpCurrentDirectory, ref StartupInfo lpStartupInfo, out ProcessInformation lpProcessInformation);
+    [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Unicode)] static extern bool CreateProcessW(string? lpApplicationName, StringBuilder lpCommandLine, IntPtr lpProcessAttributes, IntPtr lpThreadAttributes, bool bInheritHandles, uint dwCreationFlags, IntPtr lpEnvironment, string lpCurrentDirectory, ref StartupInfoEx lpStartupInfo, out ProcessInformation lpProcessInformation);
     [DllImport("kernel32.dll", SetLastError = true)] static extern uint ResumeThread(SafeFileHandle hThread);
     [DllImport("kernel32.dll", SetLastError = true)] static extern bool TerminateProcess(SafeFileHandle hProcess, uint uExitCode);
+    [DllImport("kernel32.dll", SetLastError = true)] static extern bool InitializeProcThreadAttributeList(IntPtr lpAttributeList, int dwAttributeCount, int dwFlags, ref IntPtr lpSize);
+    [DllImport("kernel32.dll", SetLastError = true)] static extern bool UpdateProcThreadAttribute(IntPtr lpAttributeList, uint dwFlags, UIntPtr attribute, IntPtr lpValue, IntPtr cbSize, IntPtr lpPreviousValue, IntPtr lpReturnSize);
+    [DllImport("kernel32.dll", SetLastError = true)] static extern void DeleteProcThreadAttributeList(IntPtr lpAttributeList);
 }

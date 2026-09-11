@@ -33,9 +33,7 @@ The schema-1 JSON configuration is secret-free and matches the Windows installer
 ```
 
 Only `Amy` and `Matt` nodes and the `central-brain` and `project-management` profiles are accepted.
-The workspace must be below `<workspace_root>/<profile>`, the issue-private home must be below
-`<private_home_root>/<profile>`, and the issue-scoped Codex home must be below
-`<codex_home_root>/<profile>`. The client derives the profile from the workspace namespace, not from
+The workspace must be below `<workspace_root>/<profile>`, the private home must be either `<private_home_root>/<profile>` or a descendant, and the Codex auth home must be either `<codex_home_root>/<profile>` or a descendant. The client derives the profile from the workspace namespace, not from
 the Codex home leaf. Every existing path component is checked for reparse points before Codex starts.
 
 The pipe DACL permits only SYSTEM and the configured controller SID and explicitly denies network
@@ -43,15 +41,12 @@ tokens. The server also impersonates every connected client and compares its SID
 controller SID. Frames have a fixed 5-byte header and a 1 MiB payload limit. Standard input, output,
 and error are proxied without interpreting app-server messages.
 
-The broker always starts the configured executable as `codex app-server`, adding only the validated
-model argument selected by Symphony launch inputs. It rebuilds the environment from a small
+The broker starts the configured executable as `codex --config shell_environment_policy.inherit=all app-server`, adding only the validated model argument selected by Symphony launch inputs. It rebuilds the environment from a small
 operating-system allowlist, sets the selected HOME, USERPROFILE, and CODEX_HOME values, and forwards
 only the call-local `GH_TOKEN` carried by that broker request. It does not inherit Linear, GitHub
-App, JWT, claim, controller, password, or key variables from the service process. A kill-on-close Job
-Object owns every Codex process tree. Client
+App, JWT, claim, controller, password, or key variables from the service process. Codex is created suspended, assigned to a kill-on-close Job Object, and only then resumed; the child process inherits only that session's stdio handles. Client
 disconnect, service stop, idle timeout (default 15 minutes), and absolute timeout (default 4 hours)
-terminate that entire tree. Up to eight pipe instances allow the node's configured Symphony slots to
-run concurrently.
+terminate that entire tree. Each installed broker service accepts one session at a time so temporary service-SID ACL grants cannot overlap across workspaces or profiles.
 
 Run the Windows integration suite with:
 

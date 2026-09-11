@@ -47,6 +47,8 @@ public sealed class BrokerTests : IDisposable
         Assert.Equal("central-brain", valid.Profile);
         Assert.Throws<InvalidDataException>(() => policy.Validate(valid with { Profile = "unknown" }));
         Assert.Throws<InvalidDataException>(() => policy.Validate(valid with { Workspace = root }));
+        Assert.Equal(privateRoot, policy.Validate(valid with { PrivateHome = privateRoot }).PrivateHome);
+        Assert.Equal(codexRoot, policy.Validate(valid with { CodexHome = codexRoot }).CodexHome);
 
         var link = Path.Combine(workspace, "central-brain", "link");
         try
@@ -86,7 +88,7 @@ public sealed class BrokerTests : IDisposable
         var valid = new BrokerRequest("central-brain", MakeDirectory("workspace", "central-brain", "ARO-1"), privateHome, codexHome, "token", "gpt-5.5");
 
         Assert.Equal("gpt-5.5", policy.Validate(valid).Model);
-        Assert.Equal(new[] { "--config", "model=\"gpt-5.5\"", "app-server" }, BrokerPolicy.CodexArguments(valid));
+        Assert.Equal(new[] { "--config", "shell_environment_policy.inherit=all", "--config", "model=\"gpt-5.5\"", "app-server" }, BrokerPolicy.CodexArguments(valid));
         Assert.Throws<InvalidDataException>(() => policy.Validate(valid with { GitHubToken = "bad\nsecret" }));
         Assert.Throws<InvalidDataException>(() => policy.Validate(valid with { Model = "bad model" }));
     }
@@ -124,25 +126,9 @@ public sealed class BrokerTests : IDisposable
     }
 
     [Fact]
-    public async Task Server_accepts_multiple_simultaneous_slots()
+    public void Broker_service_is_single_session_to_keep_service_sid_acl_grants_isolated()
     {
-        var pipe = "symphony-concurrent-" + Guid.NewGuid().ToString("N");
-        var options = TestOptions(pipe, TimeSpan.FromSeconds(5), TimeSpan.FromSeconds(10));
-        var factory = new TestProcessFactory(TestBehavior.Silent, expectedStarts: 3);
-        await using var server = new BrokerServer(options, factory);
-        using var stop = new CancellationTokenSource(TimeSpan.FromSeconds(10));
-        var serving = server.RunAsync(stop.Token);
-        async Task<NamedPipeClientStream> Connect()
-        {
-            var client = new NamedPipeClientStream(".", pipe, PipeDirection.InOut, PipeOptions.Asynchronous, TokenImpersonationLevel.Impersonation);
-            await client.ConnectAsync(stop.Token); await Frame.WriteJsonAsync(client, FrameKind.Request, ValidRequest(), stop.Token); return client;
-        }
-        var clients = await Task.WhenAll(Connect(), Connect(), Connect());
-        await factory.AllStarted.Task.WaitAsync(stop.Token);
-        Assert.Equal(3, factory.StartCount);
-        stop.Cancel();
-        await Assert.ThrowsAnyAsync<OperationCanceledException>(async () => await serving);
-        foreach (var client in clients) client.Dispose();
+        Assert.Equal(1, PipeFactory.MaxServerInstances);
     }
 
     [Fact]

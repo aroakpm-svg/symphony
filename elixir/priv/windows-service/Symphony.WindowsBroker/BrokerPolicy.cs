@@ -10,7 +10,7 @@ public sealed class BrokerPolicy(string workspaceRoot, IReadOnlyDictionary<strin
         if (!profiles.TryGetValue(request.Profile, out var profile)) throw new InvalidDataException("profile_denied");
         ValidateOptionalSecret(request.GitHubToken, "github_token_invalid");
         ValidateOptionalModel(request.Model);
-        return request with { Workspace = CanonicalUnder(Path.Combine(workspaceRoot, request.Profile), request.Workspace), PrivateHome = CanonicalUnder(profile.PrivateHome, request.PrivateHome), CodexHome = CanonicalUnder(profile.CodexHome, request.CodexHome) };
+        return request with { Workspace = CanonicalUnder(Path.Combine(workspaceRoot, request.Profile), request.Workspace, allowEqual: false), PrivateHome = CanonicalUnder(profile.PrivateHome, request.PrivateHome, allowEqual: true), CodexHome = CanonicalUnder(profile.CodexHome, request.CodexHome, allowEqual: true) };
     }
     public static Dictionary<string, string> WorkerEnvironment(BrokerRequest request, IReadOnlyDictionary<string, string> host)
     {
@@ -20,10 +20,13 @@ public sealed class BrokerPolicy(string workspaceRoot, IReadOnlyDictionary<strin
         if (!string.IsNullOrWhiteSpace(request.GitHubToken)) result["GH_TOKEN"] = request.GitHubToken!;
         return result;
     }
-    public static string[] CodexArguments(BrokerRequest request) =>
-        string.IsNullOrWhiteSpace(request.Model)
-            ? new[] { "app-server" }
-            : new[] { "--config", $"model=\"{request.Model}\"", "app-server" };
+    public static string[] CodexArguments(BrokerRequest request)
+    {
+        var args = new List<string> { "--config", "shell_environment_policy.inherit=all" };
+        if (!string.IsNullOrWhiteSpace(request.Model)) args.AddRange(new[] { "--config", $"model=\"{request.Model}\"" });
+        args.Add("app-server");
+        return args.ToArray();
+    }
     static void ValidateOptionalSecret(string? value, string reason)
     {
         if (value is not null && (value.Length > 8192 || value.Contains('\0') || value.Contains('\r') || value.Contains('\n'))) throw new InvalidDataException(reason);
@@ -33,10 +36,11 @@ public sealed class BrokerPolicy(string workspaceRoot, IReadOnlyDictionary<strin
         if (model is null) return;
         if (string.IsNullOrWhiteSpace(model) || !Regex.IsMatch(model, @"\A[a-zA-Z0-9][a-zA-Z0-9._:-]{0,63}\z")) throw new InvalidDataException("model_denied");
     }
-    static string CanonicalUnder(string root, string supplied)
+    static string CanonicalUnder(string root, string supplied, bool allowEqual)
     {
         var a = Canonical(root).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar); var b = Canonical(supplied);
-        if (StringComparer.OrdinalIgnoreCase.Equals(a, b) || !b.StartsWith(a + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase)) throw new InvalidDataException("path_denied");
+        if (StringComparer.OrdinalIgnoreCase.Equals(a, b)) { if (allowEqual) return b; throw new InvalidDataException("path_denied"); }
+        if (!b.StartsWith(a + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase)) throw new InvalidDataException("path_denied");
         return b;
     }
     static string Canonical(string path)
