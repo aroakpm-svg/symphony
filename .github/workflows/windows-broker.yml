@@ -39,7 +39,7 @@ jobs:
             if ($LASTEXITCODE) { throw 'key ACL setup failed' }
             [Environment]::SetEnvironmentVariable('SYMPHONY_GITHUB_APP_PRIVATE_KEY_FILE', $key, 'Machine')
             $sha = (git rev-parse HEAD).Trim()
-            $common = @('-Node',$node,'-RuntimeCommit',$sha,'-InstallRoot',$install)
+            $common = @{ Node = $node; RuntimeCommit = $sha; InstallRoot = $install }
             & ./elixir/priv/install_aro_197_windows.ps1 @common -Mode Install -RuntimeSource $env:GITHUB_WORKSPACE -BrokerArtifacts $publish -CodexExe $binary -WorkspaceRoot $workspace -PrivateHomeRoot $private -CodexHomeRoot $codexHome
             if ($LASTEXITCODE) { throw 'install failed' }
             if ((Get-Service AROAKSymphonyCodexAmy).Status -ne 'Stopped') { throw 'service unexpectedly started' }
