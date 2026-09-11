@@ -74,6 +74,10 @@ function Resolve-AccountSid([string]$name) {
   try { ([Security.Principal.NTAccount]::new($name)).Translate([Security.Principal.SecurityIdentifier]).Value }
   catch { throw 'controller_principal_missing' }
 }
+function ConvertTo-PowerShellSingleQuotedLiteral([string]$value) {
+  "'" + $value.Replace("'", "''") + "'"
+}
+
 function Get-RuleSid([Security.Principal.IdentityReference]$identity) {
   try { $identity.Translate([Security.Principal.SecurityIdentifier]).Value }
   catch { throw 'private_key_acl_unresolvable' }
@@ -184,9 +188,12 @@ try {
   if ((Get-FileHash -Algorithm SHA256 -LiteralPath $CodexExe).Hash -ne (Get-FileHash -Algorithm SHA256 -LiteralPath $installedCodexExe).Hash) { throw 'codex_copy_attestation_failed' }
   $settings = [ordered]@{ schema = 1; node = $Node; pipe_name = "aroak-symphony-codex-$($Node.ToLowerInvariant())"; controller_sid = $controllerSid; workspace_root = [IO.Path]::GetFullPath($WorkspaceRoot); private_home_root = [IO.Path]::GetFullPath($PrivateHomeRoot); codex_home_root = [IO.Path]::GetFullPath($CodexHomeRoot); codex_exe = $installedCodexExe }
   $settings | ConvertTo-Json | Set-Content -LiteralPath $brokerConfig -Encoding UTF8; $created.config = $true; Save-RecoveryState $created $previousAcl
+  $workspaceRootLiteral = ConvertTo-PowerShellSingleQuotedLiteral ([IO.Path]::GetFullPath($WorkspaceRoot))
+  $brokerExeLiteral = ConvertTo-PowerShellSingleQuotedLiteral $brokerExe
+  $pipeNameLiteral = ConvertTo-PowerShellSingleQuotedLiteral $settings.pipe_name
   @"
 `$ErrorActionPreference = 'Stop'
-`$workspaceRoot = '$([IO.Path]::GetFullPath($WorkspaceRoot))'
+`$workspaceRoot = $workspaceRootLiteral
 `$codexHome = [Environment]::GetEnvironmentVariable('CODEX_HOME', 'Process')
 `$privateHome = [Environment]::GetEnvironmentVariable('HOME', 'Process')
 if ([string]::IsNullOrWhiteSpace(`$privateHome)) { `$privateHome = [Environment]::GetEnvironmentVariable('USERPROFILE', 'Process') }
@@ -202,20 +209,29 @@ if (`$profile -notin @('central-brain', 'project-management')) { throw 'profile_
 `$mutex = New-Object System.Threading.Mutex(`$false, 'Global\AROAKSymphonyCodex-$($Node)')
 `$lockHeld = `$false
 try {
-  `$lockHeld = `$mutex.WaitOne([TimeSpan]::FromHours(4))
-  if (!`$lockHeld) { throw 'broker_acl_lock_timeout' }
+  `$lockHeld = `$mutex.WaitOne(0)
+  if (!`$lockHeld) { throw 'broker_acl_busy' }
   foreach (`$grantPath in `$grantPaths) {
     & icacls.exe `$grantPath /grant '$($serviceIdentity):(OI)(CI)(M)' | Out-Null
     if (`$LASTEXITCODE) { throw 'broker_grant_failed' }
   }
-  & '$brokerExe' --client --pipe '$($settings.pipe_name)' --profile `$profile --workspace `$workspace --private-home `$privateHome --codex-home `$codexHome
+  & $brokerExeLiteral --client --pipe $pipeNameLiteral --profile `$profile --workspace `$workspace --private-home `$privateHome --codex-home `$codexHome
   exit `$LASTEXITCODE
 } finally {
-  foreach (`$grantPath in `$grantPaths) {
-    & icacls.exe `$grantPath /remove:g '$($serviceIdentity)' | Out-Null
+  `$cleanupOk = `$true
+  if (`$lockHeld) {
+    foreach (`$grantPath in `$grantPaths) {
+      & icacls.exe `$grantPath /remove:g '$($serviceIdentity)' | Out-Null
+      if (`$LASTEXITCODE) { `$cleanupOk = `$false }
+    }
+    `$mutex.ReleaseMutex()
   }
-  if (`$lockHeld) { `$mutex.ReleaseMutex() }
   `$mutex.Dispose()
+  if (`$cleanupOk) {
+    if (![string]::IsNullOrWhiteSpace(`$env:SYMPHONY_BROKER_CLEANUP_ACK)) { Set-Content -LiteralPath `$env:SYMPHONY_BROKER_CLEANUP_ACK -Value 'done' -Encoding ASCII }
+  } else {
+    throw 'broker_revoke_failed'
+  }
 }
 "@ | Set-Content -LiteralPath $commandWrapper -Encoding UTF8
   ('codex.command: "powershell.exe -NoProfile -ExecutionPolicy Bypass -File \"{0}\""' -f $commandWrapper) | Set-Content -LiteralPath $commandExample -Encoding UTF8

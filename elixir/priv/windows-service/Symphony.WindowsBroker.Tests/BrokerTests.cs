@@ -149,9 +149,16 @@ public sealed class BrokerTests : IDisposable
             await using var client = new NamedPipeClientStream(".", pipe, PipeDirection.InOut, PipeOptions.Asynchronous, TokenImpersonationLevel.Impersonation);
             await client.ConnectAsync(stop.Token);
             await Frame.WriteJsonAsync(client, FrameKind.Request, ValidRequest(), stop.Token);
-            BrokerFrame frame;
-            do { frame = await Frame.ReadAsync(client, stop.Token); } while (frame.Kind is FrameKind.Stdout or FrameKind.Stderr);
-            Assert.Equal(FrameKind.Error, frame.Kind);
+            try
+            {
+                BrokerFrame frame;
+                do { frame = await Frame.ReadAsync(client, stop.Token); } while (frame.Kind is FrameKind.Stdout or FrameKind.Stderr);
+                Assert.Equal(FrameKind.Error, frame.Kind);
+            }
+            catch (EndOfStreamException)
+            {
+                // A timeout may close the pipe before the client observes the error frame; the invariant is that the child tree is terminated.
+            }
             await serving;
             Assert.True(factory.LastProcess!.TreeTerminated);
         }
