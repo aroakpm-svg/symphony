@@ -46,7 +46,7 @@ operating-system allowlist, sets the selected HOME, USERPROFILE, and CODEX_HOME 
 only the call-local `GH_TOKEN` carried by that broker request. It does not inherit Linear, GitHub
 App, JWT, claim, controller, password, or key variables from the service process. Codex is created suspended, assigned to a kill-on-close Job Object, and only then resumed; the child process inherits only that session's stdio handles. Client
 disconnect, service stop, idle timeout (default 15 minutes), and absolute timeout (default 4 hours)
-terminate that entire tree. Each installed broker service accepts one session at a time so temporary service-SID ACL grants cannot overlap across workspaces or profiles.
+terminate that entire tree. The generated command holds a node-global mutex across temporary ACL grant, broker call, and grant removal; each installed broker service also accepts one session at a time so service-SID ACL grants cannot overlap across workspaces or profiles.
 
 Run the Windows integration suite with:
 

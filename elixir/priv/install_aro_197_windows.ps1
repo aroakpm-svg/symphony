@@ -199,7 +199,11 @@ if (`$workspace.Length -le `$workspaceRootFull.Length -or !`$workspace.StartsWit
 `$profile = (`$relativeWorkspace -split '[\\/]')[0]
 if (`$profile -notin @('central-brain', 'project-management')) { throw 'profile_denied' }
 `$grantPaths = @(`$workspace, `$privateHome, `$codexHome)
+`$mutex = New-Object System.Threading.Mutex(`$false, 'Global\AROAKSymphonyCodex-$($Node)')
+`$lockHeld = `$false
 try {
+  `$lockHeld = `$mutex.WaitOne([TimeSpan]::FromHours(4))
+  if (!`$lockHeld) { throw 'broker_acl_lock_timeout' }
   foreach (`$grantPath in `$grantPaths) {
     & icacls.exe `$grantPath /grant '$($serviceIdentity):(OI)(CI)(M)' | Out-Null
     if (`$LASTEXITCODE) { throw 'broker_grant_failed' }
@@ -210,6 +214,8 @@ try {
   foreach (`$grantPath in `$grantPaths) {
     & icacls.exe `$grantPath /remove:g '$($serviceIdentity)' | Out-Null
   }
+  if (`$lockHeld) { `$mutex.ReleaseMutex() }
+  `$mutex.Dispose()
 }
 "@ | Set-Content -LiteralPath $commandWrapper -Encoding UTF8
   ('codex.command: "powershell.exe -NoProfile -ExecutionPolicy Bypass -File \"{0}\""' -f $commandWrapper) | Set-Content -LiteralPath $commandExample -Encoding UTF8
