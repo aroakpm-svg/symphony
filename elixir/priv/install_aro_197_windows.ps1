@@ -90,14 +90,17 @@ function Restore-Acls($previousAcl) {
 }
 function Remove-CreatedResources($created, $previousAcl) {
   if ($created.service) {
+    $script:stage = 'rollback_service'
     Stop-Service -Name $serviceName -Force -ErrorAction SilentlyContinue
     & sc.exe delete $serviceName | Out-Null
     if ($LASTEXITCODE -ne 0) { throw 'service_delete_failed' }
   }
+  $script:stage = 'rollback_files'
   if ($created.config -and (Test-Path -LiteralPath $brokerConfig)) { Remove-Item -LiteralPath $brokerConfig -Force }
   if ($created.broker -and (Test-Path -LiteralPath $brokerRoot)) { Remove-Item -LiteralPath $brokerRoot -Recurse -Force }
   if ($created.runtime -and (Test-Path -LiteralPath $runtime)) { Remove-Item -LiteralPath $runtime -Recurse -Force }
-  Restore-Acls $previousAcl
+  $script:stage = 'rollback_acls'; Restore-Acls $previousAcl
+  $script:stage = 'rollback_state'
   if ($created.state -and (Test-Path -LiteralPath $state)) { Remove-Item -LiteralPath $state -Force }
 }
 
@@ -109,6 +112,7 @@ $previousAcl = [ordered]@{}
 $stage = 'validate'
 try {
   if ($Mode -eq 'Rollback') {
+    $stage = 'rollback_manifest'
     if (-not (Test-Path -LiteralPath $state -PathType Leaf)) { throw 'state_missing' }
     $saved = Get-Content -LiteralPath $state -Raw | ConvertFrom-Json
     if ($saved.schema -ne 2 -or $saved.node -ne $Node -or $saved.runtime_commit -ne $RuntimeCommit) { throw 'state_mismatch' }
