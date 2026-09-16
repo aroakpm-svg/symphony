@@ -146,6 +146,15 @@ public sealed class BrokerTests : IDisposable
     {
         Assert.Equal(1, PipeFactory.MaxServerInstances);
     }
+    [Fact]
+    public void Broker_worker_yields_before_waiting_for_pipe_clients()
+    {
+        var program = File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", "Symphony.WindowsBroker", "Program.cs"));
+        var worker = program[program.IndexOf("sealed class BrokerWorker", StringComparison.Ordinal)..];
+        Assert.Contains("await Task.Yield();", worker);
+        Assert.True(worker.IndexOf("await Task.Yield();", StringComparison.Ordinal) < worker.IndexOf("server.RunAsync", StringComparison.Ordinal));
+    }
+
 
     [Fact]
     public async Task Idle_and_absolute_timeouts_terminate_the_process_tree()

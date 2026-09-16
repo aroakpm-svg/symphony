@@ -34,7 +34,14 @@ public static class Program
     static string? Value(string[] args, string name) { var index = Array.FindIndex(args, value => value.Equals(name, StringComparison.OrdinalIgnoreCase)); return index >= 0 && index + 1 < args.Length ? args[index + 1] : null; }
 }
 sealed class BrokerWorker(BrokerOptions options, IBrokerProcessFactory factory) : BackgroundService
-{ protected override async Task ExecuteAsync(CancellationToken stoppingToken) { await using var server = new BrokerServer(options, factory); await server.RunAsync(stoppingToken); } }
+{
+    protected override async Task ExecuteAsync(CancellationToken stoppingToken)
+    {
+        await Task.Yield();
+        await using var server = new BrokerServer(options, factory);
+        await server.RunAsync(stoppingToken);
+    }
+}
 public sealed record BrokerSettings(
     [property: JsonPropertyName("schema")] int Schema,
     [property: JsonPropertyName("node")] string Node,
