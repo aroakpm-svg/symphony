@@ -75,8 +75,15 @@ function Resolve-AccountSid([string]$name) {
   catch { throw 'controller_principal_missing' }
 }
 function Assert-BrokerArtifactSelfContained([string]$candidateBrokerExe) {
-  $probeOutput = (& $candidateBrokerExe --service 2>&1 | Out-String).Trim()
-  if ($LASTEXITCODE -ne 1 -or $probeOutput -notmatch 'missing_config') { throw 'broker_artifact_not_self_contained' }
+  $previousErrorActionPreference = $ErrorActionPreference
+  try {
+    $ErrorActionPreference = 'Continue'
+    $probeOutput = (& $candidateBrokerExe --service 2>&1 | Out-String).Trim()
+    $probeExitCode = $LASTEXITCODE
+  } finally {
+    $ErrorActionPreference = $previousErrorActionPreference
+  }
+  if ($probeExitCode -ne 1 -or $probeOutput -notmatch 'missing_config') { throw 'broker_artifact_not_self_contained' }
 }
 function ConvertTo-PowerShellSingleQuotedLiteral([string]$value) {
   "'" + $value.Replace("'", "''") + "'"
