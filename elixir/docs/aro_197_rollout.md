@@ -1,5 +1,14 @@
 # ARO-197 GitHub App and node rollout
 
+> **Windows rollout blocked (2026-09-16):** The currently implemented restricted LocalSystem
+> broker is write-restricted, not a private-key read-isolation boundary. Its directly spawned
+> child can read a key allowed to SYSTEM even without a service-SID grant. Do not provision
+> production keys for this launcher, start Windows acceptance with real secrets, enable its
+> runtime, or treat the steps below as authorization. First review a worker security context
+> that excludes controller secrets and prove read-only denial from the actual spawned child
+> against a synthetic fixture. See [security evidence](aro_197_windows_read_boundary.md).
+> ACL-shape validation and passing CI do not satisfy that acceptance gate.
+
 This runbook provisions the ARO-195-approved automation identity after ARO-196. It does not run the
 ARO-285 fleet workload.
 

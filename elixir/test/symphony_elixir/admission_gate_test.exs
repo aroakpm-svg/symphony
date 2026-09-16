@@ -52,6 +52,11 @@ defmodule SymphonyElixir.AdmissionGateTest do
 
     assert {:error, :admission_gate_invalid} =
              AdmissionGate.gate_entry_for_test("ignored", fn _ -> {:error, :eacces} end)
+
+    directory = secure_directory!()
+
+    assert {:error, :admission_gate_invalid} =
+             AdmissionGate.gate_entry_for_test(directory, &File.lstat/1)
   end
 
   test "a gate beneath a worker-writable ancestor fails closed" do
@@ -78,18 +83,18 @@ defmodule SymphonyElixir.AdmissionGateTest do
   end
 
   test "every gate ancestor is validated and a redirected ancestor fails closed" do
-    leaf = Path.join([System.tmp_dir!(), "trusted", "current", "runtime"])
-    redirected = Path.dirname(leaf)
-    caller = self()
+    directory = secure_directory!()
+    actual = Path.join(directory, "actual")
+    redirected = Path.join(directory, "redirected")
+    File.mkdir!(actual)
+    File.chmod!(actual, 0o700)
+    File.ln_s!(actual, redirected)
+    System.put_env(@environment, Path.join(redirected, "pause"))
 
     assert {:error, :admission_gate_invalid} =
-             AdmissionGate.validate_parent_directories_for_test(leaf, fn path ->
-               send(caller, {:validated, path})
-               if path == redirected, do: {:error, :unsafe_private_home_path}, else: :ok
-             end)
+             AdmissionGate.validate_configuration()
 
-    assert_receive {:validated, ^leaf}
-    assert_receive {:validated, ^redirected}
+    assert AdmissionGate.paused?()
   end
 
   defp restore_environment(nil), do: System.delete_env(@environment)
