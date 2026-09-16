@@ -108,6 +108,21 @@ public sealed class BrokerTests : IDisposable
     }
 
     [Fact]
+    public void Json_configuration_accepts_utf8_bom_written_by_windows_powershell()
+    {
+        var workspace = MakeDirectory("workspace"); var privateRoot = MakeDirectory("private"); var codexRoot = MakeDirectory("codex");
+        var codexExe = Path.Combine(root, "codex.exe"); File.WriteAllText(codexExe, "stub");
+        foreach (var profile in new[] { "central-brain", "project-management" }) { MakeDirectory("workspace", profile); MakeDirectory("private", profile); MakeDirectory("codex", profile); }
+        var config = Path.Combine(root, "broker-settings-bom.json");
+        var json = System.Text.Json.JsonSerializer.Serialize(new { schema=1, node="Amy", service_name="AROAKSymphonyCodexAmy", pipe_name="test", controller_sid=WindowsIdentity.GetCurrent().User!.Value, workspace_root=workspace, private_home_root=privateRoot, codex_home_root=codexRoot, codex_exe=codexExe });
+        File.WriteAllBytes(config, new byte[] { 0xEF, 0xBB, 0xBF }.Concat(Encoding.UTF8.GetBytes(json)).ToArray());
+
+        var options = BrokerConfiguration.FromFile(config);
+
+        Assert.Equal("AROAKSymphonyCodexAmy", options.ServiceName);
+    }
+
+    [Fact]
     public async Task Client_and_server_proxy_stdio_and_return_exit_code()
     {
         var pipe = "symphony-test-" + Guid.NewGuid().ToString("N");

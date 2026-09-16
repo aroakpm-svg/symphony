@@ -54,7 +54,7 @@ public static class BrokerConfiguration
         string canonicalConfig;
         try { canonicalConfig = BrokerPolicy.ExistingFile(path); }
         catch (InvalidDataException) { throw new InvalidDataException("config_path_invalid"); }
-        var settings = JsonSerializer.Deserialize<BrokerSettings>(File.ReadAllBytes(canonicalConfig)) ?? throw new InvalidDataException("config_invalid");
+        var settings = JsonSerializer.Deserialize<BrokerSettings>(File.ReadAllText(canonicalConfig)) ?? throw new InvalidDataException("config_invalid");
         if (settings.Schema != 1 || settings.Node is not ("Amy" or "Matt") || settings.ServiceName != $"AROAKSymphonyCodex{settings.Node}") throw new InvalidDataException("config_schema_invalid");
         if (settings.IdleTimeoutSeconds is <= 0 || settings.AbsoluteTimeoutSeconds is <= 0) throw new InvalidDataException("timeout_invalid");
         var workspaceRoot = BrokerPolicy.ExistingDirectory(settings.WorkspaceRoot);
