@@ -1,5 +1,4 @@
-using Microsoft.Extensions.DependencyInjection;
-using Microsoft.Extensions.Hosting;
+using System.ServiceProcess;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 namespace Symphony.WindowsBroker;
@@ -14,8 +13,8 @@ public static class Program
             var options = BrokerConfiguration.FromFile(configPath);
             if (args.Contains("--server", StringComparer.OrdinalIgnoreCase)) { await using var server = new BrokerServer(options, new CodexProcessFactory()); await server.RunAsync(CancellationToken.None); return 0; }
             if (!args.Contains("--service", StringComparer.OrdinalIgnoreCase)) throw new ArgumentException("mode_required");
-            await Host.CreateDefaultBuilder(args).UseWindowsService(service => service.ServiceName = options.ServiceName)
-                .ConfigureServices(services => { services.AddSingleton(options); services.AddSingleton<IBrokerProcessFactory, CodexProcessFactory>(); services.AddHostedService<BrokerWorker>(); }).Build().RunAsync(); return 0;
+            ServiceBase.Run(new BrokerWindowsService(options, new CodexProcessFactory()));
+            return 0;
         }
         catch (Exception error) { Console.Error.WriteLine(error.Message); return 1; }
     }
@@ -33,13 +32,42 @@ public static class Program
     }
     static string? Value(string[] args, string name) { var index = Array.FindIndex(args, value => value.Equals(name, StringComparison.OrdinalIgnoreCase)); return index >= 0 && index + 1 < args.Length ? args[index + 1] : null; }
 }
-sealed class BrokerWorker(BrokerOptions options, IBrokerProcessFactory factory) : BackgroundService
+sealed class BrokerWindowsService : ServiceBase
 {
-    protected override async Task ExecuteAsync(CancellationToken stoppingToken)
+    readonly BrokerOptions options;
+    readonly IBrokerProcessFactory factory;
+    readonly CancellationTokenSource stop = new();
+    Task? running;
+
+    public BrokerWindowsService(BrokerOptions options, IBrokerProcessFactory factory)
     {
-        await Task.Yield();
+        this.options = options;
+        this.factory = factory;
+        ServiceName = options.ServiceName;
+    }
+
+    protected override void OnStart(string[] args)
+    {
+        running = Task.Run(RunAsync);
+    }
+
+    protected override void OnStop()
+    {
+        stop.Cancel();
+        try { running?.GetAwaiter().GetResult(); }
+        catch (OperationCanceledException) { }
+    }
+
+    async Task RunAsync()
+    {
         await using var server = new BrokerServer(options, factory);
-        await server.RunAsync(stoppingToken);
+        await server.RunAsync(stop.Token);
+    }
+
+    protected override void Dispose(bool disposing)
+    {
+        if (disposing) stop.Dispose();
+        base.Dispose(disposing);
     }
 }
 public sealed record BrokerSettings(

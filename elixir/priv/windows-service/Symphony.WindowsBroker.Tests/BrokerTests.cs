@@ -147,12 +147,14 @@ public sealed class BrokerTests : IDisposable
         Assert.Equal(1, PipeFactory.MaxServerInstances);
     }
     [Fact]
-    public void Broker_worker_yields_before_waiting_for_pipe_clients()
+    public void Windows_service_onstart_returns_after_scheduling_broker_loop()
     {
         var program = File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", "Symphony.WindowsBroker", "Program.cs"));
-        var worker = program[program.IndexOf("sealed class BrokerWorker", StringComparison.Ordinal)..];
-        Assert.Contains("await Task.Yield();", worker);
-        Assert.True(worker.IndexOf("await Task.Yield();", StringComparison.Ordinal) < worker.IndexOf("server.RunAsync", StringComparison.Ordinal));
+        var service = program[program.IndexOf("sealed class BrokerWindowsService", StringComparison.Ordinal)..];
+        Assert.Contains(" : ServiceBase", service);
+        Assert.Contains("protected override void OnStart", service);
+        Assert.Contains("running = Task.Run(RunAsync);", service);
+        Assert.True(service.IndexOf("running = Task.Run(RunAsync);", StringComparison.Ordinal) < service.IndexOf("async Task RunAsync", StringComparison.Ordinal));
     }
 
 
