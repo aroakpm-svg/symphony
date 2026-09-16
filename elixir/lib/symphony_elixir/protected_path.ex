@@ -201,11 +201,14 @@ defmodule SymphonyElixir.ProtectedPath do
 
   defp valid_windows_rule?(_invalid), do: false
 
-  defp permitted_windows_rule?(rule, policy, trusted_sids) do
+  defp permitted_windows_rule?(rule, :ancestor, trusted_sids) do
     if inherit_only?(rule),
       do: true,
-      else: permitted_applicable_windows_rule?(rule, policy, trusted_sids)
+      else: permitted_applicable_windows_rule?(rule, :ancestor, trusted_sids)
   end
+
+  defp permitted_windows_rule?(rule, policy, trusted_sids),
+    do: permitted_applicable_windows_rule?(rule, policy, trusted_sids)
 
   defp permitted_applicable_windows_rule?(%{"type" => "Deny"}, _policy, _trusted_sids),
     do: true

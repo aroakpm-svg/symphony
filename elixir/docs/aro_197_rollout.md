@@ -50,10 +50,11 @@ direct parent must have a protected DACL and only the controller, SYSTEM, and lo
 may receive access; untrusted ancestor rights that can replace or retarget the path are rejected.
 The exact TrustedInstaller SID is trusted only as the owner or an allow principal on higher
 ancestors, never on the gate/key or their immediate parents. Evaluate each ACE against the current
-path component: an inherit-only ACE does not apply to that component, while generic rights on an
-applicable ACE must be mapped to their file-system rights before evaluation. A higher ancestor may
-allow an untrusted principal to create a subdirectory only when it grants no delete, delete-child,
-DACL/owner mutation, generic-write/all, or other unrecognized right.
+path component: an inherit-only ACE is ignored on a higher ancestor where it does not apply, while
+generic rights on an applicable ACE must be mapped to their file-system rights before evaluation.
+Immediate parents remain strict because an inheritable grant can control a future gate/key entry.
+A higher ancestor may allow an untrusted principal to create a subdirectory only when it grants no
+delete, delete-child, DACL/owner mutation, generic-write/all, or other unrecognized right.
 Missing ACL inspection support, an unreadable DACL, or any unverifiable path fails closed. Do not
 place the gate under a workspace, `/tmp`, or any tree writable by Codex.
 

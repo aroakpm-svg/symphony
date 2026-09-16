@@ -208,6 +208,21 @@ defmodule SymphonyElixir.ProtectedPathTest do
              )
   end
 
+  test "Windows gate parent rejects untrusted inherit-only mutation grants" do
+    gate_parent =
+      windows_evidence(@controller, true, [
+        allow_rule(@controller, 0x1F01FF),
+        allow_rule(@users, 0x40000000, inheritance_flags: 3, propagation_flags: 2)
+      ])
+
+    assert {:error, :unsafe_protected_path} =
+             ProtectedPath.validate_windows_acl_evidence(
+               gate_parent,
+               :gate_parent,
+               @controller
+             )
+  end
+
   test "Windows ACL evidence validates deny and malformed rules and SIDs" do
     deny_only =
       windows_evidence(@controller, true, [
