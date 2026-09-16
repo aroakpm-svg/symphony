@@ -53,6 +53,16 @@ defmodule SymphonyElixir.WindowsNodeInstallerTest do
     refute workflow =~ "--self-contained false"
     assert workflow =~ "Verify self-contained single-file broker artifact"
     assert workflow =~ "DOTNET_ROOT_X64"
+
+    probe = :binary.match(workflow, "$output = (& $binary --service 2>&1 | Out-String).Trim()")
+    restoration = :binary.match(workflow, "$env:DOTNET_MULTILEVEL_LOOKUP = $savedLookup")
+    explicit_success = :binary.match(workflow, "exit 0")
+
+    assert probe != :nomatch
+    assert restoration != :nomatch
+    assert explicit_success != :nomatch
+    assert elem(probe, 0) < elem(restoration, 0)
+    assert elem(restoration, 0) < elem(explicit_success, 0)
   end
 
   test "installer retains one broker-only identity boundary" do

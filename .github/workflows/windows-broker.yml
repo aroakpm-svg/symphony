@@ -29,6 +29,7 @@ jobs:
             $env:DOTNET_ROOT_X64 = $savedRoot
             $env:DOTNET_MULTILEVEL_LOOKUP = $savedLookup
           }
+          exit 0
       - shell: pwsh
         run: |
           $errors=$null
