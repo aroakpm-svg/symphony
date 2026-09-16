@@ -48,14 +48,18 @@ defmodule SymphonyElixir.DispatchPolicy do
           {:allow, decision()} | {:deny, [reason_code(), ...]}
   def evaluate(issue, policy, run_state, evidence, %DateTime{} = now)
       when is_map(issue) and is_map(policy) and is_map(run_state) and is_map(evidence) do
-    evidence_usable? = evidence_usable?(policy, evidence, now)
-    reason_flags = reason_flags(issue, policy, run_state, evidence, evidence_usable?)
+    if valid_datetime?(now) do
+      evidence_usable? = evidence_usable?(policy, evidence, now)
+      reason_flags = reason_flags(issue, policy, run_state, evidence, evidence_usable?)
 
-    reasons = Enum.filter(@reason_order, &Map.fetch!(reason_flags, &1))
+      reasons = Enum.filter(@reason_order, &Map.fetch!(reason_flags, &1))
 
-    case reasons do
-      [] -> {:allow, receipt(issue, policy, evidence)}
-      [_ | _] -> {:deny, reasons}
+      case reasons do
+        [] -> {:allow, receipt(issue, policy, evidence)}
+        [_ | _] -> {:deny, reasons}
+      end
+    else
+      {:deny, [:invalid_input]}
     end
   end
 
@@ -142,9 +146,22 @@ defmodule SymphonyElixir.DispatchPolicy do
 
   defp valid_evidence_time?(read_at, ttl_seconds, now) do
     is_integer(ttl_seconds) and ttl_seconds > 0 and
-      is_struct(read_at, DateTime) and
+      valid_datetime_fields?(read_at) and
       DateTime.compare(read_at, now) != :gt and
       DateTime.compare(now, DateTime.add(read_at, ttl_seconds, :second)) != :gt
+  rescue
+    _exception -> false
+  end
+
+  defp valid_datetime?(%DateTime{} = datetime) do
+    valid_datetime_fields?(datetime)
+  rescue
+    _exception -> false
+  end
+
+  defp valid_datetime_fields?(datetime) do
+    DateTime.compare(datetime, datetime) == :eq and
+      match?(%DateTime{}, DateTime.add(datetime, 0, :second))
   end
 
   defp unowned_in_progress?(issue, policy, run_state) do

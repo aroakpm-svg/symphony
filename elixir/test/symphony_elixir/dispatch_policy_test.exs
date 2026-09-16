@@ -340,6 +340,26 @@ defmodule SymphonyElixir.DispatchPolicyTest do
     end
   end
 
+  test "rejects a structurally tagged but semantically malformed DateTime clock" do
+    assert DispatchPolicy.evaluate(
+             issue(),
+             policy(),
+             run_state(),
+             evidence(),
+             struct(DateTime)
+           ) == {:deny, [:invalid_input]}
+  end
+
+  test "treats a structurally tagged but semantically malformed evidence time as unavailable" do
+    assert DispatchPolicy.evaluate(
+             issue(),
+             policy(),
+             run_state(),
+             evidence(%{read_at: struct(DateTime)}),
+             @now
+           ) == {:deny, [:evidence_unavailable]}
+  end
+
   test "rejects malformed nested policy input without raising" do
     assert DispatchPolicy.evaluate(
              issue(),
