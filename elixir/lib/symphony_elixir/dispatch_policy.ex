@@ -159,10 +159,68 @@ defmodule SymphonyElixir.DispatchPolicy do
     _exception -> false
   end
 
-  defp valid_datetime_fields?(datetime) do
-    DateTime.compare(datetime, datetime) == :eq and
+  defp valid_datetime_fields?(%DateTime{} = datetime) do
+    valid_microsecond?(datetime.microsecond) and
+      valid_calendar_fields?(datetime) and
+      valid_zone_fields?(datetime) and
+      DateTime.compare(datetime, datetime) == :eq and
       match?(%DateTime{}, DateTime.add(datetime, 0, :second))
   end
+
+  defp valid_datetime_fields?(_datetime), do: false
+
+  defp valid_calendar_fields?(datetime) do
+    valid_calendar_date?(datetime) and valid_calendar_time?(datetime)
+  end
+
+  defp valid_calendar_date?(datetime) do
+    calendar = datetime.calendar
+
+    is_integer(datetime.year) and
+      is_integer(datetime.month) and
+      is_integer(datetime.day) and
+      is_atom(calendar) and
+      function_exported?(calendar, :valid_date?, 3) and
+      calendar.valid_date?(datetime.year, datetime.month, datetime.day) == true
+  end
+
+  defp valid_calendar_time?(datetime) do
+    is_integer(datetime.hour) and
+      is_integer(datetime.minute) and
+      is_integer(datetime.second) and
+      function_exported?(datetime.calendar, :valid_time?, 4) and
+      datetime.calendar.valid_time?(
+        datetime.hour,
+        datetime.minute,
+        datetime.second,
+        datetime.microsecond
+      ) == true
+  end
+
+  defp valid_microsecond?({value, precision}) do
+    is_integer(value) and value in 0..999_999 and
+      is_integer(precision) and precision in 0..6
+  end
+
+  defp valid_microsecond?(_microsecond), do: false
+
+  defp valid_zone_fields?(datetime) do
+    non_empty_binary?(datetime.time_zone) and
+      non_empty_binary?(datetime.zone_abbr) and
+      valid_utc_offset?(datetime.utc_offset) and
+      valid_utc_offset?(datetime.std_offset) and
+      valid_utc_offset?(datetime.utc_offset + datetime.std_offset) and
+      utc_zone_consistent?(datetime)
+  end
+
+  defp valid_utc_offset?(offset), do: is_integer(offset) and offset in -86_399..86_399
+
+  defp utc_zone_consistent?(%DateTime{time_zone: time_zone} = datetime)
+       when time_zone in ["Etc/UTC", "UTC"] do
+    datetime.zone_abbr == "UTC" and datetime.utc_offset == 0 and datetime.std_offset == 0
+  end
+
+  defp utc_zone_consistent?(_datetime), do: true
 
   defp unowned_in_progress?(issue, policy, run_state) do
     if list_member?(map_value(policy, :in_progress_state_ids), map_value(issue, :state_id)) do
@@ -208,15 +266,15 @@ defmodule SymphonyElixir.DispatchPolicy do
 
     map_value(policy, :human_gate) == :required and
       map_value(gate, :status) == :approved and
-      (map_value(gate, :issue_revision) != map_value(issue, :revision) or
-         map_value(gate, :policy_revision) != map_value(policy, :revision) or
-         map_value(gate, :workflow_sha) != map_value(policy, :workflow_sha))
+      (map_value(gate, :issue_revision) !== map_value(issue, :revision) or
+         map_value(gate, :policy_revision) !== map_value(policy, :revision) or
+         map_value(gate, :workflow_sha) !== map_value(policy, :workflow_sha))
   end
 
   defp run_binding_mismatch?(issue, policy, run_state) do
-    map_value(run_state, :approved_issue_revision) != map_value(issue, :revision) or
-      map_value(run_state, :approved_policy_revision) != map_value(policy, :revision) or
-      map_value(run_state, :approved_workflow_sha) != map_value(policy, :workflow_sha)
+    map_value(run_state, :approved_issue_revision) !== map_value(issue, :revision) or
+      map_value(run_state, :approved_policy_revision) !== map_value(policy, :revision) or
+      map_value(run_state, :approved_workflow_sha) !== map_value(policy, :workflow_sha)
   end
 
   defp policy_revision_mismatch?(issue, policy, run_state, evidence, evidence_usable?) do

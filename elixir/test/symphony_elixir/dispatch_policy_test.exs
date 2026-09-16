@@ -5,6 +5,11 @@ defmodule SymphonyElixir.DispatchPolicyTest do
 
   @now ~U[2026-09-16 06:00:00Z]
 
+  defmodule IncompleteCalendar do
+    def valid_date?(_year, _month, _day), do: true
+    def valid_time?(_hour, _minute, _second, _microsecond), do: true
+  end
+
   test "allows an eligible issue with fresh evidence and returns the exact receipt" do
     assert DispatchPolicy.evaluate(issue(), policy(), run_state(), evidence(), @now) ==
              {:allow,
@@ -235,6 +240,23 @@ defmodule SymphonyElixir.DispatchPolicyTest do
     end
   end
 
+  test "requires the evidence approval policy revision to match by type and value" do
+    human_gate = %{
+      status: :approved,
+      issue_revision: "issue-revision-7",
+      policy_revision: 3.0,
+      workflow_sha: "workflow-sha-3"
+    }
+
+    assert DispatchPolicy.evaluate(
+             issue(),
+             policy(),
+             run_state(),
+             evidence(%{human_gate: human_gate}),
+             @now
+           ) == {:deny, [:policy_revision_mismatch]}
+  end
+
   test "binds run state to the issue, policy, and workflow revisions" do
     for state <- [
           run_state(%{approved_issue_revision: "other-revision"}),
@@ -244,6 +266,16 @@ defmodule SymphonyElixir.DispatchPolicyTest do
       assert DispatchPolicy.evaluate(issue(), policy(), state, evidence(), @now) ==
                {:deny, [:policy_revision_mismatch]}
     end
+  end
+
+  test "requires the run-state approval policy revision to match by type and value" do
+    assert DispatchPolicy.evaluate(
+             issue(),
+             policy(),
+             run_state(%{approved_policy_revision: 3.0}),
+             evidence(),
+             @now
+           ) == {:deny, [:policy_revision_mismatch]}
   end
 
   test "denies when a time, turn, failure, or distinct-issue quota is exhausted" do
@@ -350,12 +382,116 @@ defmodule SymphonyElixir.DispatchPolicyTest do
            ) == {:deny, [:invalid_input]}
   end
 
+  test "rejects a plain map clock even when it contains every DateTime field" do
+    assert DispatchPolicy.evaluate(
+             issue(),
+             policy(),
+             run_state(),
+             evidence(),
+             Map.from_struct(@now)
+           ) == {:deny, [:invalid_input]}
+  end
+
+  test "rejects DateTime clocks with invalid fields, ranges, or UTC metadata" do
+    invalid_clocks = [
+      %{@now | year: "2026"},
+      %{@now | month: 13},
+      %{@now | day: 31, month: 9},
+      %{@now | hour: 24},
+      %{@now | minute: 60},
+      %{@now | second: 60},
+      %{@now | microsecond: {1_000_000, 6}},
+      %{@now | microsecond: {0, 7}},
+      %{@now | microsecond: nil},
+      %{@now | time_zone: nil},
+      %{@now | zone_abbr: nil},
+      %{@now | utc_offset: 1},
+      %{@now | std_offset: 1},
+      %{@now | calendar: nil}
+    ]
+
+    for invalid_clock <- invalid_clocks do
+      assert DispatchPolicy.evaluate(
+               issue(),
+               policy(),
+               run_state(),
+               evidence(),
+               invalid_clock
+             ) == {:deny, [:invalid_input]}
+    end
+  end
+
+  test "rejects a clock whose calendar cannot perform DateTime arithmetic" do
+    invalid_clock = %{
+      @now
+      | calendar: IncompleteCalendar,
+        time_zone: "Custom/Incomplete",
+        zone_abbr: "X"
+    }
+
+    assert DispatchPolicy.evaluate(issue(), policy(), run_state(), evidence(), invalid_clock) ==
+             {:deny, [:invalid_input]}
+  end
+
   test "treats a structurally tagged but semantically malformed evidence time as unavailable" do
     assert DispatchPolicy.evaluate(
              issue(),
              policy(),
              run_state(),
              evidence(%{read_at: struct(DateTime)}),
+             @now
+           ) == {:deny, [:evidence_unavailable]}
+  end
+
+  test "treats a plain map evidence time as unavailable even with every DateTime field" do
+    assert DispatchPolicy.evaluate(
+             issue(),
+             policy(),
+             run_state(),
+             evidence(%{read_at: Map.from_struct(~U[2026-09-16 05:58:00Z])}),
+             @now
+           ) == {:deny, [:evidence_unavailable]}
+  end
+
+  test "treats evidence DateTimes with invalid fields, ranges, or UTC metadata as unavailable" do
+    read_at = ~U[2026-09-16 05:58:00Z]
+
+    invalid_read_times = [
+      %{read_at | year: "2026"},
+      %{read_at | month: 13},
+      %{read_at | day: 31, month: 9},
+      %{read_at | hour: 24},
+      %{read_at | minute: 60},
+      %{read_at | second: 60},
+      %{read_at | microsecond: {1_000_000, 6}},
+      %{read_at | microsecond: {0, 7}},
+      %{read_at | microsecond: nil},
+      %{read_at | time_zone: nil},
+      %{read_at | zone_abbr: nil},
+      %{read_at | utc_offset: 1},
+      %{read_at | std_offset: 1},
+      %{read_at | calendar: nil}
+    ]
+
+    for invalid_read_at <- invalid_read_times do
+      assert DispatchPolicy.evaluate(
+               issue(),
+               policy(),
+               run_state(),
+               evidence(%{read_at: invalid_read_at}),
+               @now
+             ) == {:deny, [:evidence_unavailable]}
+    end
+  end
+
+  test "treats evidence as unavailable when its calendar cannot perform DateTime arithmetic" do
+    invalid_read_at = %{~U[2026-09-16 05:58:00Z] | calendar: IncompleteCalendar}
+
+    assert DispatchPolicy.evaluate(
+             issue(),
+             policy(),
+             run_state(),
+             evidence(%{read_at: invalid_read_at}),
              @now
            ) == {:deny, [:evidence_unavailable]}
   end
