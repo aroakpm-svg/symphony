@@ -69,19 +69,24 @@ defmodule SymphonyElixir.MultiProjectDispatchTest do
   end
 
   test "admission gate blocks fetch and releases a claim acquired during the gate race" do
-    gate = Path.join(System.tmp_dir!(), "symphony-admission-#{System.unique_integer([:positive])}")
+    gate_root = Path.join(File.cwd!(), ".symphony-admission-#{System.unique_integer([:positive])}")
+    File.mkdir!(gate_root)
+    File.chmod!(gate_root, 0o700)
+    gate = Path.join(gate_root, "paused")
     previous = System.get_env("SYMPHONY_ADMISSION_PAUSE_FILE")
     System.put_env("SYMPHONY_ADMISSION_PAUSE_FILE", gate)
 
     on_exit(fn ->
-      File.rm(gate)
+      File.rm_rf!(gate_root)
 
       if previous,
         do: System.put_env("SYMPHONY_ADMISSION_PAUSE_FILE", previous),
         else: System.delete_env("SYMPHONY_ADMISSION_PAUSE_FILE")
     end)
 
+    assert :ok = SymphonyElixir.AdmissionGate.validate_configuration()
     File.write!(gate, "paused\n")
+    File.chmod!(gate, 0o600)
 
     assert base_state() ==
              Orchestrator.multi_project_dispatch_for_test(base_state(), @profiles, fetcher: fn _ -> flunk("candidate fetch ran while admission was paused") end)
