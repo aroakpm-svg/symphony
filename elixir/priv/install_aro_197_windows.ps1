@@ -74,6 +74,10 @@ function Resolve-AccountSid([string]$name) {
   try { ([Security.Principal.NTAccount]::new($name)).Translate([Security.Principal.SecurityIdentifier]).Value }
   catch { throw 'controller_principal_missing' }
 }
+function Assert-BrokerArtifactSelfContained([string]$candidateBrokerExe) {
+  $probeOutput = (& $candidateBrokerExe --service 2>&1 | Out-String).Trim()
+  if ($LASTEXITCODE -ne 1 -or $probeOutput -notmatch 'missing_config') { throw 'broker_artifact_not_self_contained' }
+}
 function ConvertTo-PowerShellSingleQuotedLiteral([string]$value) {
   "'" + $value.Replace("'", "''") + "'"
 }
@@ -154,7 +158,9 @@ try {
   foreach ($path in @($RuntimeSource, $BrokerArtifacts, $CodexExe, $WorkspaceRoot, $PrivateHomeRoot, $CodexHomeRoot)) { Assert-PlainAbsolutePath $path }
   if (-not (Test-Path -LiteralPath $RuntimeSource -PathType Container)) { throw 'runtime_source_required' }
   if (-not (Test-Path -LiteralPath $BrokerArtifacts -PathType Container)) { throw 'broker_artifacts_required' }
-  if (-not (Test-Path -LiteralPath (Join-Path $BrokerArtifacts 'Symphony.WindowsBroker.exe') -PathType Leaf)) { throw 'broker_binary_missing' }
+  $sourceBrokerExe = Join-Path $BrokerArtifacts 'Symphony.WindowsBroker.exe'
+  if (-not (Test-Path -LiteralPath $sourceBrokerExe -PathType Leaf)) { throw 'broker_binary_missing' }
+  Assert-BrokerArtifactSelfContained $sourceBrokerExe
   if (-not (Test-Path -LiteralPath $CodexExe -PathType Leaf)) { throw 'codex_exe_missing' }
   foreach ($path in @($WorkspaceRoot, $PrivateHomeRoot, $CodexHomeRoot)) { if (-not (Test-Path -LiteralPath $path -PathType Container)) { throw 'broker_root_missing' } }
   foreach ($profile in @('central-brain', 'project-management')) {

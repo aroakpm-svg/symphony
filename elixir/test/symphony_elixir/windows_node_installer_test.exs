@@ -3,6 +3,7 @@ defmodule SymphonyElixir.WindowsNodeInstallerTest do
 
   @powershell System.find_executable("powershell.exe")
   @installer Path.expand("../../priv/install_aro_197_windows.ps1", __DIR__)
+  @broker_project Path.expand("../../priv/windows-service/Symphony.WindowsBroker/Symphony.WindowsBroker.csproj", __DIR__)
   @sha String.duplicate("a", 40)
 
   @tag skip: if(is_nil(@powershell), do: "powershell.exe unavailable", else: false)
@@ -37,6 +38,15 @@ defmodule SymphonyElixir.WindowsNodeInstallerTest do
     assert status != 0
     assert Jason.decode!(output) == %{"changed" => false, "result" => "FAIL", "reason" => "elevation_required"}
     refute File.exists?(Path.join(root, "runtime-#{@sha}"))
+  end
+
+  test "broker service artifact is self-contained for Windows hosts without global dotnet" do
+    project = File.read!(@broker_project)
+
+    assert project =~ "<RuntimeIdentifier>win-x64</RuntimeIdentifier>"
+    assert project =~ "<SelfContained>true</SelfContained>"
+    assert project =~ "<PublishSingleFile>true</PublishSingleFile>"
+    assert project =~ "<IncludeNativeLibrariesForSelfExtract>true</IncludeNativeLibrariesForSelfExtract>"
   end
 
   test "installer retains one broker-only identity boundary" do
@@ -100,6 +110,9 @@ defmodule SymphonyElixir.WindowsNodeInstallerTest do
     assert installer =~ "codex_home_root"
     assert installer =~ "codex_exe"
     assert installer =~ "codex_copy_attestation_failed"
+    assert installer =~ "Assert-BrokerArtifactSelfContained"
+    assert installer =~ "broker_artifact_not_self_contained"
+    assert installer =~ "missing_config"
     assert installer =~ "Set-ProtectedAclRules $WorkspaceRoot"
     assert installer =~ "Set-ProtectedAclRules $PrivateHomeRoot"
     assert installer =~ "Set-ProtectedAclRules $CodexHomeRoot"
