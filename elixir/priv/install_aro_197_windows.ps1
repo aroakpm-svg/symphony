@@ -281,6 +281,11 @@ try {
   foreach ($path in $profileAclRoots) { Set-ProtectedAcl $path @('BUILTIN\Administrators', "${env:COMPUTERNAME}\$controller") }
   $created.acls = $true; Save-RecoveryState $created $previousAcl
   $stage = 'installed_acls'
+  Set-ProtectedAclRules $InstallRoot @(
+    @{ Principal = 'BUILTIN\Administrators'; Rights = 'FullControl' },
+    @{ Principal = "${env:COMPUTERNAME}\$controller"; Rights = 'FullControl' },
+    @{ Principal = $serviceIdentity; Rights = 'ReadAndExecute' }
+  )
   Set-ProtectedAclRules $runtime @(
     @{ Principal = 'BUILTIN\Administrators'; Rights = 'FullControl' },
     @{ Principal = "${env:COMPUTERNAME}\$controller"; Rights = 'ReadAndExecute' }

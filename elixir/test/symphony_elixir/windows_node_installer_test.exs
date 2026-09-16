@@ -66,6 +66,8 @@ defmodule SymphonyElixir.WindowsNodeInstallerTest do
     assert installer =~ "-StartupType Manual"
     assert installer =~ "NT SERVICE\\$serviceName"
     assert installer =~ "Set-ProtectedAclRules"
+    assert installer =~ "Set-ProtectedAclRules $InstallRoot"
+    assert installer =~ "@{ Principal = $serviceIdentity; Rights = 'ReadAndExecute' }"
     assert installer =~ "Rights = 'FullControl'"
     assert installer =~ "Rights = 'ReadAndExecute'"
     assert installer =~ "controller_sid"
