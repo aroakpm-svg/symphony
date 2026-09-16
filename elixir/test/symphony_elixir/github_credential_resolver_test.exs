@@ -85,6 +85,11 @@ defmodule SymphonyElixir.GitHubCredentialResolverTest do
              )
   end
 
+  test "maps source unavailability to the retryable GitHub classification" do
+    assert {:error, :github_unavailable} =
+             Resolver.resolve(@central_ref, credential_source: fn _ -> {:error, :unavailable} end)
+  end
+
   setup do
     previous = Application.get_env(:symphony_elixir, :github_credential_source)
     Application.delete_env(:symphony_elixir, :github_credential_source)

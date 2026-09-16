@@ -7,6 +7,7 @@
 │ Rate Limits: priority-tier | primary 100/100 reset 1s | secondary 500/500 reset 1s | credits unlimited
 │ Health: poll=unknown linear=unknown claim_store=unknown stop=unknown
 │ Project: https://linear.app/project/project/issues
+│ Admission: unknown | claimed 0
 │ Next refresh: n/a
 ├─ Running
 │

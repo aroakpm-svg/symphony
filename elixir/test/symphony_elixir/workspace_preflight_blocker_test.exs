@@ -342,7 +342,7 @@ defmodule SymphonyElixir.WorkspacePreflightBlockerTest do
 
     refute Map.has_key?(state.running, issue_id)
     refute Map.has_key?(state.retry_attempts, issue_id)
-    assert MapSet.member?(state.claimed, issue_id)
+    refute MapSet.member?(state.claimed, issue_id)
 
     assert %{
              identifier: "MT-PREFLIGHT",

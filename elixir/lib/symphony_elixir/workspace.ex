@@ -1898,7 +1898,7 @@ defmodule SymphonyElixir.Workspace do
     do: classify_windows_reparse_query(output, status)
 
   defp classify_windows_reparse_query(output, 1) when is_binary(output) do
-    if Regex.match?(~r/\AError\s+4390\s*:[^\r\n]*\z/i, String.trim(output)) do
+    if Regex.match?(~r{\A[^\d\r\n:\\/]*4390[ \t]*:[^\r\n]*(?:\r\n|\n)?\z}, output) do
       :ok
     else
       {:error, :unsafe_private_home_path}

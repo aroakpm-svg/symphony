@@ -38,6 +38,7 @@ defmodule SymphonyElixir.MixProject do
           SymphonyElixir.Workspace,
           SymphonyElixir.Application,
           SymphonyElixir.PrivateHome.WindowsCapability,
+          SymphonyElixir.ProtectedPath.Native,
           SymphonyElixir.RuntimeHealth,
           SymphonyElixir.RuntimeNotifier,
           :symphony_runtime_receipt_writer,

@@ -377,6 +377,11 @@ The observability UI now runs on a minimal Phoenix stack:
 
 ## Approved project repository preflight
 
+ARO-197's built-in host adapter is `SymphonyElixir.GitHubAppCredentialSource`. Operators explicitly
+enable it with `--github-app`; it mints a fresh installation token narrowed to one approved repository
+for every resolver call and does not cache credentials. See [`docs/aro_197_rollout.md`](docs/aro_197_rollout.md)
+for provisioning, rotation, revocation, and rollback.
+
 `SymphonyElixir.ProjectRepoPreflight.check/2` accepts one complete profile map from the validated
 `project_profiles` contract plus trusted runtime options. It resolves a short-lived credential
 through `SymphonyElixir.GitHubCredentialResolver`, verifies the configured dedicated actor and
@@ -516,6 +521,20 @@ checkout, hooks or child environment delivery. This checks the token's authority
 uses a direct Git URL or API call, which remote configuration checks cannot constrain. The list
 response is call-local and never stored in scheduler state. Actual token minting, provisioning and
 live cross-repository denial smoke remain ARO-197 operator work.
+
+The controller process that reads the reusable App private key and the Codex worker must use
+different OS principals. `codex.command` must enter the dedicated Codex principal through a trusted
+node-local launcher before starting app-server, and the worker must not inherit any
+`SYMPHONY_GITHUB_APP_*` value. A workspace sandbox with full read access is not an isolation boundary
+for a key readable by the same principal. Each node's rollout must prove, from an actual Codex turn,
+that the worker principal differs from the controller and cannot list or read the key.
+Windows may provide workspace access with a narrow ACL. Han must instead use the trusted launcher
+to create a private mount/user namespace with separate identity-mapped views of only the current
+issue workspace, its exact issue-private-home subtree, and selected profile authentication home.
+Workspace/profile roots that contain sibling work are never mapped. This keeps Symphony's controller-owned `0700` issue-private homes
+unchanged on the host while making the same paths usable by the Codex UID inside its namespace.
+Shared-group, default-ACL, and ordinary-bind fallbacks are unsupported because they either fail the
+private-home re-attestation or leave the worker unable to traverse the directories.
 
 The source's `expires_at` is optional metadata used to reject known-expired credentials early.
 It cannot extend GitHub's actual token lifetime: installation access tokens expire after one hour

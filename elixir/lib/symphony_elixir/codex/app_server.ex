@@ -4,7 +4,7 @@ defmodule SymphonyElixir.Codex.AppServer do
   """
 
   require Logger
-  alias SymphonyElixir.{Codex.DynamicTool, CodexAuthHome, Config, PathSafety, SSH, Workspace}
+  alias SymphonyElixir.{Codex.BrokerLaunchLock, Codex.DynamicTool, CodexAuthHome, Config, PathSafety, SSH, Workspace}
   alias SymphonyElixir.SubprocessEnvironment
 
   @initialize_id 1
@@ -27,7 +27,8 @@ defmodule SymphonyElixir.Codex.AppServer do
           workspace: Path.t(),
           worker_host: String.t() | nil,
           managed_session: boolean(),
-          managed_issue_id: String.t() | nil
+          managed_issue_id: String.t() | nil,
+          broker_lock: term() | nil
         }
 
   @spec run(Path.t(), String.t(), map(), keyword()) :: {:ok, map()} | {:error, term()}
@@ -55,7 +56,7 @@ defmodule SymphonyElixir.Codex.AppServer do
            ),
          {:ok, codex_home} <- CodexAuthHome.resolve(Keyword.get(opts, :execution_context)),
          {:ok, port_environment} <- port_environment(opts),
-         {:ok, port} <- start_port(expanded_workspace, worker_host, port_environment, opts, codex_home) do
+         {:ok, port, broker_lock} <- start_port(expanded_workspace, worker_host, port_environment, opts, codex_home) do
       metadata = port_metadata(port, worker_host)
 
       with {:ok, session_policies} <- session_policies(expanded_workspace, worker_host),
@@ -82,11 +83,12 @@ defmodule SymphonyElixir.Codex.AppServer do
            workspace: expanded_workspace,
            worker_host: worker_host,
            managed_session: managed_session,
-           managed_issue_id: Keyword.get(opts, :managed_issue_id)
+           managed_issue_id: Keyword.get(opts, :managed_issue_id),
+           broker_lock: broker_lock
          }}
       else
         {:error, reason} ->
-          stop_port(port)
+          maybe_release_broker_lock(stop_port_for_lock(port, broker_lock), broker_lock)
           {:error, sanitize_term(reason, redaction_values)}
       end
     end
@@ -195,8 +197,9 @@ defmodule SymphonyElixir.Codex.AppServer do
   end
 
   @spec stop_session(session()) :: :ok
-  def stop_session(%{port: port}) when is_port(port) do
-    stop_port(port)
+  def stop_session(%{port: port} = session) when is_port(port) do
+    broker_lock = Map.get(session, :broker_lock)
+    maybe_release_broker_lock(stop_port_for_lock(port, broker_lock), broker_lock)
   end
 
   defp validate_workspace_cwd(workspace, worker_host, nil, nil) do
@@ -275,51 +278,13 @@ defmodule SymphonyElixir.Codex.AppServer do
 
   defp start_port(workspace, nil, port_environment, opts, codex_home) do
     {shell_name, shell_flag} = local_shell_contract(:os.type())
-    executable = System.find_executable(shell_name)
 
-    if is_nil(executable) do
-      {:error, :shell_not_found}
-    else
-      port_opener = Keyword.get(opts, :port_opener, &Port.open/2)
+    case System.find_executable(shell_name) do
+      nil ->
+        {:error, :shell_not_found}
 
-      port_opts =
-        [
-          :binary,
-          :exit_status,
-          :stderr_to_stdout,
-          args: [String.to_charlist(shell_flag), String.to_charlist(Config.settings!().codex.command)],
-          cd: String.to_charlist(workspace),
-          line: @port_line_bytes
-        ]
-        |> maybe_put_port_environment(codex_port_environment(port_environment, codex_home))
-
-      with {:ok, _revalidated_workspace} <-
-             validate_workspace_cwd(
-               workspace,
-               nil,
-               Keyword.get(opts, :execution_context),
-               Keyword.get(opts, :workspace_attestation)
-             ),
-           :ok <-
-             Workspace.validate_private_home_effect(
-               workspace,
-               nil,
-               Keyword.get(opts, :execution_context),
-               Keyword.get(opts, :workspace_attestation),
-               opts
-             ),
-           {:ok, ^codex_home} <- CodexAuthHome.resolve(Keyword.get(opts, :execution_context)) do
-        port =
-          port_opener.(
-            {:spawn_executable, String.to_charlist(executable)},
-            port_opts
-          )
-
-        {:ok, port}
-      else
-        {:ok, _changed_home} -> {:error, :codex_auth_home_invalid}
-        {:error, _reason} = error -> error
-      end
+      executable ->
+        start_local_port(executable, shell_flag, workspace, port_environment, opts, codex_home)
     end
   end
 
@@ -331,12 +296,88 @@ defmodule SymphonyElixir.Codex.AppServer do
         Keyword.get(opts, :workspace_attestation)
       )
 
-    SSH.start_port(worker_host, remote_command, line: @port_line_bytes)
+    case SSH.start_port(worker_host, remote_command, line: @port_line_bytes) do
+      {:ok, port} -> {:ok, port, nil}
+      {:error, _reason} = error -> error
+    end
   end
 
   defp start_port(_workspace, worker_host, _port_environment, _opts, _codex_home)
        when is_binary(worker_host),
        do: {:error, :remote_subprocess_environment_unsupported}
+
+  defp validate_local_launch(workspace, opts, codex_home) do
+    with {:ok, _revalidated_workspace} <-
+           validate_workspace_cwd(
+             workspace,
+             nil,
+             Keyword.get(opts, :execution_context),
+             Keyword.get(opts, :workspace_attestation)
+           ),
+         :ok <-
+           Workspace.validate_private_home_effect(
+             workspace,
+             nil,
+             Keyword.get(opts, :execution_context),
+             Keyword.get(opts, :workspace_attestation),
+             opts
+           ),
+         {:ok, ^codex_home} <- CodexAuthHome.resolve(Keyword.get(opts, :execution_context)) do
+      :ok
+    else
+      {:ok, _changed_home} -> {:error, :codex_auth_home_invalid}
+      {:error, _reason} = error -> error
+    end
+  end
+
+  defp start_local_port(executable, shell_flag, workspace, port_environment, opts, codex_home) do
+    port_opener = Keyword.get(opts, :port_opener, &Port.open/2)
+
+    port_opts =
+      [
+        :binary,
+        :exit_status,
+        :stderr_to_stdout,
+        args: [String.to_charlist(shell_flag), String.to_charlist(Config.settings!().codex.command)],
+        cd: String.to_charlist(workspace),
+        line: @port_line_bytes
+      ]
+      |> maybe_put_port_environment(codex_port_environment(port_environment, codex_home))
+
+    with {:ok, broker_lock} <- acquire_broker_lock(nil, opts) do
+      port_opts = maybe_put_broker_cleanup_ack_environment(port_opts, broker_lock)
+      open_validated_local_port(executable, workspace, port_opts, port_opener, opts, codex_home, broker_lock)
+    end
+  end
+
+  defp open_validated_local_port(executable, workspace, port_opts, port_opener, opts, codex_home, broker_lock) do
+    case validate_local_launch(workspace, opts, codex_home) do
+      :ok ->
+        BrokerLaunchLock.mark_wrapper_starting(broker_lock)
+
+        try do
+          port =
+            port_opener.(
+              {:spawn_executable, String.to_charlist(executable)},
+              port_opts
+            )
+
+          {:ok, port, broker_lock}
+        rescue
+          exception ->
+            release_broker_lock(broker_lock)
+            reraise exception, __STACKTRACE__
+        catch
+          kind, reason ->
+            release_broker_lock(broker_lock)
+            :erlang.raise(kind, reason, __STACKTRACE__)
+        end
+
+      {:error, _reason} = error ->
+        release_broker_lock(broker_lock)
+        error
+    end
+  end
 
   defp local_shell_contract({:win32, _name}), do: {"sh", "-c"}
   defp local_shell_contract({:unix, _name}), do: {"bash", "-lc"}
@@ -445,6 +486,41 @@ defmodule SymphonyElixir.Codex.AppServer do
       :ok
     end
   end
+
+  defp maybe_put_broker_cleanup_ack_environment(port_opts, nil), do: port_opts
+
+  defp maybe_put_broker_cleanup_ack_environment(port_opts, %{cleanup_ack: cleanup_ack}) do
+    environment = Keyword.get(port_opts, :env, [])
+    environment = [{~c"SYMPHONY_BROKER_CLEANUP_ACK", String.to_charlist(cleanup_ack)} | environment]
+    Keyword.put(port_opts, :env, environment)
+  end
+
+  defp acquire_broker_lock(nil, opts) do
+    command = Config.settings!().codex.command
+
+    if Keyword.get(opts, :windows_broker_lock, windows_broker_command?(command) and match?({:win32, _}, :os.type())) do
+      BrokerLaunchLock.acquire(command)
+    else
+      {:ok, nil}
+    end
+  end
+
+  defp maybe_release_broker_lock(:ok, broker_lock), do: release_broker_lock(broker_lock)
+  defp maybe_release_broker_lock({:error, :broker_cleanup_ack_timeout}, _broker_lock), do: :ok
+
+  defp release_broker_lock(nil), do: :ok
+
+  defp release_broker_lock(lock) do
+    cleanup_ack = Map.get(lock, :cleanup_ack)
+    if is_binary(cleanup_ack), do: File.rm(cleanup_ack)
+    BrokerLaunchLock.release(lock)
+  end
+
+  defp windows_broker_command?(command) when is_binary(command) do
+    String.contains?(command, "codex-command.ps1") or String.contains?(command, "Symphony.WindowsBroker")
+  end
+
+  defp windows_broker_command?(_command), do: false
 
   defp session_policies(workspace, nil) do
     Config.codex_runtime_settings(workspace)
@@ -1376,6 +1452,44 @@ defmodule SymphonyElixir.Codex.AppServer do
 
   defp issue_context(%{id: issue_id, identifier: identifier}) do
     "issue_id=#{issue_id} issue_identifier=#{identifier}"
+  end
+
+  defp stop_port_for_lock(port, nil), do: stop_port(port)
+
+  defp stop_port_for_lock(port, broker_lock) do
+    monitor = Port.monitor(port)
+    stop_port(port)
+    await_port_down(port, monitor, Config.settings!().codex.read_timeout_ms)
+    await_broker_cleanup_ack(Map.fetch!(broker_lock, :cleanup_ack), Config.settings!().codex.read_timeout_ms)
+  end
+
+  defp await_port_down(port, monitor, timeout_ms) when is_port(port) do
+    receive do
+      {:DOWN, ^monitor, :port, ^port, _reason} -> :ok
+    after
+      timeout_ms ->
+        Port.demonitor(monitor, [:flush])
+        :ok
+    end
+  end
+
+  defp await_broker_cleanup_ack(path, timeout_ms) do
+    deadline = System.monotonic_time(:millisecond) + timeout_ms
+    do_await_broker_cleanup_ack(path, deadline)
+  end
+
+  defp do_await_broker_cleanup_ack(path, deadline) do
+    cond do
+      File.exists?(path) ->
+        :ok
+
+      System.monotonic_time(:millisecond) >= deadline ->
+        {:error, :broker_cleanup_ack_timeout}
+
+      true ->
+        Process.sleep(50)
+        do_await_broker_cleanup_ack(path, deadline)
+    end
   end
 
   defp stop_port(port) when is_port(port) do
