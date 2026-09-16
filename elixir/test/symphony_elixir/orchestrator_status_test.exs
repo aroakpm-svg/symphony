@@ -1,6 +1,23 @@
 defmodule SymphonyElixir.OrchestratorStatusTest do
   use SymphonyElixir.TestSupport
 
+  defmodule ClaimNotOwnedService do
+    use GenServer
+
+    def start_link(recipient) do
+      GenServer.start_link(__MODULE__, recipient, name: SymphonyElixir.ClaimService)
+    end
+
+    @impl true
+    def init(recipient), do: {:ok, recipient}
+
+    @impl true
+    def handle_call({:release, issue_id}, _from, recipient) do
+      send(recipient, {:unexpected_claim_release, issue_id})
+      {:reply, {:error, :claim_not_owned}, recipient}
+    end
+  end
+
   test "claim-loss DOWN followed by notification preserves blocked state" do
     issue_id = "issue-claim-loss-race"
     ref = make_ref()
@@ -54,6 +71,68 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
 
     refute MapSet.member?(final_state.claimed, issue.id)
     assert final_state.retry_attempts == %{}
+  end
+
+  test "claim loss retires only the lost finalization and leaves unrelated work alive" do
+    assert Process.whereis(SymphonyElixir.ClaimService) == nil
+    start_supervised!({ClaimNotOwnedService, self()})
+
+    lost_issue_id = "issue-lost-finalization"
+    unrelated_issue_id = "issue-unrelated-worker"
+    unrelated_retry_id = "issue-unrelated-retry"
+    orchestrator_name = Module.concat(__MODULE__, :LostFinalizationOrchestrator)
+    {:ok, pid} = Orchestrator.start_link(name: orchestrator_name)
+    Process.unlink(pid)
+
+    on_exit(fn ->
+      if Process.alive?(pid), do: Process.exit(pid, :normal)
+    end)
+
+    initial_state = :sys.get_state(pid)
+    unrelated_running = %{pid: self(), ref: make_ref(), identifier: "ARO-OTHER", started_at: DateTime.utc_now()}
+    unrelated_retry = %{attempt: 4, retry_token: make_ref(), timer_ref: make_ref(), identifier: "ARO-RETRY"}
+
+    lost_context = %SymphonyElixir.ProjectExecutionContext{
+      issue_id: lost_issue_id,
+      issue_identifier: "ARO-LOST",
+      profile_key: "central-brain",
+      linear_project_id: "00000000-0000-0000-0000-000000000001",
+      repository: "aroakpm-svg/aroak-central-brain",
+      canonical_branch: "main",
+      workspace_namespace: "central-brain",
+      credential_ref: "github-central-brain",
+      environment: "local_non_production",
+      routing_revision: 1
+    }
+
+    lost_retry = %{
+      attempt: 3,
+      retry_token: make_ref(),
+      timer_ref: make_ref(),
+      finalization_action: :release,
+      execution_context: lost_context
+    }
+
+    :sys.replace_state(pid, fn _ ->
+      %{
+        initial_state
+        | claimed: MapSet.new([lost_issue_id, unrelated_issue_id, unrelated_retry_id]),
+          running: %{unrelated_issue_id => unrelated_running},
+          retry_attempts: %{lost_issue_id => lost_retry, unrelated_retry_id => unrelated_retry}
+      }
+    end)
+
+    send(pid, {:claim_lost, lost_issue_id, :renewal_deadline_uncertain})
+    final_state = :sys.get_state(pid)
+
+    assert Process.alive?(pid)
+    refute_received {:unexpected_claim_release, ^lost_issue_id}
+    refute MapSet.member?(final_state.claimed, lost_issue_id)
+    refute Map.has_key?(final_state.retry_attempts, lost_issue_id)
+    assert final_state.running == %{unrelated_issue_id => unrelated_running}
+    assert final_state.retry_attempts[unrelated_retry_id] == unrelated_retry
+    assert MapSet.member?(final_state.claimed, unrelated_issue_id)
+    assert MapSet.member?(final_state.claimed, unrelated_retry_id)
   end
 
   test "snapshot returns :timeout when snapshot server is unresponsive" do

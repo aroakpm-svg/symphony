@@ -1089,6 +1089,73 @@ defmodule SymphonyElixir.MultiProjectDispatchTest do
     end
   end
 
+  test "a fenced startup worker that reports DOWN late is finalized only after death" do
+    {:ok, events} = Agent.start_link(fn -> [] end)
+    {:ok, worker_holder} = Agent.start_link(fn -> nil end)
+    candidate = %{issue("late-fenced-down", @central_profile, 1) | project_profile: @central_profile}
+
+    opts =
+      dispatch_opts(
+        fn profile -> {:ok, if(profile.key == "central-brain", do: [candidate], else: [])} end,
+        %{candidate.id => candidate},
+        events,
+        project_profiles: @profiles,
+        task_start_fun: fn _task_fun ->
+          worker = spawn(fn -> Process.sleep(:infinity) end)
+          Agent.update(worker_holder, fn _ -> worker end)
+          {:ok, worker}
+        end,
+        bind_worker_fun: fn _id, _pid -> {:error, :bind_failed} end,
+        terminate_task_fun: fn _pid -> :ok end,
+        worker_down_wait_fun: fn _ref, _pid, _timeout_ms -> :timeout end,
+        finalize_claim_fun: fn issue_id, action ->
+          record(events, {:finalize, issue_id, action})
+          {:error, :claim_store_unavailable}
+        end
+      )
+      |> Keyword.delete(:dispatch_fun)
+
+    state = %{base_state() | runtime_options: opts}
+    pending = Orchestrator.multi_project_dispatch_for_test(state, @profiles, opts)
+    worker = Agent.get(worker_holder, & &1)
+
+    assert MapSet.member?(pending.claimed, candidate.id)
+    refute Map.has_key?(pending.retry_attempts, candidate.id)
+    refute Orchestrator.should_dispatch_issue_for_test(candidate, pending)
+    assert Agent.get(events, & &1) |> Enum.all?(&(not match?({:finalize, _, _}, &1)))
+
+    assert %{ref: ref, pid: ^worker} = pending.pending_cleanup[candidate.id]
+
+    assert {:noreply, lost_pending} =
+             Orchestrator.handle_info(
+               {:claim_lost, candidate.id, :renewal_deadline_uncertain},
+               pending
+             )
+
+    assert Map.has_key?(lost_pending.pending_cleanup, candidate.id)
+    assert MapSet.member?(lost_pending.claimed, candidate.id)
+    refute Orchestrator.should_dispatch_issue_for_test(candidate, lost_pending)
+
+    claimless_pending = %{lost_pending | claimed: MapSet.delete(lost_pending.claimed, candidate.id)}
+    refute Orchestrator.should_dispatch_issue_for_test(candidate, claimless_pending)
+
+    assert_receive down = {:DOWN, ^ref, :process, ^worker, :killed}
+
+    assert {:noreply, retained} = Orchestrator.handle_info(down, pending)
+    assert {:finalize, candidate.id, :release} in Agent.get(events, & &1)
+    refute Map.has_key?(retained.pending_cleanup, candidate.id)
+    assert MapSet.member?(retained.claimed, candidate.id)
+    assert retained.retry_attempts[candidate.id].ownership == :retained_owner
+    assert retained.retry_attempts[candidate.id].finalization_action == :release
+    refute Orchestrator.should_dispatch_issue_for_test(candidate, retained)
+
+    assert {:noreply, retired} = Orchestrator.handle_info(down, lost_pending)
+    assert Enum.count(Agent.get(events, & &1), &match?({:finalize, _, :release}, &1)) == 1
+    refute Map.has_key?(retired.pending_cleanup, candidate.id)
+    refute MapSet.member?(retired.claimed, candidate.id)
+    refute Map.has_key?(retired.retry_attempts, candidate.id)
+  end
+
   test "post-acquisition dispatch raise, exit, and throw release then retry through a fresh claim" do
     for failure <- [:raise, :exit, :throw] do
       {:ok, events} = Agent.start_link(fn -> [] end)

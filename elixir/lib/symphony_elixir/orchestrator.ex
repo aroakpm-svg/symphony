@@ -150,6 +150,7 @@ defmodule SymphonyElixir.Orchestrator do
       :tick_token,
       runtime_options: [],
       running: %{},
+      pending_cleanup: %{},
       completed: MapSet.new(),
       claimed: MapSet.new(),
       blocked: %{},
@@ -317,7 +318,7 @@ defmodule SymphonyElixir.Orchestrator do
       ) do
     case find_issue_id_for_ref(running, ref) do
       nil ->
-        {:noreply, state}
+        handle_pending_cleanup_down(state, ref, reason)
 
       issue_id ->
         {running_entry, state} = pop_running_entry(state, issue_id)
@@ -382,7 +383,7 @@ defmodule SymphonyElixir.Orchestrator do
 
     state =
       case Map.get(state.running, issue_id) do
-        nil -> retire_lost_claim(state, issue_id)
+        nil -> retire_or_fence_lost_claim(state, issue_id, reason)
         running_entry -> stop_and_block_issue(state, issue_id, running_entry, "database claim lost: #{inspect(reason)}")
       end
 
@@ -1026,6 +1027,7 @@ defmodule SymphonyElixir.Orchestrator do
     candidate_issue?(issue, active_state_set(), terminal_state_set()) and
       !todo_issue_blocked_by_non_terminal?(issue, terminal_state_set()) and
       MapSet.member?(state.claimed, issue.id) and
+      !Map.has_key?(state.pending_cleanup, issue.id) and
       !Map.has_key?(state.running, issue.id) and
       !Map.has_key?(state.blocked, issue.id) and
       available_slots(state) > 0 and
@@ -1990,22 +1992,27 @@ defmodule SymphonyElixir.Orchestrator do
 
   defp should_dispatch_issue?(
          %Issue{} = issue,
-         %State{running: running, claimed: claimed, blocked: blocked} = state,
+         %State{running: running} = state,
          active_states,
          terminal_states
        ) do
     candidate_issue?(issue, active_states, terminal_states) and
       !todo_issue_blocked_by_non_terminal?(issue, terminal_states) and
-      !MapSet.member?(claimed, issue.id) and
-      !Map.has_key?(state.retry_attempts, issue.id) and
-      !Map.has_key?(running, issue.id) and
-      !Map.has_key?(blocked, issue.id) and
+      issue_dispatch_state_available?(state, issue.id) and
       available_slots(state) > 0 and
       state_slots_available?(issue, running) and
       worker_slots_available?(state)
   end
 
   defp should_dispatch_issue?(_issue, _state, _active_states, _terminal_states), do: false
+
+  defp issue_dispatch_state_available?(%State{} = state, issue_id) do
+    !MapSet.member?(state.claimed, issue_id) and
+      !Map.has_key?(state.retry_attempts, issue_id) and
+      !Map.has_key?(state.pending_cleanup, issue_id) and
+      !Map.has_key?(state.running, issue_id) and
+      !Map.has_key?(state.blocked, issue_id)
+  end
 
   defp state_slots_available?(%Issue{state: issue_state}, running) when is_map(running) do
     limit = Config.max_concurrent_agents_for_state(issue_state)
@@ -2360,24 +2367,26 @@ defmodule SymphonyElixir.Orchestrator do
   defp cleanup_spawned_worker_failure(context, reason) do
     case fence_spawned_worker(context) do
       :down -> finalize_spawned_worker_failure(context, reason)
-      :timeout -> retain_unfenced_worker_claim_state(context)
+      :timeout -> retain_unfenced_worker_claim_state(context, reason)
     end
   end
 
   defp fence_spawned_worker(context) do
+    wait_fun = Keyword.get(context.opts, :worker_down_wait_fun, &await_spawned_worker_down/3)
+
     try do
       context.terminate_fun.(context.pid)
     catch
       _kind, _reason -> :ok
     end
 
-    case await_spawned_worker_down(context.ref, context.pid, @worker_terminate_grace_ms) do
+    case wait_fun.(context.ref, context.pid, @worker_terminate_grace_ms) do
       :down ->
         :down
 
       :timeout ->
         Process.exit(context.pid, :kill)
-        await_spawned_worker_down(context.ref, context.pid, @worker_kill_grace_ms)
+        wait_fun.(context.ref, context.pid, @worker_kill_grace_ms)
     end
   end
 
@@ -2448,14 +2457,76 @@ defmodule SymphonyElixir.Orchestrator do
     }
   end
 
-  defp retain_unfenced_worker_claim_state(context) do
+  defp retain_unfenced_worker_claim_state(context, reason) do
     Logger.error("Spawned worker could not be fenced for #{issue_context(context.issue)}; retaining claim visibility")
+
+    pending_cleanup = %{
+      pid: context.pid,
+      ref: context.ref,
+      issue: context.issue,
+      identifier: context.issue.identifier,
+      attempt: context.attempt,
+      worker_host: context.worker_host,
+      distributed_claim: context.claim,
+      execution_context: Keyword.get(context.opts, :execution_context),
+      retry_metadata: Keyword.get(context.opts, :retry_metadata, %{}),
+      cleanup_reason: reason
+    }
 
     %{
       context.state
       | claimed: MapSet.put(context.state.claimed, context.issue.id),
-        retry_attempts: Map.delete(context.state.retry_attempts, context.issue.id)
+        retry_attempts: Map.delete(context.state.retry_attempts, context.issue.id),
+        pending_cleanup: Map.put(context.state.pending_cleanup, context.issue.id, pending_cleanup)
     }
+  end
+
+  defp handle_pending_cleanup_down(%State{} = state, ref, reason) do
+    case find_issue_id_for_ref(state.pending_cleanup, ref) do
+      nil ->
+        {:noreply, state}
+
+      issue_id ->
+        pending_cleanup = Map.fetch!(state.pending_cleanup, issue_id)
+        state = %{state | pending_cleanup: Map.delete(state.pending_cleanup, issue_id)}
+        state = finalize_pending_cleanup(state, pending_cleanup)
+
+        Logger.info("Pending cleanup worker stopped for issue_id=#{issue_id} issue_identifier=#{pending_cleanup.identifier} reason=#{inspect(reason)}")
+
+        notify_dashboard()
+        {:noreply, state}
+    end
+  end
+
+  defp finalize_pending_cleanup(%State{} = state, pending_cleanup) do
+    if Map.has_key?(pending_cleanup, :claim_lost_reason) do
+      Process.demonitor(pending_cleanup.ref, [:flush])
+
+      %{
+        state
+        | claimed: MapSet.delete(state.claimed, pending_cleanup.issue.id),
+          retry_attempts: Map.delete(state.retry_attempts, pending_cleanup.issue.id)
+      }
+    else
+      opts =
+        state.runtime_options
+        |> Keyword.put(:execution_context, pending_cleanup.execution_context)
+        |> Keyword.put(:retry_metadata, pending_cleanup.retry_metadata)
+
+      context = %{
+        state: state,
+        issue: pending_cleanup.issue,
+        attempt: pending_cleanup.attempt,
+        worker_host: pending_cleanup.worker_host,
+        claim: pending_cleanup.distributed_claim,
+        pid: pending_cleanup.pid,
+        ref: pending_cleanup.ref,
+        finalize_fun: Keyword.get(opts, :finalize_claim_fun, &finalize_distributed_claim/2),
+        opts: opts
+      }
+
+      finalize_spawned_worker_failure(context, pending_cleanup.cleanup_reason)
+    end
   end
 
   defp retain_spawned_worker_claim(context, reason) do
@@ -3342,7 +3413,6 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   defp retire_lost_claim(%State{} = state, issue_id) do
-    :ok = finalize_distributed_claim(issue_id, :release)
     retry_entry = Map.get(state.retry_attempts, issue_id)
     cancel_issue_retry_timer(retry_entry)
 
@@ -3355,6 +3425,26 @@ defmodule SymphonyElixir.Orchestrator do
       | claimed: MapSet.delete(state.claimed, issue_id),
         retry_attempts: Map.delete(state.retry_attempts, issue_id)
     }
+  end
+
+  defp retire_or_fence_lost_claim(%State{} = state, issue_id, reason) do
+    case Map.get(state.pending_cleanup, issue_id) do
+      nil ->
+        retire_lost_claim(state, issue_id)
+
+      pending_cleanup ->
+        retry_entry = Map.get(state.retry_attempts, issue_id)
+        cancel_issue_retry_timer(retry_entry)
+
+        pending_cleanup = Map.put(pending_cleanup, :claim_lost_reason, reason)
+
+        %{
+          state
+          | claimed: MapSet.put(state.claimed, issue_id),
+            retry_attempts: Map.delete(state.retry_attempts, issue_id),
+            pending_cleanup: Map.put(state.pending_cleanup, issue_id, pending_cleanup)
+        }
+    end
   end
 
   defp cancel_issue_retry_timer(%{timer_ref: timer_ref}) when is_reference(timer_ref) do
