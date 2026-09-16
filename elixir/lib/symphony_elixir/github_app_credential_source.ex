@@ -125,8 +125,7 @@ defmodule SymphonyElixir.GitHubAppCredentialSource do
 
   defp private_key(path) when is_binary(path) do
     with true <- Path.type(path) == :absolute,
-         :ok <- validate_parent_directories(Path.dirname(path)),
-         :ok <- SymphonyElixir.Workspace.validate_non_reparse_regular_file_for_worker(path),
+         :ok <- SymphonyElixir.ProtectedPath.validate_secret_file(path),
          {:ok, pem} <- File.read(path),
          [entry] <- :public_key.pem_decode(pem),
          key <- :public_key.pem_entry_decode(entry),
@@ -140,14 +139,6 @@ defmodule SymphonyElixir.GitHubAppCredentialSource do
   end
 
   defp private_key(_path), do: {:error, :invalid}
-
-  defp validate_parent_directories(path) do
-    parent = Path.dirname(path)
-
-    with :ok <- SymphonyElixir.Workspace.validate_non_reparse_directory_for_worker(path) do
-      if parent == path, do: :ok, else: validate_parent_directories(parent)
-    end
-  end
 
   defp signed_jwt(app_id, now, key) do
     issued_at = DateTime.to_unix(now) - 60

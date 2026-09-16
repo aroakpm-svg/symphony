@@ -38,6 +38,24 @@ defmodule SymphonyElixir.GitHubAppCredentialSourceTest do
     assert Agent.get(counter, & &1) == 2
   end
 
+  test "revalidates key and parent permissions on every load" do
+    key_path = write_private_key!()
+
+    request = fn _options ->
+      {:ok, %{status: 201, body: %{"token" => "token", "expires_at" => "2030-01-01T00:00:00Z"}}}
+    end
+
+    opts = valid_options(key_path, request)
+    assert {:ok, %{token: "token"}} = GitHubAppCredentialSource.resolve("github-central-brain", opts)
+
+    File.chmod!(key_path, 0o644)
+    assert {:error, :failed} = GitHubAppCredentialSource.resolve("github-central-brain", opts)
+
+    File.chmod!(key_path, 0o600)
+    File.chmod!(Path.dirname(key_path), 0o777)
+    assert {:error, :failed} = GitHubAppCredentialSource.resolve("github-central-brain", opts)
+  end
+
   test "fails closed without exposing configuration or response details" do
     key_path = write_private_key!()
     secret = "private-response-secret"
@@ -224,11 +242,17 @@ defmodule SymphonyElixir.GitHubAppCredentialSourceTest do
   defp restore_system_env(key, value), do: System.put_env(key, value)
 
   defp write_private_key! do
-    path = Path.join(System.tmp_dir!(), "symphony-app-key-#{System.unique_integer([:positive])}.pem")
+    directory =
+      Path.join(File.cwd!(), ".symphony-key-test-#{System.unique_integer([:positive])}")
+
+    path = Path.join(directory, "private-key.pem")
     key = :public_key.generate_key({:rsa, 1024, 65_537})
     pem = :public_key.pem_encode([:public_key.pem_entry_encode(:RSAPrivateKey, key)])
+    File.mkdir!(directory)
+    File.chmod!(directory, 0o700)
     File.write!(path, pem)
-    on_exit(fn -> File.rm(path) end)
+    File.chmod!(path, 0o600)
+    on_exit(fn -> File.rm_rf(directory) end)
     path
   end
 end

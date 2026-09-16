@@ -18,6 +18,10 @@ jobs:
       - name: Checkout
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
 
+      - name: Install filesystem ACL inspection tool
+        run: sudo apt-get update && sudo apt-get install --yes --no-install-recommends acl
+        working-directory: .
+
       - name: Set up mise tools
         uses: jdx/mise-action@5228313ee0372e111a38da051671ca30fc5a96db # v3
         with:

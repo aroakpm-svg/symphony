@@ -42,7 +42,7 @@ defmodule SymphonyElixir.AdmissionGate do
   defp status do
     with path when is_binary(path) and path != "" <- System.get_env(@environment),
          true <- Path.type(path) == :absolute,
-         :ok <- validate_parent_directories(Path.dirname(path), &validate_directory/1),
+         :ok <- SymphonyElixir.ProtectedPath.validate_admission_gate(path),
          entry when entry in [:absent, :present] <- gate_entry(path, &File.lstat/1) do
       {:ok, if(entry == :present, do: :paused, else: :open)}
     else
@@ -59,9 +59,6 @@ defmodule SymphonyElixir.AdmissionGate do
       {:error, _reason} -> {:error, :admission_gate_invalid}
     end
   end
-
-  defp validate_directory(path),
-    do: SymphonyElixir.Workspace.validate_non_reparse_directory_for_worker(path)
 
   defp gate_entry(path, lstat_fun) do
     case lstat_fun.(path) do

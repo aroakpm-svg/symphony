@@ -32,20 +32,38 @@ the source module and expected actor in application options. All other values ar
 token request.
 
 Also set `SYMPHONY_ADMISSION_PAUSE_FILE` to an absolute path under a controller-only runtime-state
-directory. The parent must already be a real, non-reparse directory. Absence of the file admits work;
-an existing regular file pauses candidate fetch, retries, claims, and post-claim dispatch while
-existing workers continue. Invalid configured paths fail closed. Do not place the gate under a
-workspace or any tree writable by Codex.
+directory. Absence of the file admits work; an existing regular file pauses candidate fetch,
+retries, claims, and post-claim dispatch while existing workers continue. The runtime revalidates
+the gate and every ancestor on each observation. On Unix, the direct parent must be `0700`, the
+gate must not be group/other-writable, owners must be the controller (or root for the gate and
+higher ancestors), and `getfacl` must prove that no named or default ACL exists. On Windows, the
+direct parent must have a protected DACL and only the controller, SYSTEM, and local Administrators
+may receive access; untrusted ancestor rights that can replace or retarget the path are rejected.
+Missing ACL inspection support, an unreadable DACL, or any unverifiable path fails closed. Do not
+place the gate under a workspace, `/tmp`, or any tree writable by Codex.
+
+The App key is checked on every token request before it is read. On Unix, keep its immediate
+directory controller-owned `0700` and the key controller-owned `0600`; install the `getfacl`
+utility and remove named/default ACLs. On Windows, both the key and its immediate directory must be
+controller-owned, with protected DACLs whose allow entries name only the controller, SYSTEM, or
+local Administrators. A broker service SID is not a key principal. Higher ancestors must have
+trusted owners and no untrusted path-takeover rights. These checks do not make a same-UID Unix
+worker safe: root and any process running as the controller can still read `0600` material, so the
+separate unprivileged Codex identity and namespace boundary remain mandatory prerequisites.
+The Windows Codex principal must not be a member of local Administrators; otherwise the trusted
+Administrators allow entry necessarily collapses the intended controller/worker boundary.
 
 Configure `codex.command` to enter the dedicated Codex principal through the trusted node-local
 launcher and only then execute `codex app-server`. The launcher must pass the existing private
 `CODEX_HOME` and sanitized worker environment, must not inherit any `SYMPHONY_GITHUB_APP_*` value,
 and must fail closed rather than falling back to the controller principal.
 
-Give both principals access only to the workspace and Codex-home roots they share. On Windows,
-create a node-local workspace group, grant that group Modify on the workspace root, grant each
-profile home only to the controller and Codex principals, and keep the App-key directory outside
-both ACL trees.
+Give both principals access only to the invocation paths they must share. On Windows, do not create
+a shared workspace group or grant the broker broad Modify rights on a workspace or profile root.
+The restricted LocalSystem broker uses its single service SID, and the controller grants that SID
+Modify only on the selected invocation's workspace, issue-private home, and selected Codex home.
+Remove those explicit grants when the brokered process exits. Keep the App-key directory outside
+all worker and broker ACL trees.
 
 Han MUST NOT use a shared group or default ACL for the workspace. Symphony deliberately creates
 each issue-private `.symphony-subprocess` home as controller-owned `0700` and re-attests that exact
@@ -75,8 +93,10 @@ elevated token and emits a masked, non-mutating JSON receipt. `Install` and `Rol
 elevated token. The installer accepts only `Amy` or `Matt`, a full 40-character runtime commit, an
 absolute clean source checkout at that exact commit, a reviewed broker publish directory, and plain
 non-reparse roots. It clones the reviewed commit into an independent checkout beside legacy runtimes,
-never into the legacy `runtime` directory and never with a worktree link back to the source. The node controller account must already exist; account lifecycle remains an operator
-responsibility. The broker runs as its passwordless node-specific virtual service identity.
+never into the legacy `runtime` directory and never with a worktree link back to the source. The
+node controller account must already exist; account lifecycle remains an operator responsibility.
+The one broker service runs as restricted LocalSystem with its node-specific service SID enabled;
+there is no password-bearing broker account or second service identity.
 
 The installer has one identity-transition path. It installs the immutable runtime, broker publish
 artifacts, secret-free broker configuration, protected ACLs, and a Manual Windows service that stays
@@ -109,9 +129,11 @@ Rollback requires the same node and commit. It reads the protected state manifes
 the runtime directory, broker directory, configuration, service, and manifest recorded as created
 by that install, and restores the exact prior ACLs for pre-existing workspace and profile roots.
 It never disables, stops, rewrites, or removes any Scheduled Task, legacy runtime, dirty checkout,
-pre-existing account, or pre-existing service. Keep the broker service Manual and
-Stopped until all dry acceptance gates below pass. Repository scripts are unsigned development
-artifacts; Authenticode-sign the reviewed release copy before an `AllSigned` production invocation.
+pre-existing account, or pre-existing service. Installation leaves the broker Manual and Stopped.
+After separate operator approval, start it and verify broker readiness before dry worker validation;
+the Symphony Scheduled Task remains disabled until every acceptance gate passes. Repository scripts
+are unsigned development artifacts; Authenticode-sign the reviewed release copy before an
+`AllSigned` production invocation.
 
 Keep the Scheduled Task disabled. Install a clean immutable build beside the previous runtime; never
 overwrite a dirty checkout. Capture the prior task action, enabled state, runtime version, and a

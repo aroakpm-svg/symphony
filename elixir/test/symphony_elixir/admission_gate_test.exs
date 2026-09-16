@@ -18,14 +18,15 @@ defmodule SymphonyElixir.AdmissionGateTest do
   end
 
   test "a valid gate pauses admission only while its regular file exists" do
-    path = Path.join(System.tmp_dir!(), "symphony-admission-#{System.unique_integer([:positive])}")
+    directory = secure_directory!()
+    path = Path.join(directory, "pause")
     System.put_env(@environment, path)
-    on_exit(fn -> File.rm(path) end)
 
     assert :ok = AdmissionGate.validate_configuration()
     refute AdmissionGate.paused?()
 
     File.write!(path, "paused\n")
+    File.chmod!(path, 0o600)
     assert :ok = AdmissionGate.validate_configuration()
     assert AdmissionGate.paused?()
 
@@ -53,6 +54,29 @@ defmodule SymphonyElixir.AdmissionGateTest do
              AdmissionGate.gate_entry_for_test("ignored", fn _ -> {:error, :eacces} end)
   end
 
+  test "a gate beneath a worker-writable ancestor fails closed" do
+    path = Path.join(System.tmp_dir!(), "symphony-admission-#{System.unique_integer([:positive])}")
+    System.put_env(@environment, path)
+
+    assert {:error, :admission_gate_invalid} = AdmissionGate.validate_configuration()
+    assert AdmissionGate.paused?()
+  end
+
+  test "missing ACL inspection tooling fails closed" do
+    directory = secure_directory!()
+    path = Path.join(directory, "pause")
+    empty_path = Path.join(directory, "empty-path")
+    File.mkdir!(empty_path)
+    System.put_env(@environment, path)
+
+    previous_path = System.get_env("PATH")
+    on_exit(fn -> restore_environment_variable("PATH", previous_path) end)
+    System.put_env("PATH", empty_path)
+
+    assert {:error, :admission_gate_invalid} = AdmissionGate.validate_configuration()
+    assert AdmissionGate.paused?()
+  end
+
   test "every gate ancestor is validated and a redirected ancestor fails closed" do
     leaf = Path.join([System.tmp_dir!(), "trusted", "current", "runtime"])
     redirected = Path.dirname(leaf)
@@ -70,4 +94,14 @@ defmodule SymphonyElixir.AdmissionGateTest do
 
   defp restore_environment(nil), do: System.delete_env(@environment)
   defp restore_environment(value), do: System.put_env(@environment, value)
+  defp restore_environment_variable(key, nil), do: System.delete_env(key)
+  defp restore_environment_variable(key, value), do: System.put_env(key, value)
+
+  defp secure_directory! do
+    path = Path.join(File.cwd!(), ".symphony-gate-test-#{System.unique_integer([:positive])}")
+    File.mkdir!(path)
+    File.chmod!(path, 0o700)
+    on_exit(fn -> File.rm_rf(path) end)
+    path
+  end
 end
