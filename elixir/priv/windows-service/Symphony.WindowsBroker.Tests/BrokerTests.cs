@@ -203,13 +203,15 @@ public sealed class BrokerTests : IDisposable
     }
 
     [Fact]
-    public void Pipe_security_allows_only_system_and_controller_and_denies_network()
+    public void Pipe_security_allows_only_system_controller_and_server_identity_and_denies_network()
     {
         if (!OperatingSystem.IsWindows()) return;
         var controller = WindowsIdentity.GetCurrent().User!;
-        var rules = PipeFactory.BuildSecurity(controller).GetAccessRules(true, false, typeof(SecurityIdentifier))
+        var server = new SecurityIdentifier(WellKnownSidType.LocalServiceSid, null);
+        var rules = PipeFactory.BuildSecurity(controller, server).GetAccessRules(true, false, typeof(SecurityIdentifier))
             .Cast<System.IO.Pipes.PipeAccessRule>().ToArray();
         Assert.Contains(rules, r => r.IdentityReference.Equals(controller) && r.AccessControlType == System.Security.AccessControl.AccessControlType.Allow);
+        Assert.Contains(rules, r => r.IdentityReference.Equals(server) && r.AccessControlType == System.Security.AccessControl.AccessControlType.Allow);
         Assert.Contains(rules, r => r.IdentityReference.Equals(new SecurityIdentifier(WellKnownSidType.LocalSystemSid, null)));
         Assert.Contains(rules, r => r.IdentityReference.Equals(new SecurityIdentifier(WellKnownSidType.NetworkSid, null)) && r.AccessControlType == System.Security.AccessControl.AccessControlType.Deny);
     }
@@ -220,7 +222,7 @@ public sealed class BrokerTests : IDisposable
         if (!OperatingSystem.IsWindows()) return;
         var pipeName = "symphony-denied-" + Guid.NewGuid().ToString("N");
         var deniedSid = new SecurityIdentifier(WellKnownSidType.LocalServiceSid, null);
-        await using var server = PipeFactory.Create(pipeName, deniedSid);
+        await using var server = PipeFactory.Create(pipeName, deniedSid, new SecurityIdentifier(WellKnownSidType.LocalServiceSid, null));
         await using var client = new NamedPipeClientStream(".", pipeName, PipeDirection.InOut, PipeOptions.Asynchronous, TokenImpersonationLevel.Impersonation);
         using var timeout = new CancellationTokenSource(TimeSpan.FromMilliseconds(500));
         await Assert.ThrowsAnyAsync<Exception>(async () => await client.ConnectAsync(timeout.Token));
