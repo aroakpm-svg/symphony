@@ -5,7 +5,19 @@ defmodule SymphonyElixir.ProtectedPath do
 
   @system_sid "S-1-5-18"
   @administrators_sid "S-1-5-32-544"
-  @windows_ancestor_safe_rights 0x001200A9
+  @trusted_installer_sid "S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464"
+  @windows_known_specific_rights 0x001F01FF
+  @windows_known_rights 0xF01F01FF
+  @windows_ancestor_safe_rights 0x001200AD
+  @generic_read 0x80000000
+  @generic_write 0x40000000
+  @generic_execute 0x20000000
+  @generic_all 0x10000000
+  @file_generic_read 0x00120089
+  @file_generic_write 0x00120116
+  @file_generic_execute 0x001200A0
+  @file_all_access 0x001F01FF
+  @inherit_only 0x2
 
   @type validation_error :: {:error, :unsafe_protected_path}
 
@@ -122,11 +134,14 @@ defmodule SymphonyElixir.ProtectedPath do
              is_binary(controller_sid) do
     trusted_sids = [controller_sid, @system_sid, @administrators_sid]
 
+    policy_trusted_sids =
+      if policy == :ancestor, do: [@trusted_installer_sid | trusted_sids], else: trusted_sids
+
     with true <- valid_windows_sid?(controller_sid),
-         true <- permitted_windows_owner?(owner, policy, controller_sid, trusted_sids),
+         true <- permitted_windows_owner?(owner, policy, controller_sid, policy_trusted_sids),
          true <- permitted_windows_inheritance?(protected, policy),
          true <- Enum.all?(rules, &valid_windows_rule?/1),
-         true <- Enum.all?(rules, &permitted_windows_rule?(&1, policy, trusted_sids)) do
+         true <- Enum.all?(rules, &permitted_windows_rule?(&1, policy, policy_trusted_sids)) do
       :ok
     else
       _unsafe -> {:error, :unsafe_protected_path}
@@ -171,21 +186,76 @@ defmodule SymphonyElixir.ProtectedPath do
 
   defp permitted_windows_inheritance?(_protected, _policy), do: true
 
-  defp valid_windows_rule?(%{"sid" => sid, "type" => type, "rights" => rights}) do
-    valid_windows_sid?(sid) and type in ["Allow", "Deny"] and is_integer(rights) and rights >= 0
+  defp valid_windows_rule?(%{
+         "sid" => sid,
+         "type" => type,
+         "rights" => rights,
+         "isInherited" => is_inherited,
+         "inheritanceFlags" => inheritance_flags,
+         "propagationFlags" => propagation_flags
+       }) do
+    valid_windows_sid?(sid) and type in ["Allow", "Deny"] and
+      is_integer(rights) and rights in 0..0xFFFFFFFF and
+      is_boolean(is_inherited) and inheritance_flags in 0..3 and propagation_flags in 0..3
   end
 
   defp valid_windows_rule?(_invalid), do: false
 
-  defp permitted_windows_rule?(%{"type" => "Deny"}, _policy, _trusted_sids), do: true
+  defp permitted_windows_rule?(rule, policy, trusted_sids) do
+    if inherit_only?(rule),
+      do: true,
+      else: permitted_applicable_windows_rule?(rule, policy, trusted_sids)
+  end
 
-  defp permitted_windows_rule?(%{"sid" => sid}, policy, trusted_sids)
+  defp permitted_applicable_windows_rule?(%{"type" => "Deny"}, _policy, _trusted_sids),
+    do: true
+
+  defp permitted_applicable_windows_rule?(%{"sid" => sid}, policy, trusted_sids)
        when policy in [:secret_entry, :secret_parent, :gate_entry, :gate_parent],
        do: sid in trusted_sids
 
-  defp permitted_windows_rule?(%{"sid" => sid, "rights" => rights}, :ancestor, trusted_sids) do
-    sid in trusted_sids or Bitwise.band(rights, @windows_ancestor_safe_rights) == rights
+  defp permitted_applicable_windows_rule?(
+         %{"sid" => sid, "rights" => rights},
+         :ancestor,
+         trusted_sids
+       ) do
+    sid in trusted_sids or permitted_untrusted_ancestor_rights?(rights)
   end
+
+  defp permitted_untrusted_ancestor_rights?(rights) do
+    case map_windows_generic_rights(rights) do
+      {:ok, mapped_rights} ->
+        Bitwise.band(mapped_rights, @windows_ancestor_safe_rights) == mapped_rights
+
+      {:error, :unknown_rights} ->
+        false
+    end
+  end
+
+  defp map_windows_generic_rights(rights) do
+    if Bitwise.band(rights, @windows_known_rights) == rights do
+      mapped =
+        rights
+        |> include_generic_mapping(@generic_read, @file_generic_read)
+        |> include_generic_mapping(@generic_write, @file_generic_write)
+        |> include_generic_mapping(@generic_execute, @file_generic_execute)
+        |> include_generic_mapping(@generic_all, @file_all_access)
+        |> Bitwise.band(@windows_known_specific_rights)
+
+      {:ok, mapped}
+    else
+      {:error, :unknown_rights}
+    end
+  end
+
+  defp include_generic_mapping(rights, generic_bit, mapped_rights) do
+    if Bitwise.band(rights, generic_bit) == generic_bit,
+      do: Bitwise.bor(rights, mapped_rights),
+      else: rights
+  end
+
+  defp inherit_only?(%{"propagationFlags" => flags}),
+    do: Bitwise.band(flags, @inherit_only) == @inherit_only
 
   defp valid_windows_sid?(sid) when is_binary(sid),
     do: Regex.match?(~r/\AS-[0-9]+(?:-[0-9]+)+\z/, sid)

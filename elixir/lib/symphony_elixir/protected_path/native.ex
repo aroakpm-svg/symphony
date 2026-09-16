@@ -9,7 +9,6 @@ defmodule SymphonyElixir.ProtectedPath.Native do
     case :os.type() do
       {:unix, _name} -> validate_unix_admission_gate(path)
       {:win32, _name} -> validate_windows_admission_gate(path)
-      _unsupported -> {:error, :unsafe_protected_path}
     end
   end
 
@@ -21,7 +20,6 @@ defmodule SymphonyElixir.ProtectedPath.Native do
     case :os.type() do
       {:unix, _name} -> validate_unix_secret_file(path)
       {:win32, _name} -> validate_windows_secret_file(path)
-      _unsupported -> {:error, :unsafe_protected_path}
     end
   end
 

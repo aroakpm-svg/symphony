@@ -6,8 +6,10 @@ defmodule SymphonyElixir.ProtectedPathTest do
   @controller "S-1-5-21-1000"
   @system "S-1-5-18"
   @administrators "S-1-5-32-544"
+  @trusted_installer "S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464"
   @broker_service "S-1-5-80-111-222-333-444-555"
   @users "S-1-5-32-545"
+  @authenticated_users "S-1-5-11"
   @base_acl "user::rw-\ngroup::---\nother::---\n"
 
   test "POSIX ACL evidence rejects named and default grants" do
@@ -156,7 +158,10 @@ defmodule SymphonyElixir.ProtectedPathTest do
     harmless =
       windows_evidence(@system, false, [
         allow_rule(@users, 0x000020),
-        allow_rule(@users, 0x1200A9)
+        allow_rule(@users, 0x1200A9),
+        allow_rule(@users, 0x000004),
+        allow_rule(@users, 0x80000000),
+        allow_rule(@users, 0x20000000)
       ])
 
     assert :ok = ProtectedPath.validate_windows_acl_evidence(harmless, :ancestor, @controller)
@@ -169,10 +174,44 @@ defmodule SymphonyElixir.ProtectedPathTest do
     end
   end
 
+  test "Windows higher ancestor accepts exact TrustedInstaller and ignores inherit-only grants" do
+    root_evidence =
+      windows_evidence(@trusted_installer, false, [
+        allow_rule(@trusted_installer, 0x1F01FF),
+        allow_rule(@authenticated_users, 0x000004),
+        allow_rule(@authenticated_users, 0xE0010000,
+          inheritance_flags: 3,
+          propagation_flags: 2
+        )
+      ])
+
+    assert :ok =
+             ProtectedPath.validate_windows_acl_evidence(
+               root_evidence,
+               :ancestor,
+               @controller
+             )
+
+    applicable =
+      windows_evidence(@trusted_installer, false, [
+        allow_rule(@authenticated_users, 0xE0010000)
+      ])
+
+    assert {:error, :unsafe_protected_path} =
+             ProtectedPath.validate_windows_acl_evidence(applicable, :ancestor, @controller)
+
+    assert {:error, :unsafe_protected_path} =
+             ProtectedPath.validate_windows_acl_evidence(
+               root_evidence,
+               :gate_parent,
+               @controller
+             )
+  end
+
   test "Windows ACL evidence validates deny and malformed rules and SIDs" do
     deny_only =
       windows_evidence(@controller, true, [
-        %{"sid" => @users, "type" => "Deny", "rights" => 1}
+        deny_rule(@users, 1)
       ])
 
     assert :ok =
@@ -191,7 +230,18 @@ defmodule SymphonyElixir.ProtectedPathTest do
     %{"owner" => owner, "protected" => protected, "daclPresent" => true, "rules" => rules}
   end
 
-  defp allow_rule(sid, rights) do
-    %{"sid" => sid, "type" => "Allow", "rights" => rights}
+  defp allow_rule(sid, rights, opts \\ []) do
+    %{
+      "sid" => sid,
+      "type" => "Allow",
+      "rights" => rights,
+      "isInherited" => Keyword.get(opts, :is_inherited, false),
+      "inheritanceFlags" => Keyword.get(opts, :inheritance_flags, 0),
+      "propagationFlags" => Keyword.get(opts, :propagation_flags, 0)
+    }
+  end
+
+  defp deny_rule(sid, rights) do
+    allow_rule(sid, rights) |> Map.put("type", "Deny")
   end
 end

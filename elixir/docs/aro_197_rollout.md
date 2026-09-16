@@ -48,6 +48,12 @@ gate must not be group/other-writable, owners must be the controller (or root fo
 higher ancestors), and `getfacl` must prove that no named or default ACL exists. On Windows, the
 direct parent must have a protected DACL and only the controller, SYSTEM, and local Administrators
 may receive access; untrusted ancestor rights that can replace or retarget the path are rejected.
+The exact TrustedInstaller SID is trusted only as the owner or an allow principal on higher
+ancestors, never on the gate/key or their immediate parents. Evaluate each ACE against the current
+path component: an inherit-only ACE does not apply to that component, while generic rights on an
+applicable ACE must be mapped to their file-system rights before evaluation. A higher ancestor may
+allow an untrusted principal to create a subdirectory only when it grants no delete, delete-child,
+DACL/owner mutation, generic-write/all, or other unrecognized right.
 Missing ACL inspection support, an unreadable DACL, or any unverifiable path fails closed. Do not
 place the gate under a workspace, `/tmp`, or any tree writable by Codex.
 
@@ -61,6 +67,9 @@ worker safe: root and any process running as the controller can still read `0600
 separate unprivileged Codex identity and namespace boundary remain mandatory prerequisites.
 The Windows Codex principal must not be a member of local Administrators; otherwise the trusted
 Administrators allow entry necessarily collapses the intended controller/worker boundary.
+Windows key-read rollout approval remains blocked by the identity issue recorded in
+`elixir/docs/aro_197_windows_read_boundary.md`; the path validator alone is not key-read isolation
+proof.
 
 Configure `codex.command` to enter the dedicated Codex principal through the trusted node-local
 launcher and only then execute `codex app-server`. The launcher must pass the existing private

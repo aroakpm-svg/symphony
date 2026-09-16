@@ -26,10 +26,17 @@ try {
   $rules = @(
     $acl.GetAccessRules($true, $true, [Security.Principal.SecurityIdentifier]) |
       ForEach-Object {
+        $rights = [BitConverter]::ToUInt32(
+          [BitConverter]::GetBytes([int]$_.FileSystemRights),
+          0
+        )
         [ordered]@{
           sid = $_.IdentityReference.Value
           type = $_.AccessControlType.ToString()
-          rights = [long]$_.FileSystemRights
+          rights = [long]$rights
+          isInherited = [bool]$_.IsInherited
+          inheritanceFlags = [int]$_.InheritanceFlags
+          propagationFlags = [int]$_.PropagationFlags
         }
       }
   )
