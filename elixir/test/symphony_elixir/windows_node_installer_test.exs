@@ -105,6 +105,8 @@ defmodule SymphonyElixir.WindowsNodeInstallerTest do
     assert installer =~ "broker-settings.json"
     assert installer =~ "controller_sid"
     assert installer =~ "pipe_name"
+    assert installer =~ "service_name"
+    assert installer =~ "service_name = $serviceName"
     assert installer =~ "workspace_root"
     assert installer =~ "private_home_root"
     assert installer =~ "codex_home_root"

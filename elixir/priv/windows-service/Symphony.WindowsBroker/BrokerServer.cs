@@ -4,7 +4,7 @@ using System.Security.Principal;
 using System.Text;
 using System.Text.Json;
 namespace Symphony.WindowsBroker;
-public sealed record BrokerOptions(string PipeName, string ControllerSid, string CodexExecutable, string WorkspaceRoot, IReadOnlyDictionary<string, ProfileRoots> Profiles, TimeSpan IdleTimeout, TimeSpan AbsoluteTimeout);
+public sealed record BrokerOptions(string PipeName, string ServiceName, string ControllerSid, string CodexExecutable, string WorkspaceRoot, IReadOnlyDictionary<string, ProfileRoots> Profiles, TimeSpan IdleTimeout, TimeSpan AbsoluteTimeout);
 public sealed class BrokerServer(BrokerOptions options, IBrokerProcessFactory processFactory) : IAsyncDisposable
 {
     public async Task ServeOneAsync(CancellationToken stop)

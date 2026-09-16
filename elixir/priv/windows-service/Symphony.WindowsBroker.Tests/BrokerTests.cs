@@ -100,8 +100,9 @@ public sealed class BrokerTests : IDisposable
         var codexExe = Path.Combine(root, "codex.exe"); File.WriteAllText(codexExe, "stub");
         foreach (var profile in new[] { "central-brain", "project-management" }) { MakeDirectory("workspace", profile); MakeDirectory("private", profile); MakeDirectory("codex", profile); }
         var config = Path.Combine(root, "broker-settings.json");
-        File.WriteAllText(config, System.Text.Json.JsonSerializer.Serialize(new { schema=1, node="Amy", pipe_name="test", controller_sid=WindowsIdentity.GetCurrent().User!.Value, workspace_root=workspace, private_home_root=privateRoot, codex_home_root=codexRoot, codex_exe=codexExe }));
+        File.WriteAllText(config, System.Text.Json.JsonSerializer.Serialize(new { schema=1, node="Amy", service_name="AROAKSymphonyCodexAmy", pipe_name="test", controller_sid=WindowsIdentity.GetCurrent().User!.Value, workspace_root=workspace, private_home_root=privateRoot, codex_home_root=codexRoot, codex_exe=codexExe }));
         var options = BrokerConfiguration.FromFile(config);
+        Assert.Equal("AROAKSymphonyCodexAmy", options.ServiceName);
         Assert.Equal(Path.Combine(privateRoot, "central-brain"), options.Profiles["central-brain"].PrivateHome);
         Assert.Equal(Path.Combine(codexRoot, "project-management"), options.Profiles["project-management"].CodexHome);
     }
@@ -242,7 +243,7 @@ public sealed class BrokerTests : IDisposable
     BrokerOptions TestOptions(string pipe, TimeSpan idle, TimeSpan absolute)
     {
         var request = ValidRequest();
-        return new(pipe, WindowsIdentity.GetCurrent().User!.Value, Path.Combine(root, "codex.exe"),
+        return new(pipe, "AROAKSymphonyCodexAmy", WindowsIdentity.GetCurrent().User!.Value, Path.Combine(root, "codex.exe"),
             Path.Combine(root, "workspace"), new Dictionary<string, ProfileRoots> { ["central-brain"] = new(Path.GetDirectoryName(request.PrivateHome)!, Path.GetDirectoryName(request.CodexHome)!) }, idle, absolute);
     }
 

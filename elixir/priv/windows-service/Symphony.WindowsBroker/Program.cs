@@ -14,7 +14,7 @@ public static class Program
             var options = BrokerConfiguration.FromFile(configPath);
             if (args.Contains("--server", StringComparer.OrdinalIgnoreCase)) { await using var server = new BrokerServer(options, new CodexProcessFactory()); await server.RunAsync(CancellationToken.None); return 0; }
             if (!args.Contains("--service", StringComparer.OrdinalIgnoreCase)) throw new ArgumentException("mode_required");
-            await Host.CreateDefaultBuilder(args).UseWindowsService(service => service.ServiceName = "AROAK Symphony Codex Broker")
+            await Host.CreateDefaultBuilder(args).UseWindowsService(service => service.ServiceName = options.ServiceName)
                 .ConfigureServices(services => { services.AddSingleton(options); services.AddSingleton<IBrokerProcessFactory, CodexProcessFactory>(); services.AddHostedService<BrokerWorker>(); }).Build().RunAsync(); return 0;
         }
         catch (Exception error) { Console.Error.WriteLine(error.Message); return 1; }
@@ -39,6 +39,7 @@ public sealed record BrokerSettings(
     [property: JsonPropertyName("schema")] int Schema,
     [property: JsonPropertyName("node")] string Node,
     [property: JsonPropertyName("pipe_name")] string PipeName,
+    [property: JsonPropertyName("service_name")] string ServiceName,
     [property: JsonPropertyName("controller_sid")] string ControllerSid,
     [property: JsonPropertyName("workspace_root")] string WorkspaceRoot,
     [property: JsonPropertyName("private_home_root")] string PrivateHomeRoot,
@@ -54,7 +55,7 @@ public static class BrokerConfiguration
         try { canonicalConfig = BrokerPolicy.ExistingFile(path); }
         catch (InvalidDataException) { throw new InvalidDataException("config_path_invalid"); }
         var settings = JsonSerializer.Deserialize<BrokerSettings>(File.ReadAllBytes(canonicalConfig)) ?? throw new InvalidDataException("config_invalid");
-        if (settings.Schema != 1 || settings.Node is not ("Amy" or "Matt")) throw new InvalidDataException("config_schema_invalid");
+        if (settings.Schema != 1 || settings.Node is not ("Amy" or "Matt") || settings.ServiceName != $"AROAKSymphonyCodex{settings.Node}") throw new InvalidDataException("config_schema_invalid");
         if (settings.IdleTimeoutSeconds is <= 0 || settings.AbsoluteTimeoutSeconds is <= 0) throw new InvalidDataException("timeout_invalid");
         var workspaceRoot = BrokerPolicy.ExistingDirectory(settings.WorkspaceRoot);
         var privateRoot = BrokerPolicy.ExistingDirectory(settings.PrivateHomeRoot);
@@ -66,6 +67,6 @@ public static class BrokerConfiguration
             ["project-management"] = new(BrokerPolicy.ExistingDirectory(Path.Combine(privateRoot, "project-management")), BrokerPolicy.ExistingDirectory(Path.Combine(codexRoot, "project-management")))
         };
         foreach (var profile in profiles.Keys) BrokerPolicy.ExistingDirectory(Path.Combine(workspaceRoot, profile));
-        return new(settings.PipeName, settings.ControllerSid, codexExecutable, workspaceRoot, profiles, TimeSpan.FromSeconds(settings.IdleTimeoutSeconds ?? 900), TimeSpan.FromSeconds(settings.AbsoluteTimeoutSeconds ?? 14400));
+        return new(settings.PipeName, settings.ServiceName, settings.ControllerSid, codexExecutable, workspaceRoot, profiles, TimeSpan.FromSeconds(settings.IdleTimeoutSeconds ?? 900), TimeSpan.FromSeconds(settings.AbsoluteTimeoutSeconds ?? 14400));
     }
 }
