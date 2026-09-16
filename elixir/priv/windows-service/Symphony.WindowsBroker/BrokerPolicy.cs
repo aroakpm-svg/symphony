@@ -5,6 +5,7 @@ public sealed record ProfileRoots(string PrivateHome, string CodexHome);
 public sealed class BrokerPolicy(string workspaceRoot, IReadOnlyDictionary<string, ProfileRoots> profiles)
 {
     static readonly Regex SecretName = new("(LINEAR|TOKEN|JWT|SECRET|PASSWORD|PRIVATE_KEY|GITHUB_APP|CLAIM|CONTROLLER)", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+    const string GitCredentialHelper = "!f() { test \"$1\" = get || exit 0; protocol=; host=; while IFS== read -r key value; do case \"$key\" in protocol) protocol=\"$value\" ;; host) host=\"$value\" ;; esac; done; test \"$protocol\" = https && test \"$host\" = github.com || exit 1; printf \"username=x-access-token\\npassword=%s\\n\" \"$GH_TOKEN\"; }; f";
     public BrokerRequest Validate(BrokerRequest request)
     {
         if (!profiles.TryGetValue(request.Profile, out var profile)) throw new InvalidDataException("profile_denied");
@@ -17,7 +18,18 @@ public sealed class BrokerPolicy(string workspaceRoot, IReadOnlyDictionary<strin
         var result = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
         foreach (var key in new[] { "SystemRoot", "WINDIR", "TEMP", "TMP", "PATH", "PATHEXT", "COMSPEC" }) if (host.TryGetValue(key, out var value) && !SecretName.IsMatch(key)) result[key] = value;
         result["HOME"] = request.PrivateHome; result["USERPROFILE"] = request.PrivateHome; result["CODEX_HOME"] = request.CodexHome;
-        if (!string.IsNullOrWhiteSpace(request.GitHubToken)) result["GH_TOKEN"] = request.GitHubToken!;
+        result["GCM_INTERACTIVE"] = "Never";
+        result["GIT_CONFIG_COUNT"] = "0";
+        result["GIT_CONFIG_GLOBAL"] = "NUL";
+        result["GIT_CONFIG_NOSYSTEM"] = "1";
+        result["GIT_CONFIG_PARAMETERS"] = "'credential.helper='";
+        result["GIT_CONFIG_SYSTEM"] = "NUL";
+        result["GIT_TERMINAL_PROMPT"] = "0";
+        if (!string.IsNullOrWhiteSpace(request.GitHubToken))
+        {
+            result["GH_TOKEN"] = request.GitHubToken!;
+            result["GIT_CONFIG_PARAMETERS"] = $"'credential.helper=' 'credential.helper={GitCredentialHelper}'";
+        }
         return result;
     }
     public static string[] CodexArguments(BrokerRequest request)

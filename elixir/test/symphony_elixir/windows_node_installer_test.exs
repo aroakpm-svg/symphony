@@ -4,6 +4,7 @@ defmodule SymphonyElixir.WindowsNodeInstallerTest do
   @powershell System.find_executable("powershell.exe")
   @installer Path.expand("../../priv/install_aro_197_windows.ps1", __DIR__)
   @broker_project Path.expand("../../priv/windows-service/Symphony.WindowsBroker/Symphony.WindowsBroker.csproj", __DIR__)
+  @workflow Path.expand("../../../.github/workflows/windows-broker.yml", __DIR__)
   @sha String.duplicate("a", 40)
 
   @tag skip: if(is_nil(@powershell), do: "powershell.exe unavailable", else: false)
@@ -42,11 +43,16 @@ defmodule SymphonyElixir.WindowsNodeInstallerTest do
 
   test "broker service artifact is self-contained for Windows hosts without global dotnet" do
     project = File.read!(@broker_project)
+    workflow = File.read!(@workflow)
 
     assert project =~ "<RuntimeIdentifier>win-x64</RuntimeIdentifier>"
     assert project =~ "<SelfContained>true</SelfContained>"
     assert project =~ "<PublishSingleFile>true</PublishSingleFile>"
     assert project =~ "<IncludeNativeLibrariesForSelfExtract>true</IncludeNativeLibrariesForSelfExtract>"
+    assert workflow =~ "--self-contained true"
+    refute workflow =~ "--self-contained false"
+    assert workflow =~ "Verify self-contained single-file broker artifact"
+    assert workflow =~ "DOTNET_ROOT_X64"
   end
 
   test "installer retains one broker-only identity boundary" do
@@ -74,6 +80,8 @@ defmodule SymphonyElixir.WindowsNodeInstallerTest do
     assert installer =~ "controller_sid"
     assert installer =~ "codex.command"
     assert installer =~ "codex-command.ps1"
+    assert installer =~ "broker_service_not_running"
+    assert installer =~ "Get-Service -Name"
     refute installer =~ "Register-ScheduledTask"
     refute installer =~ "New-ScheduledTask"
     refute installer =~ "codex_worker_windows.ps1"
@@ -132,6 +140,11 @@ defmodule SymphonyElixir.WindowsNodeInstallerTest do
     assert installer =~ "$pipeNameLiteral"
     assert installer =~ "icacls.exe `$grantPath /grant"
     assert installer =~ "if (`$lockHeld)"
+    assert installer =~ "@('gh', 'xdg-config', 'xdg-cache', 'xdg-data', 'codex')"
+    assert installer =~ "private_home_component_missing"
+    assert installer =~ "private_home_component_reparse"
+    assert installer =~ "`$grantedPaths.Add(`$grantPath)"
+    assert installer =~ "[array]::Reverse(`$revokePaths)"
     assert installer =~ "icacls.exe `$grantPath /remove:g '$($serviceIdentity)'"
     assert installer =~ "broker_revoke_failed"
     assert installer =~ "SYMPHONY_BROKER_CLEANUP_ACK"
@@ -140,6 +153,16 @@ defmodule SymphonyElixir.WindowsNodeInstallerTest do
     refute installer =~ "<issue-workspace>"
     refute installer =~ "installation_id ="
     refute installer =~ "private_key ="
+  end
+
+  test "recovery manifest is persisted before protecting the install root" do
+    installer = File.read!(@installer)
+    state_write = :binary.match(installer, "$created.state = $true; Save-RecoveryState $created $previousAcl")
+    root_acl = :binary.match(installer, "Set-ProtectedAcl $InstallRoot")
+
+    assert state_write != :nomatch
+    assert root_acl != :nomatch
+    assert elem(state_write, 0) < elem(root_acl, 0)
   end
 
   defp run_installer(mode, root) do

@@ -185,8 +185,8 @@ try {
   $stage = 'runtime'
   New-Item -ItemType Directory -Path $InstallRoot -Force | Out-Null
   if (-not $previousAcl.Contains($InstallRoot)) { $previousAcl[$InstallRoot] = (Get-Acl -LiteralPath $InstallRoot).Sddl }
-  Set-ProtectedAcl $InstallRoot @('BUILTIN\Administrators', "${env:COMPUTERNAME}\$controller")
   $created.state = $true; Save-RecoveryState $created $previousAcl
+  Set-ProtectedAcl $InstallRoot @('BUILTIN\Administrators', "${env:COMPUTERNAME}\$controller")
   New-Item -ItemType Directory -Path $runtime | Out-Null; $created.runtime = $true; Save-RecoveryState $created $previousAcl
   & git clone --no-local --no-checkout -- $RuntimeSource $runtime | Out-Null
   if ($LASTEXITCODE -ne 0) { throw 'runtime_copy_failed' }
@@ -204,6 +204,7 @@ try {
   $workspaceRootLiteral = ConvertTo-PowerShellSingleQuotedLiteral ([IO.Path]::GetFullPath($WorkspaceRoot))
   $brokerExeLiteral = ConvertTo-PowerShellSingleQuotedLiteral $brokerExe
   $pipeNameLiteral = ConvertTo-PowerShellSingleQuotedLiteral $settings.pipe_name
+  $serviceNameLiteral = ConvertTo-PowerShellSingleQuotedLiteral $serviceName
   @"
 `$ErrorActionPreference = 'Stop'
 `$workspaceRoot = $workspaceRootLiteral
@@ -212,28 +213,41 @@ try {
 if ([string]::IsNullOrWhiteSpace(`$privateHome)) { `$privateHome = [Environment]::GetEnvironmentVariable('USERPROFILE', 'Process') }
 if ([string]::IsNullOrWhiteSpace(`$codexHome)) { throw 'codex_home_missing' }
 if ([string]::IsNullOrWhiteSpace(`$privateHome)) { throw 'private_home_missing' }
+`$brokerService = Get-Service -Name $serviceNameLiteral -ErrorAction Stop
+if (`$brokerService.Status -ne 'Running') { throw 'broker_service_not_running' }
 `$workspace = [IO.Path]::GetFullPath((Get-Location).ProviderPath).TrimEnd([IO.Path]::DirectorySeparatorChar, [IO.Path]::AltDirectorySeparatorChar)
 `$workspaceRootFull = [IO.Path]::GetFullPath(`$workspaceRoot).TrimEnd([IO.Path]::DirectorySeparatorChar, [IO.Path]::AltDirectorySeparatorChar)
 if (`$workspace.Length -le `$workspaceRootFull.Length -or !`$workspace.StartsWith(`$workspaceRootFull + [IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase)) { throw 'workspace_outside_root' }
 `$relativeWorkspace = `$workspace.Substring(`$workspaceRootFull.Length).TrimStart([IO.Path]::DirectorySeparatorChar, [IO.Path]::AltDirectorySeparatorChar)
 `$profile = (`$relativeWorkspace -split '[\\/]')[0]
 if (`$profile -notin @('central-brain', 'project-management')) { throw 'profile_denied' }
-`$grantPaths = @(`$workspace, `$privateHome, `$codexHome)
+`$privateHomeChildren = foreach (`$leaf in @('gh', 'xdg-config', 'xdg-cache', 'xdg-data', 'codex')) {
+  `$child = Join-Path `$privateHome `$leaf
+  if (!(Test-Path -LiteralPath `$child -PathType Container)) { throw 'private_home_component_missing' }
+  `$item = Get-Item -LiteralPath `$child -Force
+  if ((`$item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) { throw 'private_home_component_reparse' }
+  `$item.FullName
+}
+`$grantPaths = @(`$workspace, `$privateHome) + @(`$privateHomeChildren) + @(`$codexHome)
 `$mutex = New-Object System.Threading.Mutex(`$false, 'Global\AROAKSymphonyCodex-$($Node)')
 `$lockHeld = `$false
+`$grantedPaths = New-Object 'System.Collections.Generic.List[string]'
 try {
   `$lockHeld = `$mutex.WaitOne(0)
   if (!`$lockHeld) { throw 'broker_acl_busy' }
   foreach (`$grantPath in `$grantPaths) {
     & icacls.exe `$grantPath /grant '$($serviceIdentity):(OI)(CI)(M)' | Out-Null
     if (`$LASTEXITCODE) { throw 'broker_grant_failed' }
+    `$grantedPaths.Add(`$grantPath)
   }
   & $brokerExeLiteral --client --pipe $pipeNameLiteral --profile `$profile --workspace `$workspace --private-home `$privateHome --codex-home `$codexHome
   exit `$LASTEXITCODE
 } finally {
   `$cleanupOk = `$true
   if (`$lockHeld) {
-    foreach (`$grantPath in `$grantPaths) {
+    `$revokePaths = `$grantedPaths.ToArray()
+    [array]::Reverse(`$revokePaths)
+    foreach (`$grantPath in `$revokePaths) {
       & icacls.exe `$grantPath /remove:g '$($serviceIdentity)' | Out-Null
       if (`$LASTEXITCODE) { `$cleanupOk = `$false }
     }

@@ -66,14 +66,70 @@ public sealed class BrokerTests : IDisposable
         var host = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
         {
             ["SystemRoot"] = @"C:\Windows", ["PATH"] = "safe", ["LINEAR_API_KEY"] = "secret",
-            ["GITHUB_TOKEN"] = "secret", ["UNRELATED"] = "drop"
+            ["GITHUB_TOKEN"] = "secret", ["UNRELATED"] = "drop",
+            ["GIT_CONFIG_PARAMETERS"] = "'credential.helper=!host-controlled'",
+            ["GIT_CONFIG_GLOBAL"] = @"C:\host-controlled.gitconfig"
         };
         var environment = BrokerPolicy.WorkerEnvironment(request, host);
         Assert.Equal("safe", environment["PATH"]);
         Assert.Equal(request.CodexHome, environment["CODEX_HOME"]);
         Assert.Equal("call-local-token", environment["GH_TOKEN"]);
+        Assert.Equal("Never", environment["GCM_INTERACTIVE"]);
+        Assert.Equal("0", environment["GIT_CONFIG_COUNT"]);
+        Assert.Equal("NUL", environment["GIT_CONFIG_GLOBAL"]);
+        Assert.Equal("1", environment["GIT_CONFIG_NOSYSTEM"]);
+        Assert.Equal("NUL", environment["GIT_CONFIG_SYSTEM"]);
+        Assert.Equal("0", environment["GIT_TERMINAL_PROMPT"]);
+        Assert.Contains("credential.helper=!f()", environment["GIT_CONFIG_PARAMETERS"]);
+        Assert.DoesNotContain("host-controlled", environment["GIT_CONFIG_PARAMETERS"]);
         Assert.DoesNotContain(environment, pair => pair.Key.Contains("TOKEN", StringComparison.OrdinalIgnoreCase) && pair.Key != "GH_TOKEN");
         Assert.DoesNotContain("UNRELATED", environment.Keys);
+    }
+
+    [Fact]
+    public async Task Worker_git_environment_uses_only_the_fixed_https_github_helper()
+    {
+        if (!OperatingSystem.IsWindows()) return;
+
+        var marker = Path.Combine(root, "ambient-helper.marker");
+        var globalConfig = Path.Combine(root, "ambient.gitconfig");
+        File.WriteAllText(globalConfig, $"[credential]\n\thelper = !echo ambient>{marker.Replace('\\', '/')}\n");
+        var host = Environment.GetEnvironmentVariables().Cast<System.Collections.DictionaryEntry>()
+            .ToDictionary(entry => (string)entry.Key, entry => (string)entry.Value!, StringComparer.OrdinalIgnoreCase);
+        host["GIT_CONFIG_GLOBAL"] = globalConfig;
+        host["GIT_CONFIG_PARAMETERS"] = "'credential.helper=!host-controlled'";
+        var request = new BrokerRequest("central-brain", root, Path.Combine(root, "private"), Path.Combine(root, "codex"), "call-local-token");
+        var environment = BrokerPolicy.WorkerEnvironment(request, host);
+
+        var github = await GitCredentialFillAsync("protocol=https\nhost=github.com\n\n", environment);
+        Assert.Equal(0, github.ExitCode);
+        Assert.Contains("username=x-access-token", github.Output);
+        Assert.Contains("password=call-local-token", github.Output);
+        Assert.False(File.Exists(marker));
+
+        var denied = await GitCredentialFillAsync("protocol=https\nhost=example.com\n\n", environment);
+        Assert.NotEqual(0, denied.ExitCode);
+        Assert.False(File.Exists(marker));
+    }
+
+    [Fact]
+    public void Worker_environment_without_a_call_local_token_still_denies_ambient_credentials()
+    {
+        var request = new BrokerRequest("central-brain", root, Path.Combine(root, "private"), Path.Combine(root, "codex"));
+        var host = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+        {
+            ["GIT_CONFIG_PARAMETERS"] = "'credential.helper=!host-controlled'",
+            ["GITHUB_TOKEN"] = "ambient-token"
+        };
+
+        var environment = BrokerPolicy.WorkerEnvironment(request, host);
+
+        Assert.DoesNotContain("GH_TOKEN", environment.Keys);
+        Assert.DoesNotContain("GITHUB_TOKEN", environment.Keys);
+        Assert.Equal("'credential.helper='", environment["GIT_CONFIG_PARAMETERS"]);
+        Assert.Equal("NUL", environment["GIT_CONFIG_GLOBAL"]);
+        Assert.Equal("NUL", environment["GIT_CONFIG_SYSTEM"]);
+        Assert.Equal("0", environment["GIT_TERMINAL_PROMPT"]);
     }
 
     [Fact]
@@ -139,6 +195,23 @@ public sealed class BrokerTests : IDisposable
         Assert.Equal(0, exit);
         Assert.Equal("hello", Encoding.UTF8.GetString(output.ToArray()));
         Assert.Empty(error.ToArray());
+    }
+
+    [Fact]
+    public async Task Client_times_out_when_the_service_pipe_is_unavailable()
+    {
+        Assert.InRange(BrokerClient.DefaultConnectTimeout, TimeSpan.FromMilliseconds(1), TimeSpan.FromMilliseconds(4999));
+        var elapsed = Stopwatch.StartNew();
+        await using var input = new MemoryStream();
+        await using var output = new MemoryStream();
+        await using var error = new MemoryStream();
+
+        var failure = await Assert.ThrowsAsync<TimeoutException>(() => BrokerClient.RunAsync(
+            "symphony-missing-" + Guid.NewGuid().ToString("N"), ValidRequest(), input, output, error,
+            CancellationToken.None, TimeSpan.FromMilliseconds(100)));
+
+        Assert.Equal("broker_connect_timeout", failure.Message);
+        Assert.InRange(elapsed.Elapsed, TimeSpan.FromMilliseconds(50), TimeSpan.FromSeconds(5));
     }
 
     [Fact]
@@ -277,6 +350,29 @@ public sealed class BrokerTests : IDisposable
 
     BrokerPolicy Policy(string workspace, string privateHome, string codexHome) =>
         new(workspace, new Dictionary<string, ProfileRoots> { ["central-brain"] = new(privateHome, codexHome) });
+
+    static async Task<(int ExitCode, string Output)> GitCredentialFillAsync(string input, IReadOnlyDictionary<string, string> environment)
+    {
+        var start = new ProcessStartInfo("git")
+        {
+            UseShellExecute = false,
+            RedirectStandardInput = true,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            CreateNoWindow = true
+        };
+        start.ArgumentList.Add("credential");
+        start.ArgumentList.Add("fill");
+        start.Environment.Clear();
+        foreach (var pair in environment) start.Environment[pair.Key] = pair.Value;
+        using var process = Process.Start(start) ?? throw new InvalidOperationException("git_start_failed");
+        await process.StandardInput.WriteAsync(input);
+        process.StandardInput.Close();
+        var stdout = await process.StandardOutput.ReadToEndAsync();
+        var stderr = await process.StandardError.ReadToEndAsync();
+        await process.WaitForExitAsync();
+        return (process.ExitCode, stdout + stderr);
+    }
 
     string MakeDirectory(params string[] parts)
     {

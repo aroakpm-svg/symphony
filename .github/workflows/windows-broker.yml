@@ -8,7 +8,27 @@ jobs:
       - uses: actions/setup-dotnet@67a3573c9a986a3f9c594539f4ab511d57bb3ce9 # v4
         with: { dotnet-version: '8.0.x' }
       - run: dotnet test elixir/priv/windows-service/Symphony.WindowsBroker.Tests/Symphony.WindowsBroker.Tests.csproj --configuration Release
-      - run: dotnet publish elixir/priv/windows-service/Symphony.WindowsBroker/Symphony.WindowsBroker.csproj --configuration Release --runtime win-x64 --self-contained false
+      - run: dotnet publish elixir/priv/windows-service/Symphony.WindowsBroker/Symphony.WindowsBroker.csproj --configuration Release --runtime win-x64 --self-contained true
+      - name: Verify self-contained single-file broker artifact
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $publish = Resolve-Path 'elixir/priv/windows-service/Symphony.WindowsBroker/bin/Release/net8.0-windows/win-x64/publish'
+          $binary = Join-Path $publish 'Symphony.WindowsBroker.exe'
+          if (-not (Test-Path -LiteralPath $binary -PathType Leaf)) { throw 'broker executable missing' }
+          if ((Get-Item -LiteralPath $binary).Length -lt 10MB) { throw 'broker executable is not a bundled self-contained artifact' }
+          if (Get-ChildItem -LiteralPath $publish -Filter '*.dll' -File) { throw 'broker publish left framework-dependent DLLs' }
+          $savedRoot = $env:DOTNET_ROOT_X64
+          $savedLookup = $env:DOTNET_MULTILEVEL_LOOKUP
+          try {
+            $env:DOTNET_ROOT_X64 = Join-Path $env:RUNNER_TEMP 'no-dotnet-runtime'
+            $env:DOTNET_MULTILEVEL_LOOKUP = '0'
+            $output = (& $binary --service 2>&1 | Out-String).Trim()
+            if ($LASTEXITCODE -ne 1 -or $output -notmatch 'missing_config') { throw 'broker self-contained execution probe failed' }
+          } finally {
+            $env:DOTNET_ROOT_X64 = $savedRoot
+            $env:DOTNET_MULTILEVEL_LOOKUP = $savedLookup
+          }
       - shell: pwsh
         run: |
           $errors=$null
@@ -43,6 +63,53 @@ jobs:
             & ./elixir/priv/install_aro_197_windows.ps1 @common -Mode Install -RuntimeSource $env:GITHUB_WORKSPACE -BrokerArtifacts $publish -CodexExe $binary -WorkspaceRoot $workspace -PrivateHomeRoot $private -CodexHomeRoot $codexHome
             if ($LASTEXITCODE) { throw 'install failed' }
             if ((Get-Service AROAKSymphonyCodexAmy).Status -ne 'Stopped') { throw 'service unexpectedly started' }
+            $workspaceIssue = New-Item -ItemType Directory -Force -Path (Join-Path $workspace 'central-brain\ARO-1')
+            $privateIssue = New-Item -ItemType Directory -Force -Path (Join-Path $private 'central-brain\ARO-1-r1')
+            $protectedChildren = foreach ($leaf in 'gh','xdg-config','xdg-cache','xdg-data','codex') {
+              $child = New-Item -ItemType Directory -Force -Path (Join-Path $privateIssue.FullName $leaf)
+              & icacls.exe $child.FullName /inheritance:r /grant:r "Administrators:(OI)(CI)(F)" "${env:COMPUTERNAME}\${controller}:(OI)(CI)(F)" | Out-Null
+              if ($LASTEXITCODE) { throw 'protected private-home child setup failed' }
+              $child.FullName
+            }
+            $authHome = Join-Path $codexHome 'central-brain'
+            $wrapper = Join-Path $install "broker-$sha\codex-command.ps1"
+            $cleanupAck = Join-Path $root 'broker-cleanup.ack'
+            $serviceSid = ([Security.Principal.NTAccount]::new('NT SERVICE\AROAKSymphonyCodexAmy')).Translate([Security.Principal.SecurityIdentifier]).Value
+            function Test-ServiceGrant([string]$path) {
+              foreach ($rule in (Get-Acl -LiteralPath $path).Access) {
+                try { $ruleSid = $rule.IdentityReference.Translate([Security.Principal.SecurityIdentifier]).Value } catch { continue }
+                if ($ruleSid -eq $serviceSid -and $rule.AccessControlType -eq 'Allow') { return $true }
+              }
+              return $false
+            }
+            $job = Start-Job -ArgumentList $wrapper,$workspaceIssue.FullName,$privateIssue.FullName,$authHome,$cleanupAck -ScriptBlock {
+              param($wrapperPath,$workspacePath,$privatePath,$authPath,$ackPath)
+              function Get-Service { [CmdletBinding()] param([string]$Name); [pscustomobject]@{ Status = 'Running' } }
+              $env:HOME = $privatePath
+              $env:USERPROFILE = $privatePath
+              $env:CODEX_HOME = $authPath
+              $env:SYMPHONY_BROKER_CLEANUP_ACK = $ackPath
+              Set-Location -LiteralPath $workspacePath
+              & $wrapperPath
+            }
+            try {
+              $deadline = [DateTime]::UtcNow.AddSeconds(10)
+              $observedProtectedGrant = $false
+              do {
+                if (Test-ServiceGrant $protectedChildren[-1]) { $observedProtectedGrant = $true; break }
+                if ($job.State -notin 'NotStarted','Running') { break }
+                Start-Sleep -Milliseconds 50
+              } while ([DateTime]::UtcNow -lt $deadline)
+              if (-not $observedProtectedGrant) { throw 'protected private-home child never received the scoped grant' }
+              if (-not (Wait-Job -Job $job -Timeout 10)) { throw 'bounded broker client did not exit' }
+              Receive-Job -Job $job -ErrorAction SilentlyContinue | Out-Null
+              if ((Get-Content -LiteralPath $cleanupAck -Raw).Trim() -ne 'done') { throw 'wrapper cleanup acknowledgement missing' }
+              foreach ($path in @($workspaceIssue.FullName,$privateIssue.FullName) + $protectedChildren + @($authHome)) {
+                if (Test-ServiceGrant $path) { throw "service grant remained on $path" }
+              }
+            } finally {
+              Remove-Job -Job $job -Force -ErrorAction SilentlyContinue
+            }
             if ((git -C (Join-Path $install "runtime-$sha") rev-parse HEAD).Trim() -ne $sha) { throw 'runtime attestation failed' }
             & ./elixir/priv/install_aro_197_windows.ps1 @common -Mode Rollback
             if ($LASTEXITCODE) { throw 'rollback failed' }

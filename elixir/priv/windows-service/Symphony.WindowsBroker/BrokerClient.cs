@@ -5,10 +5,18 @@ using System.Text;
 namespace Symphony.WindowsBroker;
 public static class BrokerClient
 {
-    public static async Task<int> RunAsync(string pipeName, BrokerRequest request, Stream input, Stream output, Stream error, CancellationToken token)
+    public static readonly TimeSpan DefaultConnectTimeout = TimeSpan.FromSeconds(3);
+
+    public static async Task<int> RunAsync(string pipeName, BrokerRequest request, Stream input, Stream output, Stream error, CancellationToken token, TimeSpan? connectTimeout = null)
     {
         await using var pipe = new NamedPipeClientStream(".", pipeName, PipeDirection.InOut, PipeOptions.Asynchronous | PipeOptions.WriteThrough, TokenImpersonationLevel.Impersonation);
-        await pipe.ConnectAsync(token);
+        using var connect = CancellationTokenSource.CreateLinkedTokenSource(token);
+        connect.CancelAfter(connectTimeout ?? DefaultConnectTimeout);
+        try { await pipe.ConnectAsync(connect.Token); }
+        catch (OperationCanceledException) when (!token.IsCancellationRequested && connect.IsCancellationRequested)
+        {
+            throw new TimeoutException("broker_connect_timeout");
+        }
         await Frame.WriteJsonAsync(pipe, FrameKind.Request, request, token);
         using var session = CancellationTokenSource.CreateLinkedTokenSource(token);
         var writeGate = new SemaphoreSlim(1, 1);
