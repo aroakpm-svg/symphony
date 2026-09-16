@@ -65,6 +65,7 @@ defmodule SymphonyElixir.WindowsNodeInstallerTest do
     assert installer =~ "New-Service"
     assert installer =~ "-StartupType Manual"
     assert installer =~ "NT SERVICE\\$serviceName"
+    assert installer =~ "sc.exe sidtype $serviceName restricted"
     assert installer =~ "Set-ProtectedAclRules"
     assert installer =~ "Set-ProtectedAclRules $InstallRoot"
     assert installer =~ "@{ Principal = $serviceIdentity; Rights = 'ReadAndExecute' }"
@@ -77,6 +78,7 @@ defmodule SymphonyElixir.WindowsNodeInstallerTest do
     refute installer =~ "New-ScheduledTask"
     refute installer =~ "codex_worker_windows.ps1"
     refute installer =~ "New-LocalUser"
+    refute installer =~ "sc.exe config $serviceName obj="
     refute installer =~ "-Credential"
   end
 

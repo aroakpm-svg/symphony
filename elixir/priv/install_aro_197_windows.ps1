@@ -251,8 +251,6 @@ try {
   $stage = 'service_create'
   New-Service -Name $serviceName -BinaryPathName ('"{0}" --service --config "{1}"' -f $brokerExe, $brokerConfig) -StartupType Manual -DisplayName "AROAK Symphony Codex Broker ($Node)" | Out-Null
   $created.service = $true; Save-RecoveryState $created $previousAcl
-  $stage = 'service_identity'
-  & sc.exe config $serviceName obj= $serviceIdentity | Out-Null; if ($LASTEXITCODE -ne 0) { throw 'service_identity_failed' }
   $stage = 'service_sid'
   & sc.exe sidtype $serviceName restricted | Out-Null; if ($LASTEXITCODE -ne 0) { throw 'service_sid_failed' }
   $stage = 'shared_acls'
