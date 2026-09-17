@@ -5,6 +5,7 @@ using System.Text;
 using System.Text.Json;
 using System.Diagnostics;
 using Symphony.WindowsBroker;
+using Symphony.WindowsBroker.Probe;
 using Xunit;
 
 namespace Symphony.WindowsBroker.Tests;
@@ -248,6 +249,39 @@ public sealed class BrokerTests : IDisposable
         var snapshot = new ServiceIdentitySnapshot(new SecurityIdentifier(userSid), elevated, adminEnabled, adminDenyOnly);
 
         Assert.Equal(reason, Assert.Throws<InvalidOperationException>(() => ServiceIdentity.Demand(expected, snapshot)).Message);
+    }
+
+    [Fact]
+    public void Boundary_probe_negative_control_does_not_report_readable_files_as_denied()
+    {
+        var workspace = MakeDirectory("probe-workspace");
+        var secretDirectory = MakeDirectory("probe-secret");
+        var key = Path.Combine(secretDirectory, "app-key.pem");
+        var outside = Path.Combine(root, "outside.txt");
+        File.WriteAllText(key, "disposable-test-key");
+        File.WriteAllText(outside, "outside");
+        File.WriteAllText(Path.Combine(workspace, ProbeRunner.ConfigurationFileName), JsonSerializer.Serialize(new
+        {
+            synthetic_key_path = key,
+            outside_path = outside
+        }));
+
+        var result = ProbeRunner.Run(workspace);
+
+        Assert.False(result.KeyDirectoryListDenied);
+        Assert.False(result.KeyReadDenied);
+        Assert.False(result.OutsideReadDenied);
+        Assert.True(result.WorkspaceCreateEditDeleteSucceeded);
+        Assert.False(ProbeRunner.Succeeded(result));
+    }
+
+    [Fact]
+    public void Boundary_probe_rejects_unknown_configuration_members()
+    {
+        var workspace = MakeDirectory("probe-config");
+        File.WriteAllText(Path.Combine(workspace, ProbeRunner.ConfigurationFileName), "{\"synthetic_key_path\":\"C:\\\\key\",\"outside_path\":\"C:\\\\outside\",\"extra\":true}");
+
+        Assert.Throws<JsonException>(() => ProbeRunner.Run(workspace));
     }
 
     [Fact]

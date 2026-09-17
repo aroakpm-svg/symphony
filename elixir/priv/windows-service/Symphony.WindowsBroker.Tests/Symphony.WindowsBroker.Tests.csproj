@@ -11,5 +11,6 @@
     <PackageReference Include="xunit" Version="2.9.2" />
     <PackageReference Include="xunit.runner.visualstudio" Version="2.8.2" />
     <ProjectReference Include="../Symphony.WindowsBroker/Symphony.WindowsBroker.csproj" />
+    <ProjectReference Include="../Symphony.WindowsBroker.Probe/Symphony.WindowsBroker.Probe.csproj" />
   </ItemGroup>
 </Project>
