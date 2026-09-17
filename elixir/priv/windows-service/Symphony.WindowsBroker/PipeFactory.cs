@@ -17,6 +17,7 @@ public static class PipeFactory
         security.AddAccessRule(new PipeAccessRule(controller, PipeAccessRights.ReadWrite | PipeAccessRights.CreateNewInstance, AccessControlType.Allow));
         security.AddAccessRule(new PipeAccessRule(serverSid, PipeAccessRights.FullControl, AccessControlType.Allow));
         security.AddAccessRule(new PipeAccessRule(new SecurityIdentifier(WellKnownSidType.LocalSystemSid, null), PipeAccessRights.FullControl, AccessControlType.Allow));
+        security.AddAccessRule(new PipeAccessRule(new SecurityIdentifier(WellKnownSidType.BuiltinAdministratorsSid, null), PipeAccessRights.ReadWrite, AccessControlType.Allow));
         return security;
     }
 

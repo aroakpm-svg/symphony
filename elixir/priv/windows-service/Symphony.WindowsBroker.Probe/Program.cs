@@ -36,8 +36,8 @@ public static class ProbeRunner
         var configurationPath = ExistingFile(Path.Combine(workspace, ConfigurationFileName));
         var configuration = JsonSerializer.Deserialize<ProbeConfiguration>(File.ReadAllText(configurationPath), StrictJson)
             ?? throw new InvalidDataException("probe_config_invalid");
-        var key = ExistingFile(configuration.SyntheticKeyPath);
-        var outside = ExistingFile(configuration.OutsidePath);
+        var key = TargetPath(configuration.SyntheticKeyPath);
+        var outside = TargetPath(configuration.OutsidePath);
         var identity = TokenInspector.Capture();
         var keyDirectory = Path.GetDirectoryName(key) ?? throw new InvalidDataException("probe_key_parent_missing");
 
@@ -104,6 +104,13 @@ public static class ProbeRunner
         var canonical = Canonical(path);
         if (!Directory.Exists(canonical)) throw new InvalidDataException("probe_directory_missing");
         return canonical;
+    }
+
+    static string TargetPath(string path)
+    {
+        if (string.IsNullOrWhiteSpace(path) || !Path.IsPathFullyQualified(path)) throw new InvalidDataException("probe_path_not_absolute");
+        if (path.StartsWith(@"\\", StringComparison.Ordinal) || path.StartsWith(@"\\?\", StringComparison.Ordinal)) throw new InvalidDataException("probe_path_denied");
+        return Path.GetFullPath(path).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
     }
 
     static string Canonical(string path)

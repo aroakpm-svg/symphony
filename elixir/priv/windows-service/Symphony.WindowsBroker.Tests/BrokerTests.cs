@@ -285,6 +285,23 @@ public sealed class BrokerTests : IDisposable
     }
 
     [Fact]
+    public void Boundary_probe_does_not_preflight_secret_target_existence()
+    {
+        var workspace = MakeDirectory("probe-missing-target");
+        var secretDirectory = MakeDirectory("probe-missing-secret");
+        var missingKey = Path.Combine(secretDirectory, "missing.pem");
+        var outside = Path.Combine(root, "outside-readable.txt");
+        File.WriteAllText(outside, "outside");
+        File.WriteAllText(Path.Combine(workspace, ProbeRunner.ConfigurationFileName), JsonSerializer.Serialize(new
+        {
+            synthetic_key_path = missingKey,
+            outside_path = outside
+        }));
+
+        Assert.Throws<FileNotFoundException>(() => ProbeRunner.Run(workspace));
+    }
+
+    [Fact]
     public void Windows_service_onstart_returns_after_scheduling_broker_loop()
     {
         var program = File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", "Symphony.WindowsBroker", "Program.cs"));
@@ -362,6 +379,7 @@ public sealed class BrokerTests : IDisposable
         Assert.Contains(rules, r => r.IdentityReference.Equals(controller) && r.AccessControlType == System.Security.AccessControl.AccessControlType.Allow);
         Assert.Contains(rules, r => r.IdentityReference.Equals(server) && r.AccessControlType == System.Security.AccessControl.AccessControlType.Allow);
         Assert.Contains(rules, r => r.IdentityReference.Equals(new SecurityIdentifier(WellKnownSidType.LocalSystemSid, null)));
+        Assert.Contains(rules, r => r.IdentityReference.Equals(new SecurityIdentifier(WellKnownSidType.BuiltinAdministratorsSid, null)) && r.AccessControlType == System.Security.AccessControl.AccessControlType.Allow);
         Assert.Contains(rules, r => r.IdentityReference.Equals(new SecurityIdentifier(WellKnownSidType.NetworkSid, null)) && r.AccessControlType == System.Security.AccessControl.AccessControlType.Deny);
     }
 
