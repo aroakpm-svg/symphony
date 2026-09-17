@@ -1,13 +1,12 @@
 # ARO-197 GitHub App and node rollout
 
-> **Windows rollout blocked (2026-09-16):** The currently implemented restricted LocalSystem
-> broker is write-restricted, not a private-key read-isolation boundary. Its directly spawned
-> child can read a key allowed to SYSTEM even without a service-SID grant. Do not provision
-> production keys for this launcher, start Windows acceptance with real secrets, enable its
-> runtime, or treat the steps below as authorization. First review a worker security context
-> that excludes controller secrets and prove read-only denial from the actual spawned child
-> against a synthetic fixture. See [security evidence](aro_197_windows_read_boundary.md).
-> ACL-shape validation and passing CI do not satisfy that acceptance gate.
+> **Windows rollout remains blocked pending exact-head and Matt evidence:** The historical
+> restricted-LocalSystem design was not a private-key read boundary. The remediation branch uses a
+> per-service virtual account and a real spawned-child synthetic-key test. Do not provision a live
+> key, install on Matt, enable its runtime, merge, or treat hosted CI as Matt authorization. First
+> require exact-head review and hosted Windows success; then obtain separate approval for an
+> elevated Matt synthetic installation. Live enablement is a third independent approval. See
+> [security evidence](aro_197_windows_read_boundary.md).
 
 This runbook provisions the ARO-195-approved automation identity after ARO-196. It does not run the
 ARO-285 fleet workload.
@@ -77,12 +76,12 @@ launcher and only then execute `codex app-server`. The launcher must pass the ex
 `CODEX_HOME` and sanitized worker environment, must not inherit any `SYMPHONY_GITHUB_APP_*` value,
 and must fail closed rather than falling back to the controller principal.
 
-Give both principals access only to the invocation paths they must share. On Windows, do not create
-a shared workspace group or grant the broker broad Modify rights on a workspace or profile root.
-The restricted LocalSystem broker uses its single service SID, and the controller grants that SID
-Modify only on the selected invocation's workspace, issue-private home, and selected Codex home.
-Remove those explicit grants when the brokered process exits. Keep the App-key directory outside
-all worker and broker ACL trees.
+Give both principals access only to the roots they must share. On Windows, do not create a shared
+workspace group. The virtual service account may traverse the configured top-level worker roots and
+has Modify only on the approved `central-brain` and `project-management` profile directories beneath
+the workspace, private-home, and Codex-home roots. This Windows boundary separates controller-only
+material from approved worker roots; it does not claim Han-style sibling-issue filesystem
+invisibility. Keep the App-key directory outside every worker and broker ACL tree.
 
 Han MUST NOT use a shared group or default ACL for the workspace. Symphony deliberately creates
 each issue-private `.symphony-subprocess` home as controller-owned `0700` and re-attests that exact
@@ -107,15 +106,19 @@ for `central-brain` and `project-management`, then complete Codex-managed ChatGP
 
 ### Windows administrator installer
 
-Amy and Matt share `priv/install_aro_197_windows.ps1`. `Plan` is the only mode permitted without an
-elevated token and emits a masked, non-mutating JSON receipt. `Install` and `Rollback` require a real
-elevated token. The installer accepts only `Amy` or `Matt`, a full 40-character runtime commit, an
+Amy and Matt share `priv/install_aro_197_windows.ps1`. `Plan` is non-mutating and emits a masked JSON
+receipt. A readiness PASS requires Windows API proof of an elevated token with Administrators SID
+enabled and not deny-only, the separate controller SID/context, disabled task, paused admission,
+runtime inputs, ACLs, and acceptable service state. Any unproved item returns FAIL. `Install` and
+`Rollback` require a real elevated token. The installer accepts only `Amy` or `Matt`, a full
+40-character runtime commit, an
 absolute clean source checkout at that exact commit, a reviewed broker publish directory, and plain
 non-reparse roots. It clones the reviewed commit into an independent checkout beside legacy runtimes,
 never into the legacy `runtime` directory and never with a worktree link back to the source. The
 node controller account must already exist; account lifecycle remains an operator responsibility.
-The one broker service runs as restricted LocalSystem with its node-specific service SID enabled;
-there is no password-bearing broker account or second service identity.
+The broker service runs as `NT SERVICE\AROAKSymphonyCodex{Node}` with no stored password. Its
+restricted service SID remains defense in depth for writes; the virtual-account primary token is
+the read boundary.
 
 The installer has one identity-transition path. It installs the immutable runtime, broker publish
 artifacts, secret-free broker configuration, protected ACLs, and a Manual Windows service that stays
@@ -140,9 +143,12 @@ as the clean reviewed checkout, `-BrokerArtifacts` as the reviewed `dotnet publi
 absolute values for `-CodexExe`, `-WorkspaceRoot`, `-PrivateHomeRoot`, and `-CodexHomeRoot`. The
 broker configuration contains only the controller SID, pipe name, executable and allowed roots. It
 contains no App credential, token, installation identifier, password, or authentication material.
-The broker fixes the executable to `codex --config shell_environment_policy.inherit=all app-server`; client requests may select only an allowed profile, canonical paths beneath those configured roots, the call-local `GH_TOKEN`, and the validated Codex model selected by the existing launch inputs. The token and model are forwarded only
-to that brokered `codex app-server` process and are not stored in the service configuration or
-machine environment. The generated command derives the profile from the current workspace namespace with Windows PowerShell 5.1-compatible path logic and grants the broker service Modify rights only to that invocation's workspace, private home, and Codex home, removing those explicit grants after the brokered Codex process exits. Symphony acquires a node-local broker launch lock before starting the app-server port. The generated command also uses a fail-fast node-global mutex around grant, broker call, and grant removal for cross-process protection; the installed broker service accepts one session at a time. Additional simultaneous Windows slots require separate reviewed service identities rather than overlapping ACL grants under one service SID.
+The broker fixes the executable to
+`codex --config shell_environment_policy.inherit=all app-server`. A strict version-1 request contains
+only a 32-character request ID, approved profile, and canonical workspace. Private home, Codex home,
+executable, arguments, model, token, and environment values come from neither the caller nor ambient
+controller state. The broker maps profile homes from protected configuration and rebuilds a
+secret-free environment. The installed service accepts one session at a time.
 
 Rollback requires the same node and commit. It reads the protected state manifest and removes only
 the runtime directory, broker directory, configuration, service, and manifest recorded as created

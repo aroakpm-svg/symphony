@@ -2,6 +2,32 @@
 
 Research date: 2026-09-16. Read-only source/document review; no service, credential, ACL, or live-key operations were performed. Repository HEAD observed: `4d4ebbe3a2506fdf47952090521de0ba308f6b4e`; the child-launch implementation was also read at base `77e7dbf` and uses the same `CreateProcessW` path.
 
+## Remediation status
+
+The finding below remains the historical P1 for the restricted-LocalSystem design. The remediation
+branch replaces the service logon account with `NT SERVICE\AROAKSymphonyCodex{Node}` and rejects
+service startup unless Windows token APIs prove that exact non-SYSTEM, non-elevated,
+non-Administrator primary token. `CreateProcessW` then deliberately gives the child that already
+attested token.
+
+The branch also narrows the pipe request to protocol version, request ID, profile, and workspace;
+maps all homes from protected configuration; removes request-carried token/model/environment values;
+and adds a test-only child probe. The Windows workflow is designed to prove all of these facts from
+the real SCM service and actual spawned child:
+
+- SCM `StartName` is the node's virtual service account.
+- The live service process token SID equals that account and is not `S-1-5-18`.
+- The child reports the same SID, is not elevated, and has no enabled or deny-only Administrators SID.
+- Controller-to-pipe authentication succeeds and a different administrator SID fails.
+- Synthetic-key directory listing, synthetic-key read, and an outside-root read fail.
+- Workspace create/edit/delete succeeds and the controller re-attests cleanup.
+- The service returns to Manual/Stopped and installer rollback removes only created resources.
+
+This is not yet Matt rollout evidence. The P1 is resolved for code review only after the exact-head
+hosted Windows job passes. Matt installation remains blocked until a separately authorized elevated
+run repeats the synthetic test on Matt. Live key use and task enablement require the later live
+enablement authorization gate.
+
 ## Conclusion
 
 **P1 / rollout blocker:** `SERVICE_SID_TYPE_RESTRICTED` does not prevent a LocalSystem broker or its directly spawned Codex process from reading a private-key file whose DACL grants SYSTEM read access. The service restriction applies to write checks. Omitting the service SID from the allowlist does not subtract SYSTEM's ordinary read permission. This invalidates the claimed read boundary for the accepted SYSTEM-readable ACL configuration.
@@ -32,4 +58,9 @@ This conclusion assumes the stated DACL has no applicable read-deny ACE and that
 
 ## Minimum safe next step
 
-Keep the Windows rollout / key-read-denial gate closed and report this as a security-boundary failure. Do not accept the static ACL allowlist test or service-SID presence as proof that the worker cannot read the key. Before reopening the gate, require a reviewed worker security context that actually excludes the controller secret, plus a direct read-only denial test from the actual broker-spawned child against a synthetic nonsecret fixture reproducing the production ACL. No large alternative or implementation is proposed in this bounded research task.
+Keep the Windows rollout and key-read-denial gate closed. Do not accept the static ACL allowlist,
+service `StartName`, service-SID presence, or unit tests alone as proof. First require exact-head
+hosted Windows success for the real service/child synthetic fixture. Then obtain separate approval
+for Matt installation, rerun the read-only execution-context gate from an elevated administrator
+token, and repeat the synthetic fixture without touching the live App key. Only a later approval may
+perform live-key validation or enable the Symphony task.

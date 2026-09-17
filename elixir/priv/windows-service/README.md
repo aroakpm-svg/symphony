@@ -1,77 +1,78 @@
 # Windows Codex broker
 
-`Symphony.WindowsBroker.exe` is the single Windows identity boundary used by Symphony. The same
-binary runs as the Windows Service and as the `codex.command` client shim. It does not schedule,
-claim, retry, or track work.
+`Symphony.WindowsBroker.exe` is the single Windows controller-to-worker identity boundary used by
+Symphony. It does not schedule, claim, retry, route, or track work.
 
-The installer registers this service command but leaves the Manual service stopped:
-
-```text
-Symphony.WindowsBroker.exe --service --config C:\ProgramData\AROAK\Symphony\broker-settings.json
-```
-
-For foreground diagnostics, `--server --config <absolute-path>` uses the same server code. Symphony
-connects through the existing `codex.command` extension point:
+The installer registers one node-specific service and leaves it Manual and Stopped:
 
 ```text
-Symphony.WindowsBroker.exe --client --pipe aroak-symphony-codex-amy --profile central-brain --workspace <absolute-issue-workspace> --private-home <absolute-issue-private-home> --codex-home <absolute-profile-codex-home>
+Service: AROAKSymphonyCodexAmy
+Account: NT SERVICE\AROAKSymphonyCodexAmy
+Command: Symphony.WindowsBroker.exe --service --config <protected-broker-settings.json>
 ```
 
-The schema-1 JSON configuration is secret-free and matches the Windows installer:
+Matt uses the corresponding `AROAKSymphonyCodexMatt` names. The virtual service account has no
+stored password. `SERVICE_SID_TYPE_RESTRICTED` remains enabled as write hardening, but it is not the
+read boundary; the separate virtual-account primary token is the read boundary. Service startup
+fails before the pipe opens unless the current token user is the exact virtual account, is not
+SYSTEM, is not elevated, and has neither enabled nor deny-only Administrators membership.
 
-```json
-{
-  "schema": 1,
-  "node": "Amy",
-  "service_name": "AROAKSymphonyCodexAmy",
-  "pipe_name": "aroak-symphony-codex-amy",
-  "controller_sid": "S-1-5-21-...",
-  "workspace_root": "C:\\ProgramData\\AROAK\\Symphony\\workspaces",
-  "private_home_root": "C:\\ProgramData\\AROAK\\Symphony\\private-homes",
-  "codex_home_root": "C:\\ProgramData\\AROAK\\Symphony\\codex-homes",
-  "codex_exe": "C:\\ProgramData\\AROAK\\Symphony\\broker-<commit>\\codex.exe"
-}
+The generated `codex.command` wrapper invokes the client with only the selected profile and current
+absolute issue workspace:
+
+```text
+Symphony.WindowsBroker.exe --client --pipe aroak-symphony-codex-amy --profile central-brain --workspace <absolute-issue-workspace>
 ```
 
-Only `Amy` and `Matt` nodes and the `central-brain` and `project-management` profiles are accepted.
-The workspace must be below `<workspace_root>/<profile>`, the private home must be either `<private_home_root>/<profile>` or a descendant, and the Codex auth home must be either `<codex_home_root>/<profile>` or a descendant. The client derives the profile from the workspace namespace, not from
-the Codex home leaf. Every existing path component is checked for reparse points before Codex starts.
+The JSON pipe request contains exactly `protocol_version`, `request_id`, `profile`, and `workspace`.
+Protocol version is 1, request IDs are 32 lowercase hexadecimal characters, and unknown JSON members
+are rejected. The request cannot select an executable, arguments, private home, Codex home, model,
+credential, token, or environment entry.
 
-`--private-home` is the issue-scoped subprocess `HOME`; its protected `gh`, `xdg-config`,
-`xdg-cache`, `xdg-data`, and `codex` children receive the same temporary service-SID grant for one
-serialized broker call. `--codex-home` is the separately provisioned profile authentication home
-under `codex_home_root`; it is not the issue-private `<private-home>\codex` child. The broker uses
-the profile authentication home as the app-server process's `CODEX_HOME`, while Symphony sets the
-issue-private `codex` child in the app-server shell policy for commands launched by Codex.
+The protected schema-1 configuration maps `central-brain` and `project-management` to fixed workspace,
+private-home, and Codex-home profile roots and pins the copied Codex executable. The broker rejects
+relative, UNC, device, missing, out-of-profile, traversal, and reparse-point workspace paths. It maps
+HOME, USERPROFILE, and CODEX_HOME from protected configuration only.
 
-The pipe DACL permits only SYSTEM and the configured controller SID and explicitly denies network
-tokens. The server also impersonates every connected client and compares its SID with the configured
-controller SID. Frames have a fixed 5-byte header and a 1 MiB payload limit. Standard input, output,
-and error are proxied without interpreting app-server messages.
+The pipe DACL permits the controller, broker account, SYSTEM, and local Administrators and denies
+network tokens. DACL access is not application authorization: the server impersonates every client
+and requires the exact configured `SymphonyCtl{Node}` SID before reading a request. Frames have a
+fixed 5-byte header and a 1 MiB payload limit.
 
-The broker starts the configured executable as `codex --config shell_environment_policy.inherit=all app-server`, adding only the validated model argument selected by Symphony launch inputs. It rebuilds the environment from a small
-operating-system allowlist, sets the selected HOME, USERPROFILE, and CODEX_HOME values, and forwards
-only the call-local `GH_TOKEN` carried by that broker request. It does not inherit Linear, GitHub
-App, JWT, claim, controller, password, or key variables from the service process. Codex is created suspended, assigned to a kill-on-close Job Object, and only then resumed; the child process inherits only that session's stdio handles. Client
-disconnect, service stop, idle timeout (default 15 minutes), and absolute timeout (default 4 hours)
-terminate that entire tree. Symphony takes a broker launch lock before app-server startup. The generated command also holds a fail-fast node-global mutex across temporary ACL grant, broker call, and grant removal for cross-process protection; each installed broker service accepts one session at a time so service-SID ACL grants cannot overlap across workspaces or profiles.
+The broker starts only the configured executable with these fixed arguments:
 
-The installer intentionally creates the service as `Manual` and leaves it `Stopped`; the generated
-wrapper never starts it. After the documented dry acceptance gates pass, an administrator must run
-`Start-Service AROAKSymphonyCodexAmy` (or the Matt service), require `Get-Service` to report
-`Running`, and then run one prepared issue through the generated wrapper for each enabled profile.
-That wrapper requires the service to be running, bounds pipe connection readiness to 3 seconds
-(inside Symphony app-server's 5-second startup read budget),
-and releases its mutex and any successful ACL grants when readiness fails.
+```text
+codex --config shell_environment_policy.inherit=all app-server
+```
 
-After every reboot, keep the Symphony Scheduled Task disabled until the operator starts the Manual
-broker service, observes `Running`, and repeats the bounded wrapper readiness check. Only then may
-the operator enable or start the Symphony task. A stopped service or unavailable pipe is a failed
-readiness gate; do not reorder these steps or change the service to automatic startup without a new
-review.
+It constructs the child environment from the operating-system allowlist plus fixed HOME/Codex/Git
+hardening entries. It does not forward `GH_TOKEN`, model selection, Linear values, GitHub App values,
+JWTs, claims, controller settings, passwords, private-key settings, or ambient Git helpers. The
+child is created with `CreateProcessW`, so it inherits the already-attested virtual-service-account
+primary token. There is no `LogonUser`, `CreateProcessAsUser`, token duplication, or identity fallback.
 
-Run the Windows integration suite with:
+The child is created suspended, assigned to a kill-on-close Job Object, and then resumed with only
+the session's stdio handles. Client disconnect, service stop, idle timeout, and absolute timeout
+terminate the process tree. Each service accepts one session at a time.
+
+The installer applies protected DACLs. Administrators and the controller retain full control of the
+approved worker roots; the service can traverse the top-level roots and has Modify only on the two
+approved profile directories. The GitHub App key file and its containing directory must have
+protected ACLs whose readers/owners are limited to the controller, SYSTEM, and Administrators. The
+service account receives no key-directory or key-file access.
+
+The `windows-broker` workflow publishes a test-only child probe and runs it through the installed
+wrapper and real SCM service. The test reads the live service process token, checks the spawned child
+token, requires synthetic-key directory listing and direct read to fail, requires an outside-root
+read to fail, and requires workspace create/edit/delete to succeed. It then stops and rolls back the
+service. The probe is CI test infrastructure and is not a production Codex executable.
+
+Passing unit or hosted-runner tests does not authorize a Matt installation. Keep the Symphony task
+disabled and admission paused. Matt installation with a synthetic fixture and live enablement are
+separate authorization gates documented in `elixir/docs/aro_197_rollout.md`.
+
+Run local broker tests with:
 
 ```powershell
-.tools\dotnet\dotnet.exe test elixir\priv\windows-service\Symphony.WindowsBroker.Tests\Symphony.WindowsBroker.Tests.csproj --configuration Release
+dotnet test elixir\priv\windows-service\Symphony.WindowsBroker.Tests\Symphony.WindowsBroker.Tests.csproj --configuration Release
 ```
