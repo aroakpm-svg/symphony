@@ -227,6 +227,29 @@ public sealed class BrokerTests : IDisposable
     {
         Assert.Equal(1, PipeFactory.MaxServerInstances);
     }
+
+    [Fact]
+    public void Service_identity_accepts_only_the_expected_low_privilege_sid()
+    {
+        var expected = new SecurityIdentifier("S-1-5-80-1-2-3-4-5");
+
+        ServiceIdentity.Demand(expected, new ServiceIdentitySnapshot(expected, false, false, false));
+    }
+
+    [Theory]
+    [InlineData("S-1-5-18", false, false, false, "service_identity_system")]
+    [InlineData("S-1-5-80-9-8-7-6-5", false, false, false, "service_identity_mismatch")]
+    [InlineData("S-1-5-80-1-2-3-4-5", true, false, false, "service_identity_elevated")]
+    [InlineData("S-1-5-80-1-2-3-4-5", false, true, false, "service_identity_admin")]
+    [InlineData("S-1-5-80-1-2-3-4-5", false, false, true, "service_identity_admin_deny_only")]
+    public void Service_identity_rejects_privileged_or_wrong_tokens(string userSid, bool elevated, bool adminEnabled, bool adminDenyOnly, string reason)
+    {
+        var expected = new SecurityIdentifier("S-1-5-80-1-2-3-4-5");
+        var snapshot = new ServiceIdentitySnapshot(new SecurityIdentifier(userSid), elevated, adminEnabled, adminDenyOnly);
+
+        Assert.Equal(reason, Assert.Throws<InvalidOperationException>(() => ServiceIdentity.Demand(expected, snapshot)).Message);
+    }
+
     [Fact]
     public void Windows_service_onstart_returns_after_scheduling_broker_loop()
     {

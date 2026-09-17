@@ -46,6 +46,7 @@ sealed class BrokerWindowsService : ServiceBase
 
     protected override void OnStart(string[] args)
     {
+        ServiceIdentity.Demand(options.ServiceName);
         running = Task.Run(RunAsync);
     }
 
