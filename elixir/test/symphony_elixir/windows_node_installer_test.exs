@@ -84,12 +84,20 @@ defmodule SymphonyElixir.WindowsNodeInstallerTest do
     assert installer =~ "ChangePermissions"
     assert installer =~ "TakeOwnership"
     assert installer =~ "Get-RuleSid"
+    assert installer =~ "if (-not ('ARO197.NativeToken' -as [type]))"
+    assert installer =~ "Assert-AdministrativeExecutionContext"
+    refute installer =~ "if (-not (Test-Elevated))"
     assert installer =~ "New-Service"
     assert installer =~ "-StartupType Manual"
     assert installer =~ "NT SERVICE\\$serviceName"
     assert installer =~ "sc.exe config $serviceName obj= $serviceIdentity"
     assert installer =~ "sc.exe sidtype $serviceName restricted"
     assert installer =~ "service_account_mismatch"
+    assert installer =~ "task_not_disabled"
+    assert installer =~ "admission_not_paused"
+    assert installer =~ "Assert-InstallReadiness"
+    assert installer =~ "Assert-ControllerOnlyBoundary"
+    assert installer =~ "Get-ScheduledTask"
     assert installer =~ "StartName"
     assert installer =~ "StartMode"
     assert installer =~ "Set-ProtectedAclRules"
@@ -107,6 +115,12 @@ defmodule SymphonyElixir.WindowsNodeInstallerTest do
     refute installer =~ "codex_worker_windows.ps1"
     refute installer =~ "New-LocalUser"
     refute installer =~ "-Credential"
+
+    readiness = :binary.match(installer, "Assert-InstallReadiness $controllerSid")
+    first_mutation = :binary.match(installer, "$stage = 'runtime'")
+    assert readiness != :nomatch
+    assert first_mutation != :nomatch
+    assert elem(readiness, 0) < elem(first_mutation, 0)
   end
 
   test "state manifest and rollback are limited to resources created by this install" do

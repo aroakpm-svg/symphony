@@ -22,6 +22,7 @@ $commandExample = Join-Path $brokerRoot 'codex-command.example.txt'
 $state = Join-Path $InstallRoot "aro197-$($Node.ToLowerInvariant()).json"
 $serviceIdentity = "NT SERVICE\$serviceName"
 
+if (-not ('ARO197.NativeToken' -as [type])) {
 Add-Type -TypeDefinition @'
 using System;
 using System.ComponentModel;
@@ -85,6 +86,7 @@ namespace ARO197 {
   }
 }
 '@
+}
 
 function Write-Receipt([string]$result, [bool]$changed, [string]$reason = '') {
   $receipt = [ordered]@{ result = $result; changed = $changed }
@@ -99,9 +101,6 @@ function Save-RecoveryState($created, $previousAcl) {
   $document | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath $state -Encoding UTF8
   Set-ProtectedAcl $state @('BUILTIN\Administrators', "${env:COMPUTERNAME}\$controller")
 }
-function Test-Elevated {
-  (Get-ExecutionContext).elevated
-}
 function Get-ExecutionContext {
   $snapshot = [ARO197.NativeToken]::Capture()
   [ordered]@{
@@ -112,6 +111,13 @@ function Get-ExecutionContext {
     administrators_enabled = [bool]$snapshot.AdministratorsEnabled
     administrators_deny_only = [bool]$snapshot.AdministratorsDenyOnly
   }
+}
+function Assert-AdministrativeExecutionContext {
+  try { $context = Get-ExecutionContext }
+  catch { throw 'execution_context_unproved' }
+  if (-not $context.elevated) { throw 'elevation_required' }
+  if (-not $context.administrators_enabled) { throw 'administrators_sid_not_enabled' }
+  if ($context.administrators_deny_only) { throw 'administrators_sid_deny_only' }
 }
 function Assert-PlainAbsolutePath([string]$path) {
   if (-not $path -or -not [IO.Path]::IsPathRooted($path)) { throw 'absolute_path_required' }
@@ -190,6 +196,46 @@ function Get-RuleSid([Security.Principal.IdentityReference]$identity) {
   try { $identity.Translate([Security.Principal.SecurityIdentifier]).Value }
   catch { throw 'private_key_acl_unresolvable' }
 }
+function Assert-ControllerOnlyBoundary([string[]]$paths, [string]$controllerSid, [string]$failure) {
+  $allowedSids = @(
+    $controllerSid,
+    ([Security.Principal.SecurityIdentifier]::new([Security.Principal.WellKnownSidType]::LocalSystemSid, $null)).Value,
+    ([Security.Principal.SecurityIdentifier]::new([Security.Principal.WellKnownSidType]::BuiltinAdministratorsSid, $null)).Value
+  )
+  foreach ($boundaryPath in $paths) {
+    try {
+      $acl = Get-Acl -LiteralPath $boundaryPath
+      if (-not $acl.AreAccessRulesProtected) { throw $failure }
+      $ownerSid = Get-RuleSid ([Security.Principal.NTAccount]::new($acl.Owner))
+      if ($ownerSid -notin $allowedSids) { throw $failure }
+      foreach ($rule in @($acl.Access)) {
+        if ($rule.IsInherited -or $rule.AccessControlType -ne [Security.AccessControl.AccessControlType]::Allow) { throw $failure }
+        if ((Get-RuleSid $rule.IdentityReference) -notin $allowedSids) { throw $failure }
+      }
+    } catch {
+      throw $failure
+    }
+  }
+}
+function Assert-ScheduledTaskDisabled {
+  if ([string]::IsNullOrWhiteSpace($ScheduledTaskName) -or [string]::IsNullOrWhiteSpace($ScheduledTaskPath)) { throw 'task_state_unproved' }
+  try { $task = Get-ScheduledTask -TaskName $ScheduledTaskName -TaskPath $ScheduledTaskPath -ErrorAction Stop }
+  catch { throw 'task_state_unproved' }
+  if ([string]$task.State -ne 'Disabled') { throw 'task_not_disabled' }
+}
+function Assert-AdmissionPaused([string]$controllerSid) {
+  if ([string]::IsNullOrWhiteSpace($AdmissionPauseFile)) { throw 'admission_state_unproved' }
+  Assert-PlainAbsolutePath $AdmissionPauseFile
+  if (-not (Test-Path -LiteralPath $AdmissionPauseFile -PathType Leaf)) { throw 'admission_not_paused' }
+  $admissionParent = Split-Path -Parent $AdmissionPauseFile
+  if (-not $admissionParent -or -not (Test-Path -LiteralPath $admissionParent -PathType Container)) { throw 'admission_state_unproved' }
+  Assert-PlainAbsolutePath $admissionParent
+  Assert-ControllerOnlyBoundary @($admissionParent, $AdmissionPauseFile) $controllerSid 'admission_state_unproved'
+}
+function Assert-InstallReadiness([string]$controllerSid) {
+  Assert-ScheduledTaskDisabled
+  Assert-AdmissionPaused $controllerSid
+}
 function Assert-ControllerSecretBoundary([string]$controllerSid) {
   $keyPath = [Environment]::GetEnvironmentVariable('SYMPHONY_GITHUB_APP_PRIVATE_KEY_FILE', 'Machine')
   if (-not $keyPath -or -not (Test-Path -LiteralPath $keyPath -PathType Leaf)) { throw 'private_key_missing' }
@@ -254,7 +300,10 @@ function Write-PlanReceipt {
     if (Get-Service -Name $serviceName -ErrorAction SilentlyContinue) { $blockers.Add('service_configuration_unproved') }
   }
   if ($service) {
-    if ($service.StartName -ne $serviceIdentity -or $service.StartMode -ne 'Manual' -or $service.State -ne 'Stopped') { $blockers.Add('service_configuration_unproved') }
+    $expectedPath = ('"{0}" --service --config "{1}"' -f $brokerExe, $brokerConfig)
+    if ($service.StartName -ne $serviceIdentity -or $service.StartMode -ne 'Manual' -or $service.State -ne 'Stopped' -or $service.PathName -ne $expectedPath) {
+      $blockers.Add('service_configuration_unproved')
+    }
   }
 
   $taskState = 'Unknown'
@@ -268,14 +317,13 @@ function Write-PlanReceipt {
   }
 
   $admissionState = 'Unknown'
-  if ([string]::IsNullOrWhiteSpace($AdmissionPauseFile)) { $blockers.Add('admission_state_unproved') }
-  else {
-    try {
-      Assert-PlainAbsolutePath $AdmissionPauseFile
-      if (-not (Test-Path -LiteralPath $AdmissionPauseFile -PathType Leaf)) { $blockers.Add('admission_not_paused') }
-      else { $admissionState = 'Paused' }
-    } catch { $blockers.Add('admission_state_unproved') }
-  }
+  if ($controllerSid) {
+    try { Assert-AdmissionPaused $controllerSid; $admissionState = 'Paused' }
+    catch {
+      if ($_.Exception.Message -eq 'admission_not_paused') { $blockers.Add('admission_not_paused') }
+      else { $blockers.Add('admission_state_unproved') }
+    }
+  } else { $blockers.Add('admission_state_unproved') }
 
   $runtimeInputs = @($RuntimeSource, $BrokerArtifacts, $CodexExe, $WorkspaceRoot, $PrivateHomeRoot, $CodexHomeRoot)
   if ($runtimeInputs.Where({ [string]::IsNullOrWhiteSpace($_) }).Count -ne 0) { $blockers.Add('runtime_input_unproved') }
@@ -342,7 +390,8 @@ function Remove-CreatedResources($created, $previousAcl) {
 }
 
 if ($Mode -eq 'Plan') { Assert-PlainAbsolutePath $InstallRoot; Write-PlanReceipt }
-if (-not (Test-Elevated)) { Write-Receipt 'FAIL' $false 'elevation_required'; exit 20 }
+try { Assert-AdministrativeExecutionContext }
+catch { Write-Receipt 'FAIL' $false $_.Exception.Message; exit 20 }
 Assert-PlainAbsolutePath $InstallRoot
 $created = [ordered]@{ runtime = $false; broker = $false; config = $false; service = $false; state = $false; acls = $false }
 $previousAcl = [ordered]@{}
@@ -378,7 +427,9 @@ try {
   if (Test-Path -LiteralPath $runtime) { throw 'runtime_already_exists' }
   if (Test-Path -LiteralPath $brokerRoot) { throw 'broker_already_exists' }
   if (Get-Service -Name $serviceName -ErrorAction SilentlyContinue) { throw 'service_already_exists' }
-  $controllerSid = Resolve-AccountSid "${env:COMPUTERNAME}\$controller"; Assert-ControllerSecretBoundary $controllerSid
+  $controllerSid = Resolve-AccountSid "${env:COMPUTERNAME}\$controller"
+  Assert-InstallReadiness $controllerSid
+  Assert-ControllerSecretBoundary $controllerSid
   $stage = 'runtime'
   New-Item -ItemType Directory -Path $InstallRoot -Force | Out-Null
   if (-not $previousAcl.Contains($InstallRoot)) { $previousAcl[$InstallRoot] = (Get-Acl -LiteralPath $InstallRoot).Sddl }
