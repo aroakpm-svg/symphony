@@ -16,17 +16,17 @@ public interface IBrokerProcess : IAsyncDisposable
     void TerminateTree();
 }
 
-public interface IBrokerProcessFactory { IBrokerProcess Start(BrokerRequest request, BrokerOptions options); }
+public interface IBrokerProcessFactory { IBrokerProcess Start(ValidatedBrokerRequest request, BrokerOptions options); }
 
 public sealed class CodexProcessFactory : IBrokerProcessFactory
 {
-    public IBrokerProcess Start(BrokerRequest request, BrokerOptions options)
+    public IBrokerProcess Start(ValidatedBrokerRequest request, BrokerOptions options)
     {
         var host = Environment.GetEnvironmentVariables()
             .Cast<DictionaryEntry>()
             .ToDictionary(e => (string)e.Key, e => (string)e.Value!, StringComparer.OrdinalIgnoreCase);
         var environment = BrokerPolicy.WorkerEnvironment(request, host);
-        var arguments = BrokerPolicy.CodexArguments(request);
+        var arguments = BrokerPolicy.CodexArguments();
         return SuspendedBrokerProcess.Start(options.CodexExecutable, arguments, request.Workspace, environment);
     }
 }

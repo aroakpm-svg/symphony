@@ -2,6 +2,7 @@ using System.Buffers.Binary;
 using System.IO.Pipes;
 using System.Security.Principal;
 using System.Text;
+using System.Text.Json;
 using System.Diagnostics;
 using Symphony.WindowsBroker;
 using Xunit;
@@ -39,30 +40,81 @@ public sealed class BrokerTests : IDisposable
     {
         var workspace = MakeDirectory("workspace");
         var privateRoot = MakeDirectory("private", "central-brain");
-        var privateHome = MakeDirectory("private", "central-brain", "ARO-1-r1");
+        var privateHome = MakeDirectory("private", "central-brain");
         var codexRoot = MakeDirectory("codex", "central-brain");
-        var codexHome = MakeDirectory("codex", "central-brain", "ARO-1-r1");
+        var codexHome = MakeDirectory("codex", "central-brain");
         var policy = Policy(workspace, privateRoot, codexRoot);
-        var valid = policy.Validate(new BrokerRequest("central-brain", MakeDirectory("workspace", "central-brain", "ARO-1"), privateHome, codexHome));
+        var request = new BrokerRequest(1, new string('a', 32), "central-brain", MakeDirectory("workspace", "central-brain", "ARO-1"));
+        var valid = policy.Validate(request);
         Assert.Equal("central-brain", valid.Profile);
-        Assert.Throws<InvalidDataException>(() => policy.Validate(valid with { Profile = "unknown" }));
-        Assert.Throws<InvalidDataException>(() => policy.Validate(valid with { Workspace = root }));
-        Assert.Equal(privateRoot, policy.Validate(valid with { PrivateHome = privateRoot }).PrivateHome);
-        Assert.Equal(codexRoot, policy.Validate(valid with { CodexHome = codexRoot }).CodexHome);
+        Assert.Equal(privateHome, valid.PrivateHome);
+        Assert.Equal(codexHome, valid.CodexHome);
+        Assert.Equal("profile_denied", Assert.Throws<InvalidDataException>(() => policy.Validate(request with { Profile = "unknown" })).Message);
+        Assert.Equal("path_denied", Assert.Throws<InvalidDataException>(() => policy.Validate(request with { Workspace = root })).Message);
 
         var link = Path.Combine(workspace, "central-brain", "link");
         try
         {
             Directory.CreateSymbolicLink(link, root);
-            Assert.Throws<InvalidDataException>(() => policy.Validate(valid with { Workspace = link }));
+            Assert.Equal("reparse_denied", Assert.Throws<InvalidDataException>(() => policy.Validate(request with { Workspace = link })).Message);
         }
         catch (Exception error) when (error is UnauthorizedAccessException or IOException) { }
     }
 
     [Fact]
+    public void Request_json_contains_only_the_bounded_capability_fields()
+    {
+        var request = new BrokerRequest(1, new string('a', 32), "central-brain", @"C:\work\central-brain\ARO-1");
+
+        var json = JsonSerializer.Serialize(request, BrokerJson.Strict);
+
+        Assert.Equal("{\"protocol_version\":1,\"request_id\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"profile\":\"central-brain\",\"workspace\":\"C:\\\\work\\\\central-brain\\\\ARO-1\"}", json);
+    }
+
+    [Theory]
+    [InlineData("private_home")]
+    [InlineData("codex_home")]
+    [InlineData("github_token")]
+    [InlineData("model")]
+    [InlineData("executable")]
+    [InlineData("arguments")]
+    [InlineData("environment")]
+    public void Strict_json_rejects_unmapped_request_members(string member)
+    {
+        var json = $$"""{"protocol_version":1,"request_id":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","profile":"central-brain","workspace":"C:\\work\\central-brain\\ARO-1","{{member}}":"injected"}""";
+
+        Assert.Throws<JsonException>(() => JsonSerializer.Deserialize<BrokerRequest>(json, BrokerJson.Strict));
+    }
+
+    [Theory]
+    [InlineData(0, "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "protocol_denied")]
+    [InlineData(2, "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "protocol_denied")]
+    [InlineData(1, "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA", "request_id_denied")]
+    [InlineData(1, "abc", "request_id_denied")]
+    public void Policy_rejects_unversioned_or_unbound_requests(int version, string requestId, string reason)
+    {
+        var workspace = MakeDirectory("workspace");
+        var policy = Policy(workspace, MakeDirectory("private", "central-brain"), MakeDirectory("codex", "central-brain"));
+        var request = new BrokerRequest(version, requestId, "central-brain", MakeDirectory("workspace", "central-brain", "ARO-1"));
+
+        Assert.Equal(reason, Assert.Throws<InvalidDataException>(() => policy.Validate(request)).Message);
+    }
+
+    [Fact]
+    public void Policy_rejects_unc_and_device_workspaces()
+    {
+        var policy = Policy(MakeDirectory("workspace"), MakeDirectory("private", "central-brain"), MakeDirectory("codex", "central-brain"));
+        MakeDirectory("workspace", "central-brain");
+        var request = new BrokerRequest(1, new string('a', 32), "central-brain", @"\\server\share\ARO-1");
+
+        Assert.Equal("path_denied", Assert.Throws<InvalidDataException>(() => policy.Validate(request)).Message);
+        Assert.Equal("path_denied", Assert.Throws<InvalidDataException>(() => policy.Validate(request with { Workspace = @"\\?\C:\work\ARO-1" })).Message);
+    }
+
+    [Fact]
     public void Worker_environment_is_minimal_and_drops_secrets()
     {
-        var request = new BrokerRequest("central-brain", root, Path.Combine(root, "private"), Path.Combine(root, "codex"), "call-local-token");
+        var request = new ValidatedBrokerRequest(new string('a', 32), "central-brain", root, Path.Combine(root, "private"), Path.Combine(root, "codex"));
         var host = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
         {
             ["SystemRoot"] = @"C:\Windows", ["PATH"] = "safe", ["LINEAR_API_KEY"] = "secret",
@@ -73,49 +125,22 @@ public sealed class BrokerTests : IDisposable
         var environment = BrokerPolicy.WorkerEnvironment(request, host);
         Assert.Equal("safe", environment["PATH"]);
         Assert.Equal(request.CodexHome, environment["CODEX_HOME"]);
-        Assert.Equal("call-local-token", environment["GH_TOKEN"]);
         Assert.Equal("Never", environment["GCM_INTERACTIVE"]);
         Assert.Equal("0", environment["GIT_CONFIG_COUNT"]);
         Assert.Equal("NUL", environment["GIT_CONFIG_GLOBAL"]);
         Assert.Equal("1", environment["GIT_CONFIG_NOSYSTEM"]);
         Assert.Equal("NUL", environment["GIT_CONFIG_SYSTEM"]);
         Assert.Equal("0", environment["GIT_TERMINAL_PROMPT"]);
-        Assert.Contains("credential.helper=!f()", environment["GIT_CONFIG_PARAMETERS"]);
-        Assert.DoesNotContain("host-controlled", environment["GIT_CONFIG_PARAMETERS"]);
-        Assert.DoesNotContain(environment, pair => pair.Key.Contains("TOKEN", StringComparison.OrdinalIgnoreCase) && pair.Key != "GH_TOKEN");
+        Assert.Equal("'credential.helper='", environment["GIT_CONFIG_PARAMETERS"]);
+        Assert.DoesNotContain(environment, pair => pair.Key.Contains("TOKEN", StringComparison.OrdinalIgnoreCase));
         Assert.DoesNotContain("UNRELATED", environment.Keys);
-    }
-
-    [Fact]
-    public async Task Worker_git_environment_uses_only_the_fixed_https_github_helper()
-    {
-        if (!OperatingSystem.IsWindows()) return;
-
-        var marker = Path.Combine(root, "ambient-helper.marker");
-        var globalConfig = Path.Combine(root, "ambient.gitconfig");
-        File.WriteAllText(globalConfig, $"[credential]\n\thelper = !echo ambient>{marker.Replace('\\', '/')}\n");
-        var host = Environment.GetEnvironmentVariables().Cast<System.Collections.DictionaryEntry>()
-            .ToDictionary(entry => (string)entry.Key, entry => (string)entry.Value!, StringComparer.OrdinalIgnoreCase);
-        host["GIT_CONFIG_GLOBAL"] = globalConfig;
-        host["GIT_CONFIG_PARAMETERS"] = "'credential.helper=!host-controlled'";
-        var request = new BrokerRequest("central-brain", root, Path.Combine(root, "private"), Path.Combine(root, "codex"), "call-local-token");
-        var environment = BrokerPolicy.WorkerEnvironment(request, host);
-
-        var github = await GitCredentialFillAsync("protocol=https\nhost=github.com\n\n", environment);
-        Assert.Equal(0, github.ExitCode);
-        Assert.Contains("username=x-access-token", github.Output);
-        Assert.Contains("password=call-local-token", github.Output);
-        Assert.False(File.Exists(marker));
-
-        var denied = await GitCredentialFillAsync("protocol=https\nhost=example.com\n\n", environment);
-        Assert.NotEqual(0, denied.ExitCode);
-        Assert.False(File.Exists(marker));
+        Assert.Equal(new[] { "--config", "shell_environment_policy.inherit=all", "app-server" }, BrokerPolicy.CodexArguments());
     }
 
     [Fact]
     public void Worker_environment_without_a_call_local_token_still_denies_ambient_credentials()
     {
-        var request = new BrokerRequest("central-brain", root, Path.Combine(root, "private"), Path.Combine(root, "codex"));
+        var request = new ValidatedBrokerRequest(new string('a', 32), "central-brain", root, Path.Combine(root, "private"), Path.Combine(root, "codex"));
         var host = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
         {
             ["GIT_CONFIG_PARAMETERS"] = "'credential.helper=!host-controlled'",
@@ -130,23 +155,6 @@ public sealed class BrokerTests : IDisposable
         Assert.Equal("NUL", environment["GIT_CONFIG_GLOBAL"]);
         Assert.Equal("NUL", environment["GIT_CONFIG_SYSTEM"]);
         Assert.Equal("0", environment["GIT_TERMINAL_PROMPT"]);
-    }
-
-    [Fact]
-    public void Policy_validates_call_local_secret_and_model_inputs()
-    {
-        var workspace = MakeDirectory("workspace");
-        var privateRoot = MakeDirectory("private", "central-brain");
-        var privateHome = MakeDirectory("private", "central-brain", "ARO-1-r1");
-        var codexRoot = MakeDirectory("codex", "central-brain");
-        var codexHome = MakeDirectory("codex", "central-brain", "ARO-1-r1");
-        var policy = Policy(workspace, privateRoot, codexRoot);
-        var valid = new BrokerRequest("central-brain", MakeDirectory("workspace", "central-brain", "ARO-1"), privateHome, codexHome, "token", "gpt-5.5");
-
-        Assert.Equal("gpt-5.5", policy.Validate(valid).Model);
-        Assert.Equal(new[] { "--config", "shell_environment_policy.inherit=all", "--config", "model=\"gpt-5.5\"", "app-server" }, BrokerPolicy.CodexArguments(valid));
-        Assert.Throws<InvalidDataException>(() => policy.Validate(valid with { GitHubToken = "bad\nsecret" }));
-        Assert.Throws<InvalidDataException>(() => policy.Validate(valid with { Model = "bad model" }));
     }
 
     [Fact]
@@ -335,44 +343,20 @@ public sealed class BrokerTests : IDisposable
     BrokerRequest ValidRequest()
     {
         var workspace = MakeDirectory("workspace", "central-brain", "ARO-1");
-        var privateHome = MakeDirectory("private", "central-brain", "ARO-1-r1");
+        MakeDirectory("private", "central-brain");
         MakeDirectory("codex", "central-brain");
-        var codexHome = MakeDirectory("codex", "central-brain", "ARO-1-r1");
-        return new("central-brain", workspace, privateHome, codexHome);
+        return new(1, new string('a', 32), "central-brain", workspace);
     }
 
     BrokerOptions TestOptions(string pipe, TimeSpan idle, TimeSpan absolute)
     {
         var request = ValidRequest();
         return new(pipe, "AROAKSymphonyCodexAmy", WindowsIdentity.GetCurrent().User!.Value, Path.Combine(root, "codex.exe"),
-            Path.Combine(root, "workspace"), new Dictionary<string, ProfileRoots> { ["central-brain"] = new(Path.GetDirectoryName(request.PrivateHome)!, Path.GetDirectoryName(request.CodexHome)!) }, idle, absolute);
+            Path.Combine(root, "workspace"), new Dictionary<string, ProfileRoots> { ["central-brain"] = new(Path.Combine(root, "private", "central-brain"), Path.Combine(root, "codex", "central-brain")) }, idle, absolute);
     }
 
     BrokerPolicy Policy(string workspace, string privateHome, string codexHome) =>
         new(workspace, new Dictionary<string, ProfileRoots> { ["central-brain"] = new(privateHome, codexHome) });
-
-    static async Task<(int ExitCode, string Output)> GitCredentialFillAsync(string input, IReadOnlyDictionary<string, string> environment)
-    {
-        var start = new ProcessStartInfo("git")
-        {
-            UseShellExecute = false,
-            RedirectStandardInput = true,
-            RedirectStandardOutput = true,
-            RedirectStandardError = true,
-            CreateNoWindow = true
-        };
-        start.ArgumentList.Add("credential");
-        start.ArgumentList.Add("fill");
-        start.Environment.Clear();
-        foreach (var pair in environment) start.Environment[pair.Key] = pair.Value;
-        using var process = Process.Start(start) ?? throw new InvalidOperationException("git_start_failed");
-        await process.StandardInput.WriteAsync(input);
-        process.StandardInput.Close();
-        var stdout = await process.StandardOutput.ReadToEndAsync();
-        var stderr = await process.StandardError.ReadToEndAsync();
-        await process.WaitForExitAsync();
-        return (process.ExitCode, stdout + stderr);
-    }
 
     string MakeDirectory(params string[] parts)
     {
@@ -391,7 +375,7 @@ sealed class TestProcessFactory(TestBehavior behavior, int expectedStarts = 1) :
     public TaskCompletionSource AllStarted { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
     public int StartCount => Volatile.Read(ref startCount);
     public TestBrokerProcess? LastProcess { get; private set; }
-    public IBrokerProcess Start(BrokerRequest request, BrokerOptions options)
+    public IBrokerProcess Start(ValidatedBrokerRequest request, BrokerOptions options)
     {
         LastProcess = new TestBrokerProcess(behavior);
         var count = Interlocked.Increment(ref startCount);

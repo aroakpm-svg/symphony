@@ -35,7 +35,7 @@ public sealed class BrokerServer(BrokerOptions options, IBrokerProcessFactory pr
         using var absolute = CancellationTokenSource.CreateLinkedTokenSource(stop); absolute.CancelAfter(options.AbsoluteTimeout);
         var first = await Frame.ReadAsync(pipe, absolute.Token);
         if (first.Kind != FrameKind.Request) throw new InvalidDataException("request_required");
-        var raw = JsonSerializer.Deserialize<BrokerRequest>(first.Payload) ?? throw new InvalidDataException("request_invalid");
+        var raw = JsonSerializer.Deserialize<BrokerRequest>(first.Payload, BrokerJson.Strict) ?? throw new InvalidDataException("request_invalid");
         var request = new BrokerPolicy(options.WorkspaceRoot, options.Profiles).Validate(raw);
         await using var process = processFactory.Start(request, options);
         var writeGate = new SemaphoreSlim(1, 1); long activity = Environment.TickCount64;
