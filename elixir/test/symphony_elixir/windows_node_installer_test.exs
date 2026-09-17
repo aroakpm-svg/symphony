@@ -8,23 +8,29 @@ defmodule SymphonyElixir.WindowsNodeInstallerTest do
   @sha String.duplicate("a", 40)
 
   @tag skip: if(is_nil(@powershell), do: "powershell.exe unavailable", else: false)
-  test "plan is secret-free, node-bound, immutable, and makes no filesystem changes" do
+  test "plan is secret-free, fail-closed, and makes no filesystem changes" do
     root = tmp_root()
     legacy = Path.join(root, "runtime")
     File.mkdir_p!(legacy)
     File.write!(Path.join(legacy, "dirty.txt"), "keep")
 
-    {output, 0} = run_installer("Plan", root)
+    {output, status} = run_installer("Plan", root)
+    assert status != 0
     receipt = Jason.decode!(output)
 
-    assert receipt == %{
-             "changed" => false,
-             "mode" => "Plan",
-             "node" => "Amy",
-             "result" => "PASS",
-             "runtime_commit" => @sha,
-             "service_state" => "Stopped"
-           }
+    assert receipt["changed"] == false
+    assert receipt["mode"] == "Plan"
+    assert receipt["node"] == "Amy"
+    assert receipt["runtime_commit"] == @sha
+    assert receipt["computer_name"] == System.get_env("COMPUTERNAME")
+    assert is_binary(receipt["identity"])
+    assert receipt["administrators_sid"] == "S-1-5-32-544"
+    assert is_boolean(receipt["elevated"])
+    assert is_boolean(receipt["administrators_enabled"])
+    assert is_boolean(receipt["administrators_deny_only"])
+    assert is_list(receipt["blockers"])
+    assert receipt["result"] == "FAIL"
+    assert receipt["blockers"] != []
 
     assert File.read!(Path.join(legacy, "dirty.txt")) == "keep"
     refute File.exists?(Path.join(root, "runtime-#{@sha}"))
@@ -81,7 +87,11 @@ defmodule SymphonyElixir.WindowsNodeInstallerTest do
     assert installer =~ "New-Service"
     assert installer =~ "-StartupType Manual"
     assert installer =~ "NT SERVICE\\$serviceName"
+    assert installer =~ "sc.exe config $serviceName obj= $serviceIdentity"
     assert installer =~ "sc.exe sidtype $serviceName restricted"
+    assert installer =~ "service_account_mismatch"
+    assert installer =~ "StartName"
+    assert installer =~ "StartMode"
     assert installer =~ "Set-ProtectedAclRules"
     assert installer =~ "Set-ProtectedAclRules $InstallRoot"
     assert installer =~ "@{ Principal = $serviceIdentity; Rights = 'ReadAndExecute' }"
@@ -96,7 +106,6 @@ defmodule SymphonyElixir.WindowsNodeInstallerTest do
     refute installer =~ "New-ScheduledTask"
     refute installer =~ "codex_worker_windows.ps1"
     refute installer =~ "New-LocalUser"
-    refute installer =~ "sc.exe config $serviceName obj="
     refute installer =~ "-Credential"
   end
 
@@ -148,17 +157,13 @@ defmodule SymphonyElixir.WindowsNodeInstallerTest do
     assert installer =~ "$workspaceRootLiteral"
     assert installer =~ "$brokerExeLiteral"
     assert installer =~ "$pipeNameLiteral"
-    assert installer =~ "icacls.exe `$grantPath /grant"
-    assert installer =~ "if (`$lockHeld)"
-    assert installer =~ "@('gh', 'xdg-config', 'xdg-cache', 'xdg-data', 'codex')"
-    assert installer =~ "private_home_component_missing"
-    assert installer =~ "private_home_component_reparse"
-    assert installer =~ "`$grantedPaths.Add(`$grantPath)"
-    assert installer =~ "[array]::Reverse(`$revokePaths)"
-    assert installer =~ "icacls.exe `$grantPath /remove:g '$($serviceIdentity)'"
-    assert installer =~ "broker_revoke_failed"
-    assert installer =~ "SYMPHONY_BROKER_CLEANUP_ACK"
+    assert installer =~ "@{ Principal = $serviceIdentity; Rights = 'Modify' }"
     assert installer =~ "ConvertTo-Json"
+    refute installer =~ "--private-home"
+    refute installer =~ "--codex-home"
+    refute installer =~ "icacls.exe `$grantPath /grant"
+    refute installer =~ "icacls.exe `$grantPath /remove:g"
+    refute installer =~ "SYMPHONY_BROKER_CLEANUP_ACK"
     refute installer =~ "<profile>"
     refute installer =~ "<issue-workspace>"
     refute installer =~ "installation_id ="

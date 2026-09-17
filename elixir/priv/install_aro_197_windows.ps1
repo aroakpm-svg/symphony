@@ -5,7 +5,8 @@ param(
   [Parameter(Mandatory)][ValidateSet('Plan', 'Install', 'Rollback')][string]$Mode,
   [string]$InstallRoot = "$env:ProgramData\AROAK\Symphony",
   [string]$RuntimeSource, [string]$BrokerArtifacts, [string]$CodexExe,
-  [string]$WorkspaceRoot, [string]$PrivateHomeRoot, [string]$CodexHomeRoot
+  [string]$WorkspaceRoot, [string]$PrivateHomeRoot, [string]$CodexHomeRoot,
+  [string]$ScheduledTaskName, [string]$ScheduledTaskPath, [string]$AdmissionPauseFile
 )
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
@@ -21,6 +22,70 @@ $commandExample = Join-Path $brokerRoot 'codex-command.example.txt'
 $state = Join-Path $InstallRoot "aro197-$($Node.ToLowerInvariant()).json"
 $serviceIdentity = "NT SERVICE\$serviceName"
 
+Add-Type -TypeDefinition @'
+using System;
+using System.ComponentModel;
+using System.Runtime.InteropServices;
+using System.Security.Principal;
+
+namespace ARO197 {
+  public sealed class TokenSnapshot {
+    public bool Elevated { get; set; }
+    public bool AdministratorsEnabled { get; set; }
+    public bool AdministratorsDenyOnly { get; set; }
+  }
+
+  public static class NativeToken {
+    const uint TOKEN_QUERY = 0x0008;
+    const uint SE_GROUP_ENABLED = 0x00000004;
+    const uint SE_GROUP_USE_FOR_DENY_ONLY = 0x00000010;
+
+    [StructLayout(LayoutKind.Sequential)] struct TOKEN_ELEVATION { public uint TokenIsElevated; }
+    [StructLayout(LayoutKind.Sequential)] struct SID_AND_ATTRIBUTES { public IntPtr Sid; public uint Attributes; }
+
+    [DllImport("kernel32.dll")] static extern IntPtr GetCurrentProcess();
+    [DllImport("advapi32.dll", SetLastError = true)] static extern bool OpenProcessToken(IntPtr process, uint access, out IntPtr token);
+    [DllImport("advapi32.dll", SetLastError = true)] static extern bool GetTokenInformation(IntPtr token, int tokenInformationClass, IntPtr information, int length, out int returnLength);
+    [DllImport("kernel32.dll", SetLastError = true)] static extern bool CloseHandle(IntPtr handle);
+
+    public static TokenSnapshot Capture() {
+      IntPtr token = IntPtr.Zero;
+      IntPtr buffer = IntPtr.Zero;
+      try {
+        if (!OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, out token)) throw new Win32Exception();
+        int size;
+        var elevation = new TOKEN_ELEVATION();
+        buffer = Marshal.AllocHGlobal(Marshal.SizeOf<TOKEN_ELEVATION>());
+        if (!GetTokenInformation(token, 20, buffer, Marshal.SizeOf<TOKEN_ELEVATION>(), out size)) throw new Win32Exception();
+        elevation = Marshal.PtrToStructure<TOKEN_ELEVATION>(buffer);
+        Marshal.FreeHGlobal(buffer); buffer = IntPtr.Zero;
+
+        GetTokenInformation(token, 2, IntPtr.Zero, 0, out size);
+        if (size <= 0) throw new Win32Exception();
+        buffer = Marshal.AllocHGlobal(size);
+        if (!GetTokenInformation(token, 2, buffer, size, out size)) throw new Win32Exception();
+        int count = Marshal.ReadInt32(buffer);
+        int offset = IntPtr.Size == 8 ? 8 : 4;
+        int stride = Marshal.SizeOf<SID_AND_ATTRIBUTES>();
+        bool enabled = false, denyOnly = false;
+        for (int index = 0; index < count; index++) {
+          var entry = Marshal.PtrToStructure<SID_AND_ATTRIBUTES>(IntPtr.Add(buffer, offset + index * stride));
+          var sid = new SecurityIdentifier(entry.Sid).Value;
+          if (sid == "S-1-5-32-544") {
+            enabled = (entry.Attributes & SE_GROUP_ENABLED) != 0;
+            denyOnly = (entry.Attributes & SE_GROUP_USE_FOR_DENY_ONLY) != 0;
+          }
+        }
+        return new TokenSnapshot { Elevated = elevation.TokenIsElevated != 0, AdministratorsEnabled = enabled, AdministratorsDenyOnly = denyOnly };
+      } finally {
+        if (buffer != IntPtr.Zero) Marshal.FreeHGlobal(buffer);
+        if (token != IntPtr.Zero && !CloseHandle(token)) throw new Win32Exception();
+      }
+    }
+  }
+}
+'@
+
 function Write-Receipt([string]$result, [bool]$changed, [string]$reason = '') {
   $receipt = [ordered]@{ result = $result; changed = $changed }
   if ($reason) { $receipt.reason = $reason } else {
@@ -30,13 +95,23 @@ function Write-Receipt([string]$result, [bool]$changed, [string]$reason = '') {
   [Console]::Out.WriteLine(($receipt | ConvertTo-Json -Compress))
 }
 function Save-RecoveryState($created, $previousAcl) {
-  $document = [ordered]@{ schema = 2; node = $Node; runtime_commit = $RuntimeCommit; created = $created; previous_acl = $previousAcl }
+  $document = [ordered]@{ schema = 3; node = $Node; runtime_commit = $RuntimeCommit; created = $created; previous_acl = $previousAcl }
   $document | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath $state -Encoding UTF8
   Set-ProtectedAcl $state @('BUILTIN\Administrators', "${env:COMPUTERNAME}\$controller")
 }
 function Test-Elevated {
-  $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
-  ([Security.Principal.WindowsPrincipal]::new($identity)).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+  (Get-ExecutionContext).elevated
+}
+function Get-ExecutionContext {
+  $snapshot = [ARO197.NativeToken]::Capture()
+  [ordered]@{
+    computer_name = [Environment]::MachineName
+    identity = [Security.Principal.WindowsIdentity]::GetCurrent().Name
+    elevated = [bool]$snapshot.Elevated
+    administrators_sid = 'S-1-5-32-544'
+    administrators_enabled = [bool]$snapshot.AdministratorsEnabled
+    administrators_deny_only = [bool]$snapshot.AdministratorsDenyOnly
+  }
 }
 function Assert-PlainAbsolutePath([string]$path) {
   if (-not $path -or -not [IO.Path]::IsPathRooted($path)) { throw 'absolute_path_required' }
@@ -68,7 +143,29 @@ function Set-ProtectedAclRules([string]$path, [object[]]$rules) {
   foreach ($rule in $rules) {
     $acl.AddAccessRule([Security.AccessControl.FileSystemAccessRule]::new([string]$rule.Principal, [string]$rule.Rights, $inheritance, 'None', 'Allow'))
   }
-  Set-Acl -LiteralPath $path -AclObject $acl; Assert-AreAllAccessRulesProtected $path
+  Set-Acl -LiteralPath $path -AclObject $acl; Assert-ProtectedAclRules $path $rules
+}
+function Assert-ProtectedAclRules([string]$path, [object[]]$rules) {
+  $acl = Get-Acl -LiteralPath $path
+  if (-not $acl.AreAccessRulesProtected) { throw 'acl_inheritance_enabled' }
+  $expected = @{}
+  foreach ($rule in $rules) {
+    $sid = Resolve-AccountSid ([string]$rule.Principal)
+    $rights = [int]([Enum]::Parse([Security.AccessControl.FileSystemRights], [string]$rule.Rights))
+    $expected[$sid] = $rights
+  }
+  $actual = @{}
+  foreach ($rule in @($acl.Access)) {
+    if ($rule.IsInherited -or $rule.AccessControlType -ne [Security.AccessControl.AccessControlType]::Allow) { throw 'acl_rule_unexpected' }
+    $sid = Get-RuleSid $rule.IdentityReference
+    if (-not $expected.ContainsKey($sid) -or $actual.ContainsKey($sid)) { throw 'acl_principal_unexpected' }
+    $actual[$sid] = ([int]$rule.FileSystemRights -band (-bnot [int][Security.AccessControl.FileSystemRights]::Synchronize))
+  }
+  if ($actual.Count -ne $expected.Count) { throw 'acl_rule_missing' }
+  foreach ($sid in $expected.Keys) {
+    $expectedRights = ($expected[$sid] -band (-bnot [int][Security.AccessControl.FileSystemRights]::Synchronize))
+    if (-not $actual.ContainsKey($sid) -or $actual[$sid] -ne $expectedRights) { throw 'acl_rights_mismatch' }
+  }
 }
 function Resolve-AccountSid([string]$name) {
   try { ([Security.Principal.NTAccount]::new($name)).Translate([Security.Principal.SecurityIdentifier]).Value }
@@ -96,26 +193,126 @@ function Get-RuleSid([Security.Principal.IdentityReference]$identity) {
 function Assert-ControllerSecretBoundary([string]$controllerSid) {
   $keyPath = [Environment]::GetEnvironmentVariable('SYMPHONY_GITHUB_APP_PRIVATE_KEY_FILE', 'Machine')
   if (-not $keyPath -or -not (Test-Path -LiteralPath $keyPath -PathType Leaf)) { throw 'private_key_missing' }
-  Assert-PlainAbsolutePath $keyPath; $keyAcl = Get-Acl -LiteralPath $keyPath
-  if (-not $keyAcl.AreAccessRulesProtected) { throw 'private_key_acl_inherited' }
+  Assert-PlainAbsolutePath $keyPath
+  $keyParent = Split-Path -Parent $keyPath
+  if (-not $keyParent -or -not (Test-Path -LiteralPath $keyParent -PathType Container)) { throw 'private_key_parent_missing' }
+  Assert-PlainAbsolutePath $keyParent
   $serviceAccount = [Security.Principal.NTAccount]::new($serviceIdentity)
-  $keyOwner = $keyAcl.Owner
-  if ($keyOwner -eq $serviceIdentity) { throw 'private_key_codex_owner' }
   $allowedReaders = @(
     $controllerSid,
     ([Security.Principal.SecurityIdentifier]::new([Security.Principal.WellKnownSidType]::LocalSystemSid, $null)).Value,
     ([Security.Principal.SecurityIdentifier]::new([Security.Principal.WellKnownSidType]::BuiltinAdministratorsSid, $null)).Value
   )
-  if ((Get-RuleSid ([Security.Principal.NTAccount]::new($keyOwner))) -notin $allowedReaders) { throw 'private_key_owner_not_allowed' }
   $readMask = [int]([Security.AccessControl.FileSystemRights]::Read -bor [Security.AccessControl.FileSystemRights]::ReadAndExecute -bor [Security.AccessControl.FileSystemRights]::FullControl)
   $controlMask = [int]([Security.AccessControl.FileSystemRights]::ChangePermissions -bor [Security.AccessControl.FileSystemRights]::TakeOwnership -bor [Security.AccessControl.FileSystemRights]::FullControl)
-  foreach ($rule in @($keyAcl.Access)) {
-    if ($rule.AccessControlType -eq [Security.AccessControl.AccessControlType]::Allow) {
-      if ($rule.IdentityReference -eq $serviceAccount -and (([int]$rule.FileSystemRights -band ($readMask -bor $controlMask)) -ne 0)) { throw 'private_key_codex_acl_control' }
-      if ((([int]$rule.FileSystemRights -band $controlMask) -ne 0) -and (Get-RuleSid $rule.IdentityReference) -notin $allowedReaders) { throw 'private_key_controller_acl_control' }
-      if ((([int]$rule.FileSystemRights -band $readMask) -ne 0) -and (Get-RuleSid $rule.IdentityReference) -notin $allowedReaders) { throw 'private_key_reader_not_allowed' }
+  foreach ($boundaryPath in @($keyParent, $keyPath)) {
+    $keyAcl = Get-Acl -LiteralPath $boundaryPath
+    if (-not $keyAcl.AreAccessRulesProtected) { throw 'private_key_acl_inherited' }
+    $keyOwner = $keyAcl.Owner
+    if ($keyOwner -eq $serviceIdentity) { throw 'private_key_codex_owner' }
+    if ((Get-RuleSid ([Security.Principal.NTAccount]::new($keyOwner))) -notin $allowedReaders) { throw 'private_key_owner_not_allowed' }
+    foreach ($rule in @($keyAcl.Access)) {
+      if ($rule.AccessControlType -eq [Security.AccessControl.AccessControlType]::Deny) { throw 'private_key_deny_rule_unexpected' }
+      if ($rule.AccessControlType -eq [Security.AccessControl.AccessControlType]::Allow) {
+        if ($rule.IdentityReference -eq $serviceAccount -and (([int]$rule.FileSystemRights -band ($readMask -bor $controlMask)) -ne 0)) { throw 'private_key_codex_acl_control' }
+        if ((([int]$rule.FileSystemRights -band $controlMask) -ne 0) -and (Get-RuleSid $rule.IdentityReference) -notin $allowedReaders) { throw 'private_key_controller_acl_control' }
+        if ((([int]$rule.FileSystemRights -band $readMask) -ne 0) -and (Get-RuleSid $rule.IdentityReference) -notin $allowedReaders) { throw 'private_key_reader_not_allowed' }
+      }
     }
   }
+}
+function Get-ServiceConfiguration {
+  $escaped = $serviceName.Replace("'", "''")
+  Get-CimInstance Win32_Service -Filter "Name='$escaped'" -ErrorAction Stop
+}
+function Assert-ServiceConfiguration {
+  $service = Get-ServiceConfiguration
+  if ($service.StartName -ne $serviceIdentity) { throw 'service_account_mismatch' }
+  if ($service.StartMode -ne 'Manual') { throw 'service_start_mode_mismatch' }
+  if ($service.State -ne 'Stopped') { throw 'service_not_stopped' }
+  $expectedPath = ('"{0}" --service --config "{1}"' -f $brokerExe, $brokerConfig)
+  if ($service.PathName -ne $expectedPath) { throw 'service_image_mismatch' }
+}
+function Write-PlanReceipt {
+  $blockers = [Collections.Generic.List[string]]::new()
+  try { $context = Get-ExecutionContext }
+  catch {
+    $context = [ordered]@{ computer_name = [Environment]::MachineName; identity = [Security.Principal.WindowsIdentity]::GetCurrent().Name; elevated = $false; administrators_sid = 'S-1-5-32-544'; administrators_enabled = $false; administrators_deny_only = $false }
+    $blockers.Add('execution_context_unproved')
+  }
+  if (-not $context.elevated) { $blockers.Add('elevation_required') }
+  if (-not $context.administrators_enabled) { $blockers.Add('administrators_sid_not_enabled') }
+  if ($context.administrators_deny_only) { $blockers.Add('administrators_sid_deny_only') }
+
+  $controllerSid = $null
+  try { $controllerSid = Resolve-AccountSid "${env:COMPUTERNAME}\$controller" }
+  catch { $blockers.Add('controller_context_unproved') }
+
+  $service = $null
+  try { $service = Get-ServiceConfiguration }
+  catch {
+    if (Get-Service -Name $serviceName -ErrorAction SilentlyContinue) { $blockers.Add('service_configuration_unproved') }
+  }
+  if ($service) {
+    if ($service.StartName -ne $serviceIdentity -or $service.StartMode -ne 'Manual' -or $service.State -ne 'Stopped') { $blockers.Add('service_configuration_unproved') }
+  }
+
+  $taskState = 'Unknown'
+  if ([string]::IsNullOrWhiteSpace($ScheduledTaskName) -or [string]::IsNullOrWhiteSpace($ScheduledTaskPath)) { $blockers.Add('task_state_unproved') }
+  else {
+    try {
+      $task = Get-ScheduledTask -TaskName $ScheduledTaskName -TaskPath $ScheduledTaskPath -ErrorAction Stop
+      $taskState = [string]$task.State
+      if ($taskState -ne 'Disabled') { $blockers.Add('task_not_disabled') }
+    } catch { $blockers.Add('task_state_unproved') }
+  }
+
+  $admissionState = 'Unknown'
+  if ([string]::IsNullOrWhiteSpace($AdmissionPauseFile)) { $blockers.Add('admission_state_unproved') }
+  else {
+    try {
+      Assert-PlainAbsolutePath $AdmissionPauseFile
+      if (-not (Test-Path -LiteralPath $AdmissionPauseFile -PathType Leaf)) { $blockers.Add('admission_not_paused') }
+      else { $admissionState = 'Paused' }
+    } catch { $blockers.Add('admission_state_unproved') }
+  }
+
+  $runtimeInputs = @($RuntimeSource, $BrokerArtifacts, $CodexExe, $WorkspaceRoot, $PrivateHomeRoot, $CodexHomeRoot)
+  if ($runtimeInputs.Where({ [string]::IsNullOrWhiteSpace($_) }).Count -ne 0) { $blockers.Add('runtime_input_unproved') }
+  else {
+    try {
+      foreach ($path in $runtimeInputs) { Assert-PlainAbsolutePath $path }
+    } catch { $blockers.Add('runtime_input_unproved') }
+  }
+  if ($controllerSid) {
+    try { Assert-ControllerSecretBoundary $controllerSid }
+    catch { $blockers.Add('acl_state_unproved') }
+  }
+
+  $receipt = [ordered]@{
+    result = $(if ($blockers.Count -eq 0) { 'PASS' } else { 'FAIL' })
+    changed = $false
+    mode = 'Plan'
+    node = $Node
+    runtime_commit = $RuntimeCommit
+    computer_name = $context.computer_name
+    identity = $context.identity
+    elevated = $context.elevated
+    administrators_sid = $context.administrators_sid
+    administrators_enabled = $context.administrators_enabled
+    administrators_deny_only = $context.administrators_deny_only
+    controller_sid = $controllerSid
+    service_exists = [bool]$service
+    service_account = $(if ($service) { [string]$service.StartName } else { $null })
+    service_start_mode = $(if ($service) { [string]$service.StartMode } else { $null })
+    service_state = $(if ($service) { [string]$service.State } else { 'Absent' })
+    task_state = $taskState
+    admission_state = $admissionState
+    proposed_changes = @('install_versioned_runtime', 'install_broker', 'configure_virtual_service_account', 'apply_protected_acls', 'leave_service_manual_stopped')
+    blockers = @($blockers)
+  }
+  [Console]::Out.WriteLine(($receipt | ConvertTo-Json -Compress -Depth 4))
+  if ($blockers.Count -eq 0) { exit 0 } else { exit 20 }
 }
 function Restore-Acls($previousAcl) {
   if (-not $previousAcl) { return }
@@ -144,7 +341,7 @@ function Remove-CreatedResources($created, $previousAcl) {
   if ($created.state -and (Test-Path -LiteralPath $state)) { Remove-Item -LiteralPath $state -Force; $created.state = $false }
 }
 
-if ($Mode -eq 'Plan') { Assert-PlainAbsolutePath $InstallRoot; Write-Receipt 'PASS' $false; exit 0 }
+if ($Mode -eq 'Plan') { Assert-PlainAbsolutePath $InstallRoot; Write-PlanReceipt }
 if (-not (Test-Elevated)) { Write-Receipt 'FAIL' $false 'elevation_required'; exit 20 }
 Assert-PlainAbsolutePath $InstallRoot
 $created = [ordered]@{ runtime = $false; broker = $false; config = $false; service = $false; state = $false; acls = $false }
@@ -155,7 +352,7 @@ try {
     $stage = 'rollback_manifest'
     if (-not (Test-Path -LiteralPath $state -PathType Leaf)) { throw 'state_missing' }
     $saved = Get-Content -LiteralPath $state -Raw | ConvertFrom-Json
-    if ($saved.schema -ne 2 -or $saved.node -ne $Node -or $saved.runtime_commit -ne $RuntimeCommit) { throw 'state_mismatch' }
+    if ($saved.schema -ne 3 -or $saved.node -ne $Node -or $saved.runtime_commit -ne $RuntimeCommit) { throw 'state_mismatch' }
     $saved.created.state = $false
     Remove-CreatedResources $saved.created $saved.previous_acl
     $stage = 'rollback_state'
@@ -208,11 +405,6 @@ try {
   @"
 `$ErrorActionPreference = 'Stop'
 `$workspaceRoot = $workspaceRootLiteral
-`$codexHome = [Environment]::GetEnvironmentVariable('CODEX_HOME', 'Process')
-`$privateHome = [Environment]::GetEnvironmentVariable('HOME', 'Process')
-if ([string]::IsNullOrWhiteSpace(`$privateHome)) { `$privateHome = [Environment]::GetEnvironmentVariable('USERPROFILE', 'Process') }
-if ([string]::IsNullOrWhiteSpace(`$codexHome)) { throw 'codex_home_missing' }
-if ([string]::IsNullOrWhiteSpace(`$privateHome)) { throw 'private_home_missing' }
 `$brokerService = Get-Service -Name $serviceNameLiteral -ErrorAction Stop
 if (`$brokerService.Status -ne 'Running') { throw 'broker_service_not_running' }
 `$workspace = [IO.Path]::GetFullPath((Get-Location).ProviderPath).TrimEnd([IO.Path]::DirectorySeparatorChar, [IO.Path]::AltDirectorySeparatorChar)
@@ -221,52 +413,18 @@ if (`$workspace.Length -le `$workspaceRootFull.Length -or !`$workspace.StartsWit
 `$relativeWorkspace = `$workspace.Substring(`$workspaceRootFull.Length).TrimStart([IO.Path]::DirectorySeparatorChar, [IO.Path]::AltDirectorySeparatorChar)
 `$profile = (`$relativeWorkspace -split '[\\/]')[0]
 if (`$profile -notin @('central-brain', 'project-management')) { throw 'profile_denied' }
-`$privateHomeChildren = foreach (`$leaf in @('gh', 'xdg-config', 'xdg-cache', 'xdg-data', 'codex')) {
-  `$child = Join-Path `$privateHome `$leaf
-  if (!(Test-Path -LiteralPath `$child -PathType Container)) { throw 'private_home_component_missing' }
-  `$item = Get-Item -LiteralPath `$child -Force
-  if ((`$item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) { throw 'private_home_component_reparse' }
-  `$item.FullName
-}
-`$grantPaths = @(`$workspace, `$privateHome) + @(`$privateHomeChildren) + @(`$codexHome)
-`$mutex = New-Object System.Threading.Mutex(`$false, 'Global\AROAKSymphonyCodex-$($Node)')
-`$lockHeld = `$false
-`$grantedPaths = New-Object 'System.Collections.Generic.List[string]'
-try {
-  `$lockHeld = `$mutex.WaitOne(0)
-  if (!`$lockHeld) { throw 'broker_acl_busy' }
-  foreach (`$grantPath in `$grantPaths) {
-    & icacls.exe `$grantPath /grant '$($serviceIdentity):(OI)(CI)(M)' | Out-Null
-    if (`$LASTEXITCODE) { throw 'broker_grant_failed' }
-    `$grantedPaths.Add(`$grantPath)
-  }
-  & $brokerExeLiteral --client --pipe $pipeNameLiteral --profile `$profile --workspace `$workspace --private-home `$privateHome --codex-home `$codexHome
-  exit `$LASTEXITCODE
-} finally {
-  `$cleanupOk = `$true
-  if (`$lockHeld) {
-    `$revokePaths = `$grantedPaths.ToArray()
-    [array]::Reverse(`$revokePaths)
-    foreach (`$grantPath in `$revokePaths) {
-      & icacls.exe `$grantPath /remove:g '$($serviceIdentity)' | Out-Null
-      if (`$LASTEXITCODE) { `$cleanupOk = `$false }
-    }
-    `$mutex.ReleaseMutex()
-  }
-  `$mutex.Dispose()
-  if (`$cleanupOk) {
-    if (![string]::IsNullOrWhiteSpace(`$env:SYMPHONY_BROKER_CLEANUP_ACK)) { Set-Content -LiteralPath `$env:SYMPHONY_BROKER_CLEANUP_ACK -Value 'done' -Encoding ASCII }
-  } else {
-    throw 'broker_revoke_failed'
-  }
-}
+& $brokerExeLiteral --client --pipe $pipeNameLiteral --profile `$profile --workspace `$workspace
+exit `$LASTEXITCODE
 "@ | Set-Content -LiteralPath $commandWrapper -Encoding UTF8
   ('codex.command: "powershell.exe -NoProfile -ExecutionPolicy Bypass -File \"{0}\""' -f $commandWrapper) | Set-Content -LiteralPath $commandExample -Encoding UTF8
   $stage = 'service_create'
   New-Service -Name $serviceName -BinaryPathName ('"{0}" --service --config "{1}"' -f $brokerExe, $brokerConfig) -StartupType Manual -DisplayName "AROAK Symphony Codex Broker ($Node)" | Out-Null
   $created.service = $true; Save-RecoveryState $created $previousAcl
+  $stage = 'service_identity'
+  & sc.exe config $serviceName obj= $serviceIdentity | Out-Null; if ($LASTEXITCODE -ne 0) { throw 'service_identity_failed' }
   $stage = 'service_sid'
   & sc.exe sidtype $serviceName restricted | Out-Null; if ($LASTEXITCODE -ne 0) { throw 'service_sid_failed' }
+  Assert-ServiceConfiguration
   $stage = 'shared_acls'
   $profileAclRoots = foreach ($profile in @('central-brain', 'project-management')) {
     Join-Path $WorkspaceRoot $profile
@@ -284,13 +442,21 @@ try {
   )
   Set-ProtectedAclRules $PrivateHomeRoot @(
     @{ Principal = 'BUILTIN\Administrators'; Rights = 'FullControl' },
-    @{ Principal = "${env:COMPUTERNAME}\$controller"; Rights = 'FullControl' }
+    @{ Principal = "${env:COMPUTERNAME}\$controller"; Rights = 'FullControl' },
+    @{ Principal = $serviceIdentity; Rights = 'ReadAndExecute' }
   )
   Set-ProtectedAclRules $CodexHomeRoot @(
     @{ Principal = 'BUILTIN\Administrators'; Rights = 'FullControl' },
-    @{ Principal = "${env:COMPUTERNAME}\$controller"; Rights = 'FullControl' }
+    @{ Principal = "${env:COMPUTERNAME}\$controller"; Rights = 'FullControl' },
+    @{ Principal = $serviceIdentity; Rights = 'ReadAndExecute' }
   )
-  foreach ($path in $profileAclRoots) { Set-ProtectedAcl $path @('BUILTIN\Administrators', "${env:COMPUTERNAME}\$controller") }
+  foreach ($path in $profileAclRoots) {
+    Set-ProtectedAclRules $path @(
+      @{ Principal = 'BUILTIN\Administrators'; Rights = 'FullControl' },
+      @{ Principal = "${env:COMPUTERNAME}\$controller"; Rights = 'FullControl' },
+      @{ Principal = $serviceIdentity; Rights = 'Modify' }
+    )
+  }
   $created.acls = $true; Save-RecoveryState $created $previousAcl
   $stage = 'installed_acls'
   Set-ProtectedAclRules $InstallRoot @(
@@ -314,7 +480,7 @@ try {
   $stage = 'state'
   Save-RecoveryState $created $previousAcl
   Set-ProtectedAcl $state @('BUILTIN\Administrators', "${env:COMPUTERNAME}\$controller")
-  if ((Get-Service -Name $serviceName).Status -ne 'Stopped') { throw 'service_not_stopped' }
+  Assert-ServiceConfiguration
   Write-Receipt 'PASS' $true
 } catch {
   $failedStage = $stage
