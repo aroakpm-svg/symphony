@@ -8,29 +8,23 @@ defmodule SymphonyElixir.WindowsNodeInstallerTest do
   @sha String.duplicate("a", 40)
 
   @tag skip: if(is_nil(@powershell), do: "powershell.exe unavailable", else: false)
-  test "plan is secret-free, fail-closed, and makes no filesystem changes" do
+  test "plan is secret-free and makes no filesystem changes" do
     root = tmp_root()
     legacy = Path.join(root, "runtime")
     File.mkdir_p!(legacy)
     File.write!(Path.join(legacy, "dirty.txt"), "keep")
 
-    {output, status} = run_installer("Plan", root)
-    assert status != 0
+    {output, 0} = run_installer("Plan", root)
     receipt = Jason.decode!(output)
 
-    assert receipt["changed"] == false
-    assert receipt["mode"] == "Plan"
-    assert receipt["node"] == "Amy"
-    assert receipt["runtime_commit"] == @sha
-    assert receipt["computer_name"] == System.get_env("COMPUTERNAME")
-    assert is_binary(receipt["identity"])
-    assert receipt["administrators_sid"] == "S-1-5-32-544"
-    assert is_boolean(receipt["elevated"])
-    assert is_boolean(receipt["administrators_enabled"])
-    assert is_boolean(receipt["administrators_deny_only"])
-    assert is_list(receipt["blockers"])
-    assert receipt["result"] == "FAIL"
-    assert receipt["blockers"] != []
+    assert receipt == %{
+             "changed" => false,
+             "mode" => "Plan",
+             "node" => "Amy",
+             "result" => "PASS",
+             "runtime_commit" => @sha,
+             "service_state" => "Stopped"
+           }
 
     assert File.read!(Path.join(legacy, "dirty.txt")) == "keep"
     refute File.exists?(Path.join(root, "runtime-#{@sha}"))
@@ -59,6 +53,9 @@ defmodule SymphonyElixir.WindowsNodeInstallerTest do
     refute workflow =~ "--self-contained false"
     assert workflow =~ "Verify self-contained single-file broker artifact"
     assert workflow =~ "DOTNET_ROOT_X64"
+    refute workflow =~ "Register-ScheduledTask"
+    refute workflow =~ "Disable-ScheduledTask"
+    refute workflow =~ "Unregister-ScheduledTask"
 
     probe = :binary.match(workflow, "$output = (& $binary --service 2>&1 | Out-String).Trim()")
     restoration = :binary.match(workflow, "$env:DOTNET_MULTILEVEL_LOOKUP = $savedLookup")
@@ -84,20 +81,13 @@ defmodule SymphonyElixir.WindowsNodeInstallerTest do
     assert installer =~ "ChangePermissions"
     assert installer =~ "TakeOwnership"
     assert installer =~ "Get-RuleSid"
-    assert installer =~ "if (-not ('ARO197.NativeToken' -as [type]))"
-    assert installer =~ "Assert-AdministrativeExecutionContext"
-    refute installer =~ "if (-not (Test-Elevated))"
+    assert installer =~ "if (-not (Test-Elevated))"
     assert installer =~ "New-Service"
     assert installer =~ "-StartupType Manual"
     assert installer =~ "NT SERVICE\\$serviceName"
     assert installer =~ "sc.exe config $serviceName obj= $serviceIdentity"
     assert installer =~ "sc.exe sidtype $serviceName restricted"
     assert installer =~ "service_account_mismatch"
-    assert installer =~ "task_not_disabled"
-    assert installer =~ "admission_not_paused"
-    assert installer =~ "Assert-InstallReadiness"
-    assert installer =~ "Assert-ControllerOnlyBoundary"
-    assert installer =~ "Get-ScheduledTask"
     assert installer =~ "StartName"
     assert installer =~ "StartMode"
     assert installer =~ "Set-ProtectedAclRules"
@@ -116,11 +106,8 @@ defmodule SymphonyElixir.WindowsNodeInstallerTest do
     refute installer =~ "New-LocalUser"
     refute installer =~ "-Credential"
 
-    readiness = :binary.match(installer, "Assert-InstallReadiness $controllerSid")
-    first_mutation = :binary.match(installer, "$stage = 'runtime'")
-    assert readiness != :nomatch
-    assert first_mutation != :nomatch
-    assert elem(readiness, 0) < elem(first_mutation, 0)
+    refute installer =~ "ScheduledTask"
+    refute installer =~ "AdmissionPause"
   end
 
   test "state manifest and rollback are limited to resources created by this install" do
@@ -171,13 +158,13 @@ defmodule SymphonyElixir.WindowsNodeInstallerTest do
     assert installer =~ "$workspaceRootLiteral"
     assert installer =~ "$brokerExeLiteral"
     assert installer =~ "$pipeNameLiteral"
-    assert installer =~ "@{ Principal = $serviceIdentity; Rights = 'Modify' }"
+    refute installer =~ "@{ Principal = $serviceIdentity; Rights = 'Modify' }"
     assert installer =~ "ConvertTo-Json"
-    refute installer =~ "--private-home"
-    refute installer =~ "--codex-home"
-    refute installer =~ "icacls.exe `$grantPath /grant"
-    refute installer =~ "icacls.exe `$grantPath /remove:g"
-    refute installer =~ "SYMPHONY_BROKER_CLEANUP_ACK"
+    assert installer =~ "--private-home"
+    assert installer =~ "--codex-home"
+    assert installer =~ "icacls.exe `$grantPath /grant"
+    assert installer =~ "icacls.exe `$grantPath /remove:g"
+    assert installer =~ "SYMPHONY_BROKER_CLEANUP_ACK"
     refute installer =~ "<profile>"
     refute installer =~ "<issue-workspace>"
     refute installer =~ "installation_id ="

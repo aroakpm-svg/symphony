@@ -6,20 +6,17 @@ Research date: 2026-09-16. Read-only source/document review; no service, credent
 
 The finding below remains the historical P1 for the restricted-LocalSystem design. The remediation
 branch replaces the service logon account with `NT SERVICE\AROAKSymphonyCodex{Node}` and rejects
-service startup unless Windows token APIs prove that exact non-SYSTEM, non-elevated,
-non-Administrator primary token. `CreateProcessW` then deliberately gives the child that already
-attested token.
+service startup unless the current Windows token user is that exact non-SYSTEM virtual account.
+`CreateProcessW` then deliberately gives the child that already attested token.
 
-The branch also narrows the pipe request to protocol version, request ID, profile, and workspace;
-maps all homes from protected configuration; removes request-carried token/model/environment values;
-and adds a test-only child probe. The Windows workflow is designed to prove all of these facts from
-the real SCM service and actual spawned child:
+The change preserves the existing broker request, call-local token/model forwarding, and
+per-invocation temporary ACL flow. It adds a test-only child probe so the Windows workflow can prove
+the relevant boundary using the real SCM service and actual spawned child:
 
 - SCM `StartName` is the node's virtual service account.
 - The live service process token SID equals that account and is not `S-1-5-18`.
-- The child reports the same SID, is not elevated, and has no enabled or deny-only Administrators SID.
-- Controller-to-pipe authentication succeeds and a different administrator SID fails.
-- Synthetic-key directory listing, synthetic-key read, and an outside-root read fail.
+- The child reports the same SID.
+- Synthetic-key directory listing and direct synthetic-key read fail.
 - Workspace create/edit/delete succeeds and the controller re-attests cleanup.
 - The service returns to Manual/Stopped and installer rollback removes only created resources.
 
@@ -61,6 +58,5 @@ This conclusion assumes the stated DACL has no applicable read-deny ACE and that
 Keep the Windows rollout and key-read-denial gate closed. Do not accept the static ACL allowlist,
 service `StartName`, service-SID presence, or unit tests alone as proof. First require exact-head
 hosted Windows success for the real service/child synthetic fixture. Then obtain separate approval
-for Matt installation, rerun the read-only execution-context gate from an elevated administrator
-token, and repeat the synthetic fixture without touching the live App key. Only a later approval may
+for Matt installation and repeat the synthetic fixture without touching the live App key. Only a later approval may
 perform live-key validation or enable the Symphony task.

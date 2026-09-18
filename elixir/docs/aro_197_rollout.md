@@ -76,12 +76,13 @@ launcher and only then execute `codex app-server`. The launcher must pass the ex
 `CODEX_HOME` and sanitized worker environment, must not inherit any `SYMPHONY_GITHUB_APP_*` value,
 and must fail closed rather than falling back to the controller principal.
 
-Give both principals access only to the roots they must share. On Windows, do not create a shared
-workspace group. The virtual service account may traverse the configured top-level worker roots and
-has Modify only on the approved `central-brain` and `project-management` profile directories beneath
-the workspace, private-home, and Codex-home roots. This Windows boundary separates controller-only
-material from approved worker roots; it does not claim Han-style sibling-issue filesystem
-invisibility. Keep the App-key directory outside every worker and broker ACL tree.
+Give both principals access only to the invocation paths they must share. On Windows, do not create
+a shared workspace group or grant the broker broad Modify rights on a workspace or profile root.
+The controller temporarily grants the virtual service account Modify only on the selected
+invocation's workspace, issue-private home, and Codex home, then removes those explicit grants when
+the brokered process exits. The wrapper serializes this grant/use/removal sequence with a node-global
+mutex, and the service accepts one session at a time. Keep the App-key directory outside every worker
+and broker ACL tree.
 
 Han MUST NOT use a shared group or default ACL for the workspace. Symphony deliberately creates
 each issue-private `.symphony-subprocess` home as controller-owned `0700` and re-attests that exact
@@ -107,11 +108,8 @@ for `central-brain` and `project-management`, then complete Codex-managed ChatGP
 ### Windows administrator installer
 
 Amy and Matt share `priv/install_aro_197_windows.ps1`. `Plan` is non-mutating and emits a masked JSON
-receipt. A readiness PASS requires Windows API proof of an elevated token with Administrators SID
-enabled and not deny-only, the separate controller SID/context, disabled task, paused admission,
-runtime inputs, ACLs, and acceptable service state. Any unproved item returns FAIL. `Install` and
-`Rollback` require a real elevated token. The installer accepts only `Amy` or `Matt`, a full
-40-character runtime commit, an
+receipt. `Install` and `Rollback` require an elevated administrator prompt. The installer accepts
+only `Amy` or `Matt`, a full 40-character runtime commit, an
 absolute clean source checkout at that exact commit, a reviewed broker publish directory, and plain
 non-reparse roots. It clones the reviewed commit into an independent checkout beside legacy runtimes,
 never into the legacy `runtime` directory and never with a worktree link back to the source. The
@@ -144,11 +142,13 @@ absolute values for `-CodexExe`, `-WorkspaceRoot`, `-PrivateHomeRoot`, and `-Cod
 broker configuration contains only the controller SID, pipe name, executable and allowed roots. It
 contains no App credential, token, installation identifier, password, or authentication material.
 The broker fixes the executable to
-`codex --config shell_environment_policy.inherit=all app-server`. A strict version-1 request contains
-only a 32-character request ID, approved profile, and canonical workspace. Private home, Codex home,
-executable, arguments, model, token, and environment values come from neither the caller nor ambient
-controller state. The broker maps profile homes from protected configuration and rebuilds a
-secret-free environment. The installed service accepts one session at a time.
+`codex --config shell_environment_policy.inherit=all app-server`. Client requests may select only an
+approved profile, canonical paths beneath configured roots, the call-local `GH_TOKEN`, and the
+validated Codex model selected by the existing launch inputs. The token and model are forwarded only
+to that brokered process and are not stored in service configuration or machine environment. The
+generated wrapper temporarily grants the service SID Modify rights only on the selected workspace,
+private home, and Codex home, and removes the grants after exit. The installed service accepts one
+session at a time.
 
 Rollback requires the same node and commit. It reads the protected state manifest and removes only
 the runtime directory, broker directory, configuration, service, and manifest recorded as created

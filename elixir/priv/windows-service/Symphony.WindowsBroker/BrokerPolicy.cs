@@ -1,36 +1,19 @@
 using System.Text.RegularExpressions;
-using System.Text.Json;
-using System.Text.Json.Serialization;
 namespace Symphony.WindowsBroker;
-public sealed record BrokerRequest(
-    [property: JsonPropertyName("protocol_version")] int ProtocolVersion,
-    [property: JsonPropertyName("request_id")] string RequestId,
-    [property: JsonPropertyName("profile")] string Profile,
-    [property: JsonPropertyName("workspace")] string Workspace);
-public sealed record ValidatedBrokerRequest(string RequestId, string Profile, string Workspace, string PrivateHome, string CodexHome);
+public sealed record BrokerRequest(string Profile, string Workspace, string PrivateHome, string CodexHome, string? GitHubToken = null, string? Model = null);
 public sealed record ProfileRoots(string PrivateHome, string CodexHome);
-public static class BrokerJson
-{
-    public static readonly JsonSerializerOptions Strict = new()
-    {
-        PropertyNameCaseInsensitive = false,
-        UnmappedMemberHandling = JsonUnmappedMemberHandling.Disallow
-    };
-}
 public sealed class BrokerPolicy(string workspaceRoot, IReadOnlyDictionary<string, ProfileRoots> profiles)
 {
     static readonly Regex SecretName = new("(LINEAR|TOKEN|JWT|SECRET|PASSWORD|PRIVATE_KEY|GITHUB_APP|CLAIM|CONTROLLER)", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
-    static readonly Regex RequestId = new(@"\A[a-f0-9]{32}\z", RegexOptions.CultureInvariant);
-    public ValidatedBrokerRequest Validate(BrokerRequest request)
+    const string GitCredentialHelper = "!f() { test \"$1\" = get || exit 0; protocol=; host=; while IFS== read -r key value; do case \"$key\" in protocol) protocol=\"$value\" ;; host) host=\"$value\" ;; esac; done; test \"$protocol\" = https && test \"$host\" = github.com || exit 1; printf \"username=x-access-token\\npassword=%s\\n\" \"$GH_TOKEN\"; }; f";
+    public BrokerRequest Validate(BrokerRequest request)
     {
-        if (request.ProtocolVersion != 1) throw new InvalidDataException("protocol_denied");
-        var requestId = request.RequestId ?? string.Empty;
-        if (!RequestId.IsMatch(requestId)) throw new InvalidDataException("request_id_denied");
         if (!profiles.TryGetValue(request.Profile, out var profile)) throw new InvalidDataException("profile_denied");
-        var workspace = CanonicalUnder(Path.Combine(workspaceRoot, request.Profile), request.Workspace, allowEqual: false);
-        return new(requestId, request.Profile, workspace, ExistingDirectory(profile.PrivateHome), ExistingDirectory(profile.CodexHome));
+        ValidateOptionalSecret(request.GitHubToken, "github_token_invalid");
+        ValidateOptionalModel(request.Model);
+        return request with { Workspace = CanonicalUnder(Path.Combine(workspaceRoot, request.Profile), request.Workspace, allowEqual: false), PrivateHome = CanonicalUnder(profile.PrivateHome, request.PrivateHome, allowEqual: true), CodexHome = CanonicalUnder(profile.CodexHome, request.CodexHome, allowEqual: true) };
     }
-    public static Dictionary<string, string> WorkerEnvironment(ValidatedBrokerRequest request, IReadOnlyDictionary<string, string> host)
+    public static Dictionary<string, string> WorkerEnvironment(BrokerRequest request, IReadOnlyDictionary<string, string> host)
     {
         var result = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
         foreach (var key in new[] { "SystemRoot", "WINDIR", "TEMP", "TMP", "PATH", "PATHEXT", "COMSPEC" }) if (host.TryGetValue(key, out var value) && !SecretName.IsMatch(key)) result[key] = value;
@@ -42,9 +25,29 @@ public sealed class BrokerPolicy(string workspaceRoot, IReadOnlyDictionary<strin
         result["GIT_CONFIG_PARAMETERS"] = "'credential.helper='";
         result["GIT_CONFIG_SYSTEM"] = "NUL";
         result["GIT_TERMINAL_PROMPT"] = "0";
+        if (!string.IsNullOrWhiteSpace(request.GitHubToken))
+        {
+            result["GH_TOKEN"] = request.GitHubToken!;
+            result["GIT_CONFIG_PARAMETERS"] = $"'credential.helper=' 'credential.helper={GitCredentialHelper}'";
+        }
         return result;
     }
-    public static string[] CodexArguments() => new[] { "--config", "shell_environment_policy.inherit=all", "app-server" };
+    public static string[] CodexArguments(BrokerRequest request)
+    {
+        var args = new List<string> { "--config", "shell_environment_policy.inherit=all" };
+        if (!string.IsNullOrWhiteSpace(request.Model)) args.AddRange(new[] { "--config", $"model=\"{request.Model}\"" });
+        args.Add("app-server");
+        return args.ToArray();
+    }
+    static void ValidateOptionalSecret(string? value, string reason)
+    {
+        if (value is not null && (value.Length > 8192 || value.Contains('\0') || value.Contains('\r') || value.Contains('\n'))) throw new InvalidDataException(reason);
+    }
+    static void ValidateOptionalModel(string? model)
+    {
+        if (model is null) return;
+        if (string.IsNullOrWhiteSpace(model) || !Regex.IsMatch(model, @"\A[a-zA-Z0-9][a-zA-Z0-9._:-]{0,63}\z")) throw new InvalidDataException("model_denied");
+    }
     static string CanonicalUnder(string root, string supplied, bool allowEqual)
     {
         var a = Canonical(root).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar); var b = Canonical(supplied);
@@ -55,7 +58,6 @@ public sealed class BrokerPolicy(string workspaceRoot, IReadOnlyDictionary<strin
     static string Canonical(string path)
     {
         if (string.IsNullOrWhiteSpace(path) || !Path.IsPathFullyQualified(path)) throw new InvalidDataException("path_not_absolute");
-        if (path.StartsWith(@"\\", StringComparison.Ordinal) || path.StartsWith(@"\\?\", StringComparison.Ordinal)) throw new InvalidDataException("path_denied");
         var full = Path.GetFullPath(path); var root = Path.GetPathRoot(full) ?? throw new InvalidDataException("path_root_missing"); var current = root;
         foreach (var component in full[root.Length..].Split(new[] { Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar }, StringSplitOptions.RemoveEmptyEntries))
         { current = Path.Combine(current, component); if (!Directory.Exists(current) && !File.Exists(current)) throw new InvalidDataException("path_missing"); if ((File.GetAttributes(current) & FileAttributes.ReparsePoint) != 0) throw new InvalidDataException("reparse_denied"); }

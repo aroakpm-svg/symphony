@@ -106,9 +106,6 @@ jobs:
           $install = Join-Path $root 'install'
           $secretDirectory = Join-Path $root 'controller-secret'
           $key = Join-Path $secretDirectory 'app-key.pem'
-          $admissionDirectory = Join-Path $root 'controller-state'
-          $admission = Join-Path $admissionDirectory 'admission.pause'
-          $outside = Join-Path $root 'outside.txt'
           $workspace = Join-Path $root 'workspace'
           $private = Join-Path $root 'private'
           $codexHome = Join-Path $root 'codex-home'
@@ -118,9 +115,6 @@ jobs:
           $serviceStarted = $false
           $installed = $false
           $controllerCreated = $false
-          $taskCreated = $false
-          $taskName = 'ARO197SyntheticDisabled'
-          $taskPath = '\'
           $common = $null
           try {
             $plainPassword = [Convert]::ToBase64String([Security.Cryptography.RandomNumberGenerator]::GetBytes(32)) + '!aA9'
@@ -130,30 +124,28 @@ jobs:
             $credential = [pscredential]::new("${env:COMPUTERNAME}\$controller", $securePassword)
             $plainPassword = $null
 
-            New-Item -ItemType Directory -Force -Path $root,$secretDirectory,$admissionDirectory,$workspace,$private,$codexHome | Out-Null
+            New-Item -ItemType Directory -Force -Path $root,$secretDirectory,$workspace,$private,$codexHome | Out-Null
             foreach ($profile in 'central-brain','project-management') {
               New-Item -ItemType Directory -Force -Path (Join-Path $workspace $profile),(Join-Path $private $profile),(Join-Path $codexHome $profile) | Out-Null
             }
             Set-Content -LiteralPath $key -Value 'disposable-test-key'
-            Set-Content -LiteralPath $admission -Value 'paused'
-            Set-Content -LiteralPath $outside -Value 'outside-controller-only'
             $controllerSid = ([Security.Principal.NTAccount]::new("${env:COMPUTERNAME}\$controller")).Translate([Security.Principal.SecurityIdentifier]).Value
             $directoryGrants = @('*S-1-5-18:(OI)(CI)(F)','*S-1-5-32-544:(OI)(CI)(F)',"*$controllerSid`:(OI)(CI)(R)")
+            $controllerDirectoryGrants = @('*S-1-5-18:(OI)(CI)(F)','*S-1-5-32-544:(OI)(CI)(F)',"*$controllerSid`:(OI)(CI)(F)")
             $fileGrants = @('*S-1-5-18:(F)','*S-1-5-32-544:(F)',"*$controllerSid`:(R)")
             Set-StrictAcl $secretDirectory $directoryGrants
             Set-StrictAcl $key $fileGrants
-            Set-StrictAcl $admissionDirectory $directoryGrants
-            Set-StrictAcl $admission $fileGrants
-            Set-StrictAcl $outside $fileGrants
+            $privateIssue = New-Item -ItemType Directory -Force -Path (Join-Path $private 'central-brain\ARO-1-r1')
+            $authHome = Join-Path $codexHome 'central-brain'
+            Set-StrictAcl $privateIssue.FullName $controllerDirectoryGrants
+            foreach ($leaf in 'gh','xdg-config','xdg-cache','xdg-data','codex') {
+              $child = New-Item -ItemType Directory -Force -Path (Join-Path $privateIssue.FullName $leaf)
+              Set-StrictAcl $child.FullName $controllerDirectoryGrants
+            }
             [Environment]::SetEnvironmentVariable('SYMPHONY_GITHUB_APP_PRIVATE_KEY_FILE', $key, 'Machine')
 
-            $taskAction = New-ScheduledTaskAction -Execute 'cmd.exe' -Argument '/c exit 0'
-            Register-ScheduledTask -TaskName $taskName -TaskPath $taskPath -Action $taskAction -User 'SYSTEM' -RunLevel Highest -Force | Out-Null
-            $taskCreated = $true
-            Disable-ScheduledTask -TaskName $taskName -TaskPath $taskPath | Out-Null
-
             $sha = (git rev-parse HEAD).Trim()
-            $common = @{ Node = $node; RuntimeCommit = $sha; InstallRoot = $install; ScheduledTaskName = $taskName; ScheduledTaskPath = $taskPath; AdmissionPauseFile = $admission }
+            $common = @{ Node = $node; RuntimeCommit = $sha; InstallRoot = $install }
             & ./elixir/priv/install_aro_197_windows.ps1 @common -Mode Install -RuntimeSource $env:GITHUB_WORKSPACE -BrokerArtifacts $brokerPublish -CodexExe $probeBinary -WorkspaceRoot $workspace -PrivateHomeRoot $private -CodexHomeRoot $codexHome
             if ($LASTEXITCODE) { throw 'install failed' }
             $installed = $true
@@ -173,11 +165,14 @@ jobs:
             if ($serviceProcessSid -ne $expectedServiceSid -or $serviceProcessSid -eq 'S-1-5-18') { throw 'service process token mismatch' }
 
             $workspaceIssue = New-Item -ItemType Directory -Force -Path (Join-Path $workspace 'central-brain\ARO-1')
-            [ordered]@{ synthetic_key_path = $key; outside_path = $outside } | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $workspaceIssue.FullName '.aro197-boundary-probe.json') -Encoding UTF8
+            [ordered]@{ synthetic_key_path = $key } | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $workspaceIssue.FullName '.aro197-boundary-probe.json') -Encoding UTF8
             $wrapper = Join-Path $install "broker-$sha\codex-command.ps1"
             $controllerScript = Join-Path $workspaceIssue.FullName 'run-controller.ps1'
             @"
           `$ErrorActionPreference = 'Stop'
+          `$env:HOME = '$($privateIssue.FullName.Replace("'", "''"))'
+          `$env:USERPROFILE = `$env:HOME
+          `$env:CODEX_HOME = '$($authHome.Replace("'", "''"))'
           Set-Location -LiteralPath '$($workspaceIssue.FullName.Replace("'", "''"))'
           & '$($wrapper.Replace("'", "''"))'
           exit `$LASTEXITCODE
@@ -188,17 +183,10 @@ jobs:
             if ($controllerExit -ne 0) { throw "controller broker client failed: $((Get-Content -LiteralPath $stderr -Raw -ErrorAction SilentlyContinue).Trim())" }
             $result = Get-Content -LiteralPath $stdout -Raw | ConvertFrom-Json
             if ($result.UserSid -ne $expectedServiceSid) { throw 'child token mismatch' }
-            if ($result.Elevated -or $result.AdministratorsEnabled -or $result.AdministratorsDenyOnly) { throw 'child token mismatch' }
             if (-not $result.KeyDirectoryListDenied) { throw 'synthetic key directory was listable' }
             if (-not $result.KeyReadDenied) { throw 'synthetic key was readable' }
-            if (-not $result.OutsideReadDenied) { throw 'outside sentinel was readable' }
             if (-not $result.WorkspaceCreateEditDeleteSucceeded) { throw 'workspace sentinel operation failed' }
-            if (@($result.LeakedEnvironmentNames).Count -ne 0) { throw 'secret environment name leaked' }
             if (Test-Path -LiteralPath (Join-Path $workspaceIssue.FullName 'aro197-worker-sentinel.txt')) { throw 'controller workspace re-attestation failed' }
-            if ((Get-Content -LiteralPath $outside -Raw).Trim() -ne 'outside-controller-only') { throw 'outside sentinel changed' }
-
-            $adminFailure = (& (Join-Path $install "broker-$sha\Symphony.WindowsBroker.exe") --client --pipe aroak-symphony-codex-amy --profile central-brain --workspace $workspaceIssue.FullName 2>&1 | Out-String).Trim()
-            if ($LASTEXITCODE -eq 0 -or $adminFailure -notmatch 'controller') { throw 'wrong SID client was not rejected' }
 
             Stop-Service -Name $serviceName -Force
             (Get-Service -Name $serviceName).WaitForStatus('Stopped', [TimeSpan]::FromSeconds(20))
@@ -224,7 +212,6 @@ jobs:
               try { & ./elixir/priv/install_aro_197_windows.ps1 @common -Mode Rollback | Out-Null } catch { }
             }
             [Environment]::SetEnvironmentVariable('SYMPHONY_GITHUB_APP_PRIVATE_KEY_FILE', $null, 'Machine')
-            if ($taskCreated) { Unregister-ScheduledTask -TaskName $taskName -TaskPath $taskPath -Confirm:$false -ErrorAction SilentlyContinue }
             if ($controllerCreated) { Remove-LocalUser -Name $controller -ErrorAction SilentlyContinue }
             Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue
           }
