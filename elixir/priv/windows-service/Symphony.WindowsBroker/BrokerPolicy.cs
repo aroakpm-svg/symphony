@@ -50,10 +50,23 @@ public sealed class BrokerPolicy(string workspaceRoot, IReadOnlyDictionary<strin
     }
     static string CanonicalUnder(string root, string supplied, bool allowEqual)
     {
-        var a = Canonical(root).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar); var b = Canonical(supplied);
-        if (StringComparer.OrdinalIgnoreCase.Equals(a, b)) { if (allowEqual) return b; throw new InvalidDataException("path_denied"); }
+        var a = ConfiguredRoot(root); var b = ConfiguredRoot(supplied);
+        if (StringComparer.OrdinalIgnoreCase.Equals(a, b)) { if (!allowEqual) throw new InvalidDataException("path_denied"); DemandExistingNonReparse(b); return b; }
         if (!b.StartsWith(a + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase)) throw new InvalidDataException("path_denied");
+        var current = a;
+        foreach (var component in b[(a.Length + 1)..].Split(new[] { Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar }, StringSplitOptions.RemoveEmptyEntries))
+        { current = Path.Combine(current, component); DemandExistingNonReparse(current); }
         return b;
+    }
+    public static string ConfiguredRoot(string path)
+    {
+        if (string.IsNullOrWhiteSpace(path) || !Path.IsPathFullyQualified(path)) throw new InvalidDataException("path_not_absolute");
+        return Path.GetFullPath(path).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+    }
+    static void DemandExistingNonReparse(string path)
+    {
+        if (!Directory.Exists(path) && !File.Exists(path)) throw new InvalidDataException("path_missing");
+        if ((File.GetAttributes(path) & FileAttributes.ReparsePoint) != 0) throw new InvalidDataException("reparse_denied");
     }
     static string Canonical(string path)
     {

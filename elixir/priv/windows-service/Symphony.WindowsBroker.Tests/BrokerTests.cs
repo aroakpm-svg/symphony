@@ -166,6 +166,23 @@ public sealed class BrokerTests : IDisposable
     }
 
     [Fact]
+    public void Json_configuration_defers_private_profile_access_until_the_controller_grant()
+    {
+        var workspace = MakeDirectory("deferred-workspace");
+        var privateRoot = MakeDirectory("deferred-private");
+        var codexRoot = MakeDirectory("deferred-codex");
+        var codexExe = Path.Combine(root, "deferred-codex.exe"); File.WriteAllText(codexExe, "stub");
+        foreach (var profile in new[] { "central-brain", "project-management" }) MakeDirectory("deferred-workspace", profile);
+        var config = Path.Combine(root, "deferred-broker-settings.json");
+        File.WriteAllText(config, System.Text.Json.JsonSerializer.Serialize(new { schema=1, node="Matt", service_name="AROAKSymphonyCodexMatt", pipe_name="test", controller_sid=WindowsIdentity.GetCurrent().User!.Value, workspace_root=workspace, private_home_root=privateRoot, codex_home_root=codexRoot, codex_exe=codexExe }));
+
+        var options = BrokerConfiguration.FromFile(config);
+
+        Assert.Equal(Path.Combine(privateRoot, "central-brain"), options.Profiles["central-brain"].PrivateHome);
+        Assert.Equal(Path.Combine(codexRoot, "project-management"), options.Profiles["project-management"].CodexHome);
+    }
+
+    [Fact]
     public void Json_configuration_accepts_utf8_bom_written_by_windows_powershell()
     {
         var workspace = MakeDirectory("workspace"); var privateRoot = MakeDirectory("private"); var codexRoot = MakeDirectory("codex");

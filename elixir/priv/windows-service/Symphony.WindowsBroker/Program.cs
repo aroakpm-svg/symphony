@@ -6,26 +6,17 @@ public static class Program
 {
     public static async Task<int> Main(string[] args)
     {
-        WriteStartupDiagnostic("main_entered");
         try
         {
             if (args.Contains("--client", StringComparer.OrdinalIgnoreCase)) return await RunClientAsync(args);
             var configPath = Value(args, "--config") ?? throw new ArgumentException("missing_config");
             var options = BrokerConfiguration.FromFile(configPath);
-            WriteStartupDiagnostic("config_loaded");
             if (args.Contains("--server", StringComparer.OrdinalIgnoreCase)) { await using var server = new BrokerServer(options, new CodexProcessFactory()); await server.RunAsync(CancellationToken.None); return 0; }
             if (!args.Contains("--service", StringComparer.OrdinalIgnoreCase)) throw new ArgumentException("mode_required");
-            WriteStartupDiagnostic("service_dispatch");
             ServiceBase.Run(new BrokerWindowsService(options, new CodexProcessFactory()));
             return 0;
         }
-        catch (Exception error) { WriteStartupDiagnostic(error.ToString()); Console.Error.WriteLine(error.Message); return 1; }
-    }
-    static void WriteStartupDiagnostic(string message)
-    {
-        var path = Environment.GetEnvironmentVariable("SYMPHONY_BROKER_STARTUP_DIAGNOSTIC_FILE");
-        if (string.IsNullOrWhiteSpace(path)) return;
-        try { File.AppendAllText(path, message + Environment.NewLine); } catch { }
+        catch (Exception error) { Console.Error.WriteLine(error.Message); return 1; }
     }
     static async Task<int> RunClientAsync(string[] args)
     {
@@ -103,13 +94,13 @@ public static class BrokerConfiguration
         if (settings.Schema != 1 || settings.Node is not ("Amy" or "Matt") || settings.ServiceName != $"AROAKSymphonyCodex{settings.Node}") throw new InvalidDataException("config_schema_invalid");
         if (settings.IdleTimeoutSeconds is <= 0 || settings.AbsoluteTimeoutSeconds is <= 0) throw new InvalidDataException("timeout_invalid");
         var workspaceRoot = BrokerPolicy.ExistingDirectory(settings.WorkspaceRoot);
-        var privateRoot = BrokerPolicy.ExistingDirectory(settings.PrivateHomeRoot);
-        var codexRoot = BrokerPolicy.ExistingDirectory(settings.CodexHomeRoot);
+        var privateRoot = BrokerPolicy.ConfiguredRoot(settings.PrivateHomeRoot);
+        var codexRoot = BrokerPolicy.ConfiguredRoot(settings.CodexHomeRoot);
         var codexExecutable = BrokerPolicy.ExistingFile(settings.CodexExecutable);
         var profiles = new Dictionary<string, ProfileRoots>(StringComparer.OrdinalIgnoreCase)
         {
-            ["central-brain"] = new(BrokerPolicy.ExistingDirectory(Path.Combine(privateRoot, "central-brain")), BrokerPolicy.ExistingDirectory(Path.Combine(codexRoot, "central-brain"))),
-            ["project-management"] = new(BrokerPolicy.ExistingDirectory(Path.Combine(privateRoot, "project-management")), BrokerPolicy.ExistingDirectory(Path.Combine(codexRoot, "project-management")))
+            ["central-brain"] = new(Path.Combine(privateRoot, "central-brain"), Path.Combine(codexRoot, "central-brain")),
+            ["project-management"] = new(Path.Combine(privateRoot, "project-management"), Path.Combine(codexRoot, "project-management"))
         };
         foreach (var profile in profiles.Keys) BrokerPolicy.ExistingDirectory(Path.Combine(workspaceRoot, profile));
         return new(settings.PipeName, settings.ServiceName, settings.ControllerSid, codexExecutable, workspaceRoot, profiles, TimeSpan.FromSeconds(settings.IdleTimeoutSeconds ?? 900), TimeSpan.FromSeconds(settings.AbsoluteTimeoutSeconds ?? 14400));

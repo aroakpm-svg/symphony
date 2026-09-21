@@ -14,7 +14,6 @@ $controller = "SymphonyCtl$Node"
 $runtime = Join-Path $InstallRoot "runtime-$RuntimeCommit"
 $brokerRoot = Join-Path $InstallRoot "broker-$RuntimeCommit"
 $brokerExe = Join-Path $brokerRoot 'Symphony.WindowsBroker.exe'
-$bundleExtractRoot = Join-Path $brokerRoot 'bundle-cache'
 $installedCodexExe = Join-Path $brokerRoot 'codex.exe'
 $brokerConfig = Join-Path $brokerRoot 'broker-settings.json'
 $commandWrapper = Join-Path $brokerRoot 'codex-command.ps1'
@@ -136,8 +135,6 @@ function Assert-ServiceConfiguration {
   if ($service.State -ne 'Stopped') { throw 'service_not_stopped' }
   $expectedPath = ('"{0}" --service --config "{1}"' -f $brokerExe, $brokerConfig)
   if ($service.PathName -ne $expectedPath) { throw 'service_image_mismatch' }
-  $serviceEnvironment = @(Get-ItemPropertyValue -LiteralPath "HKLM:\SYSTEM\CurrentControlSet\Services\$serviceName" -Name Environment -ErrorAction Stop)
-  if ($serviceEnvironment.Count -ne 1 -or $serviceEnvironment[0] -ne "DOTNET_BUNDLE_EXTRACT_BASE_DIR=$bundleExtractRoot") { throw 'service_bundle_environment_mismatch' }
 }
 function Restore-Acls($previousAcl) {
   if (-not $previousAcl) { return }
@@ -219,7 +216,6 @@ try {
   }
   $stage = 'broker_files'
   New-Item -ItemType Directory -Path $brokerRoot | Out-Null; $created.broker = $true; Save-RecoveryState $created $previousAcl
-  New-Item -ItemType Directory -Path $bundleExtractRoot | Out-Null
   Copy-Item -Path (Join-Path $BrokerArtifacts '*') -Destination $brokerRoot -Recurse -Force
   Copy-Item -LiteralPath $CodexExe -Destination $installedCodexExe
   if ((Get-FileHash -Algorithm SHA256 -LiteralPath $CodexExe).Hash -ne (Get-FileHash -Algorithm SHA256 -LiteralPath $installedCodexExe).Hash) { throw 'codex_copy_attestation_failed' }
@@ -291,8 +287,6 @@ try {
   $created.service = $true; Save-RecoveryState $created $previousAcl
   $stage = 'service_identity'
   & sc.exe config $serviceName obj= $serviceIdentity | Out-Null; if ($LASTEXITCODE -ne 0) { throw 'service_identity_failed' }
-  $stage = 'service_environment'
-  New-ItemProperty -LiteralPath "HKLM:\SYSTEM\CurrentControlSet\Services\$serviceName" -Name Environment -PropertyType MultiString -Value @("DOTNET_BUNDLE_EXTRACT_BASE_DIR=$bundleExtractRoot") -Force | Out-Null
   $stage = 'service_sid'
   & sc.exe sidtype $serviceName restricted | Out-Null; if ($LASTEXITCODE -ne 0) { throw 'service_sid_failed' }
   Assert-ServiceConfiguration
@@ -335,10 +329,6 @@ try {
     @{ Principal = 'BUILTIN\Administrators'; Rights = 'FullControl' },
     @{ Principal = "${env:COMPUTERNAME}\$controller"; Rights = 'ReadAndExecute' },
     @{ Principal = $serviceIdentity; Rights = 'ReadAndExecute' }
-  )
-  Set-ProtectedAclRules $bundleExtractRoot @(
-    @{ Principal = 'BUILTIN\Administrators'; Rights = 'FullControl' },
-    @{ Principal = $serviceIdentity; Rights = 'FullControl' }
   )
   Set-ProtectedAclRules $brokerConfig @(
     @{ Principal = 'BUILTIN\Administrators'; Rights = 'FullControl' },
