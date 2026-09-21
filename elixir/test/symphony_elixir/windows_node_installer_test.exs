@@ -68,6 +68,17 @@ defmodule SymphonyElixir.WindowsNodeInstallerTest do
     assert elem(restoration, 0) < elem(explicit_success, 0)
   end
 
+  test "Windows integration exercises the Matt virtual-service identity" do
+    workflow = File.read!(@workflow)
+
+    assert workflow =~ "$node = 'Matt'"
+    assert workflow =~ "$controller = 'SymphonyCtlMatt'"
+    assert workflow =~ "$serviceName = 'AROAKSymphonyCodexMatt'"
+    refute workflow =~ "$node = 'Amy'"
+    refute workflow =~ "$controller = 'SymphonyCtlAmy'"
+    refute workflow =~ "$serviceName = 'AROAKSymphonyCodexAmy'"
+  end
+
   test "installer retains one broker-only identity boundary" do
     installer = File.read!(@installer)
     assert installer =~ "ValidateSet('Amy', 'Matt')"

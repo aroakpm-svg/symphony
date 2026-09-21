@@ -98,9 +98,9 @@ jobs:
             }
           }
 
-          $node = 'Amy'
-          $controller = 'SymphonyCtlAmy'
-          $serviceName = 'AROAKSymphonyCodexAmy'
+          $node = 'Matt'
+          $controller = 'SymphonyCtlMatt'
+          $serviceName = 'AROAKSymphonyCodexMatt'
           $serviceIdentity = "NT SERVICE\$serviceName"
           $root = Join-Path $env:RUNNER_TEMP 'aro197-integration'
           $install = Join-Path $root 'install'
