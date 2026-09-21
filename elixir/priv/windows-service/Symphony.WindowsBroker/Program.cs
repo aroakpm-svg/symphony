@@ -6,17 +6,26 @@ public static class Program
 {
     public static async Task<int> Main(string[] args)
     {
+        WriteStartupDiagnostic("main_entered");
         try
         {
             if (args.Contains("--client", StringComparer.OrdinalIgnoreCase)) return await RunClientAsync(args);
             var configPath = Value(args, "--config") ?? throw new ArgumentException("missing_config");
             var options = BrokerConfiguration.FromFile(configPath);
+            WriteStartupDiagnostic("config_loaded");
             if (args.Contains("--server", StringComparer.OrdinalIgnoreCase)) { await using var server = new BrokerServer(options, new CodexProcessFactory()); await server.RunAsync(CancellationToken.None); return 0; }
             if (!args.Contains("--service", StringComparer.OrdinalIgnoreCase)) throw new ArgumentException("mode_required");
+            WriteStartupDiagnostic("service_dispatch");
             ServiceBase.Run(new BrokerWindowsService(options, new CodexProcessFactory()));
             return 0;
         }
-        catch (Exception error) { Console.Error.WriteLine(error.Message); return 1; }
+        catch (Exception error) { WriteStartupDiagnostic(error.ToString()); Console.Error.WriteLine(error.Message); return 1; }
+    }
+    static void WriteStartupDiagnostic(string message)
+    {
+        var path = Environment.GetEnvironmentVariable("SYMPHONY_BROKER_STARTUP_DIAGNOSTIC_FILE");
+        if (string.IsNullOrWhiteSpace(path)) return;
+        try { File.AppendAllText(path, message + Environment.NewLine); } catch { }
     }
     static async Task<int> RunClientAsync(string[] args)
     {

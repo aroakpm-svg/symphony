@@ -155,6 +155,12 @@ jobs:
             if ($service.StartMode -ne 'Manual') { throw 'service start mode changed' }
             if ($service.State -ne 'Stopped') { throw 'service unexpectedly started' }
 
+            $bundleExtractRoot = Join-Path $install "broker-$sha\bundle-cache"
+            $startupDiagnostic = Join-Path $bundleExtractRoot 'startup-diagnostic.txt'
+            Set-ItemProperty -LiteralPath "HKLM:\SYSTEM\CurrentControlSet\Services\$serviceName" -Name Environment -Value @(
+              "DOTNET_BUNDLE_EXTRACT_BASE_DIR=$bundleExtractRoot",
+              "SYMPHONY_BROKER_STARTUP_DIAGNOSTIC_FILE=$startupDiagnostic"
+            )
             $serviceStartAttemptedAt = Get-Date
             $serviceStartOutput = (& sc.exe start $serviceName 2>&1 | Out-String).Trim()
             $serviceStartExitCode = $LASTEXITCODE
@@ -163,13 +169,14 @@ jobs:
             if ($serviceStartExitCode -ne 0) {
               $failedService = Get-CimInstance Win32_Service -Filter "Name='$serviceName'" -ErrorAction SilentlyContinue
               Write-Host ("service start snapshot: state={0}; status={1}; exit_code={2}; service_exit_code={3}" -f $failedService.State,$failedService.Status,$failedService.ExitCode,$failedService.ServiceSpecificExitCode)
-              $bundleExtractRoot = Join-Path $install "broker-$sha\bundle-cache"
               Write-Host "bundle extraction contents:"
               Get-ChildItem -LiteralPath $bundleExtractRoot -Recurse -Force -ErrorAction SilentlyContinue |
                 Select-Object FullName,Length,Attributes |
                 Format-List |
                 Out-String |
                 Write-Host
+              Write-Host "broker startup diagnostic:"
+              Get-Content -LiteralPath $startupDiagnostic -Raw -ErrorAction SilentlyContinue | Write-Host
               Get-WinEvent -FilterHashtable @{ LogName = 'System'; ProviderName = 'Service Control Manager'; StartTime = $serviceStartAttemptedAt.AddSeconds(-5) } -ErrorAction SilentlyContinue |
                 Select-Object TimeCreated,Id,LevelDisplayName,Message |
                 Select-Object -First 20 |
