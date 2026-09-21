@@ -109,8 +109,8 @@ sealed class SuspendedBrokerProcess : IBrokerProcess
                     ref startup, out var processInformation))
                 throw new Win32Exception();
 
-            processHandle = processInformation.hProcess;
-            threadHandle = processInformation.hThread;
+            processHandle = new SafeFileHandle(processInformation.hProcess, ownsHandle: true);
+            threadHandle = new SafeFileHandle(processInformation.hThread, ownsHandle: true);
             processStarted = true;
 
             job.Add(processHandle);
@@ -238,7 +238,7 @@ sealed class SuspendedBrokerProcess : IBrokerProcess
     [StructLayout(LayoutKind.Sequential)] struct SecurityAttributes { public int Length; public IntPtr SecurityDescriptor; [MarshalAs(UnmanagedType.Bool)] public bool InheritHandle; }
     [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)] struct StartupInfo { public int cb; public string? lpReserved; public string? lpDesktop; public string? lpTitle; public int dwX; public int dwY; public int dwXSize; public int dwYSize; public int dwXCountChars; public int dwYCountChars; public int dwFillAttribute; public int dwFlags; public short wShowWindow; public short cbReserved2; public IntPtr lpReserved2; public IntPtr hStdInput; public IntPtr hStdOutput; public IntPtr hStdError; }
     [StructLayout(LayoutKind.Sequential)] struct StartupInfoEx { public StartupInfo StartupInfo; public IntPtr lpAttributeList; }
-    [StructLayout(LayoutKind.Sequential)] struct ProcessInformation { public SafeFileHandle hProcess; public SafeFileHandle hThread; public int dwProcessId; public int dwThreadId; }
+    [StructLayout(LayoutKind.Sequential)] struct ProcessInformation { public IntPtr hProcess; public IntPtr hThread; public int dwProcessId; public int dwThreadId; }
 
     [DllImport("kernel32.dll", SetLastError = true, EntryPoint = "CreatePipe")] static extern bool CreatePipeNative(out SafeFileHandle hReadPipe, out SafeFileHandle hWritePipe, ref SecurityAttributes lpPipeAttributes, uint nSize);
     [DllImport("kernel32.dll", SetLastError = true)] static extern bool SetHandleInformation(SafeFileHandle hObject, uint dwMask, uint dwFlags);

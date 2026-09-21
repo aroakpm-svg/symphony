@@ -234,6 +234,21 @@ public sealed class BrokerTests : IDisposable
     }
 
     [Fact]
+    public async Task Native_process_host_starts_a_child_without_marshalling_safe_handles()
+    {
+        if (!OperatingSystem.IsWindows()) return;
+        var request = new BrokerRequest("central-brain", root, MakeDirectory("native-private"), MakeDirectory("native-codex"));
+        var executable = Path.Combine(Environment.SystemDirectory, "where.exe");
+        var options = new BrokerOptions("unused", "unused", WindowsIdentity.GetCurrent().User!.Value, executable, root,
+            new Dictionary<string, ProfileRoots>(), TimeSpan.FromSeconds(5), TimeSpan.FromSeconds(5));
+
+        await using var process = new CodexProcessFactory().Start(request, options);
+        process.StandardInput.Dispose();
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        await process.WaitForExitAsync(timeout.Token);
+    }
+
+    [Fact]
     public void Broker_service_is_single_session_to_keep_service_sid_acl_grants_isolated()
     {
         Assert.Equal(1, PipeFactory.MaxServerInstances);
