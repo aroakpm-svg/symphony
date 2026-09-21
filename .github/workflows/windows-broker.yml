@@ -163,6 +163,13 @@ jobs:
             if ($serviceStartExitCode -ne 0) {
               $failedService = Get-CimInstance Win32_Service -Filter "Name='$serviceName'" -ErrorAction SilentlyContinue
               Write-Host ("service start snapshot: state={0}; status={1}; exit_code={2}; service_exit_code={3}" -f $failedService.State,$failedService.Status,$failedService.ExitCode,$failedService.ServiceSpecificExitCode)
+              $bundleExtractRoot = Join-Path $install "broker-$sha\bundle-cache"
+              Write-Host "bundle extraction contents:"
+              Get-ChildItem -LiteralPath $bundleExtractRoot -Recurse -Force -ErrorAction SilentlyContinue |
+                Select-Object FullName,Length,Attributes |
+                Format-List |
+                Out-String |
+                Write-Host
               Get-WinEvent -FilterHashtable @{ LogName = 'System'; ProviderName = 'Service Control Manager'; StartTime = $serviceStartAttemptedAt.AddSeconds(-5) } -ErrorAction SilentlyContinue |
                 Select-Object TimeCreated,Id,LevelDisplayName,Message |
                 Select-Object -First 20 |
@@ -170,9 +177,8 @@ jobs:
                 Out-String |
                 Write-Host
               Get-WinEvent -FilterHashtable @{ LogName = 'Application'; StartTime = $serviceStartAttemptedAt.AddSeconds(-5) } -ErrorAction SilentlyContinue |
-                Where-Object { $_.ProviderName -in @('.NET Runtime', 'Application Error', 'Windows Error Reporting') } |
                 Select-Object TimeCreated,ProviderName,Id,LevelDisplayName,Message |
-                Select-Object -First 20 |
+                Select-Object -First 50 |
                 Format-List |
                 Out-String |
                 Write-Host
