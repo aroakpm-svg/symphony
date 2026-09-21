@@ -156,18 +156,27 @@ jobs:
             if ($service.State -ne 'Stopped') { throw 'service unexpectedly started' }
 
             $serviceStartAttemptedAt = Get-Date
-            try {
-              Start-Service -Name $serviceName
-            } catch {
+            $serviceStartOutput = (& sc.exe start $serviceName 2>&1 | Out-String).Trim()
+            $serviceStartExitCode = $LASTEXITCODE
+            Write-Host "sc.exe start exit_code=$serviceStartExitCode"
+            Write-Host $serviceStartOutput
+            if ($serviceStartExitCode -ne 0) {
               $failedService = Get-CimInstance Win32_Service -Filter "Name='$serviceName'" -ErrorAction SilentlyContinue
               Write-Host ("service start snapshot: state={0}; status={1}; exit_code={2}; service_exit_code={3}" -f $failedService.State,$failedService.Status,$failedService.ExitCode,$failedService.ServiceSpecificExitCode)
-              Get-WinEvent -FilterHashtable @{ LogName = 'System'; ProviderName = 'Service Control Manager'; StartTime = $serviceStartAttemptedAt } -ErrorAction SilentlyContinue |
-                Where-Object { $_.Message -like "*$serviceName*" } |
+              Get-WinEvent -FilterHashtable @{ LogName = 'System'; ProviderName = 'Service Control Manager'; StartTime = $serviceStartAttemptedAt.AddSeconds(-5) } -ErrorAction SilentlyContinue |
                 Select-Object TimeCreated,Id,LevelDisplayName,Message |
+                Select-Object -First 20 |
                 Format-List |
                 Out-String |
                 Write-Host
-              throw
+              Get-WinEvent -FilterHashtable @{ LogName = 'Application'; StartTime = $serviceStartAttemptedAt.AddSeconds(-5) } -ErrorAction SilentlyContinue |
+                Where-Object { $_.ProviderName -in @('.NET Runtime', 'Application Error', 'Windows Error Reporting') } |
+                Select-Object TimeCreated,ProviderName,Id,LevelDisplayName,Message |
+                Select-Object -First 20 |
+                Format-List |
+                Out-String |
+                Write-Host
+              throw "service start failed with sc.exe exit code $serviceStartExitCode"
             }
             (Get-Service -Name $serviceName).WaitForStatus('Running', [TimeSpan]::FromSeconds(20))
             $serviceStarted = $true
