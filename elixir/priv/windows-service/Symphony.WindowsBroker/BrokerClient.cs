@@ -38,7 +38,19 @@ public static class BrokerClient
                 }
             }
         }
-        finally { session.Cancel(); try { await sending; } catch (Exception sendError) when (sendError is IOException or OperationCanceledException) { } }
+        finally
+        {
+            session.Cancel();
+            if (sending.IsCompleted)
+            {
+                try { await sending; } catch (Exception sendError) when (sendError is IOException or OperationCanceledException) { }
+            }
+            else
+            {
+                _ = sending.ContinueWith(completed => _ = completed.Exception, CancellationToken.None,
+                    TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Default);
+            }
+        }
     }
     static async Task SendInputAsync(Stream input, Stream pipe, SemaphoreSlim gate, CancellationToken token)
     {

@@ -234,6 +234,24 @@ public sealed class BrokerTests : IDisposable
     }
 
     [Fact]
+    public async Task Client_returns_after_server_exit_when_standard_input_ignores_cancellation()
+    {
+        var pipe = "symphony-noncancelable-input-" + Guid.NewGuid().ToString("N");
+        var options = TestOptions(pipe, TimeSpan.FromSeconds(5), TimeSpan.FromSeconds(10));
+        await using var server = new BrokerServer(options, new TestProcessFactory(TestBehavior.Completed));
+        using var stop = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        var serving = server.ServeOneAsync(stop.Token);
+        await using var input = new NonCancelableInputStream();
+        await using var output = new MemoryStream();
+        await using var error = new MemoryStream();
+
+        var exit = await BrokerClient.RunAsync(options.PipeName, ValidRequest(), input, output, error, stop.Token).WaitAsync(stop.Token);
+
+        Assert.Equal(0, exit);
+        await serving;
+    }
+
+    [Fact]
     public async Task Native_process_host_starts_a_child_without_marshalling_safe_handles()
     {
         if (!OperatingSystem.IsWindows()) return;
@@ -479,7 +497,7 @@ public sealed class BrokerTests : IDisposable
     }
 }
 
-enum TestBehavior { Echo, Silent, Active }
+enum TestBehavior { Echo, Silent, Active, Completed }
 
 sealed class TestProcessFactory(TestBehavior behavior, int expectedStarts = 1) : IBrokerProcessFactory
 {
@@ -518,6 +536,7 @@ sealed class TestBrokerProcess : IBrokerProcess
         peerError = new AnonymousPipeClientStream(PipeDirection.Out, error.ClientSafePipeHandle);
         if (behavior == TestBehavior.Echo) _ = EchoAsync();
         if (behavior == TestBehavior.Active) _ = ActiveAsync();
+        if (behavior == TestBehavior.Completed) { peerOutput.Dispose(); peerError.Dispose(); exited.TrySetResult(0); }
     }
     public Stream StandardInput => input;
     public Stream StandardOutput => output;
@@ -533,4 +552,20 @@ sealed class TestBrokerProcess : IBrokerProcess
     {
         while (!TreeTerminated) { await peerOutput.WriteAsync(new byte[] { 1 }); await peerOutput.FlushAsync(); await Task.Delay(20); }
     }
+}
+
+sealed class NonCancelableInputStream : Stream
+{
+    readonly TaskCompletionSource<int> pending = new(TaskCreationOptions.RunContinuationsAsynchronously);
+    public override bool CanRead => true;
+    public override bool CanSeek => false;
+    public override bool CanWrite => false;
+    public override long Length => throw new NotSupportedException();
+    public override long Position { get => throw new NotSupportedException(); set => throw new NotSupportedException(); }
+    public override ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken cancellationToken = default) => new(pending.Task);
+    public override int Read(byte[] buffer, int offset, int count) => throw new NotSupportedException();
+    public override void Flush() { }
+    public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
+    public override void SetLength(long value) => throw new NotSupportedException();
+    public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
 }
