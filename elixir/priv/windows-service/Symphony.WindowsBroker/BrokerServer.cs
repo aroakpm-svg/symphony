@@ -29,6 +29,7 @@ public sealed class BrokerServer(BrokerOptions options, IBrokerProcessFactory pr
             catch (OperationCanceledException) when (!stop.IsCancellationRequested) { }
             catch (Exception error) when (!stop.IsCancellationRequested)
             {
+                Diagnostic($"session_error:{error.GetType().Name}:{error.Message}");
                 try { await Frame.WriteAsync(pipe, FrameKind.Error, Encoding.UTF8.GetBytes(error.Message), stop); } catch (IOException) { }
             }
         }
