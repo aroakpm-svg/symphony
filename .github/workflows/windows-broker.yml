@@ -172,7 +172,7 @@ jobs:
             $serviceDiagnosticDirectory = New-Item -ItemType Directory -Force -Path (Join-Path $root 'service-diagnostic')
             Set-StrictAcl $serviceDiagnosticDirectory.FullName @('*S-1-5-18:(OI)(CI)(F)','*S-1-5-32-544:(OI)(CI)(F)',"$serviceIdentity`:(OI)(CI)(F)")
             $serviceDiagnostic = Join-Path $serviceDiagnosticDirectory.FullName 'broker-error.txt'
-            Set-ItemProperty -LiteralPath "HKLM:\SYSTEM\CurrentControlSet\Services\$serviceName" -Name Environment -Value @("SYMPHONY_BROKER_SERVICE_DIAGNOSTIC_FILE=$serviceDiagnostic")
+            Set-ItemProperty -LiteralPath "HKLM:\SYSTEM\CurrentControlSet\Services\$serviceName" -Name Environment -Value ([string[]]@("SYMPHONY_BROKER_SERVICE_DIAGNOSTIC_FILE=$serviceDiagnostic"))
             $serviceStartAttemptedAt = Get-Date
             $serviceStartOutput = (& sc.exe start $serviceName 2>&1 | Out-String).Trim()
             $serviceStartExitCode = $LASTEXITCODE
