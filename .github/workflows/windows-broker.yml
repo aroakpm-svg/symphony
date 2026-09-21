@@ -93,21 +93,7 @@ jobs:
               $process.Refresh()
               return $process.ExitCode
             } catch {
-              Write-Host "controller timeout process snapshot:"
-              Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
-                Where-Object { $_.ProcessId -eq $process.Id -or $_.ParentProcessId -eq $process.Id } |
-                Select-Object ProcessId,ParentProcessId,Name,CommandLine |
-                Format-List |
-                Out-String |
-                Write-Host
-              & taskkill.exe /PID $process.Id /T /F | Out-Null
-              try { Wait-Process -Id $process.Id -Timeout 10 -ErrorAction SilentlyContinue } catch { }
-              Write-Host "controller stdout:"
-              Get-Content -LiteralPath $Stdout -Raw -ErrorAction SilentlyContinue | Write-Host
-              Write-Host "controller stderr:"
-              Get-Content -LiteralPath $Stderr -Raw -ErrorAction SilentlyContinue | Write-Host
-              Write-Host "broker service diagnostic:"
-              Get-Content -LiteralPath $serviceDiagnostic -Raw -ErrorAction SilentlyContinue | Write-Host
+              Stop-Process -Id $process.Id -Force -ErrorAction SilentlyContinue
               throw 'controller client timed out'
             }
           }
@@ -169,32 +155,7 @@ jobs:
             if ($service.StartMode -ne 'Manual') { throw 'service start mode changed' }
             if ($service.State -ne 'Stopped') { throw 'service unexpectedly started' }
 
-            $serviceDiagnosticDirectory = New-Item -ItemType Directory -Force -Path (Join-Path $root 'service-diagnostic')
-            Set-StrictAcl $serviceDiagnosticDirectory.FullName @('*S-1-5-18:(OI)(CI)(F)','*S-1-5-32-544:(OI)(CI)(F)',"$serviceIdentity`:(OI)(CI)(F)")
-            $serviceDiagnostic = Join-Path $serviceDiagnosticDirectory.FullName 'broker-error.txt'
-            Set-ItemProperty -LiteralPath "HKLM:\SYSTEM\CurrentControlSet\Services\$serviceName" -Name Environment -Value ([string[]]@("SYMPHONY_BROKER_SERVICE_DIAGNOSTIC_FILE=$serviceDiagnostic"))
-            $serviceStartAttemptedAt = Get-Date
-            $serviceStartOutput = (& sc.exe start $serviceName 2>&1 | Out-String).Trim()
-            $serviceStartExitCode = $LASTEXITCODE
-            Write-Host "sc.exe start exit_code=$serviceStartExitCode"
-            Write-Host $serviceStartOutput
-            if ($serviceStartExitCode -ne 0) {
-              $failedService = Get-CimInstance Win32_Service -Filter "Name='$serviceName'" -ErrorAction SilentlyContinue
-              Write-Host ("service start snapshot: state={0}; status={1}; exit_code={2}; service_exit_code={3}" -f $failedService.State,$failedService.Status,$failedService.ExitCode,$failedService.ServiceSpecificExitCode)
-              Get-WinEvent -FilterHashtable @{ LogName = 'System'; ProviderName = 'Service Control Manager'; StartTime = $serviceStartAttemptedAt.AddSeconds(-5) } -ErrorAction SilentlyContinue |
-                Select-Object TimeCreated,Id,LevelDisplayName,Message |
-                Select-Object -First 20 |
-                Format-List |
-                Out-String |
-                Write-Host
-              Get-WinEvent -FilterHashtable @{ LogName = 'Application'; StartTime = $serviceStartAttemptedAt.AddSeconds(-5) } -ErrorAction SilentlyContinue |
-                Select-Object TimeCreated,ProviderName,Id,LevelDisplayName,Message |
-                Select-Object -First 50 |
-                Format-List |
-                Out-String |
-                Write-Host
-              throw "service start failed with sc.exe exit code $serviceStartExitCode"
-            }
+            Start-Service -Name $serviceName
             (Get-Service -Name $serviceName).WaitForStatus('Running', [TimeSpan]::FromSeconds(20))
             $serviceStarted = $true
             $service = Get-CimInstance Win32_Service -Filter "Name='$serviceName'"

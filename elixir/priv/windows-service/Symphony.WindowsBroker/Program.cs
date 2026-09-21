@@ -61,20 +61,8 @@ sealed class BrokerWindowsService : ServiceBase
 
     async Task RunAsync()
     {
-        try
-        {
-            await using var server = new BrokerServer(options, factory);
-            await server.RunAsync(stop.Token);
-        }
-        catch (Exception error)
-        {
-            var path = Environment.GetEnvironmentVariable("SYMPHONY_BROKER_SERVICE_DIAGNOSTIC_FILE");
-            if (!string.IsNullOrWhiteSpace(path))
-            {
-                try { File.WriteAllText(path, error.ToString()); } catch { }
-            }
-            throw;
-        }
+        await using var server = new BrokerServer(options, factory);
+        await server.RunAsync(stop.Token);
     }
 
     protected override void Dispose(bool disposing)
