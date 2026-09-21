@@ -20,9 +20,12 @@ public sealed class BrokerServer(BrokerOptions options, IBrokerProcessFactory pr
         var sid = new SecurityIdentifier(options.ControllerSid);
         while (!stop.IsCancellationRequested)
         {
+            Diagnostic("loop_start");
             await using var pipe = PipeFactory.Create(options.PipeName, sid);
+            Diagnostic("pipe_created");
             await pipe.WaitForConnectionAsync(stop);
-            try { PipeFactory.DemandController(pipe, sid); await RunSessionAsync(pipe, stop); }
+            Diagnostic("client_connected");
+            try { PipeFactory.DemandController(pipe, sid); Diagnostic("controller_authenticated"); await RunSessionAsync(pipe, stop); }
             catch (OperationCanceledException) when (!stop.IsCancellationRequested) { }
             catch (Exception error) when (!stop.IsCancellationRequested)
             {
@@ -34,10 +37,13 @@ public sealed class BrokerServer(BrokerOptions options, IBrokerProcessFactory pr
     {
         using var absolute = CancellationTokenSource.CreateLinkedTokenSource(stop); absolute.CancelAfter(options.AbsoluteTimeout);
         var first = await Frame.ReadAsync(pipe, absolute.Token);
+        Diagnostic("request_received");
         if (first.Kind != FrameKind.Request) throw new InvalidDataException("request_required");
         var raw = JsonSerializer.Deserialize<BrokerRequest>(first.Payload) ?? throw new InvalidDataException("request_invalid");
         var request = new BrokerPolicy(options.WorkspaceRoot, options.Profiles).Validate(raw);
+        Diagnostic("policy_validated");
         await using var process = processFactory.Start(request, options);
+        Diagnostic("child_started");
         var writeGate = new SemaphoreSlim(1, 1); long activity = Environment.TickCount64;
         void Touch() => Interlocked.Exchange(ref activity, Environment.TickCount64);
         using var session = CancellationTokenSource.CreateLinkedTokenSource(absolute.Token);
@@ -55,7 +61,7 @@ public sealed class BrokerServer(BrokerOptions options, IBrokerProcessFactory pr
                 var idleDelay = Task.Delay(idleRemaining, session.Token);
                 var candidates = input is null ? new[] { exit, idleDelay } : new[] { exit, input, idleDelay };
                 var completed = await Task.WhenAny(candidates);
-                if (completed == exit) { exitCode = await exit; break; }
+                if (completed == exit) { exitCode = await exit; Diagnostic("child_exited"); break; }
                 if (completed == input) { await input; input = null; continue; }
                 if (absolute.IsCancellationRequested) { failure = stop.IsCancellationRequested ? "server_stopped" : "absolute_timeout"; break; }
                 if (Environment.TickCount64 - Interlocked.Read(ref activity) >= options.IdleTimeout.TotalMilliseconds) { failure = "idle_timeout"; break; }
@@ -86,5 +92,11 @@ public sealed class BrokerServer(BrokerOptions options, IBrokerProcessFactory pr
     static async Task TryWriteAsync(Stream pipe, FrameKind kind, ReadOnlyMemory<byte> payload, SemaphoreSlim gate, CancellationToken token)
     { await gate.WaitAsync(token); try { await Frame.WriteAsync(pipe, kind, payload, token); } catch (IOException) { } finally { gate.Release(); } }
     static async Task IgnoreCancellation(Task task) { try { await task; } catch (OperationCanceledException) { } }
+    static void Diagnostic(string stage)
+    {
+        var path = Environment.GetEnvironmentVariable("SYMPHONY_BROKER_SERVICE_DIAGNOSTIC_FILE");
+        if (string.IsNullOrWhiteSpace(path)) return;
+        try { File.AppendAllText(path, stage + Environment.NewLine); } catch { }
+    }
     public ValueTask DisposeAsync() => ValueTask.CompletedTask;
 }
