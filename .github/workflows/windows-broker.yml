@@ -155,7 +155,20 @@ jobs:
             if ($service.StartMode -ne 'Manual') { throw 'service start mode changed' }
             if ($service.State -ne 'Stopped') { throw 'service unexpectedly started' }
 
-            Start-Service -Name $serviceName
+            $serviceStartAttemptedAt = Get-Date
+            try {
+              Start-Service -Name $serviceName
+            } catch {
+              $failedService = Get-CimInstance Win32_Service -Filter "Name='$serviceName'" -ErrorAction SilentlyContinue
+              Write-Host ("service start snapshot: state={0}; status={1}; exit_code={2}; service_exit_code={3}" -f $failedService.State,$failedService.Status,$failedService.ExitCode,$failedService.ServiceSpecificExitCode)
+              Get-WinEvent -FilterHashtable @{ LogName = 'System'; ProviderName = 'Service Control Manager'; StartTime = $serviceStartAttemptedAt } -ErrorAction SilentlyContinue |
+                Where-Object { $_.Message -like "*$serviceName*" } |
+                Select-Object TimeCreated,Id,LevelDisplayName,Message |
+                Format-List |
+                Out-String |
+                Write-Host
+              throw
+            }
             (Get-Service -Name $serviceName).WaitForStatus('Running', [TimeSpan]::FromSeconds(20))
             $serviceStarted = $true
             $service = Get-CimInstance Win32_Service -Filter "Name='$serviceName'"
