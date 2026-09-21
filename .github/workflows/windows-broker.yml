@@ -93,7 +93,19 @@ jobs:
               $process.Refresh()
               return $process.ExitCode
             } catch {
-              Stop-Process -Id $process.Id -Force -ErrorAction SilentlyContinue
+              Write-Host "controller timeout process snapshot:"
+              Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
+                Where-Object { $_.ProcessId -eq $process.Id -or $_.ParentProcessId -eq $process.Id } |
+                Select-Object ProcessId,ParentProcessId,Name,CommandLine |
+                Format-List |
+                Out-String |
+                Write-Host
+              & taskkill.exe /PID $process.Id /T /F | Out-Null
+              try { Wait-Process -Id $process.Id -Timeout 10 -ErrorAction SilentlyContinue } catch { }
+              Write-Host "controller stdout:"
+              Get-Content -LiteralPath $Stdout -Raw -ErrorAction SilentlyContinue | Write-Host
+              Write-Host "controller stderr:"
+              Get-Content -LiteralPath $Stderr -Raw -ErrorAction SilentlyContinue | Write-Host
               throw 'controller client timed out'
             }
           }
