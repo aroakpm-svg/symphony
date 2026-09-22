@@ -175,8 +175,8 @@ defmodule SymphonyElixir.ProtectedPath do
 
     if base_acl_entries?(Enum.sort(access_entries)) and
          Enum.all?(default_entries, &valid_posix_default_acl_entry?/1),
-      do: :ok,
-      else: {:error, :unsafe_protected_path}
+       do: :ok,
+       else: {:error, :unsafe_protected_path}
   end
 
   defp validate_posix_directory_acl_output(_output, nil),
