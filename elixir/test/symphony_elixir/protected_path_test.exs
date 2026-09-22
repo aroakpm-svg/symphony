@@ -64,6 +64,15 @@ defmodule SymphonyElixir.ProtectedPathTest do
                @base_acl <> "default:unknown::rwx\n"
              )
 
+    assert {:error, :unsafe_protected_path} =
+             ProtectedPath.validate_posix_directory_evidence(
+               root_ancestor,
+               controller,
+               nil,
+               :trusted,
+               :invalid_acl_evidence
+             )
+
     for unsafe <- [
           %{private | uid: 0},
           %{private | mode: 0o750},
