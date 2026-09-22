@@ -51,7 +51,7 @@ defmodule SymphonyElixir.ProtectedPathTest do
                controller,
                nil,
                :trusted,
-               @base_acl
+               @base_acl <> "default:user::rwx\ndefault:user:1000:rwx\ndefault:group::r-x\ndefault:mask::rwx\ndefault:other::r-x\n"
              )
 
     for unsafe <- [
