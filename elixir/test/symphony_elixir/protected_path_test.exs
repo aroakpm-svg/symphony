@@ -52,7 +52,7 @@ defmodule SymphonyElixir.ProtectedPathTest do
                nil,
                :trusted,
                @base_acl <>
-                 "default:user::rwx\ndefault:user:1000:rwx\ndefault:group::r-x\ndefault:mask::rwx\ndefault:other::r-x\n"
+                 "default:user::rwx\ndefault:user:1000:rwx\t#effective:r-x\ndefault:group::r-x\ndefault:mask::r-x\ndefault:other::r-x\n"
              )
 
     assert {:error, :unsafe_protected_path} =
