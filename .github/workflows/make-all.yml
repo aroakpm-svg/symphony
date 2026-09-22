@@ -39,5 +39,18 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-mix-
 
+      - name: Diagnose protected-path fixture ancestors
+        shell: bash
+        run: |
+          set -eu
+          current="$PWD"
+          while true; do
+            stat --format='%n uid=%u mode=%a type=%F' "$current"
+            getfacl --absolute-names --numeric --omit-header "$current"
+            parent="$(dirname "$current")"
+            [ "$parent" = "$current" ] && break
+            current="$parent"
+          done
+
       - name: Verify make all
         run: make all
