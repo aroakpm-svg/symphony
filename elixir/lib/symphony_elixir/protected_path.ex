@@ -183,10 +183,11 @@ defmodule SymphonyElixir.ProtectedPath do
     do: {:error, :unsafe_protected_path}
 
   defp valid_posix_default_acl_entry?(entry) do
-    Regex.match?(
-      ~r/\Adefault:(?:user:(?:[0-9]+)?:|group:(?:[0-9]+)?:|mask::|other::)[rwx-]{3}\z/,
-      entry
-    )
+    Regex.match?(~r/\Adefault:(?:user::|mask::|other::)[rwx-]{3}\z/, entry) or
+      Regex.match?(
+        ~r/\Adefault:(?:user:[0-9]+:|group:(?:[0-9]+)?:)[rwx-]{3}(?:\t#effective:[rwx-]{3})?\z/,
+        entry
+      )
   end
 
   defp base_acl_entries?(entries) do
