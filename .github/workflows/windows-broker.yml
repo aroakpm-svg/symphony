@@ -137,6 +137,12 @@ jobs:
             $fileGrants = @('*S-1-5-18:(F)','*S-1-5-32-544:(F)',"*$controllerSid`:(R)")
             Set-StrictAcl $secretDirectory $directoryGrants
             Set-StrictAcl $key $fileGrants
+            $controllerOwner = [Security.Principal.NTAccount]::new("${env:COMPUTERNAME}\$controller")
+            foreach ($secretPath in $secretDirectory,$key) {
+              $secretAcl = Get-Acl -LiteralPath $secretPath
+              $secretAcl.SetOwner($controllerOwner)
+              Set-Acl -LiteralPath $secretPath -AclObject $secretAcl
+            }
             $privateIssue = New-Item -ItemType Directory -Force -Path (Join-Path $private 'central-brain\ARO-1-r1')
             $authHome = Join-Path $codexHome 'central-brain'
             Set-StrictAcl $privateIssue.FullName $controllerDirectoryGrants

@@ -18,6 +18,10 @@ public sealed class BrokerPolicy(string workspaceRoot, IReadOnlyDictionary<strin
         var result = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
         foreach (var key in new[] { "SystemRoot", "WINDIR", "TEMP", "TMP", "PATH", "PATHEXT", "COMSPEC" }) if (host.TryGetValue(key, out var value) && !SecretName.IsMatch(key)) result[key] = value;
         result["HOME"] = request.PrivateHome; result["USERPROFILE"] = request.PrivateHome; result["CODEX_HOME"] = request.CodexHome;
+        result["GH_CONFIG_DIR"] = Path.Combine(request.PrivateHome, "gh");
+        result["XDG_CONFIG_HOME"] = Path.Combine(request.PrivateHome, "xdg-config");
+        result["XDG_CACHE_HOME"] = Path.Combine(request.PrivateHome, "xdg-cache");
+        result["XDG_DATA_HOME"] = Path.Combine(request.PrivateHome, "xdg-data");
         result["GCM_INTERACTIVE"] = "Never";
         result["GIT_CONFIG_COUNT"] = "0";
         result["GIT_CONFIG_GLOBAL"] = "NUL";

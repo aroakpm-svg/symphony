@@ -12,6 +12,11 @@ Account: NT SERVICE\AROAKSymphonyCodexAmy
 Command: Symphony.WindowsBroker.exe --service --config <protected-broker-settings.json>
 ```
 
+After separate operator approval, explicitly start this Manual service and wait for `Running` before
+the dry broker probe. Stop it again after synthetic validation. A later live rollout must repeat that
+start-and-readiness check before starting or enabling the existing Symphony Scheduled Task, including
+after each reboot; the installer neither modifies that task nor creates a parallel startup mechanism.
+
 Matt uses the corresponding `AROAKSymphonyCodexMatt` names. The virtual service account has no
 stored password. `SERVICE_SID_TYPE_RESTRICTED` remains enabled as write hardening, but it is not the
 read boundary; the separate virtual-account primary token is the read boundary. Before opening the
@@ -43,9 +48,10 @@ a 1 MiB payload limit.
 The broker starts only the configured executable as
 `codex --config shell_environment_policy.inherit=all app-server`, adding the validated model selected
 by the existing Symphony launch inputs. It rebuilds the environment from a small operating-system
-allowlist, sets HOME, USERPROFILE, and CODEX_HOME, and forwards only the call-local `GH_TOKEN` carried
-by that broker request. It does not inherit Linear, GitHub App, JWT, claim, controller, password, or
-private-key variables from the service process.
+allowlist, sets HOME, USERPROFILE, CODEX_HOME, GH_CONFIG_DIR, and the XDG config/cache/data homes to
+the invocation's isolated directories, and forwards only the call-local `GH_TOKEN` carried by that
+broker request. It does not inherit Linear, GitHub App, JWT, claim, controller, password, or private-key
+variables from the service process.
 
 The child is created with `CreateProcessW`, so it inherits the virtual-service-account primary
 token. It is created suspended, assigned to a kill-on-close Job Object, and resumed with only the
@@ -55,7 +61,10 @@ terminate the process tree. Each service accepts one session at a time.
 The controller grants the service SID Modify rights only on the selected invocation's workspace,
 private home, and Codex home, then removes those explicit grants after the brokered process exits.
 The generated wrapper holds a fail-fast node-global mutex across grant, broker call, and removal so
-temporary grants cannot overlap. No permanent service Modify grant is placed on a profile root.
+temporary grants cannot overlap. Before granting, it durably records the complete intended path list
+under the protected broker root. A later wrapper that acquires a normal or abandoned mutex revokes any
+recorded stale grants before accepting another session and fails closed if reconciliation is invalid or
+unsuccessful. No permanent service Modify grant is placed on a profile root.
 The GitHub App key and its containing directory stay outside those ACL trees and grant no access to
 the service identity.
 

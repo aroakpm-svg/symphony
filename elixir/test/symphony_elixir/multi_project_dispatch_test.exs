@@ -1161,6 +1161,38 @@ defmodule SymphonyElixir.MultiProjectDispatchTest do
     refute Map.has_key?(retired.retry_attempts, candidate.id)
   end
 
+  test "an unfenced pending-cleanup worker consumes every dispatch capacity boundary" do
+    for capacity <- [:global, :state, :worker] do
+      workflow_overrides =
+        case capacity do
+          :global -> [max_concurrent_agents: 1]
+          :state -> [max_concurrent_agents: 2, max_concurrent_agents_by_state: %{"in progress" => 1}]
+          :worker -> [max_concurrent_agents: 2, worker_ssh_hosts: ["host-a"], worker_max_concurrent_agents_per_host: 1]
+        end
+
+      write_workflow_file!(Workflow.workflow_file_path(), workflow_overrides)
+      assert :ok = WorkflowStore.force_reload()
+
+      candidate = %{issue("pending-capacity-candidate-#{capacity}", @central_profile, 1) | project_profile: @central_profile}
+      unfenced = %{issue("pending-capacity-unfenced-#{capacity}", @central_profile, 2) | project_profile: @central_profile}
+
+      state = %{
+        base_state()
+        | max_concurrent_agents: if(capacity == :global, do: 1, else: 2),
+          pending_cleanup: %{
+            unfenced.id => %{
+              issue: unfenced,
+              worker_host: if(capacity == :worker, do: "host-a"),
+              pid: self(),
+              ref: make_ref()
+            }
+          }
+      }
+
+      refute Orchestrator.should_dispatch_issue_for_test(candidate, state), inspect(capacity)
+    end
+  end
+
   test "post-acquisition dispatch raise, exit, and throw release then retry through a fresh claim" do
     for failure <- [:raise, :exit, :throw] do
       {:ok, events} = Agent.start_link(fn -> [] end)

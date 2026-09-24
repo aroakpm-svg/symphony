@@ -44,7 +44,10 @@ directory. Absence of the file admits work; an existing regular file pauses cand
 retries, claims, and post-claim dispatch while existing workers continue. The runtime revalidates
 the gate and every ancestor on each observation. On Unix, the direct parent must be `0700`, the
 gate must not be group/other-writable, owners must be the controller (or root for the gate and
-higher ancestors), and `getfacl` must prove that no named or default ACL exists. On Windows, the
+higher ancestors), and `getfacl` must prove that the gate and direct parent have no named or default
+ACL. A higher trusted ancestor may retain a syntactically valid default ACL because it does not grant
+active access to that ancestor; named active-access entries and malformed ACL evidence still fail
+closed. On Windows, the
 direct parent must have a protected DACL and only the controller, SYSTEM, and local Administrators
 may receive access; untrusted ancestor rights that can replace or retarget the path are rejected.
 The exact TrustedInstaller SID is trusted only as the owner or an allow principal on higher
@@ -80,9 +83,11 @@ Give both principals access only to the invocation paths they must share. On Win
 a shared workspace group or grant the broker broad Modify rights on a workspace or profile root.
 The controller temporarily grants the virtual service account Modify only on the selected
 invocation's workspace, issue-private home, and Codex home, then removes those explicit grants when
-the brokered process exits. The wrapper serializes this grant/use/removal sequence with a node-global
-mutex, and the service accepts one session at a time. Keep the App-key directory outside every worker
-and broker ACL tree.
+the brokered process exits. Before granting, the wrapper durably records the complete path list under
+the protected broker root. A later invocation that acquires a normal or abandoned node-global mutex
+must revoke any recorded stale grants before starting new work; invalid or unreconcilable evidence
+fails closed. The service accepts one session at a time. Keep the App-key directory outside every
+worker and broker ACL tree.
 
 Han MUST NOT use a shared group or default ACL for the workspace. Symphony deliberately creates
 each issue-private `.symphony-subprocess` home as controller-owned `0700` and re-attests that exact
@@ -155,10 +160,22 @@ the runtime directory, broker directory, configuration, service, and manifest re
 by that install, and restores the exact prior ACLs for pre-existing workspace and profile roots.
 It never disables, stops, rewrites, or removes any Scheduled Task, legacy runtime, dirty checkout,
 pre-existing account, or pre-existing service. Installation leaves the broker Manual and Stopped.
-After separate operator approval, start it and verify broker readiness before dry worker validation;
-the Symphony Scheduled Task remains disabled until every acceptance gate passes. Repository scripts
-are unsigned development artifacts; Authenticode-sign the reviewed release copy before an
-`AllSigned` production invocation.
+After separate operator approval, start it from an elevated prompt and wait for SCM readiness before
+any brokered dry validation:
+
+```powershell
+$serviceName = 'AROAKSymphonyCodexMatt' # use the Amy name on Amy
+Start-Service -Name $serviceName
+(Get-Service -Name $serviceName).WaitForStatus('Running', [TimeSpan]::FromSeconds(20))
+if ((Get-Service -Name $serviceName).Status -ne 'Running') { throw 'broker_service_not_ready' }
+```
+
+Keep the Symphony Scheduled Task disabled throughout synthetic validation, then stop the broker and
+prove it returned to `Stopped`. For a later separately approved live enablement—and again after every
+reboot—the operator must start the Manual broker, wait for `Running`, and only then start or enable the
+existing Symphony Scheduled Task. The installer does not alter that task or create another startup
+mechanism. Repository scripts are unsigned development artifacts; Authenticode-sign the reviewed
+release copy before an `AllSigned` production invocation.
 
 Keep the Scheduled Task disabled. Install a clean immutable build beside the previous runtime; never
 overwrite a dirty checkout. Capture the prior task action, enabled state, runtime version, and a

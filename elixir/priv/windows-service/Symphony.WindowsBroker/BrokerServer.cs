@@ -7,6 +7,7 @@ namespace Symphony.WindowsBroker;
 public sealed record BrokerOptions(string PipeName, string ServiceName, string ControllerSid, string CodexExecutable, string WorkspaceRoot, IReadOnlyDictionary<string, ProfileRoots> Profiles, TimeSpan IdleTimeout, TimeSpan AbsoluteTimeout);
 public sealed class BrokerServer(BrokerOptions options, IBrokerProcessFactory processFactory) : IAsyncDisposable
 {
+    static readonly TimeSpan StdioDrainTimeout = TimeSpan.FromSeconds(1);
     public async Task ServeOneAsync(CancellationToken stop)
     {
         var sid = new SecurityIdentifier(options.ControllerSid);
@@ -55,7 +56,7 @@ public sealed class BrokerServer(BrokerOptions options, IBrokerProcessFactory pr
                 var idleDelay = Task.Delay(idleRemaining, session.Token);
                 var candidates = input is null ? new[] { exit, idleDelay } : new[] { exit, input, idleDelay };
                 var completed = await Task.WhenAny(candidates);
-                if (completed == exit) { exitCode = await exit; break; }
+                if (completed == exit) { exitCode = await exit; process.TerminateTree(); break; }
                 if (completed == input) { await input; input = null; continue; }
                 if (absolute.IsCancellationRequested) { failure = stop.IsCancellationRequested ? "server_stopped" : "absolute_timeout"; break; }
                 if (Environment.TickCount64 - Interlocked.Read(ref activity) >= options.IdleTimeout.TotalMilliseconds) { failure = "idle_timeout"; break; }
@@ -75,7 +76,18 @@ public sealed class BrokerServer(BrokerOptions options, IBrokerProcessFactory pr
             if (failure == "client_disconnected") throw new OperationCanceledException("client_disconnected");
             return;
         }
-        await Task.WhenAll(IgnoreCancellation(stdout), IgnoreCancellation(stderr));
+        var pumps = Task.WhenAll(IgnoreCancellation(stdout), IgnoreCancellation(stderr));
+        if (await Task.WhenAny(pumps, Task.Delay(StdioDrainTimeout)) == pumps)
+        {
+            await IgnoreCancellation(pumps);
+        }
+        else
+        {
+            session.Cancel();
+            _ = pumps.ContinueWith(task => _ = task.Exception, CancellationToken.None,
+                TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously,
+                TaskScheduler.Default);
+        }
         session.Cancel();
         var payload = new byte[4]; BinaryPrimitives.WriteInt32BigEndian(payload, exitCode); await TryWriteAsync(pipe, FrameKind.Exit, payload, writeGate, stop);
     }

@@ -113,7 +113,7 @@ function Assert-ControllerSecretBoundary([string]$controllerSid) {
     if (-not $keyAcl.AreAccessRulesProtected) { throw 'private_key_acl_inherited' }
     $keyOwner = $keyAcl.Owner
     if ($keyOwner -eq $serviceIdentity) { throw 'private_key_codex_owner' }
-    if ((Get-RuleSid ([Security.Principal.NTAccount]::new($keyOwner))) -notin $allowedReaders) { throw 'private_key_owner_not_allowed' }
+    if ((Get-RuleSid ([Security.Principal.NTAccount]::new($keyOwner))) -ne $controllerSid) { throw 'private_key_owner_not_controller' }
     foreach ($rule in @($keyAcl.Access)) {
       if ($rule.AccessControlType -eq [Security.AccessControl.AccessControlType]::Deny) { throw 'private_key_deny_rule_unexpected' }
       if ($rule.AccessControlType -eq [Security.AccessControl.AccessControlType]::Allow) {
@@ -225,9 +225,11 @@ try {
   $brokerExeLiteral = ConvertTo-PowerShellSingleQuotedLiteral $brokerExe
   $pipeNameLiteral = ConvertTo-PowerShellSingleQuotedLiteral $settings.pipe_name
   $serviceNameLiteral = ConvertTo-PowerShellSingleQuotedLiteral $serviceName
+  $grantManifestLiteral = ConvertTo-PowerShellSingleQuotedLiteral (Join-Path $brokerRoot 'outstanding-grants.json')
   @"
 `$ErrorActionPreference = 'Stop'
 `$workspaceRoot = $workspaceRootLiteral
+`$grantManifest = $grantManifestLiteral
 `$codexHome = [Environment]::GetEnvironmentVariable('CODEX_HOME', 'Process')
 `$privateHome = [Environment]::GetEnvironmentVariable('HOME', 'Process')
 if ([string]::IsNullOrWhiteSpace(`$privateHome)) { `$privateHome = [Environment]::GetEnvironmentVariable('USERPROFILE', 'Process') }
@@ -251,37 +253,59 @@ if (`$profile -notin @('central-brain', 'project-management')) { throw 'profile_
 `$grantPaths = @(`$workspace, `$privateHome) + @(`$privateHomeChildren) + @(`$codexHome)
 `$mutex = New-Object System.Threading.Mutex(`$false, 'Global\AROAKSymphonyCodex-$($Node)')
 `$lockHeld = `$false
-`$grantedPaths = New-Object 'System.Collections.Generic.List[string]'
+`$currentGrantIntentPersisted = `$false
 try {
-  `$lockHeld = `$mutex.WaitOne(0)
+  try { `$lockHeld = `$mutex.WaitOne(0) }
+  catch [Threading.AbandonedMutexException] { `$lockHeld = `$true }
   if (!`$lockHeld) { throw 'broker_acl_busy' }
+
+  if (Test-Path -LiteralPath `$grantManifest -PathType Leaf) {
+    try { `$staleGrantDocument = Get-Content -LiteralPath `$grantManifest -Raw | ConvertFrom-Json -ErrorAction Stop }
+    catch { throw 'broker_grant_manifest_invalid' }
+    if (`$staleGrantDocument.schema -ne 1 -or `$null -eq `$staleGrantDocument.grant_paths) { throw 'broker_grant_manifest_invalid' }
+    `$stalePaths = @(`$staleGrantDocument.grant_paths)
+    [array]::Reverse(`$stalePaths)
+    foreach (`$grantPath in `$stalePaths) {
+      if (`$grantPath -isnot [string] -or ![IO.Path]::IsPathFullyQualified(`$grantPath)) { throw 'broker_grant_manifest_invalid' }
+      if (Test-Path -LiteralPath `$grantPath) {
+        & icacls.exe `$grantPath /remove:g '$($serviceIdentity)' | Out-Null
+        if (`$LASTEXITCODE) { throw 'broker_stale_revoke_failed' }
+      }
+    }
+    Remove-Item -LiteralPath `$grantManifest -Force
+  }
+
+  `$grantDocument = [ordered]@{ schema = 1; grant_paths = @(`$grantPaths) }
+  `$grantDocument | ConvertTo-Json -Depth 3 | Set-Content -LiteralPath `$grantManifest -Encoding UTF8
+  `$currentGrantIntentPersisted = `$true
   foreach (`$grantPath in `$grantPaths) {
     & icacls.exe `$grantPath /grant '$($serviceIdentity):(OI)(CI)(M)' | Out-Null
     if (`$LASTEXITCODE) { throw 'broker_grant_failed' }
-    `$grantedPaths.Add(`$grantPath)
   }
   & $brokerExeLiteral --client --pipe $pipeNameLiteral --profile `$profile --workspace `$workspace --private-home `$privateHome --codex-home `$codexHome
   exit `$LASTEXITCODE
 } finally {
   `$cleanupOk = `$true
-  if (`$lockHeld) {
-    `$revokePaths = `$grantedPaths.ToArray()
+  if (`$lockHeld -and `$currentGrantIntentPersisted) {
+    `$revokePaths = @(`$grantPaths)
     [array]::Reverse(`$revokePaths)
     foreach (`$grantPath in `$revokePaths) {
       & icacls.exe `$grantPath /remove:g '$($serviceIdentity)' | Out-Null
       if (`$LASTEXITCODE) { `$cleanupOk = `$false }
     }
-    `$mutex.ReleaseMutex()
   }
+  if (`$lockHeld) { `$mutex.ReleaseMutex() }
   `$mutex.Dispose()
-  if (`$cleanupOk) {
+  if (`$cleanupOk -and `$currentGrantIntentPersisted) {
+    Remove-Item -LiteralPath `$grantManifest -Force -ErrorAction SilentlyContinue
     if (![string]::IsNullOrWhiteSpace(`$env:SYMPHONY_BROKER_CLEANUP_ACK)) { Set-Content -LiteralPath `$env:SYMPHONY_BROKER_CLEANUP_ACK -Value 'done' -Encoding ASCII }
-  } else {
+  } elseif (!`$cleanupOk) {
     throw 'broker_revoke_failed'
   }
 }
 "@ | Set-Content -LiteralPath $commandWrapper -Encoding UTF8
-  ('codex.command: "powershell.exe -NoProfile -ExecutionPolicy Bypass -File \"{0}\""' -f $commandWrapper) | Set-Content -LiteralPath $commandExample -Encoding UTF8
+  $yamlCommand = ('powershell.exe -NoProfile -ExecutionPolicy Bypass -File "{0}"' -f $commandWrapper).Replace("'", "''")
+  ("codex.command: '{0}'" -f $yamlCommand) | Set-Content -LiteralPath $commandExample -Encoding UTF8
   $stage = 'service_create'
   New-Service -Name $serviceName -BinaryPathName ('"{0}" --service --config "{1}"' -f $brokerExe, $brokerConfig) -StartupType Manual -DisplayName "AROAK Symphony Codex Broker ($Node)" | Out-Null
   $created.service = $true; Save-RecoveryState $created $previousAcl

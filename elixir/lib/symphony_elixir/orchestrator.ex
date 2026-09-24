@@ -1992,7 +1992,7 @@ defmodule SymphonyElixir.Orchestrator do
 
   defp should_dispatch_issue?(
          %Issue{} = issue,
-         %State{running: running} = state,
+         %State{} = state,
          active_states,
          terminal_states
        ) do
@@ -2000,7 +2000,7 @@ defmodule SymphonyElixir.Orchestrator do
       !todo_issue_blocked_by_non_terminal?(issue, terminal_states) and
       issue_dispatch_state_available?(state, issue.id) and
       available_slots(state) > 0 and
-      state_slots_available?(issue, running) and
+      state_slots_available?(issue, active_workers(state)) and
       worker_slots_available?(state)
   end
 
@@ -3551,7 +3551,7 @@ defmodule SymphonyElixir.Orchestrator do
     hosts
     |> Enum.with_index()
     |> Enum.min_by(fn {host, index} ->
-      {running_worker_host_count(state.running, host), index}
+      {running_worker_host_count(active_workers(state), host), index}
     end)
     |> elem(0)
   end
@@ -3574,7 +3574,7 @@ defmodule SymphonyElixir.Orchestrator do
   defp worker_host_slots_available?(%State{} = state, worker_host) when is_binary(worker_host) do
     case Config.settings!().worker.max_concurrent_agents_per_host do
       limit when is_integer(limit) and limit > 0 ->
-        running_worker_host_count(state.running, worker_host) < limit
+        running_worker_host_count(active_workers(state), worker_host) < limit
 
       _ ->
         true
@@ -3700,9 +3700,13 @@ defmodule SymphonyElixir.Orchestrator do
   defp available_slots(%State{} = state) do
     max(
       (state.max_concurrent_agents || Config.settings!().agent.max_concurrent_agents) -
-        map_size(state.running),
+        map_size(active_workers(state)),
       0
     )
+  end
+
+  defp active_workers(%State{} = state) do
+    Map.merge(state.running, state.pending_cleanup)
   end
 
   @spec request_refresh() :: map() | :unavailable

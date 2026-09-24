@@ -74,7 +74,13 @@ public sealed class BrokerTests : IDisposable
         };
         var environment = BrokerPolicy.WorkerEnvironment(request, host);
         Assert.Equal("safe", environment["PATH"]);
+        Assert.Equal(request.PrivateHome, environment["HOME"]);
+        Assert.Equal(request.PrivateHome, environment["USERPROFILE"]);
         Assert.Equal(request.CodexHome, environment["CODEX_HOME"]);
+        Assert.Equal(Path.Combine(request.PrivateHome, "gh"), environment["GH_CONFIG_DIR"]);
+        Assert.Equal(Path.Combine(request.PrivateHome, "xdg-config"), environment["XDG_CONFIG_HOME"]);
+        Assert.Equal(Path.Combine(request.PrivateHome, "xdg-cache"), environment["XDG_CACHE_HOME"]);
+        Assert.Equal(Path.Combine(request.PrivateHome, "xdg-data"), environment["XDG_DATA_HOME"]);
         Assert.Equal("call-local-token", environment["GH_TOKEN"]);
         Assert.Equal("Never", environment["GCM_INTERACTIVE"]);
         Assert.Equal("0", environment["GIT_CONFIG_COUNT"]);
@@ -456,6 +462,28 @@ public sealed class BrokerTests : IDisposable
         return new("central-brain", workspace, privateHome, codexHome);
     }
 
+    [Fact]
+    public async Task Main_process_exit_terminates_descendants_before_waiting_for_stdio_eof()
+    {
+        var pipe = "symphony-descendant-" + Guid.NewGuid().ToString("N");
+        var factory = new TestProcessFactory(TestBehavior.ExitedWithOpenPipes);
+        var options = TestOptions(pipe, TimeSpan.FromSeconds(20), TimeSpan.FromSeconds(20));
+        await using var server = new BrokerServer(options, factory);
+        using var stop = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        var serving = server.ServeOneAsync(stop.Token);
+        await using var input = new MemoryStream();
+        await using var output = new MemoryStream();
+        await using var error = new MemoryStream();
+
+        var exit = await BrokerClient.RunAsync(pipe, ValidRequest(), input, output, error, stop.Token)
+            .WaitAsync(TimeSpan.FromSeconds(2));
+        await factory.Started.Task.WaitAsync(stop.Token);
+
+        Assert.Equal(0, exit);
+        Assert.True(factory.LastProcess!.TreeTerminated);
+        await serving;
+    }
+
     BrokerOptions TestOptions(string pipe, TimeSpan idle, TimeSpan absolute)
     {
         var request = ValidRequest();
@@ -497,7 +525,7 @@ public sealed class BrokerTests : IDisposable
     }
 }
 
-enum TestBehavior { Echo, Silent, Active, Completed }
+enum TestBehavior { Echo, Silent, Active, Completed, ExitedWithOpenPipes }
 
 sealed class TestProcessFactory(TestBehavior behavior, int expectedStarts = 1) : IBrokerProcessFactory
 {
@@ -520,11 +548,13 @@ sealed class TestBrokerProcess : IBrokerProcess
 {
     readonly TestBehavior behavior;
     readonly AnonymousPipeServerStream input = new(PipeDirection.Out);
-    readonly AnonymousPipeServerStream output = new(PipeDirection.In);
-    readonly AnonymousPipeServerStream error = new(PipeDirection.In);
+    readonly Stream output;
+    readonly Stream error;
     readonly AnonymousPipeClientStream peerInput;
-    readonly AnonymousPipeClientStream peerOutput;
-    readonly AnonymousPipeClientStream peerError;
+    readonly AnonymousPipeClientStream? peerOutput;
+    readonly AnonymousPipeClientStream? peerError;
+    readonly CompletableEofStream? lingeringOutput;
+    readonly CompletableEofStream? lingeringError;
     readonly TaskCompletionSource<int> exited = new(TaskCreationOptions.RunContinuationsAsynchronously);
     public bool TreeTerminated { get; private set; }
 
@@ -532,26 +562,65 @@ sealed class TestBrokerProcess : IBrokerProcess
     {
         this.behavior = behavior;
         peerInput = new AnonymousPipeClientStream(PipeDirection.In, input.ClientSafePipeHandle);
-        peerOutput = new AnonymousPipeClientStream(PipeDirection.Out, output.ClientSafePipeHandle);
-        peerError = new AnonymousPipeClientStream(PipeDirection.Out, error.ClientSafePipeHandle);
+        if (behavior == TestBehavior.ExitedWithOpenPipes)
+        {
+            lingeringOutput = new CompletableEofStream();
+            lingeringError = new CompletableEofStream();
+            output = lingeringOutput;
+            error = lingeringError;
+        }
+        else
+        {
+            var outputPipe = new AnonymousPipeServerStream(PipeDirection.In);
+            var errorPipe = new AnonymousPipeServerStream(PipeDirection.In);
+            peerOutput = new AnonymousPipeClientStream(PipeDirection.Out, outputPipe.ClientSafePipeHandle);
+            peerError = new AnonymousPipeClientStream(PipeDirection.Out, errorPipe.ClientSafePipeHandle);
+            output = outputPipe;
+            error = errorPipe;
+        }
         if (behavior == TestBehavior.Echo) _ = EchoAsync();
         if (behavior == TestBehavior.Active) _ = ActiveAsync();
-        if (behavior == TestBehavior.Completed) { peerOutput.Dispose(); peerError.Dispose(); exited.TrySetResult(0); }
+        if (behavior == TestBehavior.Completed) { peerOutput!.Dispose(); peerError!.Dispose(); exited.TrySetResult(0); }
+        if (behavior == TestBehavior.ExitedWithOpenPipes) exited.TrySetResult(0);
     }
     public Stream StandardInput => input;
     public Stream StandardOutput => output;
     public Stream StandardError => error;
     public Task<int> WaitForExitAsync(CancellationToken token) => exited.Task.WaitAsync(token);
-    public void TerminateTree() { TreeTerminated = true; exited.TrySetCanceled(); }
-    public ValueTask DisposeAsync() { input.Dispose(); output.Dispose(); error.Dispose(); peerInput.Dispose(); peerOutput.Dispose(); peerError.Dispose(); return ValueTask.CompletedTask; }
+    public void TerminateTree()
+    {
+        TreeTerminated = true;
+        lingeringOutput?.Complete();
+        lingeringError?.Complete();
+        exited.TrySetCanceled();
+    }
+    public ValueTask DisposeAsync() { input.Dispose(); output.Dispose(); error.Dispose(); peerInput.Dispose(); peerOutput?.Dispose(); peerError?.Dispose(); return ValueTask.CompletedTask; }
     async Task EchoAsync()
     {
-        await peerInput.CopyToAsync(peerOutput); await peerOutput.FlushAsync(); peerOutput.Dispose(); peerError.Dispose(); exited.TrySetResult(0);
+        await peerInput.CopyToAsync(peerOutput!); await peerOutput!.FlushAsync(); peerOutput.Dispose(); peerError!.Dispose(); exited.TrySetResult(0);
     }
     async Task ActiveAsync()
     {
-        while (!TreeTerminated) { await peerOutput.WriteAsync(new byte[] { 1 }); await peerOutput.FlushAsync(); await Task.Delay(20); }
+        while (!TreeTerminated) { await peerOutput!.WriteAsync(new byte[] { 1 }); await peerOutput.FlushAsync(); await Task.Delay(20); }
     }
+}
+
+sealed class CompletableEofStream : Stream
+{
+    readonly TaskCompletionSource completed = new(TaskCreationOptions.RunContinuationsAsynchronously);
+    public void Complete() => completed.TrySetResult();
+    public override bool CanRead => true;
+    public override bool CanSeek => false;
+    public override bool CanWrite => false;
+    public override long Length => throw new NotSupportedException();
+    public override long Position { get => throw new NotSupportedException(); set => throw new NotSupportedException(); }
+    public override async ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken cancellationToken = default)
+    { await completed.Task.WaitAsync(cancellationToken); return 0; }
+    public override int Read(byte[] buffer, int offset, int count) => throw new NotSupportedException();
+    public override void Flush() { }
+    public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
+    public override void SetLength(long value) => throw new NotSupportedException();
+    public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
 }
 
 sealed class NonCancelableInputStream : Stream

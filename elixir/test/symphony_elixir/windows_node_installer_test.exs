@@ -88,7 +88,7 @@ defmodule SymphonyElixir.WindowsNodeInstallerTest do
     assert installer =~ "private_key_reader_not_allowed"
     assert installer =~ "private_key_codex_owner"
     assert installer =~ "private_key_codex_acl_control"
-    assert installer =~ "private_key_owner_not_allowed"
+    assert installer =~ "private_key_owner_not_controller"
     assert installer =~ "ChangePermissions"
     assert installer =~ "TakeOwnership"
     assert installer =~ "Get-RuleSid"
@@ -180,6 +180,42 @@ defmodule SymphonyElixir.WindowsNodeInstallerTest do
     refute installer =~ "<issue-workspace>"
     refute installer =~ "installation_id ="
     refute installer =~ "private_key ="
+  end
+
+  test "installer requires the controller to own the private key boundary" do
+    installer = File.read!(@installer)
+
+    assert installer =~ "private_key_owner_not_controller"
+    assert installer =~ "-ne $controllerSid"
+  end
+
+  test "generated WORKFLOW command is a YAML-safe single-quoted scalar" do
+    installer = File.read!(@installer)
+
+    assert installer =~ "$yamlCommand"
+    assert installer =~ ".Replace(\"'\", \"''\")"
+    assert installer =~ "codex.command: '{0}'"
+    refute installer =~ "('codex.command: \"powershell.exe"
+  end
+
+  test "wrapper durably reconciles interrupted temporary ACL grants" do
+    installer = File.read!(@installer)
+
+    assert installer =~ "outstanding-grants.json"
+    assert installer =~ "AbandonedMutexException"
+    assert installer =~ "broker_grant_manifest_invalid"
+    assert installer =~ "broker_stale_revoke_failed"
+    assert installer =~ "if (`$cleanupOk -and `$currentGrantIntentPersisted)"
+
+    reconcile = :binary.match(installer, "ConvertFrom-Json -ErrorAction Stop")
+    persist = :binary.match(installer, "grant_paths = @(`$grantPaths)")
+    grant = :binary.match(installer, "icacls.exe `$grantPath /grant")
+
+    assert reconcile != :nomatch
+    assert persist != :nomatch
+    assert grant != :nomatch
+    assert elem(reconcile, 0) < elem(persist, 0)
+    assert elem(persist, 0) < elem(grant, 0)
   end
 
   test "recovery manifest is persisted before protecting the install root" do
