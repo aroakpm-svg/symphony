@@ -173,7 +173,7 @@ jobs:
             if ($serviceProcessSid -ne $expectedServiceSid -or $serviceProcessSid -eq 'S-1-5-18') { throw 'service process token mismatch' }
 
             $workspaceIssue = New-Item -ItemType Directory -Force -Path (Join-Path $workspace 'central-brain\ARO-1')
-            [ordered]@{ synthetic_key_path = $key } | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $workspaceIssue.FullName '.aro197-boundary-probe.json') -Encoding UTF8
+            [ordered]@{ synthetic_key_path = $key; protected_grant_root = (Join-Path $privateIssue.FullName 'codex') } | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $workspaceIssue.FullName '.aro197-boundary-probe.json') -Encoding UTF8
             $wrapper = Join-Path $install "broker-$sha\codex-command.ps1"
             $grantManifest = Join-Path $install "broker-$sha\outstanding-grants.json"
             $controllerScript = Join-Path $workspaceIssue.FullName 'run-controller.ps1'
@@ -194,6 +194,7 @@ jobs:
             if ($result.UserSid -ne $expectedServiceSid) { throw 'child token mismatch' }
             if (-not $result.KeyDirectoryListDenied) { throw 'synthetic key directory was listable' }
             if (-not $result.KeyReadDenied) { throw 'synthetic key was readable' }
+            if (-not $result.GrantRootRenameDenied) { throw 'temporary ACL grant root was renameable' }
             if (-not $result.WorkspaceCreateEditDeleteSucceeded) { throw 'workspace sentinel operation failed' }
             if (Test-Path -LiteralPath (Join-Path $workspaceIssue.FullName 'aro197-worker-sentinel.txt')) { throw 'controller workspace re-attestation failed' }
 

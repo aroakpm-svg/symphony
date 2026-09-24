@@ -329,17 +329,20 @@ public sealed class BrokerTests : IDisposable
     {
         var workspace = MakeDirectory("probe-workspace");
         var secretDirectory = MakeDirectory("probe-secret");
+        var protectedGrantRoot = MakeDirectory("probe-protected-root");
         var key = Path.Combine(secretDirectory, "app-key.pem");
         File.WriteAllText(key, "disposable-test-key");
         File.WriteAllText(Path.Combine(workspace, ProbeRunner.ConfigurationFileName), JsonSerializer.Serialize(new
         {
-            synthetic_key_path = key
+            synthetic_key_path = key,
+            protected_grant_root = protectedGrantRoot
         }));
 
         var result = ProbeRunner.Run(workspace);
 
         Assert.False(result.KeyDirectoryListDenied);
         Assert.False(result.KeyReadDenied);
+        Assert.False(result.GrantRootRenameDenied);
         Assert.True(result.WorkspaceCreateEditDeleteSucceeded);
         Assert.False(ProbeRunner.Succeeded(result));
     }
@@ -348,7 +351,7 @@ public sealed class BrokerTests : IDisposable
     public void Boundary_probe_rejects_unknown_configuration_members()
     {
         var workspace = MakeDirectory("probe-config");
-        File.WriteAllText(Path.Combine(workspace, ProbeRunner.ConfigurationFileName), "{\"synthetic_key_path\":\"C:\\\\key\",\"extra\":true}");
+        File.WriteAllText(Path.Combine(workspace, ProbeRunner.ConfigurationFileName), "{\"synthetic_key_path\":\"C:\\\\key\",\"protected_grant_root\":\"C:\\\\root\",\"extra\":true}");
 
         Assert.Throws<JsonException>(() => ProbeRunner.Run(workspace));
     }
@@ -358,10 +361,12 @@ public sealed class BrokerTests : IDisposable
     {
         var workspace = MakeDirectory("probe-missing-target");
         var secretDirectory = MakeDirectory("probe-missing-secret");
+        var protectedGrantRoot = MakeDirectory("probe-missing-protected-root");
         var missingKey = Path.Combine(secretDirectory, "missing.pem");
         File.WriteAllText(Path.Combine(workspace, ProbeRunner.ConfigurationFileName), JsonSerializer.Serialize(new
         {
-            synthetic_key_path = missingKey
+            synthetic_key_path = missingKey,
+            protected_grant_root = protectedGrantRoot
         }));
 
         Assert.Throws<FileNotFoundException>(() => ProbeRunner.Run(workspace));

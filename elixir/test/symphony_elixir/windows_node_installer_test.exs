@@ -177,8 +177,10 @@ defmodule SymphonyElixir.WindowsNodeInstallerTest do
     assert installer =~ "ConvertTo-Json"
     assert installer =~ "--private-home"
     assert installer =~ "--codex-home"
+    assert installer =~ "icacls.exe `$grantPath /deny '$($serviceIdentity):(D)'"
     assert installer =~ "icacls.exe `$grantPath /grant"
     assert installer =~ "icacls.exe `$grantPath /remove:g"
+    assert installer =~ "icacls.exe `$grantPath /remove:d"
     assert installer =~ "SYMPHONY_BROKER_CLEANUP_ACK"
     refute installer =~ "<profile>"
     refute installer =~ "<issue-workspace>"
@@ -224,13 +226,16 @@ defmodule SymphonyElixir.WindowsNodeInstallerTest do
 
     reconcile = :binary.match(installer, "ConvertFrom-Json -ErrorAction Stop")
     persist = :binary.match(installer, "grant_paths = @(`$grantPaths)")
+    deny_delete = :binary.match(installer, "icacls.exe `$grantPath /deny")
     grant = :binary.match(installer, "icacls.exe `$grantPath /grant")
 
     assert reconcile != :nomatch
     assert persist != :nomatch
+    assert deny_delete != :nomatch
     assert grant != :nomatch
     assert elem(reconcile, 0) < elem(persist, 0)
-    assert elem(persist, 0) < elem(grant, 0)
+    assert elem(persist, 0) < elem(deny_delete, 0)
+    assert elem(deny_delete, 0) < elem(grant, 0)
     assert installer =~ "throw 'broker_stale_grant_path_missing'"
   end
 

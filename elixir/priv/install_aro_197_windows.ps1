@@ -193,6 +193,8 @@ function Revoke-OutstandingBrokerGrants {
       if (-not (Test-Path -LiteralPath $grantPath)) { throw 'broker_stale_grant_path_missing' }
       & icacls.exe $grantPath /remove:g $serviceIdentity | Out-Null
       if ($LASTEXITCODE) { throw 'broker_stale_revoke_failed' }
+      & icacls.exe $grantPath /remove:d $serviceIdentity | Out-Null
+      if ($LASTEXITCODE) { throw 'broker_stale_revoke_failed' }
     }
     [ordered]@{ schema = 1; grant_paths = @() } | ConvertTo-Json -Depth 3 | Set-Content -LiteralPath $grantManifest -Encoding UTF8
   } finally {
@@ -338,6 +340,8 @@ try {
     if (!(Test-Path -LiteralPath `$grantPath)) { throw 'broker_stale_grant_path_missing' }
     & icacls.exe `$grantPath /remove:g '$($serviceIdentity)' | Out-Null
     if (`$LASTEXITCODE) { throw 'broker_stale_revoke_failed' }
+    & icacls.exe `$grantPath /remove:d '$($serviceIdentity)' | Out-Null
+    if (`$LASTEXITCODE) { throw 'broker_stale_revoke_failed' }
   }
   [ordered]@{ schema = 1; grant_paths = @() } | ConvertTo-Json -Depth 3 | Set-Content -LiteralPath `$grantManifest -Encoding UTF8
   `$cleanupSafeToAcknowledge = `$true
@@ -347,6 +351,8 @@ try {
   `$grantDocument | ConvertTo-Json -Depth 3 | Set-Content -LiteralPath `$grantManifest -Encoding UTF8
   `$currentGrantIntentPersisted = `$true
   foreach (`$grantPath in `$grantPaths) {
+    & icacls.exe `$grantPath /deny '$($serviceIdentity):(D)' | Out-Null
+    if (`$LASTEXITCODE) { throw 'broker_grant_failed' }
     & icacls.exe `$grantPath /grant '$($serviceIdentity):(OI)(CI)(M)' | Out-Null
     if (`$LASTEXITCODE) { throw 'broker_grant_failed' }
   }
@@ -360,6 +366,8 @@ try {
       [array]::Reverse(`$revokePaths)
       foreach (`$grantPath in `$revokePaths) {
         & icacls.exe `$grantPath /remove:g '$($serviceIdentity)' | Out-Null
+        if (`$LASTEXITCODE) { `$cleanupOk = `$false }
+        & icacls.exe `$grantPath /remove:d '$($serviceIdentity)' | Out-Null
         if (`$LASTEXITCODE) { `$cleanupOk = `$false }
       }
     }

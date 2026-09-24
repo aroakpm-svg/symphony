@@ -5,12 +5,14 @@ using System.Text.Json.Serialization;
 namespace Symphony.WindowsBroker.Probe;
 
 public sealed record ProbeConfiguration(
-    [property: JsonPropertyName("synthetic_key_path")] string SyntheticKeyPath);
+    [property: JsonPropertyName("synthetic_key_path")] string SyntheticKeyPath,
+    [property: JsonPropertyName("protected_grant_root")] string ProtectedGrantRoot);
 
 public sealed record ProbeResult(
     string UserSid,
     bool KeyDirectoryListDenied,
     bool KeyReadDenied,
+    bool GrantRootRenameDenied,
     bool WorkspaceCreateEditDeleteSucceeded);
 
 public static class ProbeRunner
@@ -26,6 +28,7 @@ public static class ProbeRunner
             ?? throw new InvalidDataException("probe_config_invalid");
         var key = TargetPath(configuration.SyntheticKeyPath);
         var keyDirectory = Path.GetDirectoryName(key) ?? throw new InvalidDataException("probe_key_parent_missing");
+        var protectedGrantRoot = ExistingDirectory(configuration.ProtectedGrantRoot);
         using var identity = WindowsIdentity.GetCurrent(TokenAccessLevels.Query);
         var userSid = identity.User?.Value ?? throw new InvalidOperationException("probe_identity_missing");
 
@@ -33,6 +36,7 @@ public static class ProbeRunner
             userSid,
             Denied(() => Directory.EnumerateFileSystemEntries(keyDirectory).ToArray()),
             Denied(() => File.ReadAllBytes(key)),
+            RenameDenied(protectedGrantRoot),
             ExerciseWorkspace(workspace));
     }
 
@@ -40,12 +44,30 @@ public static class ProbeRunner
         result.UserSid != "S-1-5-18" &&
         result.KeyDirectoryListDenied &&
         result.KeyReadDenied &&
+        result.GrantRootRenameDenied &&
         result.WorkspaceCreateEditDeleteSucceeded;
 
     static bool Denied(Action action)
     {
         try { action(); return false; }
         catch (UnauthorizedAccessException) { return true; }
+    }
+
+    static bool RenameDenied(string path)
+    {
+        var moved = path + ".aro197-rename-probe-" + Guid.NewGuid().ToString("N");
+        try
+        {
+            Directory.Move(path, moved);
+            Directory.Move(moved, path);
+            return false;
+        }
+        catch (UnauthorizedAccessException) { return true; }
+        catch (IOException error) when ((error.HResult & 0xffff) == 5) { return true; }
+        finally
+        {
+            if (Directory.Exists(moved) && !Directory.Exists(path)) Directory.Move(moved, path);
+        }
     }
 
     static bool ExerciseWorkspace(string workspace)
