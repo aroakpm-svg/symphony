@@ -65,6 +65,20 @@ defmodule SymphonyElixir.Codex.BrokerLaunchLockTest do
              })
   end
 
+  test "a stale token cannot release the current node-wide holder" do
+    assert {:ok, stale_token} = BrokerLaunchLock.acquire(unique_command())
+    assert :ok = BrokerLaunchLock.release(stale_token)
+    assert {:ok, current_token} = BrokerLaunchLock.acquire(unique_command())
+
+    assert :ok = BrokerLaunchLock.release(stale_token)
+    waiter = Task.async(fn -> BrokerLaunchLock.acquire(unique_command()) end)
+    refute Task.yield(waiter, 100)
+
+    assert :ok = BrokerLaunchLock.release(current_token)
+    assert {:ok, next_token} = Task.await(waiter, 1_000)
+    assert :ok = BrokerLaunchLock.release(next_token)
+  end
+
   test "cancelled waiters are removed while the durable lock remains held" do
     command = unique_command()
     assert {:ok, token} = BrokerLaunchLock.acquire(command)
