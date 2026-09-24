@@ -101,6 +101,7 @@ defmodule SymphonyElixir.WindowsNodeInstallerTest do
     assert installer =~ "NT SERVICE\\$serviceName"
     assert installer =~ "sc.exe config $serviceName obj= $serviceIdentity"
     assert installer =~ "sc.exe sidtype $serviceName restricted"
+    assert installer =~ "Rights = 'ReadAttributes, Traverse'; Inheritance = 'None'"
     assert installer =~ "service_account_mismatch"
     assert installer =~ "StartName"
     assert installer =~ "StartMode"

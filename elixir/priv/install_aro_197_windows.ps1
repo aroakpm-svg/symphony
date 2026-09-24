@@ -67,7 +67,8 @@ function Set-ProtectedAclRules([string]$path, [object[]]$rules) {
   foreach ($rule in @($acl.Access)) { $null = $acl.RemoveAccessRuleAll($rule) }
   $inheritance = if ((Get-Item -LiteralPath $path -Force) -is [IO.DirectoryInfo]) { 'ContainerInherit,ObjectInherit' } else { 'None' }
   foreach ($rule in $rules) {
-    $acl.AddAccessRule([Security.AccessControl.FileSystemAccessRule]::new([string]$rule.Principal, [string]$rule.Rights, $inheritance, 'None', 'Allow'))
+    $ruleInheritance = if ($null -ne $rule.Inheritance) { [string]$rule.Inheritance } else { $inheritance }
+    $acl.AddAccessRule([Security.AccessControl.FileSystemAccessRule]::new([string]$rule.Principal, [string]$rule.Rights, $ruleInheritance, 'None', 'Allow'))
   }
   Set-Acl -LiteralPath $path -AclObject $acl; Assert-AreAllAccessRulesProtected $path
 }
@@ -404,13 +405,21 @@ try {
   )
   Set-ProtectedAclRules $PrivateHomeRoot @(
     @{ Principal = 'BUILTIN\Administrators'; Rights = 'FullControl' },
-    @{ Principal = "${env:COMPUTERNAME}\$controller"; Rights = 'FullControl' }
+    @{ Principal = "${env:COMPUTERNAME}\$controller"; Rights = 'FullControl' },
+    @{ Principal = $serviceIdentity; Rights = 'ReadAttributes, Traverse'; Inheritance = 'None' }
   )
   Set-ProtectedAclRules $CodexHomeRoot @(
     @{ Principal = 'BUILTIN\Administrators'; Rights = 'FullControl' },
-    @{ Principal = "${env:COMPUTERNAME}\$controller"; Rights = 'FullControl' }
+    @{ Principal = "${env:COMPUTERNAME}\$controller"; Rights = 'FullControl' },
+    @{ Principal = $serviceIdentity; Rights = 'ReadAttributes, Traverse'; Inheritance = 'None' }
   )
-  foreach ($path in $profileAclRoots) { Set-ProtectedAcl $path @('BUILTIN\Administrators', "${env:COMPUTERNAME}\$controller") }
+  foreach ($path in $profileAclRoots) {
+    Set-ProtectedAclRules $path @(
+      @{ Principal = 'BUILTIN\Administrators'; Rights = 'FullControl' },
+      @{ Principal = "${env:COMPUTERNAME}\$controller"; Rights = 'FullControl' },
+      @{ Principal = $serviceIdentity; Rights = 'ReadAttributes, Traverse'; Inheritance = 'None' }
+    )
+  }
   $created.acls = $true; Save-RecoveryState $created $previousAcl
   $stage = 'installed_acls'
   Set-ProtectedAclRules $InstallRoot @(
