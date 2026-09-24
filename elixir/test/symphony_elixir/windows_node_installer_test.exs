@@ -198,6 +198,7 @@ defmodule SymphonyElixir.WindowsNodeInstallerTest do
     assert installer =~ "[IO.Directory]::GetParent"
     assert installer =~ "private_key_ancestor_owner_untrusted"
     assert installer =~ "private_key_ancestor_acl_control"
+    assert installer =~ "'^private_key_[a-z_]+$'"
   end
 
   test "generated WORKFLOW command is a YAML-safe single-quoted scalar" do

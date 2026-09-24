@@ -443,7 +443,9 @@ try {
 } catch {
   $failedStage = $stage
   $failureType = $_.Exception.GetType().Name
+  $failureMessage = [string]$_.Exception.Message
+  $failureCode = if ($failureMessage -match '^private_key_[a-z_]+$') { $failureMessage } else { $failureType }
   try { Remove-CreatedResources $created ([pscustomobject]$previousAcl) }
   catch { Write-Receipt 'FAIL' $false "cleanup_failed_$($stage)_$($_.Exception.GetType().Name)"; exit 22 }
-  Write-Receipt 'FAIL' $false "install_failed_$($failedStage)_$failureType"; exit 21
+  Write-Receipt 'FAIL' $false "install_failed_$($failedStage)_$failureCode"; exit 21
 }
