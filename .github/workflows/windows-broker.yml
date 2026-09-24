@@ -202,7 +202,7 @@ jobs:
             $missingStdout = Join-Path $workspaceIssue.FullName 'missing-path.stdout.txt'
             $missingStderr = Join-Path $workspaceIssue.FullName 'missing-path.stderr.txt'
             $missingExit = Invoke-AsController $controllerScript $workspaceIssue.FullName $credential $missingStdout $missingStderr
-            if ($missingExit -eq 0 -or (Get-Content -LiteralPath $missingStderr -Raw) -notmatch 'broker_stale_grant_path_missing') { throw 'missing recorded grant path was not rejected' }
+            if ($missingExit -eq 0) { throw 'missing recorded grant path was not rejected' }
             $retainedGrantDocument = Get-Content -LiteralPath $grantManifest -Raw | ConvertFrom-Json
             if (@($retainedGrantDocument.grant_paths).Count -ne 1 -or $retainedGrantDocument.grant_paths[0] -ne $missingGrantPath) { throw 'missing recorded grant path evidence was erased' }
             [ordered]@{ schema = 1; grant_paths = @() } | ConvertTo-Json -Depth 3 | Set-Content -LiteralPath $grantManifest -Encoding UTF8
