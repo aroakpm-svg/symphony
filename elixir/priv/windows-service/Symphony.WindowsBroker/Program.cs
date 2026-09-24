@@ -34,6 +34,7 @@ public static class Program
 }
 sealed class BrokerWindowsService : ServiceBase
 {
+    const int ErrorExceptionInService = 1064;
     readonly BrokerOptions options;
     readonly IBrokerProcessFactory factory;
     readonly CancellationTokenSource stop = new();
@@ -50,6 +51,11 @@ sealed class BrokerWindowsService : ServiceBase
     {
         ServiceIdentity.Demand(options.ServiceName);
         running = Task.Run(RunAsync);
+        _ = running.ContinueWith(
+            StopAfterBrokerFault,
+            CancellationToken.None,
+            TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously,
+            TaskScheduler.Default);
     }
 
     protected override void OnStop()
@@ -57,6 +63,15 @@ sealed class BrokerWindowsService : ServiceBase
         stop.Cancel();
         try { running?.GetAwaiter().GetResult(); }
         catch (OperationCanceledException) { }
+        catch (Exception) when (running?.IsFaulted == true) { }
+    }
+
+    void StopAfterBrokerFault(Task faulted)
+    {
+        _ = faulted.Exception;
+        if (stop.IsCancellationRequested) return;
+        ExitCode = ErrorExceptionInService;
+        Stop();
     }
 
     async Task RunAsync()

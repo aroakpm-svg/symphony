@@ -350,6 +350,18 @@ public sealed class BrokerTests : IDisposable
         Assert.True(service.IndexOf("running = Task.Run(RunAsync);", StringComparison.Ordinal) < service.IndexOf("async Task RunAsync", StringComparison.Ordinal));
     }
 
+    [Fact]
+    public void Windows_service_reports_a_faulted_broker_loop_to_the_service_manager()
+    {
+        var program = File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", "Symphony.WindowsBroker", "Program.cs"));
+        var service = program[program.IndexOf("sealed class BrokerWindowsService", StringComparison.Ordinal)..];
+
+        Assert.Contains("TaskContinuationOptions.OnlyOnFaulted", service);
+        Assert.Contains("faulted.Exception", service);
+        Assert.Contains("ExitCode =", service);
+        Assert.Contains("Stop();", service);
+    }
+
 
     [Fact]
     public async Task Idle_and_absolute_timeouts_terminate_the_process_tree()
