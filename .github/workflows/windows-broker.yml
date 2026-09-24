@@ -106,7 +106,7 @@ jobs:
           $serviceIdentity = "NT SERVICE\$serviceName"
           $root = Join-Path $env:RUNNER_TEMP 'aro197-integration'
           $install = Join-Path $root 'install'
-          $secretDirectory = Join-Path $root 'controller-secret'
+          $secretDirectory = Join-Path $env:ProgramData ("aro197-controller-secret-" + [guid]::NewGuid().ToString('N'))
           $key = Join-Path $secretDirectory 'app-key.pem'
           $workspace = Join-Path $root 'workspace'
           $private = Join-Path $root 'private'
@@ -239,5 +239,6 @@ jobs:
             }
             [Environment]::SetEnvironmentVariable('SYMPHONY_GITHUB_APP_PRIVATE_KEY_FILE', $null, 'Machine')
             if ($controllerCreated) { Remove-LocalUser -Name $controller -ErrorAction SilentlyContinue }
+            Remove-Item -LiteralPath $secretDirectory -Recurse -Force -ErrorAction SilentlyContinue
             Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue
           }

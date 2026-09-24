@@ -77,6 +77,7 @@ defmodule SymphonyElixir.WindowsNodeInstallerTest do
     refute workflow =~ "$node = 'Amy'"
     refute workflow =~ "$controller = 'SymphonyCtlAmy'"
     refute workflow =~ "$serviceName = 'AROAKSymphonyCodexAmy'"
+    assert workflow =~ "$secretDirectory = Join-Path $env:ProgramData"
     assert workflow =~ "rollback left temporary service ACL"
     assert workflow =~ "missing recorded grant path was not rejected"
   end
