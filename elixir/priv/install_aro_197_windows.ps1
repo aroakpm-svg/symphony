@@ -145,10 +145,42 @@ function Restore-Acls($previousAcl) {
     Set-Acl -LiteralPath $property.Name -AclObject $acl
   }
 }
+function Revoke-OutstandingBrokerGrants {
+  if (-not (Test-Path -LiteralPath $grantManifest -PathType Leaf)) { throw 'broker_grant_manifest_invalid' }
+  $mutex = New-Object System.Threading.Mutex($false, "Global\AROAKSymphonyCodex-$Node")
+  $lockHeld = $false
+  try {
+    try { $lockHeld = $mutex.WaitOne(30000) }
+    catch [Threading.AbandonedMutexException] { $lockHeld = $true }
+    if (-not $lockHeld) { throw 'broker_acl_busy' }
+    try { $grantDocument = Get-Content -LiteralPath $grantManifest -Raw | ConvertFrom-Json -ErrorAction Stop }
+    catch { throw 'broker_grant_manifest_invalid' }
+    if ($grantDocument.schema -ne 1 -or $null -eq $grantDocument.grant_paths) { throw 'broker_grant_manifest_invalid' }
+    $grantPaths = @($grantDocument.grant_paths)
+    [array]::Reverse($grantPaths)
+    foreach ($grantPath in $grantPaths) {
+      if ($grantPath -isnot [string] -or -not [IO.Path]::IsPathFullyQualified($grantPath)) { throw 'broker_grant_manifest_invalid' }
+      if (-not (Test-Path -LiteralPath $grantPath)) { throw 'broker_stale_grant_path_missing' }
+      & icacls.exe $grantPath /remove:g $serviceIdentity | Out-Null
+      if ($LASTEXITCODE) { throw 'broker_stale_revoke_failed' }
+    }
+    [ordered]@{ schema = 1; grant_paths = @() } | ConvertTo-Json -Depth 3 | Set-Content -LiteralPath $grantManifest -Encoding UTF8
+  } finally {
+    if ($lockHeld) { $mutex.ReleaseMutex() }
+    $mutex.Dispose()
+  }
+}
 function Remove-CreatedResources($created, $previousAcl) {
   if ($created.service) {
     $script:stage = 'rollback_service'
     Stop-Service -Name $serviceName -Force -ErrorAction SilentlyContinue
+  }
+  if ($created.service -or (Test-Path -LiteralPath $grantManifest -PathType Leaf)) {
+    $script:stage = 'rollback_grants'
+    Revoke-OutstandingBrokerGrants
+  }
+  if ($created.service) {
+    $script:stage = 'rollback_service'
     & sc.exe delete $serviceName | Out-Null
     if ($LASTEXITCODE -ne 0 -and (Get-Service -Name $serviceName -ErrorAction SilentlyContinue)) { throw 'service_delete_failed' }
     $created.service = $false
@@ -230,6 +262,8 @@ try {
   $grantManifestLiteral = ConvertTo-PowerShellSingleQuotedLiteral $grantManifest
   @"
 `$ErrorActionPreference = 'Stop'
+`$cleanupSafeToAcknowledge = `$true
+try {
 `$workspaceRoot = $workspaceRootLiteral
 `$grantManifest = $grantManifestLiteral
 `$codexHome = [Environment]::GetEnvironmentVariable('CODEX_HOME', 'Process')
@@ -260,6 +294,7 @@ try {
   try { `$lockHeld = `$mutex.WaitOne(0) }
   catch [Threading.AbandonedMutexException] { `$lockHeld = `$true }
   if (!`$lockHeld) { throw 'broker_acl_busy' }
+  `$cleanupSafeToAcknowledge = `$false
 
   if (!(Test-Path -LiteralPath `$grantManifest -PathType Leaf)) { throw 'broker_grant_manifest_invalid' }
   try { `$staleGrantDocument = Get-Content -LiteralPath `$grantManifest -Raw | ConvertFrom-Json -ErrorAction Stop }
@@ -269,13 +304,14 @@ try {
   [array]::Reverse(`$stalePaths)
   foreach (`$grantPath in `$stalePaths) {
     if (`$grantPath -isnot [string] -or ![IO.Path]::IsPathFullyQualified(`$grantPath)) { throw 'broker_grant_manifest_invalid' }
-    if (Test-Path -LiteralPath `$grantPath) {
-      & icacls.exe `$grantPath /remove:g '$($serviceIdentity)' | Out-Null
-      if (`$LASTEXITCODE) { throw 'broker_stale_revoke_failed' }
-    }
+    if (!(Test-Path -LiteralPath `$grantPath)) { throw 'broker_stale_grant_path_missing' }
+    & icacls.exe `$grantPath /remove:g '$($serviceIdentity)' | Out-Null
+    if (`$LASTEXITCODE) { throw 'broker_stale_revoke_failed' }
   }
   [ordered]@{ schema = 1; grant_paths = @() } | ConvertTo-Json -Depth 3 | Set-Content -LiteralPath `$grantManifest -Encoding UTF8
+  `$cleanupSafeToAcknowledge = `$true
 
+  `$cleanupSafeToAcknowledge = `$false
   `$grantDocument = [ordered]@{ schema = 1; grant_paths = @(`$grantPaths) }
   `$grantDocument | ConvertTo-Json -Depth 3 | Set-Content -LiteralPath `$grantManifest -Encoding UTF8
   `$currentGrantIntentPersisted = `$true
@@ -299,10 +335,13 @@ try {
   `$mutex.Dispose()
   if (`$cleanupOk -and `$currentGrantIntentPersisted) {
     [ordered]@{ schema = 1; grant_paths = @() } | ConvertTo-Json -Depth 3 | Set-Content -LiteralPath `$grantManifest -Encoding UTF8
-    if (![string]::IsNullOrWhiteSpace(`$env:SYMPHONY_BROKER_CLEANUP_ACK)) { Set-Content -LiteralPath `$env:SYMPHONY_BROKER_CLEANUP_ACK -Value 'done' -Encoding ASCII }
+    `$cleanupSafeToAcknowledge = `$true
   } elseif (!`$cleanupOk) {
     throw 'broker_revoke_failed'
   }
+}
+} finally {
+  if (`$cleanupSafeToAcknowledge -and ![string]::IsNullOrWhiteSpace(`$env:SYMPHONY_BROKER_CLEANUP_ACK)) { Set-Content -LiteralPath `$env:SYMPHONY_BROKER_CLEANUP_ACK -Value 'done' -Encoding ASCII }
 }
 "@ | Set-Content -LiteralPath $commandWrapper -Encoding UTF8
   $yamlCommand = ('powershell.exe -NoProfile -ExecutionPolicy Bypass -File "{0}"' -f $commandWrapper).Replace("'", "''")

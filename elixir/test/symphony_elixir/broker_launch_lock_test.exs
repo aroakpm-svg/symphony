@@ -1,5 +1,5 @@
 defmodule SymphonyElixir.Codex.BrokerLaunchLockTest do
-  use ExUnit.Case, async: true
+  use ExUnit.Case, async: false
 
   alias SymphonyElixir.Codex.BrokerLaunchLock
 
@@ -41,6 +41,20 @@ defmodule SymphonyElixir.Codex.BrokerLaunchLockTest do
     assert :ok = BrokerLaunchLock.release(next_token)
   end
 
+  test "different wrapper command revisions share one node-wide broker lock" do
+    old_command = unique_command()
+    new_command = unique_command()
+    assert {:ok, old_token} = BrokerLaunchLock.acquire(old_command)
+
+    waiter = Task.async(fn -> BrokerLaunchLock.acquire(new_command) end)
+    refute Task.yield(waiter, 100)
+
+    assert :ok = BrokerLaunchLock.release(old_token)
+    assert {:ok, new_token} = Task.await(waiter, 1_000)
+    assert new_token.command == new_command
+    assert :ok = BrokerLaunchLock.release(new_token)
+  end
+
   test "release tolerates absent commands" do
     command = unique_command()
 
@@ -74,7 +88,7 @@ defmodule SymphonyElixir.Codex.BrokerLaunchLockTest do
     monitor = Process.monitor(dead_pid)
 
     :sys.replace_state(BrokerLaunchLock, fn state ->
-      update_in(state, [:locks, command, :queue], &:queue.in({{dead_pid, make_ref()}, monitor}, &1))
+      update_in(state, [:locks, lock_key(), :queue], &:queue.in({{dead_pid, make_ref()}, monitor, command}, &1))
     end)
 
     assert :ok = BrokerLaunchLock.release(token)
@@ -186,20 +200,26 @@ defmodule SymphonyElixir.Codex.BrokerLaunchLockTest do
   end
 
   defp lock_active?(command) do
+    _command = command
+
     BrokerLaunchLock
     |> :sys.get_state()
     |> Map.fetch!(:locks)
-    |> Map.has_key?(command)
+    |> Map.has_key?(lock_key())
   end
 
   defp queued_waiters(command) do
+    _command = command
+
     BrokerLaunchLock
     |> :sys.get_state()
     |> Map.fetch!(:locks)
-    |> Map.fetch!(command)
+    |> Map.fetch!(lock_key())
     |> Map.fetch!(:queue)
     |> :queue.len()
   end
+
+  defp lock_key, do: :node_wide_windows_broker
 
   defp wait_until(fun) do
     deadline = System.monotonic_time(:millisecond) + 1_000

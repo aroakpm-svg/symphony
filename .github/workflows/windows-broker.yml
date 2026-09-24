@@ -175,6 +175,7 @@ jobs:
             $workspaceIssue = New-Item -ItemType Directory -Force -Path (Join-Path $workspace 'central-brain\ARO-1')
             [ordered]@{ synthetic_key_path = $key } | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $workspaceIssue.FullName '.aro197-boundary-probe.json') -Encoding UTF8
             $wrapper = Join-Path $install "broker-$sha\codex-command.ps1"
+            $grantManifest = Join-Path $install "broker-$sha\outstanding-grants.json"
             $controllerScript = Join-Path $workspaceIssue.FullName 'run-controller.ps1'
             @"
           `$ErrorActionPreference = 'Stop'
@@ -196,6 +197,16 @@ jobs:
             if (-not $result.WorkspaceCreateEditDeleteSucceeded) { throw 'workspace sentinel operation failed' }
             if (Test-Path -LiteralPath (Join-Path $workspaceIssue.FullName 'aro197-worker-sentinel.txt')) { throw 'controller workspace re-attestation failed' }
 
+            $missingGrantPath = Join-Path $workspaceIssue.FullName 'moved-or-missing-grant-root'
+            [ordered]@{ schema = 1; grant_paths = @($missingGrantPath) } | ConvertTo-Json -Depth 3 | Set-Content -LiteralPath $grantManifest -Encoding UTF8
+            $missingStdout = Join-Path $workspaceIssue.FullName 'missing-path.stdout.txt'
+            $missingStderr = Join-Path $workspaceIssue.FullName 'missing-path.stderr.txt'
+            $missingExit = Invoke-AsController $controllerScript $workspaceIssue.FullName $credential $missingStdout $missingStderr
+            if ($missingExit -eq 0 -or (Get-Content -LiteralPath $missingStderr -Raw) -notmatch 'broker_stale_grant_path_missing') { throw 'missing recorded grant path was not rejected' }
+            $retainedGrantDocument = Get-Content -LiteralPath $grantManifest -Raw | ConvertFrom-Json
+            if (@($retainedGrantDocument.grant_paths).Count -ne 1 -or $retainedGrantDocument.grant_paths[0] -ne $missingGrantPath) { throw 'missing recorded grant path evidence was erased' }
+            [ordered]@{ schema = 1; grant_paths = @() } | ConvertTo-Json -Depth 3 | Set-Content -LiteralPath $grantManifest -Encoding UTF8
+
             Stop-Service -Name $serviceName -Force
             (Get-Service -Name $serviceName).WaitForStatus('Stopped', [TimeSpan]::FromSeconds(20))
             $serviceStarted = $false
@@ -204,9 +215,16 @@ jobs:
             if ($service.StartMode -ne 'Manual') { throw 'service start mode changed' }
 
             if ((git -C (Join-Path $install "runtime-$sha") rev-parse HEAD).Trim() -ne $sha) { throw 'runtime attestation failed' }
+            & icacls.exe $workspaceIssue.FullName /grant "$serviceIdentity`:(OI)(CI)(M)" | Out-Null
+            if ($LASTEXITCODE) { throw 'failed to seed rollback ACL' }
+            [ordered]@{ schema = 1; grant_paths = @($workspaceIssue.FullName) } | ConvertTo-Json -Depth 3 | Set-Content -LiteralPath $grantManifest -Encoding UTF8
             & ./elixir/priv/install_aro_197_windows.ps1 @common -Mode Rollback
             if ($LASTEXITCODE) { throw 'rollback failed' }
             $installed = $false
+            $remainingServiceRules = @((Get-Acl -LiteralPath $workspaceIssue.FullName).Access | Where-Object {
+              try { $_.IdentityReference.Translate([Security.Principal.SecurityIdentifier]).Value -eq $expectedServiceSid } catch { $false }
+            })
+            if ($remainingServiceRules.Count) { throw 'rollback left temporary service ACL' }
             if (Test-Path $install) {
               $remaining = @(Get-ChildItem -Force $install)
               if ($remaining.Count) { throw 'rollback left installed resources' }

@@ -77,6 +77,8 @@ defmodule SymphonyElixir.WindowsNodeInstallerTest do
     refute workflow =~ "$node = 'Amy'"
     refute workflow =~ "$controller = 'SymphonyCtlAmy'"
     refute workflow =~ "$serviceName = 'AROAKSymphonyCodexAmy'"
+    assert workflow =~ "rollback left temporary service ACL"
+    assert workflow =~ "missing recorded grant path was not rejected"
   end
 
   test "installer retains one broker-only identity boundary" do
@@ -218,6 +220,40 @@ defmodule SymphonyElixir.WindowsNodeInstallerTest do
     assert grant != :nomatch
     assert elem(reconcile, 0) < elem(persist, 0)
     assert elem(persist, 0) < elem(grant, 0)
+    assert installer =~ "throw 'broker_stale_grant_path_missing'"
+  end
+
+  test "rollback reconciles durable grants before deleting their evidence" do
+    installer = File.read!(@installer)
+
+    reconcile = installer |> :binary.matches("Revoke-OutstandingBrokerGrants") |> List.last()
+    delete_service = :binary.match(installer, "sc.exe delete $serviceName")
+    delete_broker = :binary.match(installer, "Remove-Item -LiteralPath $brokerRoot -Recurse -Force")
+
+    assert reconcile != :nomatch
+    assert delete_service != :nomatch
+    assert delete_broker != :nomatch
+    assert installer =~ "WaitOne(30000)"
+    assert elem(reconcile, 0) < elem(delete_service, 0)
+    assert elem(reconcile, 0) < elem(delete_broker, 0)
+  end
+
+  test "wrapper acknowledges failures that occur before any ACL grant can begin" do
+    installer = File.read!(@installer)
+
+    safe = :binary.match(installer, "`$cleanupSafeToAcknowledge = `$true")
+    preflight = :binary.match(installer, "if ([string]::IsNullOrWhiteSpace(`$codexHome))")
+    unsafe = :binary.match(installer, "`$cleanupSafeToAcknowledge = `$false")
+    acknowledgement =
+      :binary.match(installer, "if (`$cleanupSafeToAcknowledge -and ![string]::IsNullOrWhiteSpace(`$env:SYMPHONY_BROKER_CLEANUP_ACK))")
+
+    assert safe != :nomatch
+    assert preflight != :nomatch
+    assert unsafe != :nomatch
+    assert acknowledgement != :nomatch
+    assert elem(safe, 0) < elem(preflight, 0)
+    assert elem(preflight, 0) < elem(unsafe, 0)
+    assert elem(unsafe, 0) < elem(acknowledgement, 0)
   end
 
   test "recovery manifest is persisted before protecting the install root" do

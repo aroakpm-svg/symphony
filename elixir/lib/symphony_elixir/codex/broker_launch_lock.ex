@@ -4,6 +4,7 @@ defmodule SymphonyElixir.Codex.BrokerLaunchLock do
   use GenServer
 
   @ack_poll_ms 50
+  @lock_key :node_wide_windows_broker
 
   @type token :: %{required(:command) => String.t(), required(:cleanup_ack) => Path.t()}
 
@@ -26,8 +27,9 @@ defmodule SymphonyElixir.Codex.BrokerLaunchLock do
   end
 
   @spec release(token()) :: :ok
-  def release(%{command: command}) when is_binary(command) do
-    GenServer.call(__MODULE__, {:release, command}, :infinity)
+  def release(%{command: command, cleanup_ack: cleanup_ack})
+      when is_binary(command) and is_binary(cleanup_ack) do
+    GenServer.call(__MODULE__, {:release, command, cleanup_ack}, :infinity)
   end
 
   @impl true
@@ -35,30 +37,30 @@ defmodule SymphonyElixir.Codex.BrokerLaunchLock do
 
   @impl true
   def handle_call({:acquire, command}, from, state) do
-    case Map.fetch(state.locks, command) do
+    case Map.fetch(state.locks, @lock_key) do
       :error ->
         {token, active, state} = new_active(command, from, state)
-        {:reply, {:ok, token}, put_in(state, [:locks, command], active)}
+        {:reply, {:ok, token}, put_in(state, [:locks, @lock_key], active)}
 
       {:ok, active} ->
         {pid, _tag} = from
         monitor = Process.monitor(pid)
-        active = update_in(active.queue, &:queue.in({from, monitor}, &1))
+        active = update_in(active.queue, &:queue.in({from, monitor, command}, &1))
 
         state =
           state
-          |> put_in([:locks, command], active)
-          |> put_in([:monitors, monitor], {:waiter, command})
+          |> put_in([:locks, @lock_key], active)
+          |> put_in([:monitors, monitor], {:waiter, @lock_key})
 
         {:noreply, state}
     end
   end
 
-  def handle_call({:mark_wrapper_starting, command, cleanup_ack}, _from, state) do
+  def handle_call({:mark_wrapper_starting, _command, cleanup_ack}, _from, state) do
     state =
-      case Map.fetch(state.locks, command) do
+      case Map.fetch(state.locks, @lock_key) do
         {:ok, %{cleanup_ack: ^cleanup_ack} = active} ->
-          put_in(state, [:locks, command], %{active | wrapper_starting?: true})
+          put_in(state, [:locks, @lock_key], %{active | wrapper_starting?: true})
 
         _missing_or_replaced ->
           state
@@ -67,15 +69,18 @@ defmodule SymphonyElixir.Codex.BrokerLaunchLock do
     {:reply, :ok, state}
   end
 
-  def handle_call({:release, command}, _from, state) do
-    case Map.fetch(state.locks, command) do
+  def handle_call({:release, _command, cleanup_ack}, _from, state) do
+    case Map.fetch(state.locks, @lock_key) do
       :error ->
         {:reply, :ok, state}
 
-      {:ok, active} ->
+      {:ok, %{cleanup_ack: ^cleanup_ack} = active} ->
         state = demonitor_holder(state, active)
         cleanup_ack(active.cleanup_ack)
-        {:reply, :ok, grant_next_or_delete(command, active.queue, state)}
+        {:reply, :ok, grant_next_or_delete(@lock_key, active.queue, state)}
+
+      {:ok, _different_holder} ->
+        {:reply, :ok, state}
     end
   end
 
@@ -134,12 +139,12 @@ defmodule SymphonyElixir.Codex.BrokerLaunchLock do
 
   defp grant_next_or_delete(command, queue, state) do
     case :queue.out(queue) do
-      {{:value, {waiter = {pid, _tag}, monitor}}, rest} ->
+      {{:value, {waiter = {pid, _tag}, monitor, waiter_command}}, rest} ->
         state = pop_monitor(state, monitor)
         Process.demonitor(monitor, [:flush])
 
         if Process.alive?(pid) do
-          {token, active, state} = new_active(command, waiter, state, rest)
+          {token, active, state} = new_active(waiter_command, waiter, state, rest)
           GenServer.reply(waiter, {:ok, token})
           put_in(state, [:locks, command], active)
         else
@@ -163,7 +168,7 @@ defmodule SymphonyElixir.Codex.BrokerLaunchLock do
       wrapper_starting?: false
     }
 
-    {token, active, put_in(state, [:monitors, monitor], {:holder, command})}
+    {token, active, put_in(state, [:monitors, monitor], {:holder, @lock_key})}
   end
 
   defp demonitor_holder(state, %{holder_monitor: nil}), do: state
@@ -178,7 +183,7 @@ defmodule SymphonyElixir.Codex.BrokerLaunchLock do
   defp remove_waiter(queue, monitor) do
     :queue.filter(
       fn
-        {_from, waiter_monitor} -> waiter_monitor != monitor
+        {_from, waiter_monitor, _command} -> waiter_monitor != monitor
       end,
       queue
     )
