@@ -244,6 +244,7 @@ defmodule SymphonyElixir.WindowsNodeInstallerTest do
     safe = :binary.match(installer, "`$cleanupSafeToAcknowledge = `$true")
     preflight = :binary.match(installer, "if ([string]::IsNullOrWhiteSpace(`$codexHome))")
     unsafe = :binary.match(installer, "`$cleanupSafeToAcknowledge = `$false")
+
     acknowledgement =
       :binary.match(installer, "if (`$cleanupSafeToAcknowledge -and ![string]::IsNullOrWhiteSpace(`$env:SYMPHONY_BROKER_CLEANUP_ACK))")
 
