@@ -246,7 +246,7 @@ defmodule SymphonyElixir.WindowsNodeInstallerTest do
     unsafe = :binary.match(installer, "`$cleanupSafeToAcknowledge = `$false")
 
     acknowledgement =
-      :binary.match(installer, "if (`$cleanupSafeToAcknowledge -and ![string]::IsNullOrWhiteSpace(`$env:SYMPHONY_BROKER_CLEANUP_ACK))")
+      :binary.match(installer, "if (`$cleanupSafeToAcknowledge -and !`$cleanupAcknowledged")
 
     assert safe != :nomatch
     assert preflight != :nomatch
@@ -257,7 +257,7 @@ defmodule SymphonyElixir.WindowsNodeInstallerTest do
     assert elem(unsafe, 0) < elem(acknowledgement, 0)
   end
 
-  test "wrapper holds the ACL mutex through manifest clearing and acknowledgement" do
+  test "wrapper acknowledges cleanup only after clearing the manifest and releasing the ACL mutex" do
     installer = File.read!(@installer)
 
     manifest_clear =
@@ -268,8 +268,8 @@ defmodule SymphonyElixir.WindowsNodeInstallerTest do
 
     release = installer |> :binary.matches("`$mutex.ReleaseMutex()") |> List.last()
 
-    assert elem(manifest_clear, 0) < elem(acknowledgement, 0)
-    assert elem(acknowledgement, 0) < elem(release, 0)
+    assert elem(manifest_clear, 0) < elem(release, 0)
+    assert elem(release, 0) < elem(acknowledgement, 0)
   end
 
   test "recovery manifest is persisted before protecting the install root" do

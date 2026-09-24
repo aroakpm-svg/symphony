@@ -339,10 +339,6 @@ try {
     } elseif (!`$cleanupOk) {
       throw 'broker_revoke_failed'
     }
-    if (`$cleanupSafeToAcknowledge -and ![string]::IsNullOrWhiteSpace(`$env:SYMPHONY_BROKER_CLEANUP_ACK)) {
-      Set-Content -LiteralPath `$env:SYMPHONY_BROKER_CLEANUP_ACK -Value 'done' -Encoding ASCII
-      `$cleanupAcknowledged = `$true
-    }
   } finally {
     if (`$lockHeld) { `$mutex.ReleaseMutex() }
     `$mutex.Dispose()
