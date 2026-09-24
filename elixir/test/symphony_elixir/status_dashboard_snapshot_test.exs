@@ -9,13 +9,19 @@ defmodule SymphonyElixir.StatusDashboardSnapshotTest do
     snapshot_data =
       {:ok,
        %{
+         claimed: ["issue-claimed-before-dispatch"],
          running: [],
          retrying: [],
+         polling: %{admission_paused?: true},
          codex_totals: %{input_tokens: 0, output_tokens: 0, total_tokens: 0, seconds_running: 0},
          rate_limits: nil
        }}
 
     Snapshot.assert_dashboard_snapshot!("idle", render_snapshot(snapshot_data, 0.0))
+    rendered = render_snapshot(snapshot_data, 0.0)
+    assert rendered =~ "Admission:"
+    assert rendered =~ "paused"
+    assert rendered =~ "claimed 1"
   end
 
   test "runtime health renders explicit unknown evidence and observed dependency state" do

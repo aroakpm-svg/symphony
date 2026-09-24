@@ -315,6 +315,7 @@ defmodule SymphonyElixir.StatusDashboard do
           {:ok,
            %{
              running: running,
+             claimed: Map.get(snapshot, :claimed, []),
              retrying: retrying,
              blocked: blocked,
              codex_totals: codex_totals,
@@ -339,6 +340,7 @@ defmodule SymphonyElixir.StatusDashboard do
         rate_limits = Map.get(snapshot, :rate_limits)
         project_link_lines = format_project_link_lines()
         project_refresh_line = format_project_refresh_line(Map.get(snapshot, :polling))
+        admission_line = format_admission_line(Map.get(snapshot, :polling), Map.get(snapshot, :claimed, []))
         health_line = format_health_line(Map.get(snapshot, :health, unknown_health()))
         codex_input_tokens = Map.get(codex_totals, :input_tokens, 0)
         codex_output_tokens = Map.get(codex_totals, :output_tokens, 0)
@@ -372,6 +374,7 @@ defmodule SymphonyElixir.StatusDashboard do
            colorize("│ Rate Limits: ", @ansi_bold) <> format_rate_limits(rate_limits),
            health_line,
            project_link_lines,
+           admission_line,
            project_refresh_line,
            colorize("├─ Running", @ansi_bold),
            "│",
@@ -436,6 +439,20 @@ defmodule SymphonyElixir.StatusDashboard do
 
   defp format_project_refresh_line(_) do
     colorize("│ Next refresh: ", @ansi_bold) <> colorize("n/a", @ansi_gray)
+  end
+
+  defp format_admission_line(%{admission_paused?: paused?}, claimed) do
+    status = if paused?, do: "paused", else: "open"
+    color = if paused?, do: @ansi_yellow, else: @ansi_green
+
+    colorize("│ Admission: ", @ansi_bold) <>
+      colorize(status, color) <>
+      colorize(" | claimed #{length(claimed)}", @ansi_gray)
+  end
+
+  defp format_admission_line(_polling, claimed) do
+    colorize("│ Admission: ", @ansi_bold) <>
+      colorize("unknown | claimed #{length(claimed)}", @ansi_gray)
   end
 
   defp format_health_line(health) when is_map(health) do

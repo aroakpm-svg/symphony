@@ -1,0 +1,245 @@
+name: windows-broker
+on: [pull_request]
+jobs:
+  test:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+      - uses: actions/setup-dotnet@67a3573c9a986a3f9c594539f4ab511d57bb3ce9 # v4
+        with: { dotnet-version: '8.0.x' }
+      - run: dotnet test elixir/priv/windows-service/Symphony.WindowsBroker.Tests/Symphony.WindowsBroker.Tests.csproj --configuration Release
+      - run: dotnet publish elixir/priv/windows-service/Symphony.WindowsBroker/Symphony.WindowsBroker.csproj --configuration Release --runtime win-x64 --self-contained true
+      - run: dotnet publish elixir/priv/windows-service/Symphony.WindowsBroker.Probe/Symphony.WindowsBroker.Probe.csproj --configuration Release --runtime win-x64 --self-contained true
+      - name: Verify self-contained single-file broker artifact
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $publish = Resolve-Path 'elixir/priv/windows-service/Symphony.WindowsBroker/bin/Release/net8.0-windows/win-x64/publish'
+          $binary = Join-Path $publish 'Symphony.WindowsBroker.exe'
+          if (-not (Test-Path -LiteralPath $binary -PathType Leaf)) { throw 'broker executable missing' }
+          if ((Get-Item -LiteralPath $binary).Length -lt 10MB) { throw 'broker executable is not a bundled self-contained artifact' }
+          if (Get-ChildItem -LiteralPath $publish -Filter '*.dll' -File) { throw 'broker publish left framework-dependent DLLs' }
+          $savedRoot = $env:DOTNET_ROOT_X64
+          $savedLookup = $env:DOTNET_MULTILEVEL_LOOKUP
+          try {
+            $env:DOTNET_ROOT_X64 = Join-Path $env:RUNNER_TEMP 'no-dotnet-runtime'
+            $env:DOTNET_MULTILEVEL_LOOKUP = '0'
+            $output = (& $binary --service 2>&1 | Out-String).Trim()
+            if ($LASTEXITCODE -ne 1 -or $output -notmatch 'missing_config') { throw 'broker self-contained execution probe failed' }
+          } finally {
+            $env:DOTNET_ROOT_X64 = $savedRoot
+            $env:DOTNET_MULTILEVEL_LOOKUP = $savedLookup
+          }
+          exit 0
+      - name: Parse installer
+        shell: pwsh
+        run: |
+          $errors=$null
+          [Management.Automation.Language.Parser]::ParseFile((Resolve-Path elixir/priv/install_aro_197_windows.ps1),[ref]$null,[ref]$errors)|Out-Null
+          if($errors){throw ($errors|Out-String)}
+      - name: Prove virtual-account child read boundary and roll back
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Add-Type -TypeDefinition @'
+          using System;
+          using System.ComponentModel;
+          using System.Runtime.InteropServices;
+          using System.Security.Principal;
+          public static class ARO197WorkflowToken {
+            const uint PROCESS_QUERY_LIMITED_INFORMATION = 0x1000;
+            const uint TOKEN_QUERY = 0x0008;
+            [StructLayout(LayoutKind.Sequential)] struct SID_AND_ATTRIBUTES { public IntPtr Sid; public uint Attributes; }
+            [DllImport("kernel32.dll", SetLastError=true)] static extern IntPtr OpenProcess(uint access, bool inherit, int processId);
+            [DllImport("advapi32.dll", SetLastError=true)] static extern bool OpenProcessToken(IntPtr process, uint access, out IntPtr token);
+            [DllImport("advapi32.dll", SetLastError=true)] static extern bool GetTokenInformation(IntPtr token, int infoClass, IntPtr info, int length, out int returnLength);
+            [DllImport("kernel32.dll", SetLastError=true)] static extern bool CloseHandle(IntPtr handle);
+            public static string UserSid(int processId) {
+              IntPtr process = IntPtr.Zero, token = IntPtr.Zero, buffer = IntPtr.Zero;
+              try {
+                process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, processId);
+                if (process == IntPtr.Zero) throw new Win32Exception();
+                if (!OpenProcessToken(process, TOKEN_QUERY, out token)) throw new Win32Exception();
+                GetTokenInformation(token, 1, IntPtr.Zero, 0, out int size);
+                if (size <= 0) throw new Win32Exception();
+                buffer = Marshal.AllocHGlobal(size);
+                if (!GetTokenInformation(token, 1, buffer, size, out size)) throw new Win32Exception();
+                var user = Marshal.PtrToStructure<SID_AND_ATTRIBUTES>(buffer);
+                return new SecurityIdentifier(user.Sid).Value;
+              } finally {
+                if (buffer != IntPtr.Zero) Marshal.FreeHGlobal(buffer);
+                if (token != IntPtr.Zero && !CloseHandle(token)) throw new Win32Exception();
+                if (process != IntPtr.Zero && !CloseHandle(process)) throw new Win32Exception();
+              }
+            }
+          }
+          '@
+
+          function Set-StrictAcl([string]$Path, [string[]]$Grants) {
+            & icacls.exe $Path /inheritance:r | Out-Null
+            if ($LASTEXITCODE) { throw 'ACL inheritance removal failed' }
+            $arguments = @($Path, '/grant:r') + $Grants
+            & icacls.exe @arguments | Out-Null
+            if ($LASTEXITCODE) { throw 'ACL grant failed' }
+            & icacls.exe $Path /setowner '*S-1-5-32-544' | Out-Null
+            if ($LASTEXITCODE) { throw 'ACL owner setup failed' }
+          }
+
+          function Invoke-AsController([string]$ScriptPath, [string]$WorkingDirectory, [pscredential]$Credential, [string]$Stdout, [string]$Stderr) {
+            $arguments = @('-NoLogo','-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass','-File',('"' + $ScriptPath + '"'))
+            $process = Start-Process powershell.exe -Credential $Credential -ArgumentList $arguments -WorkingDirectory $WorkingDirectory -RedirectStandardOutput $Stdout -RedirectStandardError $Stderr -PassThru
+            try {
+              Wait-Process -Id $process.Id -Timeout 30 -ErrorAction Stop
+              $process.Refresh()
+              return $process.ExitCode
+            } catch {
+              Stop-Process -Id $process.Id -Force -ErrorAction SilentlyContinue
+              throw 'controller client timed out'
+            }
+          }
+
+          $node = 'Matt'
+          $controller = 'SymphonyCtlMatt'
+          $serviceName = 'AROAKSymphonyCodexMatt'
+          $serviceIdentity = "NT SERVICE\$serviceName"
+          $root = Join-Path $env:RUNNER_TEMP 'aro197-integration'
+          $install = Join-Path $root 'install'
+          $secretDirectory = Join-Path $env:SystemDrive ("aro197-controller-secret-" + [guid]::NewGuid().ToString('N'))
+          $key = Join-Path $secretDirectory 'app-key.pem'
+          $workspace = Join-Path $root 'workspace'
+          $private = Join-Path $root 'private'
+          $codexHome = Join-Path $root 'codex-home'
+          $brokerPublish = Resolve-Path 'elixir/priv/windows-service/Symphony.WindowsBroker/bin/Release/net8.0-windows/win-x64/publish'
+          $probePublish = Resolve-Path 'elixir/priv/windows-service/Symphony.WindowsBroker.Probe/bin/Release/net8.0-windows/win-x64/publish'
+          $probeBinary = Join-Path $probePublish 'Symphony.WindowsBroker.Probe.exe'
+          $serviceStarted = $false
+          $installed = $false
+          $controllerCreated = $false
+          $common = $null
+          try {
+            $plainPassword = [Convert]::ToBase64String([Security.Cryptography.RandomNumberGenerator]::GetBytes(32)) + '!aA9'
+            $securePassword = ConvertTo-SecureString $plainPassword -AsPlainText -Force
+            New-LocalUser -Name $controller -Password $securePassword -PasswordNeverExpires -AccountNeverExpires | Out-Null
+            $controllerCreated = $true
+            $credential = [pscredential]::new("${env:COMPUTERNAME}\$controller", $securePassword)
+            $plainPassword = $null
+
+            New-Item -ItemType Directory -Force -Path $root,$secretDirectory,$workspace,$private,$codexHome | Out-Null
+            foreach ($profile in 'central-brain','project-management') {
+              New-Item -ItemType Directory -Force -Path (Join-Path $workspace $profile),(Join-Path $private $profile),(Join-Path $codexHome $profile) | Out-Null
+            }
+            Set-Content -LiteralPath $key -Value 'disposable-test-key'
+            $controllerSid = ([Security.Principal.NTAccount]::new("${env:COMPUTERNAME}\$controller")).Translate([Security.Principal.SecurityIdentifier]).Value
+            $directoryGrants = @('*S-1-5-18:(OI)(CI)(F)','*S-1-5-32-544:(OI)(CI)(F)',"*$controllerSid`:(OI)(CI)(R)")
+            $controllerDirectoryGrants = @('*S-1-5-18:(OI)(CI)(F)','*S-1-5-32-544:(OI)(CI)(F)',"*$controllerSid`:(OI)(CI)(F)")
+            $fileGrants = @('*S-1-5-18:(F)','*S-1-5-32-544:(F)',"*$controllerSid`:(R)")
+            Set-StrictAcl $secretDirectory $directoryGrants
+            Set-StrictAcl $key $fileGrants
+            $controllerOwner = [Security.Principal.NTAccount]::new("${env:COMPUTERNAME}\$controller")
+            foreach ($secretPath in $secretDirectory,$key) {
+              $secretAcl = Get-Acl -LiteralPath $secretPath
+              $secretAcl.SetOwner($controllerOwner)
+              Set-Acl -LiteralPath $secretPath -AclObject $secretAcl
+            }
+            $privateIssue = New-Item -ItemType Directory -Force -Path (Join-Path $private 'central-brain\ARO-1-r1')
+            $authHome = Join-Path $codexHome 'central-brain'
+            Set-StrictAcl $privateIssue.FullName $controllerDirectoryGrants
+            foreach ($leaf in 'gh','xdg-config','xdg-cache','xdg-data','codex') {
+              $child = New-Item -ItemType Directory -Force -Path (Join-Path $privateIssue.FullName $leaf)
+              Set-StrictAcl $child.FullName $controllerDirectoryGrants
+            }
+            [Environment]::SetEnvironmentVariable('SYMPHONY_GITHUB_APP_PRIVATE_KEY_FILE', $key, 'Machine')
+
+            $sha = (git rev-parse HEAD).Trim()
+            $common = @{ Node = $node; RuntimeCommit = $sha; InstallRoot = $install }
+            & ./elixir/priv/install_aro_197_windows.ps1 @common -Mode Install -RuntimeSource $env:GITHUB_WORKSPACE -BrokerArtifacts $brokerPublish -CodexExe $probeBinary -WorkspaceRoot $workspace -PrivateHomeRoot $private -CodexHomeRoot $codexHome
+            if ($LASTEXITCODE) { throw 'install failed' }
+            $installed = $true
+
+            $service = Get-CimInstance Win32_Service -Filter "Name='$serviceName'"
+            if ($service.StartName -ne $serviceIdentity) { throw 'service account mismatch' }
+            if ($service.StartMode -ne 'Manual') { throw 'service start mode changed' }
+            if ($service.State -ne 'Stopped') { throw 'service unexpectedly started' }
+
+            Start-Service -Name $serviceName
+            (Get-Service -Name $serviceName).WaitForStatus('Running', [TimeSpan]::FromSeconds(20))
+            $serviceStarted = $true
+            $service = Get-CimInstance Win32_Service -Filter "Name='$serviceName'"
+            if (-not $service.ProcessId) { throw 'service process token mismatch' }
+            $expectedServiceSid = ([Security.Principal.NTAccount]::new($serviceIdentity)).Translate([Security.Principal.SecurityIdentifier]).Value
+            $serviceProcessSid = [ARO197WorkflowToken]::UserSid([int]$service.ProcessId)
+            if ($serviceProcessSid -ne $expectedServiceSid -or $serviceProcessSid -eq 'S-1-5-18') { throw 'service process token mismatch' }
+
+            $workspaceIssue = New-Item -ItemType Directory -Force -Path (Join-Path $workspace 'central-brain\ARO-1')
+            [ordered]@{ synthetic_key_path = $key; protected_grant_root = (Join-Path $privateIssue.FullName 'codex') } | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $workspaceIssue.FullName '.aro197-boundary-probe.json') -Encoding UTF8
+            $wrapper = Join-Path $install "broker-$sha\codex-command.ps1"
+            $grantManifest = Join-Path $install "broker-$sha\outstanding-grants.json"
+            $controllerScript = Join-Path $workspaceIssue.FullName 'run-controller.ps1'
+            @"
+          `$ErrorActionPreference = 'Stop'
+          `$env:HOME = '$($privateIssue.FullName.Replace("'", "''"))'
+          `$env:USERPROFILE = `$env:HOME
+          `$env:CODEX_HOME = '$($authHome.Replace("'", "''"))'
+          Set-Location -LiteralPath '$($workspaceIssue.FullName.Replace("'", "''"))'
+          & '$($wrapper.Replace("'", "''"))'
+          exit `$LASTEXITCODE
+          "@ | Set-Content -LiteralPath $controllerScript -Encoding UTF8
+            $stdout = Join-Path $workspaceIssue.FullName 'probe.stdout.json'
+            $stderr = Join-Path $workspaceIssue.FullName 'probe.stderr.txt'
+            $controllerExit = Invoke-AsController $controllerScript $workspaceIssue.FullName $credential $stdout $stderr
+            if ($controllerExit -ne 0) { throw "controller broker client failed: $((Get-Content -LiteralPath $stderr -Raw -ErrorAction SilentlyContinue).Trim())" }
+            $result = Get-Content -LiteralPath $stdout -Raw | ConvertFrom-Json
+            if ($result.UserSid -ne $expectedServiceSid) { throw 'child token mismatch' }
+            if (-not $result.KeyDirectoryListDenied) { throw 'synthetic key directory was listable' }
+            if (-not $result.KeyReadDenied) { throw 'synthetic key was readable' }
+            if (-not $result.GrantRootRenameDenied) { throw 'temporary ACL grant root was renameable' }
+            if (-not $result.WorkspaceCreateEditDeleteSucceeded) { throw 'workspace sentinel operation failed' }
+            if (Test-Path -LiteralPath (Join-Path $workspaceIssue.FullName 'aro197-worker-sentinel.txt')) { throw 'controller workspace re-attestation failed' }
+
+            $missingGrantPath = Join-Path $workspaceIssue.FullName 'moved-or-missing-grant-root'
+            [ordered]@{ schema = 1; grant_paths = @($missingGrantPath) } | ConvertTo-Json -Depth 3 | Set-Content -LiteralPath $grantManifest -Encoding UTF8
+            $missingStdout = Join-Path $workspaceIssue.FullName 'missing-path.stdout.txt'
+            $missingStderr = Join-Path $workspaceIssue.FullName 'missing-path.stderr.txt'
+            $missingExit = Invoke-AsController $controllerScript $workspaceIssue.FullName $credential $missingStdout $missingStderr
+            if ($missingExit -eq 0) { throw 'missing recorded grant path was not rejected' }
+            $retainedGrantDocument = Get-Content -LiteralPath $grantManifest -Raw | ConvertFrom-Json
+            if (@($retainedGrantDocument.grant_paths).Count -ne 1 -or $retainedGrantDocument.grant_paths[0] -ne $missingGrantPath) { throw 'missing recorded grant path evidence was erased' }
+            [ordered]@{ schema = 1; grant_paths = @() } | ConvertTo-Json -Depth 3 | Set-Content -LiteralPath $grantManifest -Encoding UTF8
+
+            Stop-Service -Name $serviceName -Force
+            (Get-Service -Name $serviceName).WaitForStatus('Stopped', [TimeSpan]::FromSeconds(20))
+            $serviceStarted = $false
+            $service = Get-CimInstance Win32_Service -Filter "Name='$serviceName'"
+            if ($service.State -ne 'Stopped') { throw 'service did not return to stopped' }
+            if ($service.StartMode -ne 'Manual') { throw 'service start mode changed' }
+
+            if ((git -C (Join-Path $install "runtime-$sha") rev-parse HEAD).Trim() -ne $sha) { throw 'runtime attestation failed' }
+            & icacls.exe $workspaceIssue.FullName /grant "$serviceIdentity`:(OI)(CI)(M)" | Out-Null
+            if ($LASTEXITCODE) { throw 'failed to seed rollback ACL' }
+            [ordered]@{ schema = 1; grant_paths = @($workspaceIssue.FullName) } | ConvertTo-Json -Depth 3 | Set-Content -LiteralPath $grantManifest -Encoding UTF8
+            & ./elixir/priv/install_aro_197_windows.ps1 @common -Mode Rollback
+            if ($LASTEXITCODE) { throw 'rollback failed' }
+            $installed = $false
+            $remainingServiceRules = @((Get-Acl -LiteralPath $workspaceIssue.FullName).Access | Where-Object {
+              try { $_.IdentityReference.Translate([Security.Principal.SecurityIdentifier]).Value -eq $expectedServiceSid } catch { $false }
+            })
+            if ($remainingServiceRules.Count) { throw 'rollback left temporary service ACL' }
+            if (Test-Path $install) {
+              $remaining = @(Get-ChildItem -Force $install)
+              if ($remaining.Count) { throw 'rollback left installed resources' }
+            }
+          } finally {
+            if ($serviceStarted) {
+              Stop-Service -Name $serviceName -Force -ErrorAction SilentlyContinue
+              try { (Get-Service -Name $serviceName).WaitForStatus('Stopped', [TimeSpan]::FromSeconds(20)) } catch { }
+            }
+            if ($installed -and $common) {
+              try { & ./elixir/priv/install_aro_197_windows.ps1 @common -Mode Rollback | Out-Null } catch { }
+            }
+            [Environment]::SetEnvironmentVariable('SYMPHONY_GITHUB_APP_PRIVATE_KEY_FILE', $null, 'Machine')
+            if ($controllerCreated) { Remove-LocalUser -Name $controller -ErrorAction SilentlyContinue }
+            Remove-Item -LiteralPath $secretDirectory -Recurse -Force -ErrorAction SilentlyContinue
+            Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue
+          }

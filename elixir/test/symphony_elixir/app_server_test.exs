@@ -1,6 +1,7 @@
 defmodule SymphonyElixir.AppServerTest do
   use SymphonyElixir.TestSupport
 
+  alias SymphonyElixir.Codex.BrokerLaunchLock
   alias SymphonyElixir.ProjectExecutionContext
 
   test "app server rejects the workspace root and paths outside workspace root" do
@@ -123,6 +124,41 @@ defmodule SymphonyElixir.AppServerTest do
                )
 
       refute_receive :unsafe_port_opened
+    after
+      File.rm_rf(test_root)
+    end
+  end
+
+  test "windows broker lock is released when local port startup raises before wrapper launch" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-app-server-broker-open-failure-#{System.unique_integer([:positive])}"
+      )
+
+    try do
+      workspace_root = Path.join(test_root, "workspaces")
+      workspace = Path.join(workspace_root, "ARO-BROKER-OPEN")
+      File.mkdir_p!(workspace)
+      command = "codex-command.ps1"
+
+      write_workflow_file!(Workflow.workflow_file_path(),
+        workspace_root: workspace_root,
+        codex_command: command
+      )
+
+      assert_raise RuntimeError, "port open failed before wrapper launch", fn ->
+        AppServer.start_session(workspace,
+          windows_broker_lock: true,
+          port_opener: fn _spawn_target, _port_opts ->
+            raise "port open failed before wrapper launch"
+          end
+        )
+      end
+
+      waiter = Task.async(fn -> BrokerLaunchLock.acquire(command) end)
+      assert {:ok, token} = Task.await(waiter, 1_000)
+      assert :ok = BrokerLaunchLock.release(token)
     after
       File.rm_rf(test_root)
     end

@@ -26,6 +26,7 @@ defmodule SymphonyElixir.CoreSupervisor do
   def init(_opts) do
     children = [
       {Task.Supervisor, name: SymphonyElixir.TaskSupervisor},
+      SymphonyElixir.Codex.BrokerLaunchLock,
       SymphonyElixir.ClaimService,
       {SymphonyElixir.Orchestrator, orchestrator_opts()}
     ]

@@ -8,6 +8,7 @@
 │ Health: poll=unknown linear=unknown claim_store=unknown stop=unknown
 │ Project: https://linear.app/project/project/issues
 │ Dashboard: http://127.0.0.1:4000/
+│ Admission: unknown | claimed 0
 │ Next refresh: n/a
 ├─ Running
 │

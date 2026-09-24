@@ -683,17 +683,22 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
   end
 
   test "Windows reparse classification accepts only the non-reparse error code" do
-    assert :ok =
-             Workspace.classify_windows_reparse_query_for_test(
-               "Error 4390: The file or directory is not a reparse point.\r\n",
-               1
-             )
+    for output <- [
+          "Error 4390: The file or directory is not a reparse point.\r\n",
+          "錯誤 4390: 檔案或目錄不是重新分析點。\r\n",
+          "エラー 4390: ファイルまたはディレクトリは再解析ポイントではありません。\r\n",
+          <<0xBF, 0xF9, 0xBB, 0x7E, " 4390: localized legacy-code-page output.\r\n">>
+        ] do
+      assert :ok = Workspace.classify_windows_reparse_query_for_test(output, 1)
+    end
 
     for {output, status} <- [
           {"Reparse Tag Value : 0xa000000c", 0},
           {"Error 5: Access is denied.", 1},
           {"Error 5: Access is denied for C:\\4390\\private-home.", 1},
           {"Access denied.\r\nDiagnostic code 4390", 1},
+          {"Access denied for C:\\4390: private-home.", 1},
+          {"Error 5: Access denied. Diagnostic 4390: not a reparse point.", 1},
           {"Error 4390: Not a reparse point.\r\nError 5: Access is denied.", 1},
           {"Error 14390: unrelated", 1},
           {"", 1},

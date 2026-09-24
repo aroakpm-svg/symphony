@@ -17,8 +17,8 @@ tracker:
 # With project_profiles enabled, omit worker.ssh_hosts or set it to []. Nonempty hosts are rejected
 # at startup and new-work admission with profiled_ssh_topology_unsupported. Legacy SSH is unprofiled.
 # ARO-197 owns provisioning/rollout; ARO-285 owns live acceptance. This example performs neither.
-# ARO-286 consumes these opaque references and namespaces. The default credential provider still
-# fails closed until an ARO-195/ARO-196-approved host adapter is injected.
+# ARO-286 consumes these opaque references and namespaces. The provider fails closed unless the
+# operator uses --github-app with complete node-local SYMPHONY_GITHUB_APP_* configuration.
 # Profiled workers require canonical HTTPS GitHub origins; ARO-197 owns legacy SSH-origin migration.
 # The runtime supplies one scoped installation credential and a fixed child Git helper, not ambient auth.
 # project_profiles:
@@ -242,7 +242,12 @@ codex:
     fi
     export CODEX_MODEL="$SELECTED_CODEX_MODEL"
     echo "Using Codex model: $CODEX_MODEL ($MODEL_SOURCE)" >&2
-    exec "$CODEX_BIN" --config shell_environment_policy.inherit=all --model "$CODEX_MODEL" app-server
+    CODEX_ISOLATED_LAUNCHER="C:/symphony/bin/codex-isolated-launcher.exe"
+    if [ ! -x "$CODEX_ISOLATED_LAUNCHER" ]; then
+      echo "Blocked before Codex dispatch because the trusted isolated launcher is unavailable." >&2
+      exit 1
+    fi
+    exec "$CODEX_ISOLATED_LAUNCHER" "$CODEX_BIN" --config shell_environment_policy.inherit=all --model "$CODEX_MODEL" app-server
   approval_policy: "never"
   thread_sandbox: "workspace-write"
   turn_sandbox_policy:
