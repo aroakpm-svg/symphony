@@ -206,6 +206,8 @@ defmodule SymphonyElixir.WindowsNodeInstallerTest do
     assert installer =~ "broker_grant_manifest_invalid"
     assert installer =~ "broker_stale_revoke_failed"
     assert installer =~ "if (`$cleanupOk -and `$currentGrantIntentPersisted)"
+    assert installer =~ "Set-ProtectedAclRules $grantManifest"
+    refute installer =~ "Remove-Item -LiteralPath `$grantManifest"
 
     reconcile = :binary.match(installer, "ConvertFrom-Json -ErrorAction Stop")
     persist = :binary.match(installer, "grant_paths = @(`$grantPaths)")
