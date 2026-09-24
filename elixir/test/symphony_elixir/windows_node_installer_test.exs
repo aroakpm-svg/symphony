@@ -191,6 +191,14 @@ defmodule SymphonyElixir.WindowsNodeInstallerTest do
     assert installer =~ "-ne $controllerSid"
   end
 
+  test "installer validates every higher private-key ancestor against path takeover" do
+    installer = File.read!(@installer)
+
+    assert installer =~ "[IO.Directory]::GetParent"
+    assert installer =~ "private_key_ancestor_owner_untrusted"
+    assert installer =~ "private_key_ancestor_acl_control"
+  end
+
   test "generated WORKFLOW command is a YAML-safe single-quoted scalar" do
     installer = File.read!(@installer)
 

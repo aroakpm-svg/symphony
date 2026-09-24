@@ -54,8 +54,8 @@ public sealed class BrokerPolicy(string workspaceRoot, IReadOnlyDictionary<strin
     }
     static string CanonicalUnder(string root, string supplied, bool allowEqual)
     {
-        var a = ConfiguredRoot(root); var b = ConfiguredRoot(supplied);
-        if (StringComparer.OrdinalIgnoreCase.Equals(a, b)) { if (!allowEqual) throw new InvalidDataException("path_denied"); DemandExistingNonReparse(b); return b; }
+        var a = ExistingDirectory(root); var b = ConfiguredRoot(supplied);
+        if (StringComparer.OrdinalIgnoreCase.Equals(a, b)) { if (!allowEqual) throw new InvalidDataException("path_denied"); return b; }
         if (!b.StartsWith(a + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase)) throw new InvalidDataException("path_denied");
         var current = a;
         foreach (var component in b[(a.Length + 1)..].Split(new[] { Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar }, StringSplitOptions.RemoveEmptyEntries))

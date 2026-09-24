@@ -109,8 +109,8 @@ public static class BrokerConfiguration
         if (settings.Schema != 1 || settings.Node is not ("Amy" or "Matt") || settings.ServiceName != $"AROAKSymphonyCodex{settings.Node}") throw new InvalidDataException("config_schema_invalid");
         if (settings.IdleTimeoutSeconds is <= 0 || settings.AbsoluteTimeoutSeconds is <= 0) throw new InvalidDataException("timeout_invalid");
         var workspaceRoot = BrokerPolicy.ExistingDirectory(settings.WorkspaceRoot);
-        var privateRoot = BrokerPolicy.ConfiguredRoot(settings.PrivateHomeRoot);
-        var codexRoot = BrokerPolicy.ConfiguredRoot(settings.CodexHomeRoot);
+        var privateRoot = BrokerPolicy.ExistingDirectory(settings.PrivateHomeRoot);
+        var codexRoot = BrokerPolicy.ExistingDirectory(settings.CodexHomeRoot);
         var codexExecutable = BrokerPolicy.ExistingFile(settings.CodexExecutable);
         var profiles = new Dictionary<string, ProfileRoots>(StringComparer.OrdinalIgnoreCase)
         {

@@ -57,6 +57,12 @@ public sealed class BrokerTests : IDisposable
         {
             Directory.CreateSymbolicLink(link, root);
             Assert.Throws<InvalidDataException>(() => policy.Validate(valid with { Workspace = link }));
+
+            var linkedRoot = Path.Combine(root, "linked-workspace-root");
+            Directory.CreateSymbolicLink(linkedRoot, workspace);
+            var linkedPolicy = Policy(linkedRoot, privateRoot, codexRoot);
+            var linkedWorkspace = Path.Combine(linkedRoot, "central-brain", "ARO-1");
+            Assert.Throws<InvalidDataException>(() => linkedPolicy.Validate(valid with { Workspace = linkedWorkspace }));
         }
         catch (Exception error) when (error is UnauthorizedAccessException or IOException) { }
     }
@@ -186,6 +192,28 @@ public sealed class BrokerTests : IDisposable
 
         Assert.Equal(Path.Combine(privateRoot, "central-brain"), options.Profiles["central-brain"].PrivateHome);
         Assert.Equal(Path.Combine(codexRoot, "project-management"), options.Profiles["project-management"].CodexHome);
+    }
+
+    [Fact]
+    public void Json_configuration_rejects_a_reparse_root()
+    {
+        var workspace = MakeDirectory("config-workspace");
+        var privateRoot = MakeDirectory("config-private");
+        var codexRoot = MakeDirectory("config-codex");
+        var linkedPrivateRoot = Path.Combine(root, "config-private-link");
+        var codexExe = Path.Combine(root, "config-codex.exe");
+        File.WriteAllText(codexExe, "stub");
+        foreach (var profile in new[] { "central-brain", "project-management" }) MakeDirectory("config-workspace", profile);
+
+        try
+        {
+            Directory.CreateSymbolicLink(linkedPrivateRoot, privateRoot);
+            var config = Path.Combine(root, "reparse-root-settings.json");
+            File.WriteAllText(config, JsonSerializer.Serialize(new { schema=1, node="Matt", service_name="AROAKSymphonyCodexMatt", pipe_name="test", controller_sid=WindowsIdentity.GetCurrent().User!.Value, workspace_root=workspace, private_home_root=linkedPrivateRoot, codex_home_root=codexRoot, codex_exe=codexExe }));
+
+            Assert.Throws<InvalidDataException>(() => BrokerConfiguration.FromFile(config));
+        }
+        catch (Exception error) when (error is UnauthorizedAccessException or IOException) { }
     }
 
     [Fact]

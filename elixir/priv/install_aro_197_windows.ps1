@@ -94,6 +94,18 @@ function Get-RuleSid([Security.Principal.IdentityReference]$identity) {
   try { $identity.Translate([Security.Principal.SecurityIdentifier]).Value }
   catch { throw 'private_key_acl_unresolvable' }
 }
+function Test-SafeAncestorRights([Security.AccessControl.FileSystemRights]$value) {
+  [int64]$rights = [int64][int]$value
+  if ($rights -lt 0) { $rights += 0x100000000L }
+  if (($rights -band (-bnot 0xF01F01FFL)) -ne 0) { return $false }
+  [int64]$mapped = $rights
+  if (($rights -band 0x80000000L) -ne 0) { $mapped = $mapped -bor 0x00120089L }
+  if (($rights -band 0x40000000L) -ne 0) { $mapped = $mapped -bor 0x00120116L }
+  if (($rights -band 0x20000000L) -ne 0) { $mapped = $mapped -bor 0x001200A0L }
+  if (($rights -band 0x10000000L) -ne 0) { $mapped = $mapped -bor 0x001F01FFL }
+  $mapped = $mapped -band 0x001F01FFL
+  (($mapped -band 0x001200ADL) -eq $mapped)
+}
 function Assert-ControllerSecretBoundary([string]$controllerSid) {
   $keyPath = [Environment]::GetEnvironmentVariable('SYMPHONY_GITHUB_APP_PRIVATE_KEY_FILE', 'Machine')
   if (-not $keyPath -or -not (Test-Path -LiteralPath $keyPath -PathType Leaf)) { throw 'private_key_missing' }
@@ -109,6 +121,23 @@ function Assert-ControllerSecretBoundary([string]$controllerSid) {
   )
   $readMask = [int]([Security.AccessControl.FileSystemRights]::Read -bor [Security.AccessControl.FileSystemRights]::ReadAndExecute -bor [Security.AccessControl.FileSystemRights]::FullControl)
   $controlMask = [int]([Security.AccessControl.FileSystemRights]::ChangePermissions -bor [Security.AccessControl.FileSystemRights]::TakeOwnership -bor [Security.AccessControl.FileSystemRights]::FullControl)
+  $trustedInstallerSid = 'S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464'
+  $trustedAncestorSids = @($allowedReaders) + @($trustedInstallerSid)
+  $ancestor = [IO.Directory]::GetParent($keyParent)
+  while ($null -ne $ancestor) {
+    $ancestorAcl = Get-Acl -LiteralPath $ancestor.FullName
+    $ancestorOwnerSid = Get-RuleSid ([Security.Principal.NTAccount]::new($ancestorAcl.Owner))
+    if ($ancestorOwnerSid -notin $trustedAncestorSids) { throw 'private_key_ancestor_owner_untrusted' }
+    foreach ($rule in @($ancestorAcl.Access)) {
+      if ($rule.AccessControlType -eq [Security.AccessControl.AccessControlType]::Allow -and
+          ($rule.PropagationFlags -band [Security.AccessControl.PropagationFlags]::InheritOnly) -eq 0 -and
+          (Get-RuleSid $rule.IdentityReference) -notin $trustedAncestorSids -and
+          -not (Test-SafeAncestorRights $rule.FileSystemRights)) {
+        throw 'private_key_ancestor_acl_control'
+      }
+    }
+    $ancestor = $ancestor.Parent
+  }
   foreach ($boundaryPath in @($keyParent, $keyPath)) {
     $keyAcl = Get-Acl -LiteralPath $boundaryPath
     if (-not $keyAcl.AreAccessRulesProtected) { throw 'private_key_acl_inherited' }
