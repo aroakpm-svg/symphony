@@ -1193,6 +1193,40 @@ defmodule SymphonyElixir.MultiProjectDispatchTest do
     end
   end
 
+  test "an unfenced pending-cleanup worker blocks retained-owner retry state capacity" do
+    write_workflow_file!(Workflow.workflow_file_path(),
+      max_concurrent_agents: 2,
+      max_concurrent_agents_by_state: %{"in progress" => 1}
+    )
+
+    assert :ok = WorkflowStore.force_reload()
+    candidate = %{issue("retained-pending-capacity", @central_profile, 1) | project_profile: @central_profile}
+    unfenced = %{issue("other-pending-capacity", @central_profile, 2) | project_profile: @central_profile}
+    {retry_state, token} = issue_retry_state(candidate, 1)
+
+    state = %{
+      retry_state
+      | max_concurrent_agents: 2,
+        pending_cleanup: %{
+          unfenced.id => %{issue: unfenced, worker_host: nil, pid: self(), ref: make_ref()}
+        }
+    }
+
+    {:ok, events} = Agent.start_link(fn -> [] end)
+
+    opts =
+      dispatch_opts(fn _profile -> {:ok, []} end, %{candidate.id => candidate}, events,
+        project_profiles: @profiles,
+        retry_fetch_fun: fn _id, _metadata -> {:ok, [candidate]} end,
+        profile_refresh_fun: fn _ids -> {:ok, [candidate]} end,
+        claim_fun: fn _issue, _owner -> flunk("capacity-blocked retained retry must not claim") end
+      )
+
+    result = Orchestrator.fire_issue_retry_for_test(state, candidate.id, token, opts)
+    refute Map.has_key?(result.running, candidate.id)
+    assert %{attempt: 2, ownership: :retained_owner} = result.retry_attempts[candidate.id]
+  end
+
   test "post-acquisition dispatch raise, exit, and throw release then retry through a fresh claim" do
     for failure <- [:raise, :exit, :throw] do
       {:ok, events} = Agent.start_link(fn -> [] end)

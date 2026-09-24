@@ -263,6 +263,7 @@ try {
   @"
 `$ErrorActionPreference = 'Stop'
 `$cleanupSafeToAcknowledge = `$true
+`$cleanupAcknowledged = `$false
 try {
 `$workspaceRoot = $workspaceRootLiteral
 `$grantManifest = $grantManifestLiteral
@@ -322,26 +323,33 @@ try {
   & $brokerExeLiteral --client --pipe $pipeNameLiteral --profile `$profile --workspace `$workspace --private-home `$privateHome --codex-home `$codexHome
   exit `$LASTEXITCODE
 } finally {
-  `$cleanupOk = `$true
-  if (`$lockHeld -and `$currentGrantIntentPersisted) {
-    `$revokePaths = @(`$grantPaths)
-    [array]::Reverse(`$revokePaths)
-    foreach (`$grantPath in `$revokePaths) {
-      & icacls.exe `$grantPath /remove:g '$($serviceIdentity)' | Out-Null
-      if (`$LASTEXITCODE) { `$cleanupOk = `$false }
+  try {
+    `$cleanupOk = `$true
+    if (`$lockHeld -and `$currentGrantIntentPersisted) {
+      `$revokePaths = @(`$grantPaths)
+      [array]::Reverse(`$revokePaths)
+      foreach (`$grantPath in `$revokePaths) {
+        & icacls.exe `$grantPath /remove:g '$($serviceIdentity)' | Out-Null
+        if (`$LASTEXITCODE) { `$cleanupOk = `$false }
+      }
     }
-  }
-  if (`$lockHeld) { `$mutex.ReleaseMutex() }
-  `$mutex.Dispose()
-  if (`$cleanupOk -and `$currentGrantIntentPersisted) {
-    [ordered]@{ schema = 1; grant_paths = @() } | ConvertTo-Json -Depth 3 | Set-Content -LiteralPath `$grantManifest -Encoding UTF8
-    `$cleanupSafeToAcknowledge = `$true
-  } elseif (!`$cleanupOk) {
-    throw 'broker_revoke_failed'
+    if (`$cleanupOk -and `$currentGrantIntentPersisted) {
+      [ordered]@{ schema = 1; grant_paths = @() } | ConvertTo-Json -Depth 3 | Set-Content -LiteralPath `$grantManifest -Encoding UTF8
+      `$cleanupSafeToAcknowledge = `$true
+    } elseif (!`$cleanupOk) {
+      throw 'broker_revoke_failed'
+    }
+    if (`$cleanupSafeToAcknowledge -and ![string]::IsNullOrWhiteSpace(`$env:SYMPHONY_BROKER_CLEANUP_ACK)) {
+      Set-Content -LiteralPath `$env:SYMPHONY_BROKER_CLEANUP_ACK -Value 'done' -Encoding ASCII
+      `$cleanupAcknowledged = `$true
+    }
+  } finally {
+    if (`$lockHeld) { `$mutex.ReleaseMutex() }
+    `$mutex.Dispose()
   }
 }
 } finally {
-  if (`$cleanupSafeToAcknowledge -and ![string]::IsNullOrWhiteSpace(`$env:SYMPHONY_BROKER_CLEANUP_ACK)) { Set-Content -LiteralPath `$env:SYMPHONY_BROKER_CLEANUP_ACK -Value 'done' -Encoding ASCII }
+  if (`$cleanupSafeToAcknowledge -and !`$cleanupAcknowledged -and ![string]::IsNullOrWhiteSpace(`$env:SYMPHONY_BROKER_CLEANUP_ACK)) { Set-Content -LiteralPath `$env:SYMPHONY_BROKER_CLEANUP_ACK -Value 'done' -Encoding ASCII }
 }
 "@ | Set-Content -LiteralPath $commandWrapper -Encoding UTF8
   $yamlCommand = ('powershell.exe -NoProfile -ExecutionPolicy Bypass -File "{0}"' -f $commandWrapper).Replace("'", "''")

@@ -1031,7 +1031,7 @@ defmodule SymphonyElixir.Orchestrator do
       !Map.has_key?(state.running, issue.id) and
       !Map.has_key?(state.blocked, issue.id) and
       available_slots(state) > 0 and
-      state_slots_available?(issue, state.running) and
+      state_slots_available?(issue, active_workers(state)) and
       worker_slots_available?(state, Keyword.get(opts, :preferred_worker_host))
   end
 
@@ -1056,7 +1056,7 @@ defmodule SymphonyElixir.Orchestrator do
       !Map.has_key?(state.running, issue.id) and
       !Map.has_key?(state.blocked, issue.id) and
       (available_slots(state) <= 0 or
-         !state_slots_available?(issue, state.running) or
+         !state_slots_available?(issue, active_workers(state)) or
          !worker_slots_available?(state, metadata[:worker_host]))
   end
 

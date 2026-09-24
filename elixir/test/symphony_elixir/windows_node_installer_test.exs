@@ -257,6 +257,21 @@ defmodule SymphonyElixir.WindowsNodeInstallerTest do
     assert elem(unsafe, 0) < elem(acknowledgement, 0)
   end
 
+  test "wrapper holds the ACL mutex through manifest clearing and acknowledgement" do
+    installer = File.read!(@installer)
+
+    manifest_clear =
+      installer |> :binary.matches("grant_paths = @()") |> List.last()
+
+    acknowledgement =
+      :binary.match(installer, "Set-Content -LiteralPath `$env:SYMPHONY_BROKER_CLEANUP_ACK")
+
+    release = installer |> :binary.matches("`$mutex.ReleaseMutex()") |> List.last()
+
+    assert elem(manifest_clear, 0) < elem(acknowledgement, 0)
+    assert elem(acknowledgement, 0) < elem(release, 0)
+  end
+
   test "recovery manifest is persisted before protecting the install root" do
     installer = File.read!(@installer)
     state_write = :binary.match(installer, "$created.state = $true; Save-RecoveryState $created $previousAcl")
