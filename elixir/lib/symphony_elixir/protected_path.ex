@@ -48,7 +48,7 @@ defmodule SymphonyElixir.ProtectedPath do
              required_mode in [0o700, nil] and owner_policy in [:controller, :trusted] do
     with true <- permitted_posix_owner?(uid, effective_uid, owner_policy),
          :ok <- validate_posix_directory_mode(mode, required_mode),
-         :ok <- validate_posix_acl_output(acl_output) do
+         :ok <- validate_posix_directory_acl_output(acl_output, required_mode) do
       :ok
     else
       _unsafe -> {:error, :unsafe_protected_path}
@@ -164,6 +164,30 @@ defmodule SymphonyElixir.ProtectedPath do
     if Bitwise.band(mode, 0o022) == 0,
       do: :ok,
       else: {:error, :unsafe_protected_path}
+  end
+
+  defp validate_posix_directory_acl_output(output, 0o700),
+    do: validate_posix_acl_output(output)
+
+  defp validate_posix_directory_acl_output(output, nil) when is_binary(output) do
+    entries = String.split(output, "\n", trim: true)
+    {default_entries, access_entries} = Enum.split_with(entries, &String.starts_with?(&1, "default:"))
+
+    if base_acl_entries?(Enum.sort(access_entries)) and
+         Enum.all?(default_entries, &valid_posix_default_acl_entry?/1),
+       do: :ok,
+       else: {:error, :unsafe_protected_path}
+  end
+
+  defp validate_posix_directory_acl_output(_output, nil),
+    do: {:error, :unsafe_protected_path}
+
+  defp valid_posix_default_acl_entry?(entry) do
+    Regex.match?(~r/\Adefault:(?:user::|mask::|other::)[rwx-]{3}\z/, entry) or
+      Regex.match?(
+        ~r/\Adefault:(?:user:[0-9]+:|group:(?:[0-9]+)?:)[rwx-]{3}(?:\t#effective:[rwx-]{3})?\z/,
+        entry
+      )
   end
 
   defp base_acl_entries?(entries) do

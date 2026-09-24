@@ -51,7 +51,26 @@ defmodule SymphonyElixir.ProtectedPathTest do
                controller,
                nil,
                :trusted,
-               @base_acl
+               @base_acl <>
+                 "default:user::rwx\ndefault:user:1000:rwx\t#effective:r-x\ndefault:group::r-x\ndefault:mask::r-x\ndefault:other::r-x\n"
+             )
+
+    assert {:error, :unsafe_protected_path} =
+             ProtectedPath.validate_posix_directory_evidence(
+               root_ancestor,
+               controller,
+               nil,
+               :trusted,
+               @base_acl <> "default:unknown::rwx\n"
+             )
+
+    assert {:error, :unsafe_protected_path} =
+             ProtectedPath.validate_posix_directory_evidence(
+               root_ancestor,
+               controller,
+               nil,
+               :trusted,
+               :invalid_acl_evidence
              )
 
     for unsafe <- [
