@@ -4,6 +4,11 @@
   "reviewedResult": "078e3a767e9ecfe0396524389a6dbf3b1635ba15",
   "reviewedResultTree": "6776395ea983e83ee76e8a6e0d0ef404930d6d0b",
   "execution": "AROAK-Han-WSL as aroak-han",
+  "localExecutionReceipt": {
+    "wrapper": "Codex Windows PowerShell -> wsl.exe -> bash -lc",
+    "statusMeaning": "wrapperExitCode is the outer execution-tool observation; nativeExitCode is null because the historical Bash command status was not captured separately",
+    "outputMeaning": "output is the complete persisted stdout/stderr receipt for the displayed command"
+  },
   "unsetVariables": [
     "SYMPHONY_RUN_LIVE_E2E",
     "LINEAR_API_KEY",
@@ -18,106 +23,134 @@
       "id": "red-temporary-revert",
       "version": "078e3a767e9ecfe0396524389a6dbf3b1635ba15 plus red-temporary-revert.patch.gz",
       "command": "mise exec -- mix test test/symphony_elixir/core_test.exs:1999 --seed 350817",
-      "exitCode": 1,
+      "wrapperExitCode": 1,
+      "nativeExitCode": null,
+      "nativeExitCodeCapture": "not_captured",
       "output": "red-temporary-revert.log.gz"
     },
     {
       "id": "green-result",
       "version": "078e3a767e9ecfe0396524389a6dbf3b1635ba15",
       "command": "mise exec -- mix test test/symphony_elixir/core_test.exs:1999 --seed 350817",
-      "exitCode": 0,
+      "wrapperExitCode": 0,
+      "nativeExitCode": null,
+      "nativeExitCodeCapture": "not_captured",
       "output": "green-result.log.gz"
     },
     {
       "id": "retained-owner",
       "version": "078e3a767e9ecfe0396524389a6dbf3b1635ba15",
       "command": "mise exec -- mix test test/symphony_elixir/multi_project_dispatch_test.exs:1196 --seed 350817",
-      "exitCode": 0,
+      "wrapperExitCode": 0,
+      "nativeExitCode": null,
+      "nativeExitCodeCapture": "not_captured",
       "output": "retained-owner.log.gz"
     },
     {
       "id": "targeted",
       "version": "078e3a767e9ecfe0396524389a6dbf3b1635ba15",
       "command": "mise exec -- mix test test/symphony_elixir/core_test.exs test/symphony_elixir/multi_project_dispatch_test.exs test/symphony_elixir/project_profiles_test.exs --seed 350817",
-      "exitCode": 0,
+      "wrapperExitCode": 0,
+      "nativeExitCode": null,
+      "nativeExitCodeCapture": "not_captured",
       "output": "targeted.log.gz"
     },
     {
       "id": "format",
       "version": "078e3a767e9ecfe0396524389a6dbf3b1635ba15",
       "command": "mise exec -- mix format --check-formatted",
-      "exitCode": 0,
+      "wrapperExitCode": 0,
+      "nativeExitCode": null,
+      "nativeExitCodeCapture": "not_captured",
       "output": "format.log.gz"
     },
     {
       "id": "specs",
       "version": "078e3a767e9ecfe0396524389a6dbf3b1635ba15",
       "command": "mise exec -- mix specs.check",
-      "exitCode": 0,
+      "wrapperExitCode": 0,
+      "nativeExitCode": null,
+      "nativeExitCodeCapture": "not_captured",
       "output": "specs.log.gz"
     },
     {
       "id": "lint",
       "version": "078e3a767e9ecfe0396524389a6dbf3b1635ba15",
       "command": "mise exec -- mix lint",
-      "exitCode": 0,
+      "wrapperExitCode": 0,
+      "nativeExitCode": null,
+      "nativeExitCodeCapture": "not_captured",
       "output": "lint.log.gz"
     },
     {
       "id": "dialyzer",
       "version": "078e3a767e9ecfe0396524389a6dbf3b1635ba15",
       "command": "mise exec -- make dialyzer",
-      "exitCode": 0,
+      "wrapperExitCode": 0,
+      "nativeExitCode": null,
+      "nativeExitCodeCapture": "not_captured",
       "output": "dialyzer.log.gz"
     },
     {
       "id": "result-make-all",
       "version": "078e3a767e9ecfe0396524389a6dbf3b1635ba15",
       "command": "mise exec -- make all",
-      "exitCode": 1,
+      "wrapperExitCode": 1,
+      "nativeExitCode": null,
+      "nativeExitCodeCapture": "not_captured; log ends with make Error 2",
       "output": "result-make-all.log.gz"
     },
     {
       "id": "base-make-all",
       "version": "8066b60d1b2db390566925423619c04f8cf8319b",
       "command": "mise exec -- make all",
-      "exitCode": 1,
+      "wrapperExitCode": 1,
+      "nativeExitCode": null,
+      "nativeExitCodeCapture": "not_captured; log ends with make Error 2",
       "output": "base-make-all.log.gz"
     },
     {
       "id": "runtime-notifier-minimal-repro",
       "version": "078e3a767e9ecfe0396524389a6dbf3b1635ba15",
       "command": "mise exec -- mix test test/symphony_elixir/runtime_notifier_test.exs:12 --seed 350817",
-      "exitCodes": [1, 1, 1],
+      "wrapperExitCodes": [1, 1, 1],
+      "nativeExitCodes": [null, null, null],
+      "nativeExitCodeCapture": "not_captured",
       "output": "runtime-notifier-repro.log.gz"
     },
     {
       "id": "scope-isolated-cover",
       "version": "078e3a767e9ecfe0396524389a6dbf3b1635ba15",
       "command": "mise exec -- mix test --cover test/symphony_elixir/scope_contract_test.exs:950 test/symphony_elixir/scope_contract_test.exs:1320 --seed 448744",
-      "exitCode": 1,
-      "testResult": "2 tests, 0 failures; command exits 1 only because the intentionally partial run does not meet the global 100% coverage threshold",
+      "wrapperExitCode": 1,
+      "nativeExitCode": null,
+      "nativeExitCodeCapture": "not_captured",
+      "testResult": "2 tests, 0 failures; the outer wrapper reported failure because the intentionally partial run did not meet the global 100% coverage threshold",
       "output": "scope-isolated-cover.log.gz"
     },
     {
       "id": "result-cover-max-cases-1",
       "version": "078e3a767e9ecfe0396524389a6dbf3b1635ba15",
       "command": "mise exec -- mix test --cover --max-cases 1 --seed 448744",
-      "exitCode": 1,
+      "wrapperExitCode": 1,
+      "nativeExitCode": null,
+      "nativeExitCodeCapture": "not_captured",
       "output": "result-cover-max-cases-1.log.gz"
     },
     {
       "id": "result-cover-ci-concurrency",
       "version": "078e3a767e9ecfe0396524389a6dbf3b1635ba15",
       "command": "mise exec -- mix test --cover --max-cases 8 --seed 60679",
-      "exitCode": 1,
+      "wrapperExitCode": 1,
+      "nativeExitCode": null,
+      "nativeExitCodeCapture": "not_captured",
       "output": "result-cover-ci-concurrency.log.gz"
     },
     {
       "id": "base-github-ci",
       "version": "8066b60d1b2db390566925423619c04f8cf8319b",
       "command": "GitHub Actions make-all run 35984520643",
-      "exitCode": 0,
+      "conclusion": "success",
       "url": "https://github.com/aroakpm-svg/symphony/actions/runs/35984520643",
       "output": "base-github-ci.log.gz",
       "metadata": "base-github-ci.json"

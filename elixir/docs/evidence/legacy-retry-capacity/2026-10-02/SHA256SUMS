@@ -1,7 +1,7 @@
 bc51d3977aa338b92eb489e47b6dcfda5cc9e94f6cae1b150a2d1f717ee129d1  ./base-github-ci.json
 1dfcc812f49cac1ba9ce50ef069e3633275b66928887ce9678e14bf82909eb43  ./base-github-ci.log.gz
 6e43d13b37c74096542365f6bba644eb0285ef9ba390fb8b501159dd9dc83121  ./base-make-all.log.gz
-1cc588a2e8d72e9dd8695b19bbcf496bbe0467ab166dd79c7417fd76f7dda19c  ./commands.json
+f328afd78fb4f5a97b0cbf842854a3ba402069e4a556aa480fcff41eaf762034  ./commands.json
 a1dca6ca9427f385e29c48b9719e84174c8e4c0d10cffa216a81aada26dc4e54  ./dialyzer.log.gz
 45b7a08bee5c83f506e8f19d99b7b31907261e37d992fa7fd724b9c2b3d923e1  ./environment.txt
 f445dbae30867640410bf8923a419dd6ee76e80394ab109b3fd3b3f93f1f96be  ./failure-files-diff.txt

@@ -12,14 +12,14 @@ This directory contains the version-bound, secret-safe rerun receipts for the T1
 - No environment value was printed. A credential-pattern scan of the evidence files returned zero matches.
 - No live E2E, worker, service, scheduler, external write, push, PR, merge, or deploy was performed.
 
-`commands.json` records each command, version binding, exit code, and complete output path. `SHA256SUMS` binds every raw receipt and patch; its SHA-256 is `5095f349988d98410193bf584fc387c0a2775cc38753fad6bc4442d59309f9e5`.
+`commands.json` records each command, version binding, outer wrapper status, whether the native Bash status was captured, and the complete output path. Historical native statuses were not captured separately and remain `null`; they are not inferred from later probes. `SHA256SUMS` binds every raw receipt and patch; its SHA-256 is `577f8134358ceaf74ec5e26d4720ef1b4d86261a569cda802207d60678eabcdb`.
 
 ## RED to GREEN
 
-- `red-temporary-revert.log.gz`: exit 1; one test, one assertion failure for `same state pending cleanup`.
-- `green-result.log.gz`: exit 0; the identical test command passes on the reviewed result.
-- `retained-owner.log.gz`: exit 0.
-- `targeted.log.gz`: exit 0; 132 tests, zero failures.
+- `red-temporary-revert.log.gz`: the outer wrapper reported exit 1; one test, one assertion failure for `same state pending cleanup`.
+- `green-result.log.gz`: the outer wrapper reported exit 0; the identical test command passes on the reviewed result.
+- `retained-owner.log.gz`: the outer wrapper reported exit 0.
+- `targeted.log.gz`: the outer wrapper reported exit 0; 132 tests, zero failures.
 
 ## Full-gate diagnosis
 

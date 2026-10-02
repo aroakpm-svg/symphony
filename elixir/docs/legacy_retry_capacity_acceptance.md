@@ -29,35 +29,39 @@ The regression matrix covers same-state pending cleanup, different-state pending
 
 - RED: `mise exec -- mix test test/symphony_elixir/core_test.exs:1999 --seed 350817`
   - Version: result `078e3a767e9ecfe0396524389a6dbf3b1635ba15` plus the exact one-line inverse patch saved as `docs/evidence/legacy-retry-capacity/2026-10-02/red-temporary-revert.patch.gz`.
-  - Exit code: `1`; result: `1 test, 1 failure (71 excluded)`.
+  - The outer Windows PowerShell → WSL → Bash wrapper reported exit `1`; the historical native Bash command status was not captured separately.
+  - Result: `1 test, 1 failure (71 excluded)`.
   - The `same state pending cleanup` case expected `false` and received `true`.
   - Complete output: `docs/evidence/legacy-retry-capacity/2026-10-02/red-temporary-revert.log.gz`.
 - GREEN: the same command after the one-line production change.
   - Version: exact result `078e3a767e9ecfe0396524389a6dbf3b1635ba15`.
-  - Exit code: `0`; result: `1 test, 0 failures (71 excluded)`.
+  - The outer wrapper reported exit `0`; the historical native Bash command status was not captured separately.
+  - Result: `1 test, 0 failures (71 excluded)`.
   - Complete output: `docs/evidence/legacy-retry-capacity/2026-10-02/green-result.log.gz`.
 - Retained-owner regression: `mise exec -- mix test test/symphony_elixir/multi_project_dispatch_test.exs:1196 --seed 350817`
-  - Exit code: `0`; result: `1 test, 0 failures (49 excluded)`.
+  - The outer wrapper reported exit `0`; the historical native Bash command status was not captured separately.
+  - Result: `1 test, 0 failures (49 excluded)`.
   - Complete output: `docs/evidence/legacy-retry-capacity/2026-10-02/retained-owner.log.gz`.
 - Targeted suite: `mise exec -- mix test test/symphony_elixir/core_test.exs test/symphony_elixir/multi_project_dispatch_test.exs test/symphony_elixir/project_profiles_test.exs --seed 350817`
-  - Exit code: `0`; result: `132 tests, 0 failures`.
+  - The outer wrapper reported exit `0`; the historical native Bash command status was not captured separately.
+  - Result: `132 tests, 0 failures`.
   - Complete output: `docs/evidence/legacy-retry-capacity/2026-10-02/targeted.log.gz`.
 
 ## Quality checks
 
-- `mise exec -- mix format --check-formatted`: exit `0`, PASS; `docs/evidence/legacy-retry-capacity/2026-10-02/format.log.gz`.
-- `mise exec -- mix specs.check`: exit `0`, PASS; `docs/evidence/legacy-retry-capacity/2026-10-02/specs.log.gz`.
-- `mise exec -- mix lint`: exit `0`, PASS; `docs/evidence/legacy-retry-capacity/2026-10-02/lint.log.gz`.
-- `mise exec -- make dialyzer`: exit `0`, PASS; 0 errors, 0 skipped, 0 unnecessary skips; `docs/evidence/legacy-retry-capacity/2026-10-02/dialyzer.log.gz`.
+- `mise exec -- mix format --check-formatted`: outer wrapper exit `0`, PASS output; native status not separately captured; `docs/evidence/legacy-retry-capacity/2026-10-02/format.log.gz`.
+- `mise exec -- mix specs.check`: outer wrapper exit `0`, PASS output; native status not separately captured; `docs/evidence/legacy-retry-capacity/2026-10-02/specs.log.gz`.
+- `mise exec -- mix lint`: outer wrapper exit `0`, PASS output; native status not separately captured; `docs/evidence/legacy-retry-capacity/2026-10-02/lint.log.gz`.
+- `mise exec -- make dialyzer`: outer wrapper exit `0`, PASS output; native status not separately captured; 0 errors, 0 skipped, 0 unnecessary skips; `docs/evidence/legacy-retry-capacity/2026-10-02/dialyzer.log.gz`.
 - `mise exec -- make all`: BLOCKED at the coverage stage by eleven common RuntimeNotifier failures plus load-sensitive ScopeContract timeouts also present on the untouched fixed base.
-  - Fresh result rerun: exit `1`; `1320 tests, 12 failures, 38 skipped` with the same eleven RuntimeNotifier failures and one ScopeContract timeout.
-  - Fresh fixed-base rerun: exit `1`; `1319 tests, 13 failures, 38 skipped` with the same eleven RuntimeNotifier failures and two ScopeContract timeouts.
+  - Fresh result rerun: outer wrapper exit `1`; native status not separately captured; the log ends with GNU make `Error 2`. Result: `1320 tests, 12 failures, 38 skipped` with the same eleven RuntimeNotifier failures and one ScopeContract timeout.
+  - Fresh fixed-base rerun: outer wrapper exit `1`; native status not separately captured; the log ends with GNU make `Error 2`. Result: `1319 tests, 13 failures, 38 skipped` with the same eleven RuntimeNotifier failures and two ScopeContract timeouts.
   - Complete outputs: `docs/evidence/legacy-retry-capacity/2026-10-02/result-make-all.log.gz` and `docs/evidence/legacy-retry-capacity/2026-10-02/base-make-all.log.gz`.
   - Reducing only local coverage concurrency to one removes both ScopeContract timeouts while retaining all eleven RuntimeNotifier failures; see `result-cover-max-cases-1.log.gz`.
   - The fixed-base canonical GitHub Actions run passed `make all` with 1,319 tests, zero failures, and Dialyzer zero errors; see `base-github-ci.log.gz`, `base-github-ci.json`, and <https://github.com/aroakpm-svg/symphony/actions/runs/35984520643>.
   - Because coverage exits non-zero, `make all` does not reach Dialyzer; Dialyzer was run separately as recorded above.
 
-Every complete output, patch, command, exit code, and version binding is indexed by `docs/evidence/legacy-retry-capacity/2026-10-02/commands.json`. File hashes are in `docs/evidence/legacy-retry-capacity/2026-10-02/SHA256SUMS`; that manifest's SHA-256 is `5095f349988d98410193bf584fc387c0a2775cc38753fad6bc4442d59309f9e5`.
+Every complete output, patch, command, observed wrapper status, native-status capture state, and version binding is indexed by `docs/evidence/legacy-retry-capacity/2026-10-02/commands.json`. File hashes are in `docs/evidence/legacy-retry-capacity/2026-10-02/SHA256SUMS`; that manifest's SHA-256 is `577f8134358ceaf74ec5e26d4720ef1b4d86261a569cda802207d60678eabcdb`.
 
 ## Remaining items
 
