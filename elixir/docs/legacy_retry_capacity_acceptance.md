@@ -11,6 +11,8 @@ Date: 2026-10-02
 - Initial evidence commit: `f70766b981c3b987a1d557bd649836f0c80865fd`
 - Normalized compressed evidence commit: `3df4f05d48f0eda88bc953bb40474c18745eb5b4`
 - Normalized compressed evidence tree: `08dded6b022f603b9945729a17f38ab0401863ee`
+- Exit-status attribution correction commit: `2193cc6c582ccde56f860a0fea8a2d7f760c4c67`
+- Exit-status attribution correction tree: `7054eca987c6a6beea74ec7bc841e0f5dcaa7c40`
 - Worktree: `/home/aroak-han/codex-projects/.worktrees/symphony-t1-r1`
 - Branch: `codex/t1-r1-legacy-retry-capacity`
 - Toolchain: Erlang/OTP 28.5, Elixir 1.19.5, mise 2026.7.17
