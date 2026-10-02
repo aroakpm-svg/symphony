@@ -8,6 +8,8 @@ Date: 2026-10-02
 - Base tree: `fe7c765fd6305260e7b8a9098faea029b22755e4`
 - Implementation commit: `95e90ef3461de8d10b8115f39736af92a0df4fb2`
 - Implementation tree: `27516802fbae9ec8f6d3b31d074ff907ce2d6da2`
+- Durable evidence commit: `f70766b981c3b987a1d557bd649836f0c80865fd`
+- Durable evidence tree: `50ab896a2ed3aaea78948f17139b8ae95362faf9`
 - Worktree: `/home/aroak-han/codex-projects/.worktrees/symphony-t1-r1`
 - Branch: `codex/t1-r1-legacy-retry-capacity`
 - Toolchain: Erlang/OTP 28.5, Elixir 1.19.5, mise 2026.7.17
