@@ -1,0 +1,835 @@
+make-all	UNKNOWN STEP	﻿2026-09-24T09:58:58.8209372Z Current runner version: '2.337.0'
+make-all	UNKNOWN STEP	2026-09-24T09:58:58.8234495Z ##[group]Runner Image Provisioner
+make-all	UNKNOWN STEP	2026-09-24T09:58:58.8235418Z Hosted Compute Agent
+make-all	UNKNOWN STEP	2026-09-24T09:58:58.8236040Z Version: 20260828.587
+make-all	UNKNOWN STEP	2026-09-24T09:58:58.8236720Z Commit: abac92662cab4cc7352de4f9f9d2e2419aad9c29
+make-all	UNKNOWN STEP	2026-09-24T09:58:58.8237560Z Build Date: 2026-08-28T16:44:25Z
+make-all	UNKNOWN STEP	2026-09-24T09:58:58.8238248Z Worker ID: {6adfa07a-8ccb-47dc-9bda-1a9bffe012f6}
+make-all	UNKNOWN STEP	2026-09-24T09:58:58.8239005Z Azure Region: westus
+make-all	UNKNOWN STEP	2026-09-24T09:58:58.8239568Z ##[endgroup]
+make-all	UNKNOWN STEP	2026-09-24T09:58:58.8241036Z ##[group]Operating System
+make-all	UNKNOWN STEP	2026-09-24T09:58:58.8241752Z Ubuntu
+make-all	UNKNOWN STEP	2026-09-24T09:58:58.8242274Z 24.04.5
+make-all	UNKNOWN STEP	2026-09-24T09:58:58.8243089Z LTS
+make-all	UNKNOWN STEP	2026-09-24T09:58:58.8243630Z ##[endgroup]
+make-all	UNKNOWN STEP	2026-09-24T09:58:58.8244219Z ##[group]Runner Image
+make-all	UNKNOWN STEP	2026-09-24T09:58:58.8244912Z Image: ubuntu-24.04
+make-all	UNKNOWN STEP	2026-09-24T09:58:58.8245480Z Version: 20260920.314.1
+make-all	UNKNOWN STEP	2026-09-24T09:58:58.8246763Z Included Software: https://github.com/actions/runner-images/blob/ubuntu24/20260920.314/images/ubuntu/Ubuntu2404-Readme.md
+make-all	UNKNOWN STEP	2026-09-24T09:58:58.8248334Z Image Release: https://github.com/actions/runner-images/releases/tag/ubuntu24%2F20260920.314
+make-all	UNKNOWN STEP	2026-09-24T09:58:58.8249369Z ##[endgroup]
+make-all	UNKNOWN STEP	2026-09-24T09:58:58.8250574Z ##[group]GITHUB_TOKEN Permissions
+make-all	UNKNOWN STEP	2026-09-24T09:58:58.8253002Z Contents: read
+make-all	UNKNOWN STEP	2026-09-24T09:58:58.8253649Z Metadata: read
+make-all	UNKNOWN STEP	2026-09-24T09:58:58.8254280Z Packages: read
+make-all	UNKNOWN STEP	2026-09-24T09:58:58.8254855Z ##[endgroup]
+make-all	UNKNOWN STEP	2026-09-24T09:58:58.8256897Z Secret source: Actions
+make-all	UNKNOWN STEP	2026-09-24T09:58:58.8257958Z Cache mode: write
+make-all	UNKNOWN STEP	2026-09-24T09:58:58.8258632Z Prepare workflow directory
+make-all	UNKNOWN STEP	2026-09-24T09:58:58.8662116Z Prepare all required actions
+make-all	UNKNOWN STEP	2026-09-24T09:58:58.8711303Z Getting action download info
+make-all	UNKNOWN STEP	2026-09-24T09:58:59.2488739Z Download action repository 'actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5' (SHA:34e114876b0b11c390a56381ad16ebd13914f8d5)
+make-all	UNKNOWN STEP	2026-09-24T09:58:59.3754764Z Download action repository 'jdx/mise-action@5228313ee0372e111a38da051671ca30fc5a96db' (SHA:5228313ee0372e111a38da051671ca30fc5a96db)
+make-all	UNKNOWN STEP	2026-09-24T09:58:59.8867337Z Download action repository 'actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830' (SHA:0057852bfaa89a56745cba8c7296529d2fc39830)
+make-all	UNKNOWN STEP	2026-09-24T09:59:00.0880430Z Complete job name: make-all
+make-all	UNKNOWN STEP	2026-09-24T09:59:00.1672007Z ##[group]Run actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+make-all	UNKNOWN STEP	2026-09-24T09:59:00.1673472Z with:
+make-all	UNKNOWN STEP	2026-09-24T09:59:00.1674035Z   repository: aroakpm-svg/symphony
+make-all	UNKNOWN STEP	2026-09-24T09:59:00.1677953Z   token: ***
+make-all	UNKNOWN STEP	2026-09-24T09:59:00.1678436Z   ssh-strict: true
+make-all	UNKNOWN STEP	2026-09-24T09:59:00.1678915Z   ssh-user: git
+make-all	UNKNOWN STEP	2026-09-24T09:59:00.1679399Z   persist-credentials: true
+make-all	UNKNOWN STEP	2026-09-24T09:59:00.1679930Z   clean: true
+make-all	UNKNOWN STEP	2026-09-24T09:59:00.1680421Z   sparse-checkout-cone-mode: true
+make-all	UNKNOWN STEP	2026-09-24T09:59:00.1680999Z   fetch-depth: 1
+make-all	UNKNOWN STEP	2026-09-24T09:59:00.1681470Z   fetch-tags: false
+make-all	UNKNOWN STEP	2026-09-24T09:59:00.1681953Z   show-progress: true
+make-all	UNKNOWN STEP	2026-09-24T09:59:00.1682462Z   lfs: false
+make-all	UNKNOWN STEP	2026-09-24T09:59:00.1683229Z   submodules: false
+make-all	UNKNOWN STEP	2026-09-24T09:59:00.1683728Z   set-safe-directory: true
+make-all	UNKNOWN STEP	2026-09-24T09:59:00.1684557Z ##[endgroup]
+make-all	UNKNOWN STEP	2026-09-24T09:59:00.2721376Z Syncing repository: aroakpm-svg/symphony
+make-all	UNKNOWN STEP	2026-09-24T09:59:00.2724740Z ##[group]Getting Git version info
+make-all	UNKNOWN STEP	2026-09-24T09:59:00.2726149Z Working directory is '/home/runner/work/symphony/symphony'
+make-all	UNKNOWN STEP	2026-09-24T09:59:00.2728040Z [command]/usr/bin/git version
+make-all	UNKNOWN STEP	2026-09-24T09:59:00.2854864Z git version 2.55.0
+make-all	UNKNOWN STEP	2026-09-24T09:59:00.2876299Z ##[endgroup]
+make-all	UNKNOWN STEP	2026-09-24T09:59:00.2887816Z Temporarily overriding HOME='/home/runner/work/_temp/30c86ba8-4a80-4484-81a1-f4103ebf838d' before making global git config changes
+make-all	UNKNOWN STEP	2026-09-24T09:59:00.2890063Z Adding repository directory to the temporary git global config as a safe directory
+make-all	UNKNOWN STEP	2026-09-24T09:59:00.2895530Z [command]/usr/bin/git config --global --add safe.directory /home/runner/work/symphony/symphony
+make-all	UNKNOWN STEP	2026-09-24T09:59:00.2955087Z Deleting the contents of '/home/runner/work/symphony/symphony'
+make-all	UNKNOWN STEP	2026-09-24T09:59:00.2959944Z ##[group]Initializing the repository
+make-all	UNKNOWN STEP	2026-09-24T09:59:00.2966099Z [command]/usr/bin/git init /home/runner/work/symphony/symphony
+make-all	UNKNOWN STEP	2026-09-24T09:59:00.3108150Z hint: Using 'master' as the name for the initial branch. This default branch name
+make-all	UNKNOWN STEP	2026-09-24T09:59:00.3111540Z hint: will change to "main" in Git 3.0. To configure the initial branch name
+make-all	UNKNOWN STEP	2026-09-24T09:59:00.3114301Z hint: to use in all of your new repositories, which will suppress this warning,
+make-all	UNKNOWN STEP	2026-09-24T09:59:00.3116159Z hint: call:
+make-all	UNKNOWN STEP	2026-09-24T09:59:00.3117334Z hint:
+make-all	UNKNOWN STEP	2026-09-24T09:59:00.3118790Z hint: 	git config --global init.defaultBranch <name>
+make-all	UNKNOWN STEP	2026-09-24T09:59:00.3120852Z hint:
+make-all	UNKNOWN STEP	2026-09-24T09:59:00.3122021Z hint: Names commonly chosen instead of 'master' are 'main', 'trunk' and
+make-all	UNKNOWN STEP	2026-09-24T09:59:00.3124121Z hint: 'development'. The just-created branch can be renamed via this command:
+make-all	UNKNOWN STEP	2026-09-24T09:59:00.3125569Z hint:
+make-all	UNKNOWN STEP	2026-09-24T09:59:00.3126359Z hint: 	git branch -m <name>
+make-all	UNKNOWN STEP	2026-09-24T09:59:00.3127246Z hint:
+make-all	UNKNOWN STEP	2026-09-24T09:59:00.3128151Z hint: Disable this message with "git config set advice.defaultBranchName false"
+make-all	UNKNOWN STEP	2026-09-24T09:59:00.3129255Z Initialized empty Git repository in /home/runner/work/symphony/symphony/.git/
+make-all	UNKNOWN STEP	2026-09-24T09:59:00.3131332Z [command]/usr/bin/git remote add origin https://github.com/aroakpm-svg/symphony
+make-all	UNKNOWN STEP	2026-09-24T09:59:00.3183382Z ##[endgroup]
+make-all	UNKNOWN STEP	2026-09-24T09:59:00.3189048Z ##[group]Disabling automatic garbage collection
+make-all	UNKNOWN STEP	2026-09-24T09:59:00.3189850Z [command]/usr/bin/git config --local gc.auto 0
+make-all	UNKNOWN STEP	2026-09-24T09:59:00.3225111Z ##[endgroup]
+make-all	UNKNOWN STEP	2026-09-24T09:59:00.3226517Z ##[group]Setting up auth
+make-all	UNKNOWN STEP	2026-09-24T09:59:00.3233539Z [command]/usr/bin/git config --local --name-only --get-regexp core\.sshCommand
+make-all	UNKNOWN STEP	2026-09-24T09:59:00.3270060Z [command]/usr/bin/git submodule foreach --recursive sh -c "git config --local --name-only --get-regexp 'core\.sshCommand' && git config --local --unset-all 'core.sshCommand' || :"
+make-all	UNKNOWN STEP	2026-09-24T09:59:00.3694332Z [command]/usr/bin/git config --local --name-only --get-regexp http\.https\:\/\/github\.com\/\.extraheader
+make-all	UNKNOWN STEP	2026-09-24T09:59:00.3737326Z [command]/usr/bin/git submodule foreach --recursive sh -c "git config --local --name-only --get-regexp 'http\.https\:\/\/github\.com\/\.extraheader' && git config --local --unset-all 'http.https://github.com/.extraheader' || :"
+make-all	UNKNOWN STEP	2026-09-24T09:59:00.3974342Z [command]/usr/bin/git config --local --name-only --get-regexp ^includeIf\.gitdir:
+make-all	UNKNOWN STEP	2026-09-24T09:59:00.4014550Z [command]/usr/bin/git submodule foreach --recursive git config --local --show-origin --name-only --get-regexp remote.origin.url
+make-all	UNKNOWN STEP	2026-09-24T09:59:00.4250937Z [command]/usr/bin/git config --local http.https://github.com/.extraheader AUTHORIZATION: basic ***
+make-all	UNKNOWN STEP	2026-09-24T09:59:00.4293210Z ##[endgroup]
+make-all	UNKNOWN STEP	2026-09-24T09:59:00.4294277Z ##[group]Fetching the repository
+make-all	UNKNOWN STEP	2026-09-24T09:59:00.4303378Z [command]/usr/bin/git -c protocol.version=2 fetch --no-tags --prune --no-recurse-submodules --depth=1 origin +8066b60d1b2db390566925423619c04f8cf8319b:refs/remotes/origin/main
+make-all	UNKNOWN STEP	2026-09-24T09:59:01.6413376Z From https://github.com/aroakpm-svg/symphony
+make-all	UNKNOWN STEP	2026-09-24T09:59:01.6416219Z  * [new ref]         8066b60d1b2db390566925423619c04f8cf8319b -> origin/main
+make-all	UNKNOWN STEP	2026-09-24T09:59:01.6422823Z ##[endgroup]
+make-all	UNKNOWN STEP	2026-09-24T09:59:01.6425388Z ##[group]Determining the checkout info
+make-all	UNKNOWN STEP	2026-09-24T09:59:01.6428235Z ##[endgroup]
+make-all	UNKNOWN STEP	2026-09-24T09:59:01.6430235Z [command]/usr/bin/git sparse-checkout disable
+make-all	UNKNOWN STEP	2026-09-24T09:59:01.6541899Z [command]/usr/bin/git config --local --unset-all extensions.worktreeConfig
+make-all	UNKNOWN STEP	2026-09-24T09:59:01.6581503Z ##[group]Checking out the ref
+make-all	UNKNOWN STEP	2026-09-24T09:59:01.6584998Z [command]/usr/bin/git checkout --progress --force -B main refs/remotes/origin/main
+make-all	UNKNOWN STEP	2026-09-24T09:59:01.7379430Z Switched to a new branch 'main'
+make-all	UNKNOWN STEP	2026-09-24T09:59:01.7387886Z branch 'main' set up to track 'origin/main'.
+make-all	UNKNOWN STEP	2026-09-24T09:59:01.7402071Z ##[endgroup]
+make-all	UNKNOWN STEP	2026-09-24T09:59:01.7447622Z [command]/usr/bin/git log -1 --format=%H
+make-all	UNKNOWN STEP	2026-09-24T09:59:01.7475271Z 8066b60d1b2db390566925423619c04f8cf8319b
+make-all	UNKNOWN STEP	2026-09-24T09:59:01.7806710Z ##[group]Run sudo apt-get update && sudo apt-get install --yes --no-install-recommends acl
+make-all	UNKNOWN STEP	2026-09-24T09:59:01.7809748Z ^[[36;1msudo apt-get update && sudo apt-get install --yes --no-install-recommends acl^[[0m
+make-all	UNKNOWN STEP	2026-09-24T09:59:01.8098511Z shell: /usr/bin/bash -e {0}
+make-all	UNKNOWN STEP	2026-09-24T09:59:01.8099709Z ##[endgroup]
+make-all	UNKNOWN STEP	2026-09-24T09:59:01.9004986Z Get:1 file:/etc/apt/apt-mirrors.txt Mirrorlist [144 B]
+make-all	UNKNOWN STEP	2026-09-24T09:59:01.9184030Z Get:6 https://packages.microsoft.com/ubuntu/24.04/prod noble InRelease [3600 B]
+make-all	UNKNOWN STEP	2026-09-24T09:59:01.9960281Z Get:7 https://packages.microsoft.com/ubuntu/24.04/prod noble/main amd64 Packages [489 kB]
+make-all	UNKNOWN STEP	2026-09-24T09:59:02.0089602Z Get:8 https://packages.microsoft.com/ubuntu/24.04/prod noble/main arm64 Packages [439 kB]
+make-all	UNKNOWN STEP	2026-09-24T09:59:02.0569574Z Hit:2 http://azure.archive.ubuntu.com/ubuntu noble InRelease
+make-all	UNKNOWN STEP	2026-09-24T09:59:02.0589634Z Get:3 http://azure.archive.ubuntu.com/ubuntu noble-updates InRelease [126 kB]
+make-all	UNKNOWN STEP	2026-09-24T09:59:02.0659058Z Get:4 http://azure.archive.ubuntu.com/ubuntu noble-backports InRelease [126 kB]
+make-all	UNKNOWN STEP	2026-09-24T09:59:02.0685002Z Get:5 http://azure.archive.ubuntu.com/ubuntu noble-security InRelease [126 kB]
+make-all	UNKNOWN STEP	2026-09-24T09:59:02.1629711Z Get:9 http://azure.archive.ubuntu.com/ubuntu noble-updates/main amd64 Packages [1309 kB]
+make-all	UNKNOWN STEP	2026-09-24T09:59:02.1708802Z Get:10 http://azure.archive.ubuntu.com/ubuntu noble-updates/main Translation-en [298 kB]
+make-all	UNKNOWN STEP	2026-09-24T09:59:02.1745540Z Get:11 http://azure.archive.ubuntu.com/ubuntu noble-updates/main amd64 Components [181 kB]
+make-all	UNKNOWN STEP	2026-09-24T09:59:02.1786513Z Get:12 http://azure.archive.ubuntu.com/ubuntu noble-updates/universe amd64 Packages [1698 kB]
+make-all	UNKNOWN STEP	2026-09-24T09:59:02.1884731Z Get:13 http://azure.archive.ubuntu.com/ubuntu noble-updates/universe Translation-en [340 kB]
+make-all	UNKNOWN STEP	2026-09-24T09:59:02.1905758Z Get:14 http://azure.archive.ubuntu.com/ubuntu noble-updates/universe amd64 Components [388 kB]
+make-all	UNKNOWN STEP	2026-09-24T09:59:02.1933141Z Get:15 http://azure.archive.ubuntu.com/ubuntu noble-updates/restricted amd64 Packages [1635 kB]
+make-all	UNKNOWN STEP	2026-09-24T09:59:02.2044442Z Get:16 http://azure.archive.ubuntu.com/ubuntu noble-updates/restricted Translation-en [372 kB]
+make-all	UNKNOWN STEP	2026-09-24T09:59:02.2073136Z Get:17 http://azure.archive.ubuntu.com/ubuntu noble-updates/multiverse amd64 Components [940 B]
+make-all	UNKNOWN STEP	2026-09-24T09:59:02.2249925Z Get:18 http://azure.archive.ubuntu.com/ubuntu noble-backports/main amd64 Packages [40.6 kB]
+make-all	UNKNOWN STEP	2026-09-24T09:59:02.2753868Z Get:19 http://azure.archive.ubuntu.com/ubuntu noble-backports/main amd64 Components [5740 B]
+make-all	UNKNOWN STEP	2026-09-24T09:59:02.2764674Z Get:20 http://azure.archive.ubuntu.com/ubuntu noble-backports/universe amd64 Packages [31.0 kB]
+make-all	UNKNOWN STEP	2026-09-24T09:59:02.2773684Z Get:21 http://azure.archive.ubuntu.com/ubuntu noble-backports/universe Translation-en [18.6 kB]
+make-all	UNKNOWN STEP	2026-09-24T09:59:02.2781652Z Get:22 http://azure.archive.ubuntu.com/ubuntu noble-backports/universe amd64 Components [12.6 kB]
+make-all	UNKNOWN STEP	2026-09-24T09:59:02.2797568Z Get:23 http://azure.archive.ubuntu.com/ubuntu noble-security/main amd64 Packages [1053 kB]
+make-all	UNKNOWN STEP	2026-09-24T09:59:02.2841859Z Get:24 http://azure.archive.ubuntu.com/ubuntu noble-security/main Translation-en [219 kB]
+make-all	UNKNOWN STEP	2026-09-24T09:59:02.2857643Z Get:25 http://azure.archive.ubuntu.com/ubuntu noble-security/main amd64 Components [46.4 kB]
+make-all	UNKNOWN STEP	2026-09-24T09:59:02.2866825Z Get:26 http://azure.archive.ubuntu.com/ubuntu noble-security/universe amd64 Packages [1218 kB]
+make-all	UNKNOWN STEP	2026-09-24T09:59:02.2938605Z Get:27 http://azure.archive.ubuntu.com/ubuntu noble-security/universe Translation-en [244 kB]
+make-all	UNKNOWN STEP	2026-09-24T09:59:02.2958296Z Get:28 http://azure.archive.ubuntu.com/ubuntu noble-security/universe amd64 Components [76.4 kB]
+make-all	UNKNOWN STEP	2026-09-24T09:59:02.2974469Z Get:29 http://azure.archive.ubuntu.com/ubuntu noble-security/restricted amd64 Packages [1535 kB]
+make-all	UNKNOWN STEP	2026-09-24T09:59:02.3039234Z Get:30 http://azure.archive.ubuntu.com/ubuntu noble-security/restricted Translation-en [353 kB]
+make-all	UNKNOWN STEP	2026-09-24T09:59:06.6829268Z Fetched 12.4 MB in 1s (8778 kB/s)
+make-all	UNKNOWN STEP	2026-09-24T09:59:07.4934717Z Reading package lists...
+make-all	UNKNOWN STEP	2026-09-24T09:59:07.5242848Z Reading package lists...
+make-all	UNKNOWN STEP	2026-09-24T09:59:07.7235542Z Building dependency tree...
+make-all	UNKNOWN STEP	2026-09-24T09:59:07.7243208Z Reading state information...
+make-all	UNKNOWN STEP	2026-09-24T09:59:07.8766110Z acl is already the newest version (2.3.2-1build1.1).
+make-all	UNKNOWN STEP	2026-09-24T09:59:07.8767149Z 0 upgraded, 0 newly installed, 0 to remove and 28 not upgraded.
+make-all	UNKNOWN STEP	2026-09-24T09:59:07.8889260Z ##[group]Run jdx/mise-action@5228313ee0372e111a38da051671ca30fc5a96db
+make-all	UNKNOWN STEP	2026-09-24T09:59:07.8889661Z with:
+make-all	UNKNOWN STEP	2026-09-24T09:59:07.8889857Z   install: true
+make-all	UNKNOWN STEP	2026-09-24T09:59:07.8890055Z   cache: true
+make-all	UNKNOWN STEP	2026-09-24T09:59:07.8890265Z   working_directory: elixir
+make-all	UNKNOWN STEP	2026-09-24T09:59:07.8890498Z   cache_save: true
+make-all	UNKNOWN STEP	2026-09-24T09:59:07.8890703Z   cache_key_prefix: mise-v1
+make-all	UNKNOWN STEP	2026-09-24T09:59:07.8890939Z   experimental: false
+make-all	UNKNOWN STEP	2026-09-24T09:59:07.8891173Z   log_level: info
+make-all	UNKNOWN STEP	2026-09-24T09:59:07.8891367Z   reshim: false
+make-all	UNKNOWN STEP	2026-09-24T09:59:07.8891567Z   add_shims_to_path: true
+make-all	UNKNOWN STEP	2026-09-24T09:59:07.8894200Z   github_token: ***
+make-all	UNKNOWN STEP	2026-09-24T09:59:07.8894459Z   fetch_from_github: true
+make-all	UNKNOWN STEP	2026-09-24T09:59:07.8894684Z   env: true
+make-all	UNKNOWN STEP	2026-09-24T09:59:07.8894873Z ##[endgroup]
+make-all	UNKNOWN STEP	2026-09-24T09:59:08.0408078Z ##[group]Restoring mise cache
+make-all	UNKNOWN STEP	2026-09-24T09:59:08.0453290Z [command]/usr/bin/ldd --version
+make-all	UNKNOWN STEP	2026-09-24T09:59:08.0513309Z ldd (Ubuntu GLIBC 2.39-0ubuntu8.9) 2.39
+make-all	UNKNOWN STEP	2026-09-24T09:59:08.0513820Z Copyright (C) 2024 Free Software Foundation, Inc.
+make-all	UNKNOWN STEP	2026-09-24T09:59:08.0514310Z This is free software; see the source for copying conditions.  There is NO
+make-all	UNKNOWN STEP	2026-09-24T09:59:08.0514854Z warranty; not even for MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
+make-all	UNKNOWN STEP	2026-09-24T09:59:08.0515302Z Written by Roland McGrath and Ulrich Drepper.
+make-all	UNKNOWN STEP	2026-09-24T09:59:08.4639320Z Cache hit for: mise-v1-linux-x64-c45222f9352e4baa2db6e5f836d6a9a3d976bc34e507310aa9e3dadd4ced4bd8
+make-all	UNKNOWN STEP	2026-09-24T09:59:09.7404941Z Received 0 of 117279062 (0.0%), 0.0 MBs/sec
+make-all	UNKNOWN STEP	2026-09-24T09:59:10.7407682Z Received 113246208 of 117279062 (96.6%), 54.0 MBs/sec
+make-all	UNKNOWN STEP	2026-09-24T09:59:10.8327341Z Received 117279062 of 117279062 (100.0%), 53.4 MBs/sec
+make-all	UNKNOWN STEP	2026-09-24T09:59:10.8327998Z Cache Size: ~112 MB (117279062 B)
+make-all	UNKNOWN STEP	2026-09-24T09:59:10.8446538Z [command]/usr/bin/tar -xf /home/runner/work/_temp/a9a1f59b-231b-4b52-b067-246783d4560a/cache.tzst -P -C /home/runner/work/symphony/symphony --use-compress-program unzstd
+make-all	UNKNOWN STEP	2026-09-24T09:59:11.4398060Z Cache restored successfully
+make-all	UNKNOWN STEP	2026-09-24T09:59:11.4455946Z mise cache restored from key: mise-v1-linux-x64-c45222f9352e4baa2db6e5f836d6a9a3d976bc34e507310aa9e3dadd4ced4bd8
+make-all	UNKNOWN STEP	2026-09-24T09:59:11.4463140Z ##[group]Setting env vars
+make-all	UNKNOWN STEP	2026-09-24T09:59:11.4463569Z Setting MISE_LOG_LEVEL=info
+make-all	UNKNOWN STEP	2026-09-24T09:59:11.4468946Z Setting MISE_GITHUB_TOKEN=***
+make-all	UNKNOWN STEP	2026-09-24T09:59:11.4469333Z Setting MISE_TRUSTED_CONFIG_PATHS=/home/runner/work/symphony/symphony
+make-all	UNKNOWN STEP	2026-09-24T09:59:11.4469714Z Setting MISE_YES=1
+make-all	UNKNOWN STEP	2026-09-24T09:59:11.4469998Z Adding /home/runner/.local/share/mise/shims to PATH
+make-all	UNKNOWN STEP	2026-09-24T09:59:11.4470854Z ##[group]Running mise --version
+make-all	UNKNOWN STEP	2026-09-24T09:59:11.4489373Z [command]/home/runner/.local/share/mise/bin/mise --version
+make-all	UNKNOWN STEP	2026-09-24T09:59:11.4588483Z 2026.8.14 linux-x64 (2026-08-26)
+make-all	UNKNOWN STEP	2026-09-24T09:59:11.4606542Z ##[endgroup]
+make-all	UNKNOWN STEP	2026-09-24T09:59:11.4607168Z ##[group]Running mise install 
+make-all	UNKNOWN STEP	2026-09-24T09:59:11.4624206Z [command]/home/runner/.local/share/mise/bin/mise install
+make-all	UNKNOWN STEP	2026-09-24T09:59:11.4781060Z ^[[2mmise^[[0m all tools are installed
+make-all	UNKNOWN STEP	2026-09-24T09:59:11.4819254Z ##[endgroup]
+make-all	UNKNOWN STEP	2026-09-24T09:59:11.4819940Z ##[group]Running mise ls
+make-all	UNKNOWN STEP	2026-09-24T09:59:11.4837636Z [command]/home/runner/.local/share/mise/bin/mise ls
+make-all	UNKNOWN STEP	2026-09-24T09:59:11.4983592Z elixir  1.19.5-otp-28  ~/work/symphony/symphony/elixir/mise.toml  1.19.5-otp-28
+make-all	UNKNOWN STEP	2026-09-24T09:59:11.4984147Z erlang  28.5           ~/work/symphony/symphony/elixir/mise.toml  28
+make-all	UNKNOWN STEP	2026-09-24T09:59:11.4999497Z ##[endgroup]
+make-all	UNKNOWN STEP	2026-09-24T09:59:11.5001790Z ##[group]Exporting mise environment variables
+make-all	UNKNOWN STEP	2026-09-24T09:59:11.5200549Z [command]/home/runner/.local/share/mise/bin/mise env --json
+make-all	UNKNOWN STEP	2026-09-24T09:59:11.5351220Z {
+make-all	UNKNOWN STEP	2026-09-24T09:59:11.5351823Z   "MIX_ARCHIVES": "/home/runner/.local/share/mise/installs/elixir/1.19.5-otp-28/.mix/archives",
+make-all	UNKNOWN STEP	2026-09-24T09:59:11.5352831Z   "MIX_HOME": "/home/runner/.local/share/mise/installs/elixir/1.19.5-otp-28/.mix",
+make-all	UNKNOWN STEP	2026-09-24T09:59:11.5355825Z   "PATH": "/home/runner/.local/share/mise/installs/erlang/28/bin:/home/runner/.local/share/mise/installs/elixir/1.19.5-otp-28/bin:/home/runner/.local/share/mise/installs/elixir/1.19.5-otp-28/.mix/escripts:/home/runner/.local/share/mise/shims:/home/runner/.local/share/mise/bin:/snap/bin:/home/runner/.local/bin:/opt/pipx_bin:/home/runner/.cargo/bin:/home/runner/.config/composer/vendor/bin:/usr/local/.ghcup/bin:/home/runner/.dotnet/tools:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/usr/games:/usr/local/games"
+make-all	UNKNOWN STEP	2026-09-24T09:59:11.5358276Z }
+make-all	UNKNOWN STEP	2026-09-24T09:59:11.5368400Z ##[endgroup]
+make-all	UNKNOWN STEP	2026-09-24T09:59:11.6167719Z ##[group]Run actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830
+make-all	UNKNOWN STEP	2026-09-24T09:59:11.6168107Z with:
+make-all	UNKNOWN STEP	2026-09-24T09:59:11.6168320Z   path: elixir/deps
+make-all	UNKNOWN STEP	elixir/_build
+make-all	UNKNOWN STEP	
+make-all	UNKNOWN STEP	2026-09-24T09:59:11.6168737Z   key: Linux-mix-1816208a485d567dae4a4528015d9b4210f6e29a85f58136e8a0ed69d5e17a89
+make-all	UNKNOWN STEP	2026-09-24T09:59:11.6169164Z   restore-keys: Linux-mix-
+make-all	UNKNOWN STEP	
+make-all	UNKNOWN STEP	2026-09-24T09:59:11.6169422Z   enableCrossOsArchive: false
+make-all	UNKNOWN STEP	2026-09-24T09:59:11.6169674Z   fail-on-cache-miss: false
+make-all	UNKNOWN STEP	2026-09-24T09:59:11.6169911Z   lookup-only: false
+make-all	UNKNOWN STEP	2026-09-24T09:59:11.6170120Z   save-always: false
+make-all	UNKNOWN STEP	2026-09-24T09:59:11.6170328Z env:
+make-all	UNKNOWN STEP	2026-09-24T09:59:11.6170512Z   MISE_LOG_LEVEL: info
+make-all	UNKNOWN STEP	2026-09-24T09:59:11.6173193Z   MISE_GITHUB_TOKEN: ***
+make-all	UNKNOWN STEP	2026-09-24T09:59:11.6173538Z   MISE_TRUSTED_CONFIG_PATHS: /home/runner/work/symphony/symphony
+make-all	UNKNOWN STEP	2026-09-24T09:59:11.6173882Z   MISE_YES: 1
+make-all	UNKNOWN STEP	2026-09-24T09:59:11.6174258Z   MIX_ARCHIVES: /home/runner/.local/share/mise/installs/elixir/1.19.5-otp-28/.mix/archives
+make-all	UNKNOWN STEP	2026-09-24T09:59:11.6174853Z   MIX_HOME: /home/runner/.local/share/mise/installs/elixir/1.19.5-otp-28/.mix
+make-all	UNKNOWN STEP	2026-09-24T09:59:11.6176807Z   PATH: /home/runner/.local/share/mise/installs/erlang/28/bin:/home/runner/.local/share/mise/installs/elixir/1.19.5-otp-28/bin:/home/runner/.local/share/mise/installs/elixir/1.19.5-otp-28/.mix/escripts:/home/runner/.local/share/mise/shims:/home/runner/.local/share/mise/bin:/snap/bin:/home/runner/.local/bin:/opt/pipx_bin:/home/runner/.cargo/bin:/home/runner/.config/composer/vendor/bin:/usr/local/.ghcup/bin:/home/runner/.dotnet/tools:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/usr/games:/usr/local/games
+make-all	UNKNOWN STEP	2026-09-24T09:59:11.6178664Z ##[endgroup]
+make-all	UNKNOWN STEP	2026-09-24T09:59:11.7241156Z (node:2683) [DEP0040] DeprecationWarning: The `punycode` module is deprecated. Please use a userland alternative instead.
+make-all	UNKNOWN STEP	2026-09-24T09:59:11.7242261Z (Use `node --trace-deprecation ...` to show where the warning was created)
+make-all	UNKNOWN STEP	2026-09-24T09:59:11.9788593Z Cache hit for: Linux-mix-1816208a485d567dae4a4528015d9b4210f6e29a85f58136e8a0ed69d5e17a89
+make-all	UNKNOWN STEP	2026-09-24T09:59:11.9893854Z (node:2683) [DEP0169] DeprecationWarning: `url.parse()` behavior is not standardized and prone to errors that have security implications. Use the WHATWG URL API instead. CVEs are not issued for `url.parse()` vulnerabilities.
+make-all	UNKNOWN STEP	2026-09-24T09:59:13.2630466Z Received 4194304 of 32161117 (13.0%), 4.0 MBs/sec
+make-all	UNKNOWN STEP	2026-09-24T09:59:13.6636347Z Received 32161117 of 32161117 (100.0%), 21.9 MBs/sec
+make-all	UNKNOWN STEP	2026-09-24T09:59:13.6636959Z Cache Size: ~31 MB (32161117 B)
+make-all	UNKNOWN STEP	2026-09-24T09:59:13.6674800Z [command]/usr/bin/tar -xf /home/runner/work/_temp/6685a705-ad82-4a8a-a77e-76c42e5fecfe/cache.tzst -P -C /home/runner/work/symphony/symphony --use-compress-program unzstd
+make-all	UNKNOWN STEP	2026-09-24T09:59:13.9183533Z Cache restored successfully
+make-all	UNKNOWN STEP	2026-09-24T09:59:13.9275813Z Cache restored from key: Linux-mix-1816208a485d567dae4a4528015d9b4210f6e29a85f58136e8a0ed69d5e17a89
+make-all	UNKNOWN STEP	2026-09-24T09:59:13.9391524Z ##[group]Run make all
+make-all	UNKNOWN STEP	2026-09-24T09:59:13.9391819Z ^[[36;1mmake all^[[0m
+make-all	UNKNOWN STEP	2026-09-24T09:59:13.9456516Z shell: /usr/bin/bash -e {0}
+make-all	UNKNOWN STEP	2026-09-24T09:59:13.9456773Z env:
+make-all	UNKNOWN STEP	2026-09-24T09:59:13.9456975Z   MISE_LOG_LEVEL: info
+make-all	UNKNOWN STEP	2026-09-24T09:59:13.9459355Z   MISE_GITHUB_TOKEN: ***
+make-all	UNKNOWN STEP	2026-09-24T09:59:13.9459692Z   MISE_TRUSTED_CONFIG_PATHS: /home/runner/work/symphony/symphony
+make-all	UNKNOWN STEP	2026-09-24T09:59:13.9460039Z   MISE_YES: 1
+make-all	UNKNOWN STEP	2026-09-24T09:59:13.9460414Z   MIX_ARCHIVES: /home/runner/.local/share/mise/installs/elixir/1.19.5-otp-28/.mix/archives
+make-all	UNKNOWN STEP	2026-09-24T09:59:13.9460975Z   MIX_HOME: /home/runner/.local/share/mise/installs/elixir/1.19.5-otp-28/.mix
+make-all	UNKNOWN STEP	2026-09-24T09:59:13.9463180Z   PATH: /home/runner/.local/share/mise/installs/erlang/28/bin:/home/runner/.local/share/mise/installs/elixir/1.19.5-otp-28/bin:/home/runner/.local/share/mise/installs/elixir/1.19.5-otp-28/.mix/escripts:/home/runner/.local/share/mise/shims:/home/runner/.local/share/mise/bin:/snap/bin:/home/runner/.local/bin:/opt/pipx_bin:/home/runner/.cargo/bin:/home/runner/.config/composer/vendor/bin:/usr/local/.ghcup/bin:/home/runner/.dotnet/tools:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/usr/games:/usr/local/games
+make-all	UNKNOWN STEP	2026-09-24T09:59:13.9465257Z ##[endgroup]
+make-all	UNKNOWN STEP	2026-09-24T09:59:14.1244467Z make setup
+make-all	UNKNOWN STEP	2026-09-24T09:59:14.1259816Z make[1]: Entering directory '/home/runner/work/symphony/symphony/elixir'
+make-all	UNKNOWN STEP	2026-09-24T09:59:14.1260842Z mix setup
+make-all	UNKNOWN STEP	2026-09-24T09:59:14.9234122Z * creating /home/runner/.local/share/mise/installs/elixir/1.19.5-otp-28/.mix/archives/hex-2.5.1
+make-all	UNKNOWN STEP	2026-09-24T09:59:15.2237883Z Resolving Hex dependencies...
+make-all	UNKNOWN STEP	2026-09-24T09:59:15.3832382Z Resolution completed in 0.157s
+make-all	UNKNOWN STEP	2026-09-24T09:59:15.4033176Z Unchanged:
+make-all	UNKNOWN STEP	2026-09-24T09:59:15.4033560Z   bandit 1.10.3 VULNERABLE!
+make-all	UNKNOWN STEP	2026-09-24T09:59:15.4048355Z     EEF-CVE-2026-42788 (MEDIUM)
+make-all	UNKNOWN STEP	2026-09-24T09:59:15.4049302Z     aka: CVE-2026-42788, GHSA-q6v9-r226-v65f
+make-all	UNKNOWN STEP	2026-09-24T09:59:15.4050335Z     HTTP/2 frame size limit checked after body is buffered in bandit
+make-all	UNKNOWN STEP	2026-09-24T09:59:15.4051092Z     https://osv.dev/vulnerability/EEF-CVE-2026-42788
+make-all	UNKNOWN STEP	2026-09-24T09:59:15.4051404Z 
+make-all	UNKNOWN STEP	2026-09-24T09:59:15.4051504Z     EEF-CVE-2026-39805 (MEDIUM)
+make-all	UNKNOWN STEP	2026-09-24T09:59:15.4051951Z     aka: CVE-2026-39805, GHSA-c67r-gc9j-2qf7
+make-all	UNKNOWN STEP	2026-09-24T09:59:15.4052895Z     CL.CL HTTP request smuggling via duplicate Content-Length in bandit
+make-all	UNKNOWN STEP	2026-09-24T09:59:15.4053683Z     https://osv.dev/vulnerability/EEF-CVE-2026-39805
+make-all	UNKNOWN STEP	2026-09-24T09:59:15.4054094Z 
+make-all	UNKNOWN STEP	2026-09-24T09:59:15.4054440Z     EEF-CVE-2026-39807 (MEDIUM)
+make-all	UNKNOWN STEP	2026-09-24T09:59:15.4054903Z     aka: CVE-2026-39807, GHSA-375f-4r2h-f99j
+make-all	UNKNOWN STEP	2026-09-24T09:59:15.4058438Z     Client-supplied URI scheme trusted without transport verification in bandit
+make-all	UNKNOWN STEP	2026-09-24T09:59:15.4059261Z     https://osv.dev/vulnerability/EEF-CVE-2026-39807
+make-all	UNKNOWN STEP	2026-09-24T09:59:15.4059671Z 
+make-all	UNKNOWN STEP	2026-09-24T09:59:15.4059823Z     EEF-CVE-2026-39804 (HIGH)
+make-all	UNKNOWN STEP	2026-09-24T09:59:15.4060282Z     aka: CVE-2026-39804, GHSA-frh3-6pv6-rc8j
+make-all	UNKNOWN STEP	2026-09-24T09:59:15.4060969Z     WebSocket permessage-deflate inflate has no output-size cap in bandit
+make-all	UNKNOWN STEP	2026-09-24T09:59:15.4061728Z     https://osv.dev/vulnerability/EEF-CVE-2026-39804
+make-all	UNKNOWN STEP	2026-09-24T09:59:15.4062119Z 
+make-all	UNKNOWN STEP	2026-09-24T09:59:15.4062274Z     EEF-CVE-2026-42786 (HIGH)
+make-all	UNKNOWN STEP	2026-09-24T09:59:15.4062966Z     aka: CVE-2026-42786, GHSA-pf94-94m9-536p
+make-all	UNKNOWN STEP	2026-09-24T09:59:15.4063581Z     WebSocket fragmented message reassembly unbounded in bandit
+make-all	UNKNOWN STEP	2026-09-24T09:59:15.4064249Z     https://osv.dev/vulnerability/EEF-CVE-2026-42786
+make-all	UNKNOWN STEP	2026-09-24T09:59:15.4064629Z 
+make-all	UNKNOWN STEP	2026-09-24T09:59:15.4064775Z     EEF-CVE-2026-39806 (HIGH)
+make-all	UNKNOWN STEP	2026-09-24T09:59:15.4065221Z     aka: CVE-2026-39806, GHSA-rf5q-vwxw-gmrf
+make-all	UNKNOWN STEP	2026-09-24T09:59:15.4065918Z     HTTP/1 chunked decoder infinite loop on requests with trailer fields in bandit
+make-all	UNKNOWN STEP	2026-09-24T09:59:15.4066684Z     https://osv.dev/vulnerability/EEF-CVE-2026-39806
+make-all	UNKNOWN STEP	2026-09-24T09:59:15.4067068Z 
+make-all	UNKNOWN STEP	2026-09-24T09:59:15.4067221Z     EEF-CVE-2026-39803 (HIGH)
+make-all	UNKNOWN STEP	2026-09-24T09:59:15.4067650Z     aka: CVE-2026-39803, GHSA-9q9q-324x-93r2
+make-all	UNKNOWN STEP	2026-09-24T09:59:15.4068222Z     HTTP/1 chunked body reader ignores length cap in bandit
+make-all	UNKNOWN STEP	2026-09-24T09:59:15.4069227Z     https://osv.dev/vulnerability/EEF-CVE-2026-39803
+make-all	UNKNOWN STEP	2026-09-24T09:59:15.4069617Z 
+make-all	UNKNOWN STEP	2026-09-24T09:59:15.4069774Z     EEF-CVE-2026-74836 (HIGH)
+make-all	UNKNOWN STEP	2026-09-24T09:59:15.4070202Z     aka: CVE-2026-74836, GHSA-xj8g-532w-jv94
+make-all	UNKNOWN STEP	2026-09-24T09:59:15.4070914Z     HTTP/2 connection-window starvation pins Plug processes indefinitely in Bandit
+make-all	UNKNOWN STEP	2026-09-24T09:59:15.4071695Z     https://osv.dev/vulnerability/EEF-CVE-2026-74836
+make-all	UNKNOWN STEP	2026-09-24T09:59:15.4072099Z 
+make-all	UNKNOWN STEP	2026-09-24T09:59:15.4072249Z     EEF-CVE-2026-75484 (MEDIUM)
+make-all	UNKNOWN STEP	2026-09-24T09:59:15.4072904Z     aka: CVE-2026-75484, GHSA-x3gh-xhj4-3vq8
+make-all	UNKNOWN STEP	2026-09-24T09:59:15.4073737Z     HTTP/2 header field values containing CR, LF or NUL are passed to the application unvalidated in Bandit
+make-all	UNKNOWN STEP	2026-09-24T09:59:15.4074827Z     https://osv.dev/vulnerability/EEF-CVE-2026-75484
+make-all	UNKNOWN STEP	2026-09-24T09:59:15.4075330Z   bunt 1.0.0
+make-all	UNKNOWN STEP	2026-09-24T09:59:15.4075665Z   cc_precompiler 0.1.11
+make-all	UNKNOWN STEP	2026-09-24T09:59:15.4076038Z   credo 1.7.16
+make-all	UNKNOWN STEP	2026-09-24T09:59:15.4076378Z   date_time_parser 1.3.0
+make-all	UNKNOWN STEP	2026-09-24T09:59:15.4076771Z   db_connection 2.10.2
+make-all	UNKNOWN STEP	2026-09-24T09:59:15.4077158Z   decimal 2.3.0 VULNERABLE!
+make-all	UNKNOWN STEP	2026-09-24T09:59:15.4077555Z     EEF-CVE-2026-32686 (MEDIUM)
+make-all	UNKNOWN STEP	2026-09-24T09:59:15.4077995Z     aka: CVE-2026-32686, GHSA-rhv4-8758-jx7v
+make-all	UNKNOWN STEP	2026-09-24T09:59:15.4078601Z     Unbounded exponent in decimal enables unauthenticated DoS
+make-all	UNKNOWN STEP	2026-09-24T09:59:15.4079258Z     https://osv.dev/vulnerability/EEF-CVE-2026-32686
+make-all	UNKNOWN STEP	2026-09-24T09:59:15.4079773Z   dialyxir 1.4.7
+make-all	UNKNOWN STEP	2026-09-24T09:59:15.4080108Z   ecto 3.13.5
+make-all	UNKNOWN STEP	2026-09-24T09:59:15.4080440Z   elixir_make 0.9.0
+make-all	UNKNOWN STEP	2026-09-24T09:59:15.4080794Z   erlex 0.2.8
+make-all	UNKNOWN STEP	2026-09-24T09:59:15.4081118Z   file_system 1.1.1
+make-all	UNKNOWN STEP	2026-09-24T09:59:15.4100256Z   finch 0.21.0
+make-all	UNKNOWN STEP	2026-09-24T09:59:15.4100623Z   fine 0.1.4
+make-all	UNKNOWN STEP	2026-09-24T09:59:15.4100961Z   floki 0.38.0
+make-all	UNKNOWN STEP	2026-09-24T09:59:15.4101341Z   hpax 1.0.3 VULNERABLE!
+make-all	UNKNOWN STEP	2026-09-24T09:59:15.4101753Z     EEF-CVE-2026-58226 (HIGH)
+make-all	UNKNOWN STEP	2026-09-24T09:59:15.4102215Z     aka: CVE-2026-58226, GHSA-jj2p-32j7-whj2
+make-all	UNKNOWN STEP	2026-09-24T09:59:15.4103199Z     Unauthenticated denial-of-service via unbounded HPACK integer decoding in hpax
+make-all	UNKNOWN STEP	2026-09-24T09:59:15.4104032Z     https://osv.dev/vulnerability/EEF-CVE-2026-58226
+make-all	UNKNOWN STEP	2026-09-24T09:59:15.4104630Z   jason 1.4.4
+make-all	UNKNOWN STEP	2026-09-24T09:59:15.4104926Z   kday 1.1.0
+make-all	UNKNOWN STEP	2026-09-24T09:59:15.4105133Z   lazy_html 0.1.10
+make-all	UNKNOWN STEP	2026-09-24T09:59:15.4105441Z   mime 2.0.7
+make-all	UNKNOWN STEP	2026-09-24T09:59:15.4105689Z   mint 1.7.1 VULNERABLE!
+make-all	UNKNOWN STEP	2026-09-24T09:59:15.4105949Z     EEF-CVE-2026-82672 (MEDIUM)
+make-all	UNKNOWN STEP	2026-09-24T09:59:15.4106229Z     aka: CVE-2026-82672, GHSA-rj5m-69wp-cxq9
+make-all	UNKNOWN STEP	2026-09-24T09:59:15.4106877Z     Unvalidated chunk-size line tail in Mint HTTP/1 client enables response smuggling against strict intermediaries on pooled connections
+make-all	UNKNOWN STEP	2026-09-24T09:59:15.4107561Z     https://osv.dev/vulnerability/EEF-CVE-2026-82672
+make-all	UNKNOWN STEP	2026-09-24T09:59:15.4107808Z 
+make-all	UNKNOWN STEP	2026-09-24T09:59:15.4107903Z     EEF-CVE-2026-49754 (HIGH)
+make-all	UNKNOWN STEP	2026-09-24T09:59:15.4108186Z     aka: CVE-2026-49754, GHSA-2p26-p43x-fhp8
+make-all	UNKNOWN STEP	2026-09-24T09:59:15.4108621Z     HTTP/2 CONTINUATION flood in Mint client via unbounded header-block accumulation
+make-all	UNKNOWN STEP	2026-09-24T09:59:15.4109097Z     https://osv.dev/vulnerability/EEF-CVE-2026-49754
+make-all	UNKNOWN STEP	2026-09-24T09:59:15.4109322Z 
+make-all	UNKNOWN STEP	2026-09-24T09:59:15.4109426Z     EEF-CVE-2026-48861 (LOW)
+make-all	UNKNOWN STEP	2026-09-24T09:59:15.4109685Z     aka: CVE-2026-48861, GHSA-2pg6-44cx-c49v
+make-all	UNKNOWN STEP	2026-09-24T09:59:15.4110332Z     CRLF injection in HTTP/1 request line via unvalidated method in Mint
+make-all	UNKNOWN STEP	2026-09-24T09:59:15.4111021Z     https://osv.dev/vulnerability/EEF-CVE-2026-48861
+make-all	UNKNOWN STEP	2026-09-24T09:59:15.4111387Z 
+make-all	UNKNOWN STEP	2026-09-24T09:59:15.4111533Z     EEF-CVE-2026-48862 (HIGH)
+make-all	UNKNOWN STEP	2026-09-24T09:59:15.4112002Z     aka: CVE-2026-48862, GHSA-g586-ccqf-7x4r
+make-all	UNKNOWN STEP	2026-09-24T09:59:15.4112999Z     Unbounded conn.streams growth in Mint HTTP/2 client via unenforced PUSH_PROMISE concurrency
+make-all	UNKNOWN STEP	2026-09-24T09:59:15.4113823Z     https://osv.dev/vulnerability/EEF-CVE-2026-48862
+make-all	UNKNOWN STEP	2026-09-24T09:59:15.4114198Z 
+make-all	UNKNOWN STEP	2026-09-24T09:59:15.4114349Z     EEF-CVE-2026-49753 (MEDIUM)
+make-all	UNKNOWN STEP	2026-09-24T09:59:15.4114773Z     aka: CVE-2026-49753, GHSA-mjqx-c6f6-7rc2
+make-all	UNKNOWN STEP	2026-09-24T09:59:15.4115701Z     HTTP response smuggling in Mint HTTP/1 client via lenient Content-Length parsing
+make-all	UNKNOWN STEP	2026-09-24T09:59:15.4116455Z     https://osv.dev/vulnerability/EEF-CVE-2026-49753
+make-all	UNKNOWN STEP	2026-09-24T09:59:15.4116811Z 
+make-all	UNKNOWN STEP	2026-09-24T09:59:15.4116913Z     EEF-CVE-2026-58229 (HIGH)
+make-all	UNKNOWN STEP	2026-09-24T09:59:15.4117177Z     aka: CVE-2026-58229, GHSA-qrfr-wh4c-3qhw
+make-all	UNKNOWN STEP	2026-09-24T09:59:15.4117699Z     Unbounded HTTP/1 response-header and chunked-trailer accumulation in Mint causes memory-exhaustion DoS
+make-all	UNKNOWN STEP	2026-09-24T09:59:15.4118245Z     https://osv.dev/vulnerability/EEF-CVE-2026-58229
+make-all	UNKNOWN STEP	2026-09-24T09:59:15.4118482Z 
+make-all	UNKNOWN STEP	2026-09-24T09:59:15.4118579Z     EEF-CVE-2026-59246 (MEDIUM)
+make-all	UNKNOWN STEP	2026-09-24T09:59:15.4118848Z     aka: CVE-2026-59246, GHSA-8pf6-g464-h6h9
+make-all	UNKNOWN STEP	2026-09-24T09:59:15.4119543Z     Zero-length HTTP/2 CONTINUATION frames bypass Mint's header-block byte-size cap and exhaust client memory
+make-all	UNKNOWN STEP	2026-09-24T09:59:15.4120350Z     https://osv.dev/vulnerability/EEF-CVE-2026-59246
+make-all	UNKNOWN STEP	2026-09-24T09:59:15.4120579Z 
+make-all	UNKNOWN STEP	2026-09-24T09:59:15.4120674Z     EEF-CVE-2026-56810 (HIGH)
+make-all	UNKNOWN STEP	2026-09-24T09:59:15.4120960Z     aka: CVE-2026-56810, GHSA-c59h-fq4p-r36r
+make-all	UNKNOWN STEP	2026-09-24T09:59:15.4121398Z     mint buffers an entire chunked response chunk in memory in Mint.HTTP1.decode_body/5
+make-all	UNKNOWN STEP	2026-09-24T09:59:15.4121866Z     https://osv.dev/vulnerability/EEF-CVE-2026-56810
+make-all	UNKNOWN STEP	2026-09-24T09:59:15.4122092Z 
+make-all	UNKNOWN STEP	2026-09-24T09:59:15.4122189Z     EEF-CVE-2026-82728 (HIGH)
+make-all	UNKNOWN STEP	2026-09-24T09:59:15.4122449Z     aka: CVE-2026-82728, GHSA-g83f-2j6r-q6m4
+make-all	UNKNOWN STEP	2026-09-24T09:59:15.4123225Z     Unbounded HTTP/1 status-line and chunk-extension buffering in Mint causes memory-exhaustion DoS
+make-all	UNKNOWN STEP	2026-09-24T09:59:15.4123753Z     https://osv.dev/vulnerability/EEF-CVE-2026-82728
+make-all	UNKNOWN STEP	2026-09-24T09:59:15.4123983Z 
+make-all	UNKNOWN STEP	2026-09-24T09:59:15.4124075Z     EEF-CVE-2026-59249 (MEDIUM)
+make-all	UNKNOWN STEP	2026-09-24T09:59:15.4124341Z     aka: CVE-2026-59249, GHSA-x3x7-96vm-6h2w
+make-all	UNKNOWN STEP	2026-09-24T09:59:15.4124931Z     Sign-tolerant HTTP/1 chunk-size parser in Mint enables response smuggling against strict intermediaries on pooled connections
+make-all	UNKNOWN STEP	2026-09-24T09:59:15.4125558Z     https://osv.dev/vulnerability/EEF-CVE-2026-59249
+make-all	UNKNOWN STEP	2026-09-24T09:59:15.4125865Z   nimble_options 1.1.1
+make-all	UNKNOWN STEP	2026-09-24T09:59:15.4126090Z   nimble_pool 1.1.0
+make-all	UNKNOWN STEP	2026-09-24T09:59:15.4126324Z   phoenix 1.8.4 VULNERABLE!
+make-all	UNKNOWN STEP	2026-09-24T09:59:15.4126569Z     EEF-CVE-2026-32689 (HIGH)
+make-all	UNKNOWN STEP	2026-09-24T09:59:15.4126830Z     aka: CVE-2026-32689, GHSA-628h-q48j-jr6q
+make-all	UNKNOWN STEP	2026-09-24T09:59:15.4127251Z     Long-poll NDJSON body splitting causes unbounded memory allocation in Phoenix
+make-all	UNKNOWN STEP	2026-09-24T09:59:15.4127704Z     https://osv.dev/vulnerability/EEF-CVE-2026-32689
+make-all	UNKNOWN STEP	2026-09-24T09:59:15.4127928Z 
+make-all	UNKNOWN STEP	2026-09-24T09:59:15.4128020Z     EEF-CVE-2026-56812 (MEDIUM)
+make-all	UNKNOWN STEP	2026-09-24T09:59:15.4128277Z     aka: CVE-2026-56812, GHSA-63mc-hw7g-86rr
+make-all	UNKNOWN STEP	2026-09-24T09:59:15.4128883Z     Phoenix JavaScript presence client crashes on presence keys colliding with Object.prototype members in Presence.syncState/syncDiff
+make-all	UNKNOWN STEP	2026-09-24T09:59:15.4129528Z     https://osv.dev/vulnerability/EEF-CVE-2026-56812
+make-all	UNKNOWN STEP	2026-09-24T09:59:15.4129752Z 
+make-all	UNKNOWN STEP	2026-09-24T09:59:15.4129842Z     EEF-CVE-2026-56811 (HIGH)
+make-all	UNKNOWN STEP	2026-09-24T09:59:15.4130108Z     aka: CVE-2026-56811, GHSA-6983-jfq8-485w
+make-all	UNKNOWN STEP	2026-09-24T09:59:15.4130621Z     Phoenix transports do not limit channel joins per connection, enabling process-exhaustion denial of service
+make-all	UNKNOWN STEP	2026-09-24T09:59:15.4131166Z     https://osv.dev/vulnerability/EEF-CVE-2026-56811
+make-all	UNKNOWN STEP	2026-09-24T09:59:15.4131476Z   phoenix_html 4.3.0
+make-all	UNKNOWN STEP	2026-09-24T09:59:15.4131705Z   phoenix_live_view 1.1.25 VULNERABLE!
+make-all	UNKNOWN STEP	2026-09-24T09:59:15.4131982Z     EEF-CVE-2026-64941 (LOW)
+make-all	UNKNOWN STEP	2026-09-24T09:59:15.4132242Z     aka: CVE-2026-64941, GHSA-36m4-rm57-3prf
+make-all	UNKNOWN STEP	2026-09-24T09:59:15.4132944Z     Open redirect in Phoenix.LiveView.validate_local_url!/2 via ASCII tab, LF and CR
+make-all	UNKNOWN STEP	2026-09-24T09:59:15.4133507Z     https://osv.dev/vulnerability/EEF-CVE-2026-64941
+make-all	UNKNOWN STEP	2026-09-24T09:59:15.4133824Z   phoenix_pubsub 2.2.0
+make-all	UNKNOWN STEP	2026-09-24T09:59:15.4134063Z   phoenix_template 1.0.4
+make-all	UNKNOWN STEP	2026-09-24T09:59:15.4134295Z   plug 1.19.1 VULNERABLE!
+make-all	UNKNOWN STEP	2026-09-24T09:59:15.4134531Z     EEF-CVE-2026-54892 (HIGH)
+make-all	UNKNOWN STEP	2026-09-24T09:59:15.4134790Z     aka: CVE-2026-54892, GHSA-j43x-5hjq-rgxf
+make-all	UNKNOWN STEP	2026-09-24T09:59:15.4135387Z     Plug: quadratic-time decoding of nested query/body parameters enables denial of service
+make-all	UNKNOWN STEP	2026-09-24T09:59:15.4135887Z     https://osv.dev/vulnerability/EEF-CVE-2026-54892
+make-all	UNKNOWN STEP	2026-09-24T09:59:15.4136111Z 
+make-all	UNKNOWN STEP	2026-09-24T09:59:15.4136203Z     EEF-CVE-2026-8468 (HIGH)
+make-all	UNKNOWN STEP	2026-09-24T09:59:15.4136498Z     aka: CVE-2026-8468, GHSA-468c-vq7p-gh64
+make-all	UNKNOWN STEP	2026-09-24T09:59:15.4136963Z     Unbounded buffer accumulation in multipart header parsing causes denial of service in plug
+make-all	UNKNOWN STEP	2026-09-24T09:59:15.4137472Z     https://osv.dev/vulnerability/EEF-CVE-2026-8468
+make-all	UNKNOWN STEP	2026-09-24T09:59:15.4137698Z 
+make-all	UNKNOWN STEP	2026-09-24T09:59:15.4137796Z     EEF-CVE-2026-56814 (MEDIUM)
+make-all	UNKNOWN STEP	2026-09-24T09:59:15.4138058Z     aka: CVE-2026-56814, GHSA-95qv-c9g9-rm63
+make-all	UNKNOWN STEP	2026-09-24T09:59:15.4138613Z     Plug: multipart :length limit is not charged for part headers, enabling unbounded temp-file creation (denial of service)
+make-all	UNKNOWN STEP	2026-09-24T09:59:15.4139323Z     https://osv.dev/vulnerability/EEF-CVE-2026-56814
+make-all	UNKNOWN STEP	2026-09-24T09:59:15.4139547Z 
+make-all	UNKNOWN STEP	2026-09-24T09:59:15.4139635Z     EEF-CVE-2026-56813 (LOW)
+make-all	UNKNOWN STEP	2026-09-24T09:59:15.4139902Z     aka: CVE-2026-56813, GHSA-wpmj-jh88-rpgm
+make-all	UNKNOWN STEP	2026-09-24T09:59:15.4140254Z     Cookie attribute injection in Plug.Conn.Cookies.encode/2
+make-all	UNKNOWN STEP	2026-09-24T09:59:15.4140637Z     https://osv.dev/vulnerability/EEF-CVE-2026-56813
+make-all	UNKNOWN STEP	2026-09-24T09:59:15.4140942Z   plug_crypto 2.1.1
+make-all	UNKNOWN STEP	2026-09-24T09:59:15.4141174Z   postgrex 0.22.3 VULNERABLE!
+make-all	UNKNOWN STEP	2026-09-24T09:59:15.4141437Z     EEF-CVE-2026-66838 (MEDIUM)
+make-all	UNKNOWN STEP	2026-09-24T09:59:15.4141705Z     aka: CVE-2026-66838, GHSA-3gww-3f36-2388
+make-all	UNKNOWN STEP	2026-09-24T09:59:15.4142077Z     SQL injection via the :comment option in Postgrex.stream/4
+make-all	UNKNOWN STEP	2026-09-24T09:59:15.4142468Z     https://osv.dev/vulnerability/EEF-CVE-2026-66838
+make-all	UNKNOWN STEP	2026-09-24T09:59:15.4143061Z   req 0.5.17 VULNERABLE!
+make-all	UNKNOWN STEP	2026-09-24T09:59:15.4143488Z     EEF-CVE-2026-49756 (LOW)
+make-all	UNKNOWN STEP	2026-09-24T09:59:15.4143967Z     aka: CVE-2026-49756, GHSA-px9f-whj3-246m
+make-all	UNKNOWN STEP	2026-09-24T09:59:15.4144768Z     Multipart form-data header injection in Req via unescaped name/filename/content_type
+make-all	UNKNOWN STEP	2026-09-24T09:59:15.4145671Z     https://osv.dev/vulnerability/EEF-CVE-2026-49756
+make-all	UNKNOWN STEP	2026-09-24T09:59:15.4146076Z 
+make-all	UNKNOWN STEP	2026-09-24T09:59:15.4146240Z     EEF-CVE-2026-49755 (HIGH)
+make-all	UNKNOWN STEP	2026-09-24T09:59:15.4146743Z     aka: CVE-2026-49755, GHSA-655f-mp8p-96gv
+make-all	UNKNOWN STEP	2026-09-24T09:59:15.4147547Z     Decompression bomb DoS in Req via auto-decoded archive and compressed response bodies
+make-all	UNKNOWN STEP	2026-09-24T09:59:15.4148440Z     https://osv.dev/vulnerability/EEF-CVE-2026-49755
+make-all	UNKNOWN STEP	2026-09-24T09:59:15.4149008Z   solid 1.2.2
+make-all	UNKNOWN STEP	2026-09-24T09:59:15.4149370Z   telemetry 1.3.0
+make-all	UNKNOWN STEP	2026-09-24T09:59:15.4149757Z   thousand_island 1.4.3
+make-all	UNKNOWN STEP	2026-09-24T09:59:15.4150178Z   websock 0.5.3
+make-all	UNKNOWN STEP	2026-09-24T09:59:15.4150556Z   websock_adapter 0.5.9
+make-all	UNKNOWN STEP	2026-09-24T09:59:15.4150949Z   yamerl 0.10.0
+make-all	UNKNOWN STEP	2026-09-24T09:59:15.4151316Z   yaml_elixir 2.12.0
+make-all	UNKNOWN STEP	2026-09-24T09:59:15.4870213Z * creating /home/runner/.local/share/mise/installs/elixir/1.19.5-otp-28/.mix/elixir/1-19-otp-28/rebar3
+make-all	UNKNOWN STEP	2026-09-24T09:59:15.5008230Z Found packages with security advisories, see above for details
+make-all	UNKNOWN STEP	2026-09-24T09:59:15.5047625Z All dependencies have been fetched
+make-all	UNKNOWN STEP	2026-09-24T09:59:15.5245902Z make[1]: Leaving directory '/home/runner/work/symphony/symphony/elixir'
+make-all	UNKNOWN STEP	2026-09-24T09:59:15.5247545Z make build
+make-all	UNKNOWN STEP	2026-09-24T09:59:15.5262088Z make[1]: Entering directory '/home/runner/work/symphony/symphony/elixir'
+make-all	UNKNOWN STEP	2026-09-24T09:59:15.5263370Z mix build
+make-all	UNKNOWN STEP	2026-09-24T09:59:16.1255708Z Compiling 1 file (.erl)
+make-all	UNKNOWN STEP	2026-09-24T09:59:16.2100243Z Compiling 48 files (.ex)
+make-all	UNKNOWN STEP	2026-09-24T09:59:19.4808990Z Compiling 2 files (.ex)
+make-all	UNKNOWN STEP	2026-09-24T09:59:20.5047537Z Generated symphony_elixir app
+make-all	UNKNOWN STEP	2026-09-24T09:59:23.2056898Z Generated escript bin/symphony with MIX_ENV=dev
+make-all	UNKNOWN STEP	2026-09-24T09:59:23.2193364Z make[1]: Leaving directory '/home/runner/work/symphony/symphony/elixir'
+make-all	UNKNOWN STEP	2026-09-24T09:59:23.2195398Z make fmt-check
+make-all	UNKNOWN STEP	2026-09-24T09:59:23.2209814Z make[1]: Entering directory '/home/runner/work/symphony/symphony/elixir'
+make-all	UNKNOWN STEP	2026-09-24T09:59:23.2210419Z mix format --check-formatted
+make-all	UNKNOWN STEP	2026-09-24T09:59:24.1196667Z make[1]: Leaving directory '/home/runner/work/symphony/symphony/elixir'
+make-all	UNKNOWN STEP	2026-09-24T09:59:24.1197743Z make lint
+make-all	UNKNOWN STEP	2026-09-24T09:59:24.1212882Z make[1]: Entering directory '/home/runner/work/symphony/symphony/elixir'
+make-all	UNKNOWN STEP	2026-09-24T09:59:24.1213619Z mix lint
+make-all	UNKNOWN STEP	2026-09-24T09:59:24.9073128Z specs.check: all public functions have @spec or exemption
+make-all	UNKNOWN STEP	2026-09-24T09:59:25.4037044Z Checking 168 source files (this might take a while) ...
+make-all	UNKNOWN STEP	2026-09-24T09:59:34.3001022Z 
+make-all	UNKNOWN STEP	2026-09-24T09:59:34.3084020Z Please report incorrect results: https://github.com/rrrene/credo/issues
+make-all	UNKNOWN STEP	2026-09-24T09:59:34.3084747Z 
+make-all	UNKNOWN STEP	2026-09-24T09:59:34.3085446Z Analysis took 9.1 seconds (0.3s to load, 8.8s running 69 checks on 168 files)
+make-all	UNKNOWN STEP	2026-09-24T09:59:34.3569845Z 4604 mods/funs, found no issues.
+make-all	UNKNOWN STEP	2026-09-24T09:59:34.3571467Z 
+make-all	UNKNOWN STEP	2026-09-24T09:59:34.3572454Z Use `mix credo explain` to explain issues, `mix credo --help` for options.
+make-all	UNKNOWN STEP	2026-09-24T09:59:34.3782463Z make[1]: Leaving directory '/home/runner/work/symphony/symphony/elixir'
+make-all	UNKNOWN STEP	2026-09-24T09:59:34.3783968Z make coverage
+make-all	UNKNOWN STEP	2026-09-24T09:59:34.3799290Z make[1]: Entering directory '/home/runner/work/symphony/symphony/elixir'
+make-all	UNKNOWN STEP	2026-09-24T09:59:34.3800253Z mix test --cover
+make-all	UNKNOWN STEP	2026-09-24T09:59:35.0417584Z Compiling 1 file (.erl)
+make-all	UNKNOWN STEP	2026-09-24T09:59:35.1302412Z Compiling 83 files (.ex)
+make-all	UNKNOWN STEP	2026-09-24T09:59:40.5713395Z Generated symphony_elixir app
+make-all	UNKNOWN STEP	2026-09-24T09:59:40.6015147Z Cover compiling modules ...
+make-all	UNKNOWN STEP	2026-09-24T09:59:44.9250727Z warning: the following files do not match any of the configured `:test_load_filters` / `:test_ignore_filters`:
+make-all	UNKNOWN STEP	2026-09-24T09:59:44.9251698Z 
+make-all	UNKNOWN STEP	2026-09-24T09:59:44.9252775Z test/support/claim_service_postgres_harness.exs
+make-all	UNKNOWN STEP	2026-09-24T09:59:44.9253394Z 
+make-all	UNKNOWN STEP	2026-09-24T09:59:44.9254077Z This might indicate a typo in a test file name (for example, using "foo_tests.exs" instead of "foo_test.exs").
+make-all	UNKNOWN STEP	2026-09-24T09:59:44.9254999Z 
+make-all	UNKNOWN STEP	2026-09-24T09:59:44.9255636Z See the configuration for `:test_pattern` under `mix help test` for more information.
+make-all	UNKNOWN STEP	2026-09-24T09:59:44.9256445Z 
+make-all	UNKNOWN STEP	2026-09-24T09:59:45.0914720Z Running ExUnit with seed: 60679, max_cases: 8
+make-all	UNKNOWN STEP	2026-09-24T09:59:45.0915873Z 
+make-all	UNKNOWN STEP	2026-09-24T10:00:19.2281724Z spawn: Could not cd to /tmp/symphony-workspace-preflight-missing-cleanup-55714/MT-PREFLIGHT-MISSING-CLEANUP
+make-all	UNKNOWN STEP	2026-09-24T10:01:15.1729905Z hint: Using 'master' as the name for the initial branch. This default branch name
+make-all	UNKNOWN STEP	2026-09-24T10:01:15.1730850Z hint: will change to "main" in Git 3.0. To configure the initial branch name
+make-all	UNKNOWN STEP	2026-09-24T10:01:15.1731718Z hint: to use in all of your new repositories, which will suppress this warning,
+make-all	UNKNOWN STEP	2026-09-24T10:01:15.1732383Z hint: call:
+make-all	UNKNOWN STEP	2026-09-24T10:01:15.1732973Z hint:
+make-all	UNKNOWN STEP	2026-09-24T10:01:15.1733409Z hint: 	git config --global init.defaultBranch <name>
+make-all	UNKNOWN STEP	2026-09-24T10:01:15.1733798Z hint:
+make-all	UNKNOWN STEP	2026-09-24T10:01:15.1734115Z hint: Names commonly chosen instead of 'master' are 'main', 'trunk' and
+make-all	UNKNOWN STEP	2026-09-24T10:01:15.1734645Z hint: 'development'. The just-created branch can be renamed via this command:
+make-all	UNKNOWN STEP	2026-09-24T10:01:15.1735084Z hint:
+make-all	UNKNOWN STEP	2026-09-24T10:01:15.1735284Z hint: 	git branch -m <name>
+make-all	UNKNOWN STEP	2026-09-24T10:01:15.1735522Z hint:
+make-all	UNKNOWN STEP	2026-09-24T10:01:15.1735851Z hint: Disable this message with "git config set advice.defaultBranchName false"
+make-all	UNKNOWN STEP	2026-09-24T10:01:36.1453127Z ...........................................................................................................................................................................................**............................................................................................................................................................................................................................................................*............................................................................................................................................***.......................................................................................................................******************************...................................................................................................................................................................................................................*****........................................................................................................***..........................................................................................**..........................................................................................................................................................................
+make-all	UNKNOWN STEP	2026-09-24T10:01:36.1481751Z Finished in 111.0 seconds (15.4s async, 95.5s sync)
+make-all	UNKNOWN STEP	2026-09-24T10:01:36.1482973Z 1319 tests, 0 failures, 46 skipped
+make-all	UNKNOWN STEP	2026-09-24T10:01:36.1487737Z 
+make-all	UNKNOWN STEP	2026-09-24T10:01:36.1488081Z Generating cover results ...
+make-all	UNKNOWN STEP	2026-09-24T10:01:36.1488398Z 
+make-all	UNKNOWN STEP	2026-09-24T10:01:36.2162979Z | Percentage | Module                                             |
+make-all	UNKNOWN STEP	2026-09-24T10:01:36.2164223Z |------------|----------------------------------------------------|
+make-all	UNKNOWN STEP	2026-09-24T10:01:36.2170056Z |    100.00% | Inspect.SymphonyElixir.Orchestrator.State          |
+make-all	UNKNOWN STEP	2026-09-24T10:01:36.2174443Z |    100.00% | Mix.Tasks.PrBody.Check                             |
+make-all	UNKNOWN STEP	2026-09-24T10:01:36.2175517Z |    100.00% | Mix.Tasks.Specs.Check                              |
+make-all	UNKNOWN STEP	2026-09-24T10:01:36.2176514Z |    100.00% | Mix.Tasks.Workspace.BeforeRemove                   |
+make-all	UNKNOWN STEP	2026-09-24T10:01:36.2177456Z |    100.00% | SymphonyElixir                                     |
+make-all	UNKNOWN STEP	2026-09-24T10:01:36.2178354Z |    100.00% | SymphonyElixir.AdmissionGate                       |
+make-all	UNKNOWN STEP	2026-09-24T10:01:36.2179244Z |    100.00% | SymphonyElixir.AgentRunner.TurnContext             |
+make-all	UNKNOWN STEP	2026-09-24T10:01:36.2180138Z |    100.00% | SymphonyElixir.ClaimConnection                     |
+make-all	UNKNOWN STEP	2026-09-24T10:01:36.2181034Z |    100.00% | SymphonyElixir.Codex.BrokerLaunchLock              |
+make-all	UNKNOWN STEP	2026-09-24T10:01:36.2181938Z |    100.00% | SymphonyElixir.CodexAuthHome                       |
+make-all	UNKNOWN STEP	2026-09-24T10:01:36.2183074Z |    100.00% | SymphonyElixir.CodexExecutionInputs                |
+make-all	UNKNOWN STEP	2026-09-24T10:01:36.2184018Z |    100.00% | SymphonyElixir.Config.Schema                       |
+make-all	UNKNOWN STEP	2026-09-24T10:01:36.2184903Z |    100.00% | SymphonyElixir.Config.Schema.Agent                 |
+make-all	UNKNOWN STEP	2026-09-24T10:01:36.2185798Z |    100.00% | SymphonyElixir.Config.Schema.Claim                 |
+make-all	UNKNOWN STEP	2026-09-24T10:01:36.2186692Z |    100.00% | SymphonyElixir.Config.Schema.Codex                 |
+make-all	UNKNOWN STEP	2026-09-24T10:01:36.2187607Z |    100.00% | SymphonyElixir.Config.Schema.Hooks                 |
+make-all	UNKNOWN STEP	2026-09-24T10:01:36.2188512Z |    100.00% | SymphonyElixir.Config.Schema.Landing               |
+make-all	UNKNOWN STEP	2026-09-24T10:01:36.2189430Z |    100.00% | SymphonyElixir.Config.Schema.Observability         |
+make-all	UNKNOWN STEP	2026-09-24T10:01:36.2190423Z |    100.00% | SymphonyElixir.Config.Schema.Polling               |
+make-all	UNKNOWN STEP	2026-09-24T10:01:36.2191378Z |    100.00% | SymphonyElixir.Config.Schema.ProjectProfilesType   |
+make-all	UNKNOWN STEP	2026-09-24T10:01:36.2192319Z |    100.00% | SymphonyElixir.Config.Schema.ReviewConvergence     |
+make-all	UNKNOWN STEP	2026-09-24T10:01:36.2193476Z |    100.00% | SymphonyElixir.Config.Schema.Server                |
+make-all	UNKNOWN STEP	2026-09-24T10:01:36.2194457Z |    100.00% | SymphonyElixir.Config.Schema.StringOrMap           |
+make-all	UNKNOWN STEP	2026-09-24T10:01:36.2195151Z |    100.00% | SymphonyElixir.Config.Schema.Tracker               |
+make-all	UNKNOWN STEP	2026-09-24T10:01:36.2195752Z |    100.00% | SymphonyElixir.Config.Schema.Worker                |
+make-all	UNKNOWN STEP	2026-09-24T10:01:36.2196356Z |    100.00% | SymphonyElixir.Config.Schema.Workspace             |
+make-all	UNKNOWN STEP	2026-09-24T10:01:36.2196954Z |    100.00% | SymphonyElixir.CoreSupervisor                      |
+make-all	UNKNOWN STEP	2026-09-24T10:01:36.2197530Z |    100.00% | SymphonyElixir.DispatchCandidate                   |
+make-all	UNKNOWN STEP	2026-09-24T10:01:36.2198113Z |    100.00% | SymphonyElixir.FindingDisposition                  |
+make-all	UNKNOWN STEP	2026-09-24T10:01:36.2198698Z |    100.00% | SymphonyElixir.GitBranchResolver                   |
+make-all	UNKNOWN STEP	2026-09-24T10:01:36.2199306Z |    100.00% | SymphonyElixir.GitBranchResolver.CanonicalEvidence |
+make-all	UNKNOWN STEP	2026-09-24T10:01:36.2199924Z |    100.00% | SymphonyElixir.GitBranchResolver.Checkout          |
+make-all	UNKNOWN STEP	2026-09-24T10:01:36.2200538Z |    100.00% | SymphonyElixir.GitBranchResolver.Failure           |
+make-all	UNKNOWN STEP	2026-09-24T10:01:36.2201191Z |    100.00% | SymphonyElixir.GitBranchResolver.Receipt           |
+make-all	UNKNOWN STEP	2026-09-24T10:01:36.2202311Z |    100.00% | SymphonyElixir.GitCheckoutPreflight                |
+make-all	UNKNOWN STEP	2026-09-24T10:01:36.2203532Z |    100.00% | SymphonyElixir.GitCredentialEnvironment            |
+make-all	UNKNOWN STEP	2026-09-24T10:01:36.2204307Z |    100.00% | SymphonyElixir.GitHubAppCredentialSource           |
+make-all	UNKNOWN STEP	2026-09-24T10:01:36.2205071Z |    100.00% | SymphonyElixir.GitHubAuthorityClient               |
+make-all	UNKNOWN STEP	2026-09-24T10:01:36.2205813Z |    100.00% | SymphonyElixir.GitHubCredentialResolver            |
+make-all	UNKNOWN STEP	2026-09-24T10:01:36.2206590Z |    100.00% | SymphonyElixir.GitHubCredentialResolver.Credential |
+make-all	UNKNOWN STEP	2026-09-24T10:01:36.2207339Z |    100.00% | SymphonyElixir.GitHubResponse                      |
+make-all	UNKNOWN STEP	2026-09-24T10:01:36.2208063Z |    100.00% | SymphonyElixir.GitPreflightCommand                 |
+make-all	UNKNOWN STEP	2026-09-24T10:01:36.2209018Z |    100.00% | SymphonyElixir.HandoffReceipt                      |
+make-all	UNKNOWN STEP	2026-09-24T10:01:36.2209728Z |    100.00% | SymphonyElixir.HandoffReceipt.Store                |
+make-all	UNKNOWN STEP	2026-09-24T10:01:36.2210427Z |    100.00% | SymphonyElixir.Linear.Issue                        |
+make-all	UNKNOWN STEP	2026-09-24T10:01:36.2211136Z |    100.00% | SymphonyElixir.Linear.Issue.StackedBase            |
+make-all	UNKNOWN STEP	2026-09-24T10:01:36.2211866Z |    100.00% | SymphonyElixir.MergeReadyCandidate                 |
+make-all	UNKNOWN STEP	2026-09-24T10:01:36.2213268Z |    100.00% | SymphonyElixir.MergeReadyEvidence                  |
+make-all	UNKNOWN STEP	2026-09-24T10:01:36.2214029Z |    100.00% | SymphonyElixir.MultiProjectPoll                    |
+make-all	UNKNOWN STEP	2026-09-24T10:01:36.2214756Z |    100.00% | SymphonyElixir.PatchAuthorization                  |
+make-all	UNKNOWN STEP	2026-09-24T10:01:36.2215321Z |    100.00% | SymphonyElixir.PathSafety                          |
+make-all	UNKNOWN STEP	2026-09-24T10:01:36.2215739Z |    100.00% | SymphonyElixir.ProjectExecutionContext             |
+make-all	UNKNOWN STEP	2026-09-24T10:01:36.2216143Z |    100.00% | SymphonyElixir.ProjectProfiles                     |
+make-all	UNKNOWN STEP	2026-09-24T10:01:36.2216558Z |    100.00% | SymphonyElixir.PromptBuilder                       |
+make-all	UNKNOWN STEP	2026-09-24T10:01:36.2216951Z |    100.00% | SymphonyElixir.ProtectedPath                       |
+make-all	UNKNOWN STEP	2026-09-24T10:01:36.2217353Z |    100.00% | SymphonyElixir.ReadinessGate                       |
+make-all	UNKNOWN STEP	2026-09-24T10:01:36.2217754Z |    100.00% | SymphonyElixir.ReadinessGate.Failure               |
+make-all	UNKNOWN STEP	2026-09-24T10:01:36.2218158Z |    100.00% | SymphonyElixir.ReadinessGate.Receipt               |
+make-all	UNKNOWN STEP	2026-09-24T10:01:36.2218579Z |    100.00% | SymphonyElixir.RepositoryBootstrap                 |
+make-all	UNKNOWN STEP	2026-09-24T10:01:36.2218976Z |    100.00% | SymphonyElixir.RepositorySource                    |
+make-all	UNKNOWN STEP	2026-09-24T10:01:36.2219375Z |    100.00% | SymphonyElixir.ReviewConvergence                   |
+make-all	UNKNOWN STEP	2026-09-24T10:01:36.2219762Z |    100.00% | SymphonyElixir.ReviewIdentity                      |
+make-all	UNKNOWN STEP	2026-09-24T10:01:36.2220150Z |    100.00% | SymphonyElixir.ReviewSettlement                    |
+make-all	UNKNOWN STEP	2026-09-24T10:01:36.2220572Z |    100.00% | SymphonyElixir.ReviewSettlementReceipt             |
+make-all	UNKNOWN STEP	2026-09-24T10:01:36.2220986Z |    100.00% | SymphonyElixir.RuntimeReceiptContract              |
+make-all	UNKNOWN STEP	2026-09-24T10:01:36.2221376Z |    100.00% | SymphonyElixir.SSH                                 |
+make-all	UNKNOWN STEP	2026-09-24T10:01:36.2221758Z |    100.00% | SymphonyElixir.ScopeContract                       |
+make-all	UNKNOWN STEP	2026-09-24T10:01:36.2222136Z |    100.00% | SymphonyElixir.SecretSafety                        |
+make-all	UNKNOWN STEP	2026-09-24T10:01:36.2222542Z |    100.00% | SymphonyElixir.SubprocessEnvironment               |
+make-all	UNKNOWN STEP	2026-09-24T10:01:36.2223429Z |    100.00% | SymphonyElixir.Workflow                            |
+make-all	UNKNOWN STEP	2026-09-24T10:01:36.2224066Z |    100.00% | SymphonyElixir.WorkflowStore                       |
+make-all	UNKNOWN STEP	2026-09-24T10:01:36.2224728Z |    100.00% | SymphonyElixir.WorkflowStore.State                 |
+make-all	UNKNOWN STEP	2026-09-24T10:01:36.2225434Z |    100.00% | SymphonyElixir.Workspace.PrivateHomeCapability     |
+make-all	UNKNOWN STEP	2026-09-24T10:01:36.2225897Z |    100.00% | SymphonyElixir.Workspace.PrivateHomeOperation      |
+make-all	UNKNOWN STEP	2026-09-24T10:01:36.2226337Z |    100.00% | SymphonyElixir.Workspace.ReadinessState            |
+make-all	UNKNOWN STEP	2026-09-24T10:01:36.2226743Z |    100.00% | SymphonyElixirWeb.ObservabilityPubSub              |
+make-all	UNKNOWN STEP	2026-09-24T10:01:36.2227301Z |------------|----------------------------------------------------|
+make-all	UNKNOWN STEP	2026-09-24T10:01:36.2227654Z |    100.00% | Total                                              |
+make-all	UNKNOWN STEP	2026-09-24T10:01:36.2227872Z 
+make-all	UNKNOWN STEP	2026-09-24T10:01:36.3319149Z Generated HTML coverage results in "cover" directory
+make-all	UNKNOWN STEP	2026-09-24T10:01:36.3491771Z make[1]: Leaving directory '/home/runner/work/symphony/symphony/elixir'
+make-all	UNKNOWN STEP	2026-09-24T10:01:36.3493037Z make dialyzer
+make-all	UNKNOWN STEP	2026-09-24T10:01:36.3509026Z make[1]: Entering directory '/home/runner/work/symphony/symphony/elixir'
+make-all	UNKNOWN STEP	2026-09-24T10:01:36.3509740Z mix deps.get
+make-all	UNKNOWN STEP	2026-09-24T10:01:37.2939684Z Resolving Hex dependencies...
+make-all	UNKNOWN STEP	2026-09-24T10:01:37.4637634Z Resolution completed in 0.165s
+make-all	UNKNOWN STEP	2026-09-24T10:01:37.4843512Z Unchanged:
+make-all	UNKNOWN STEP	2026-09-24T10:01:37.4844042Z   bandit 1.10.3 VULNERABLE!
+make-all	UNKNOWN STEP	2026-09-24T10:01:37.4861413Z     EEF-CVE-2026-42788 (MEDIUM)
+make-all	UNKNOWN STEP	2026-09-24T10:01:37.4862114Z     aka: CVE-2026-42788, GHSA-q6v9-r226-v65f
+make-all	UNKNOWN STEP	2026-09-24T10:01:37.4863008Z     HTTP/2 frame size limit checked after body is buffered in bandit
+make-all	UNKNOWN STEP	2026-09-24T10:01:37.4863799Z     https://osv.dev/vulnerability/EEF-CVE-2026-42788
+make-all	UNKNOWN STEP	2026-09-24T10:01:37.4864237Z 
+make-all	UNKNOWN STEP	2026-09-24T10:01:37.4864405Z     EEF-CVE-2026-39805 (MEDIUM)
+make-all	UNKNOWN STEP	2026-09-24T10:01:37.4864894Z     aka: CVE-2026-39805, GHSA-c67r-gc9j-2qf7
+make-all	UNKNOWN STEP	2026-09-24T10:01:37.4865598Z     CL.CL HTTP request smuggling via duplicate Content-Length in bandit
+make-all	UNKNOWN STEP	2026-09-24T10:01:37.4866375Z     https://osv.dev/vulnerability/EEF-CVE-2026-39805
+make-all	UNKNOWN STEP	2026-09-24T10:01:37.4866806Z 
+make-all	UNKNOWN STEP	2026-09-24T10:01:37.4866981Z     EEF-CVE-2026-39807 (MEDIUM)
+make-all	UNKNOWN STEP	2026-09-24T10:01:37.4867460Z     aka: CVE-2026-39807, GHSA-375f-4r2h-f99j
+make-all	UNKNOWN STEP	2026-09-24T10:01:37.4868219Z     Client-supplied URI scheme trusted without transport verification in bandit
+make-all	UNKNOWN STEP	2026-09-24T10:01:37.4869076Z     https://osv.dev/vulnerability/EEF-CVE-2026-39807
+make-all	UNKNOWN STEP	2026-09-24T10:01:37.4869518Z 
+make-all	UNKNOWN STEP	2026-09-24T10:01:37.4869680Z     EEF-CVE-2026-39804 (HIGH)
+make-all	UNKNOWN STEP	2026-09-24T10:01:37.4870160Z     aka: CVE-2026-39804, GHSA-frh3-6pv6-rc8j
+make-all	UNKNOWN STEP	2026-09-24T10:01:37.4870907Z     WebSocket permessage-deflate inflate has no output-size cap in bandit
+make-all	UNKNOWN STEP	2026-09-24T10:01:37.4871671Z     https://osv.dev/vulnerability/EEF-CVE-2026-39804
+make-all	UNKNOWN STEP	2026-09-24T10:01:37.4872053Z 
+make-all	UNKNOWN STEP	2026-09-24T10:01:37.4872208Z     EEF-CVE-2026-42786 (HIGH)
+make-all	UNKNOWN STEP	2026-09-24T10:01:37.4872850Z     aka: CVE-2026-42786, GHSA-pf94-94m9-536p
+make-all	UNKNOWN STEP	2026-09-24T10:01:37.4873471Z     WebSocket fragmented message reassembly unbounded in bandit
+make-all	UNKNOWN STEP	2026-09-24T10:01:37.4874138Z     https://osv.dev/vulnerability/EEF-CVE-2026-42786
+make-all	UNKNOWN STEP	2026-09-24T10:01:37.4874539Z 
+make-all	UNKNOWN STEP	2026-09-24T10:01:37.4874686Z     EEF-CVE-2026-39806 (HIGH)
+make-all	UNKNOWN STEP	2026-09-24T10:01:37.4875134Z     aka: CVE-2026-39806, GHSA-rf5q-vwxw-gmrf
+make-all	UNKNOWN STEP	2026-09-24T10:01:37.4875849Z     HTTP/1 chunked decoder infinite loop on requests with trailer fields in bandit
+make-all	UNKNOWN STEP	2026-09-24T10:01:37.4876626Z     https://osv.dev/vulnerability/EEF-CVE-2026-39806
+make-all	UNKNOWN STEP	2026-09-24T10:01:37.4877017Z 
+make-all	UNKNOWN STEP	2026-09-24T10:01:37.4877193Z     EEF-CVE-2026-39803 (HIGH)
+make-all	UNKNOWN STEP	2026-09-24T10:01:37.4877620Z     aka: CVE-2026-39803, GHSA-9q9q-324x-93r2
+make-all	UNKNOWN STEP	2026-09-24T10:01:37.4878203Z     HTTP/1 chunked body reader ignores length cap in bandit
+make-all	UNKNOWN STEP	2026-09-24T10:01:37.4878831Z     https://osv.dev/vulnerability/EEF-CVE-2026-39803
+make-all	UNKNOWN STEP	2026-09-24T10:01:37.4879218Z 
+make-all	UNKNOWN STEP	2026-09-24T10:01:37.4879370Z     EEF-CVE-2026-74836 (HIGH)
+make-all	UNKNOWN STEP	2026-09-24T10:01:37.4879793Z     aka: CVE-2026-74836, GHSA-xj8g-532w-jv94
+make-all	UNKNOWN STEP	2026-09-24T10:01:37.4880502Z     HTTP/2 connection-window starvation pins Plug processes indefinitely in Bandit
+make-all	UNKNOWN STEP	2026-09-24T10:01:37.4881283Z     https://osv.dev/vulnerability/EEF-CVE-2026-74836
+make-all	UNKNOWN STEP	2026-09-24T10:01:37.4881658Z 
+make-all	UNKNOWN STEP	2026-09-24T10:01:37.4881808Z     EEF-CVE-2026-75484 (MEDIUM)
+make-all	UNKNOWN STEP	2026-09-24T10:01:37.4882252Z     aka: CVE-2026-75484, GHSA-x3gh-xhj4-3vq8
+make-all	UNKNOWN STEP	2026-09-24T10:01:37.4883266Z     HTTP/2 header field values containing CR, LF or NUL are passed to the application unvalidated in Bandit
+make-all	UNKNOWN STEP	2026-09-24T10:01:37.4884158Z     https://osv.dev/vulnerability/EEF-CVE-2026-75484
+make-all	UNKNOWN STEP	2026-09-24T10:01:37.4884664Z   bunt 1.0.0
+make-all	UNKNOWN STEP	2026-09-24T10:01:37.4884993Z   cc_precompiler 0.1.11
+make-all	UNKNOWN STEP	2026-09-24T10:01:37.4885370Z   credo 1.7.16
+make-all	UNKNOWN STEP	2026-09-24T10:01:37.4886017Z   date_time_parser 1.3.0
+make-all	UNKNOWN STEP	2026-09-24T10:01:37.4886421Z   db_connection 2.10.2
+make-all	UNKNOWN STEP	2026-09-24T10:01:37.4886800Z   decimal 2.3.0 VULNERABLE!
+make-all	UNKNOWN STEP	2026-09-24T10:01:37.4887197Z     EEF-CVE-2026-32686 (MEDIUM)
+make-all	UNKNOWN STEP	2026-09-24T10:01:37.4887648Z     aka: CVE-2026-32686, GHSA-rhv4-8758-jx7v
+make-all	UNKNOWN STEP	2026-09-24T10:01:37.4888251Z     Unbounded exponent in decimal enables unauthenticated DoS
+make-all	UNKNOWN STEP	2026-09-24T10:01:37.4888899Z     https://osv.dev/vulnerability/EEF-CVE-2026-32686
+make-all	UNKNOWN STEP	2026-09-24T10:01:37.4889412Z   dialyxir 1.4.7
+make-all	UNKNOWN STEP	2026-09-24T10:01:37.4889743Z   ecto 3.13.5
+make-all	UNKNOWN STEP	2026-09-24T10:01:37.4890070Z   elixir_make 0.9.0
+make-all	UNKNOWN STEP	2026-09-24T10:01:37.4890411Z   erlex 0.2.8
+make-all	UNKNOWN STEP	2026-09-24T10:01:37.4890731Z   file_system 1.1.1
+make-all	UNKNOWN STEP	2026-09-24T10:01:37.4891063Z   finch 0.21.0
+make-all	UNKNOWN STEP	2026-09-24T10:01:37.4891392Z   fine 0.1.4
+make-all	UNKNOWN STEP	2026-09-24T10:01:37.4891929Z   floki 0.38.0
+make-all	UNKNOWN STEP	2026-09-24T10:01:37.4892266Z   hpax 1.0.3 VULNERABLE!
+make-all	UNKNOWN STEP	2026-09-24T10:01:37.4892961Z     EEF-CVE-2026-58226 (HIGH)
+make-all	UNKNOWN STEP	2026-09-24T10:01:37.4893376Z     aka: CVE-2026-58226, GHSA-jj2p-32j7-whj2
+make-all	UNKNOWN STEP	2026-09-24T10:01:37.4894082Z     Unauthenticated denial-of-service via unbounded HPACK integer decoding in hpax
+make-all	UNKNOWN STEP	2026-09-24T10:01:37.4894832Z     https://osv.dev/vulnerability/EEF-CVE-2026-58226
+make-all	UNKNOWN STEP	2026-09-24T10:01:37.4895311Z   jason 1.4.4
+make-all	UNKNOWN STEP	2026-09-24T10:01:37.4895614Z   kday 1.1.0
+make-all	UNKNOWN STEP	2026-09-24T10:01:37.4895916Z   lazy_html 0.1.10
+make-all	UNKNOWN STEP	2026-09-24T10:01:37.4896235Z   mime 2.0.7
+make-all	UNKNOWN STEP	2026-09-24T10:01:37.4896563Z   mint 1.7.1 VULNERABLE!
+make-all	UNKNOWN STEP	2026-09-24T10:01:37.4896852Z     EEF-CVE-2026-82672 (MEDIUM)
+make-all	UNKNOWN STEP	2026-09-24T10:01:37.4897127Z     aka: CVE-2026-82672, GHSA-rj5m-69wp-cxq9
+make-all	UNKNOWN STEP	2026-09-24T10:01:37.4897751Z     Unvalidated chunk-size line tail in Mint HTTP/1 client enables response smuggling against strict intermediaries on pooled connections
+make-all	UNKNOWN STEP	2026-09-24T10:01:37.4898391Z     https://osv.dev/vulnerability/EEF-CVE-2026-82672
+make-all	UNKNOWN STEP	2026-09-24T10:01:37.4898624Z 
+make-all	UNKNOWN STEP	2026-09-24T10:01:37.4898717Z     EEF-CVE-2026-49754 (HIGH)
+make-all	UNKNOWN STEP	2026-09-24T10:01:37.4898973Z     aka: CVE-2026-49754, GHSA-2p26-p43x-fhp8
+make-all	UNKNOWN STEP	2026-09-24T10:01:37.4899394Z     HTTP/2 CONTINUATION flood in Mint client via unbounded header-block accumulation
+make-all	UNKNOWN STEP	2026-09-24T10:01:37.4899846Z     https://osv.dev/vulnerability/EEF-CVE-2026-49754
+make-all	UNKNOWN STEP	2026-09-24T10:01:37.4900079Z 
+make-all	UNKNOWN STEP	2026-09-24T10:01:37.4900172Z     EEF-CVE-2026-48861 (LOW)
+make-all	UNKNOWN STEP	2026-09-24T10:01:37.4900423Z     aka: CVE-2026-48861, GHSA-2pg6-44cx-c49v
+make-all	UNKNOWN STEP	2026-09-24T10:01:37.4900797Z     CRLF injection in HTTP/1 request line via unvalidated method in Mint
+make-all	UNKNOWN STEP	2026-09-24T10:01:37.4901202Z     https://osv.dev/vulnerability/EEF-CVE-2026-48861
+make-all	UNKNOWN STEP	2026-09-24T10:01:37.4901416Z 
+make-all	UNKNOWN STEP	2026-09-24T10:01:37.4901501Z     EEF-CVE-2026-48862 (HIGH)
+make-all	UNKNOWN STEP	2026-09-24T10:01:37.4901751Z     aka: CVE-2026-48862, GHSA-g586-ccqf-7x4r
+make-all	UNKNOWN STEP	2026-09-24T10:01:37.4902196Z     Unbounded conn.streams growth in Mint HTTP/2 client via unenforced PUSH_PROMISE concurrency
+make-all	UNKNOWN STEP	2026-09-24T10:01:37.4903026Z     https://osv.dev/vulnerability/EEF-CVE-2026-48862
+make-all	UNKNOWN STEP	2026-09-24T10:01:37.4903398Z 
+make-all	UNKNOWN STEP	2026-09-24T10:01:37.4903544Z     EEF-CVE-2026-49753 (MEDIUM)
+make-all	UNKNOWN STEP	2026-09-24T10:01:37.4903961Z     aka: CVE-2026-49753, GHSA-mjqx-c6f6-7rc2
+make-all	UNKNOWN STEP	2026-09-24T10:01:37.4904451Z     HTTP response smuggling in Mint HTTP/1 client via lenient Content-Length parsing
+make-all	UNKNOWN STEP	2026-09-24T10:01:37.4904896Z     https://osv.dev/vulnerability/EEF-CVE-2026-49753
+make-all	UNKNOWN STEP	2026-09-24T10:01:37.4905110Z 
+make-all	UNKNOWN STEP	2026-09-24T10:01:37.4905200Z     EEF-CVE-2026-58229 (HIGH)
+make-all	UNKNOWN STEP	2026-09-24T10:01:37.4905447Z     aka: CVE-2026-58229, GHSA-qrfr-wh4c-3qhw
+make-all	UNKNOWN STEP	2026-09-24T10:01:37.4905982Z     Unbounded HTTP/1 response-header and chunked-trailer accumulation in Mint causes memory-exhaustion DoS
+make-all	UNKNOWN STEP	2026-09-24T10:01:37.4906525Z     https://osv.dev/vulnerability/EEF-CVE-2026-58229
+make-all	UNKNOWN STEP	2026-09-24T10:01:37.4906732Z 
+make-all	UNKNOWN STEP	2026-09-24T10:01:37.4906828Z     EEF-CVE-2026-59246 (MEDIUM)
+make-all	UNKNOWN STEP	2026-09-24T10:01:37.4907084Z     aka: CVE-2026-59246, GHSA-8pf6-g464-h6h9
+make-all	UNKNOWN STEP	2026-09-24T10:01:37.4907593Z     Zero-length HTTP/2 CONTINUATION frames bypass Mint's header-block byte-size cap and exhaust client memory
+make-all	UNKNOWN STEP	2026-09-24T10:01:37.4908136Z     https://osv.dev/vulnerability/EEF-CVE-2026-59246
+make-all	UNKNOWN STEP	2026-09-24T10:01:37.4908356Z 
+make-all	UNKNOWN STEP	2026-09-24T10:01:37.4908447Z     EEF-CVE-2026-56810 (HIGH)
+make-all	UNKNOWN STEP	2026-09-24T10:01:37.4908869Z     aka: CVE-2026-56810, GHSA-c59h-fq4p-r36r
+make-all	UNKNOWN STEP	2026-09-24T10:01:37.4909299Z     mint buffers an entire chunked response chunk in memory in Mint.HTTP1.decode_body/5
+make-all	UNKNOWN STEP	2026-09-24T10:01:37.4909766Z     https://osv.dev/vulnerability/EEF-CVE-2026-56810
+make-all	UNKNOWN STEP	2026-09-24T10:01:37.4909984Z 
+make-all	UNKNOWN STEP	2026-09-24T10:01:37.4910070Z     EEF-CVE-2026-82728 (HIGH)
+make-all	UNKNOWN STEP	2026-09-24T10:01:37.4910326Z     aka: CVE-2026-82728, GHSA-g83f-2j6r-q6m4
+make-all	UNKNOWN STEP	2026-09-24T10:01:37.4910800Z     Unbounded HTTP/1 status-line and chunk-extension buffering in Mint causes memory-exhaustion DoS
+make-all	UNKNOWN STEP	2026-09-24T10:01:37.4911329Z     https://osv.dev/vulnerability/EEF-CVE-2026-82728
+make-all	UNKNOWN STEP	2026-09-24T10:01:37.4911552Z 
+make-all	UNKNOWN STEP	2026-09-24T10:01:37.4911644Z     EEF-CVE-2026-59249 (MEDIUM)
+make-all	UNKNOWN STEP	2026-09-24T10:01:37.4911908Z     aka: CVE-2026-59249, GHSA-x3x7-96vm-6h2w
+make-all	UNKNOWN STEP	2026-09-24T10:01:37.4912828Z     Sign-tolerant HTTP/1 chunk-size parser in Mint enables response smuggling against strict intermediaries on pooled connections
+make-all	UNKNOWN STEP	2026-09-24T10:01:37.4913902Z     https://osv.dev/vulnerability/EEF-CVE-2026-59249
+make-all	UNKNOWN STEP	2026-09-24T10:01:37.4914419Z   nimble_options 1.1.1
+make-all	UNKNOWN STEP	2026-09-24T10:01:37.4914772Z   nimble_pool 1.1.0
+make-all	UNKNOWN STEP	2026-09-24T10:01:37.4915113Z   phoenix 1.8.4 VULNERABLE!
+make-all	UNKNOWN STEP	2026-09-24T10:01:37.4915497Z     EEF-CVE-2026-32689 (HIGH)
+make-all	UNKNOWN STEP	2026-09-24T10:01:37.4915902Z     aka: CVE-2026-32689, GHSA-628h-q48j-jr6q
+make-all	UNKNOWN STEP	2026-09-24T10:01:37.4916571Z     Long-poll NDJSON body splitting causes unbounded memory allocation in Phoenix
+make-all	UNKNOWN STEP	2026-09-24T10:01:37.4917304Z     https://osv.dev/vulnerability/EEF-CVE-2026-32689
+make-all	UNKNOWN STEP	2026-09-24T10:01:37.4917648Z 
+make-all	UNKNOWN STEP	2026-09-24T10:01:37.4917739Z     EEF-CVE-2026-56812 (MEDIUM)
+make-all	UNKNOWN STEP	2026-09-24T10:01:37.4918004Z     aka: CVE-2026-56812, GHSA-63mc-hw7g-86rr
+make-all	UNKNOWN STEP	2026-09-24T10:01:37.4918602Z     Phoenix JavaScript presence client crashes on presence keys colliding with Object.prototype members in Presence.syncState/syncDiff
+make-all	UNKNOWN STEP	2026-09-24T10:01:37.4919236Z     https://osv.dev/vulnerability/EEF-CVE-2026-56812
+make-all	UNKNOWN STEP	2026-09-24T10:01:37.4919451Z 
+make-all	UNKNOWN STEP	2026-09-24T10:01:37.4919543Z     EEF-CVE-2026-56811 (HIGH)
+make-all	UNKNOWN STEP	2026-09-24T10:01:37.4919795Z     aka: CVE-2026-56811, GHSA-6983-jfq8-485w
+make-all	UNKNOWN STEP	2026-09-24T10:01:37.4920693Z     Phoenix transports do not limit channel joins per connection, enabling process-exhaustion denial of service
+make-all	UNKNOWN STEP	2026-09-24T10:01:37.4921596Z     https://osv.dev/vulnerability/EEF-CVE-2026-56811
+make-all	UNKNOWN STEP	2026-09-24T10:01:37.4922092Z   phoenix_html 4.3.0
+make-all	UNKNOWN STEP	2026-09-24T10:01:37.4922467Z   phoenix_live_view 1.1.25 VULNERABLE!
+make-all	UNKNOWN STEP	2026-09-24T10:01:37.4923095Z     EEF-CVE-2026-64941 (LOW)
+make-all	UNKNOWN STEP	2026-09-24T10:01:37.4923529Z     aka: CVE-2026-64941, GHSA-36m4-rm57-3prf
+make-all	UNKNOWN STEP	2026-09-24T10:01:37.4924202Z     Open redirect in Phoenix.LiveView.validate_local_url!/2 via ASCII tab, LF and CR
+make-all	UNKNOWN STEP	2026-09-24T10:01:37.4924942Z     https://osv.dev/vulnerability/EEF-CVE-2026-64941
+make-all	UNKNOWN STEP	2026-09-24T10:01:37.4925487Z   phoenix_pubsub 2.2.0
+make-all	UNKNOWN STEP	2026-09-24T10:01:37.4925819Z   phoenix_template 1.0.4
+make-all	UNKNOWN STEP	2026-09-24T10:01:37.4926049Z   plug 1.19.1 VULNERABLE!
+make-all	UNKNOWN STEP	2026-09-24T10:01:37.4926288Z     EEF-CVE-2026-54892 (HIGH)
+make-all	UNKNOWN STEP	2026-09-24T10:01:37.4926540Z     aka: CVE-2026-54892, GHSA-j43x-5hjq-rgxf
+make-all	UNKNOWN STEP	2026-09-24T10:01:37.4926982Z     Plug: quadratic-time decoding of nested query/body parameters enables denial of service
+make-all	UNKNOWN STEP	2026-09-24T10:01:37.4927466Z     https://osv.dev/vulnerability/EEF-CVE-2026-54892
+make-all	UNKNOWN STEP	2026-09-24T10:01:37.4927680Z 
+make-all	UNKNOWN STEP	2026-09-24T10:01:37.4927772Z     EEF-CVE-2026-8468 (HIGH)
+make-all	UNKNOWN STEP	2026-09-24T10:01:37.4928021Z     aka: CVE-2026-8468, GHSA-468c-vq7p-gh64
+make-all	UNKNOWN STEP	2026-09-24T10:01:37.4928479Z     Unbounded buffer accumulation in multipart header parsing causes denial of service in plug
+make-all	UNKNOWN STEP	2026-09-24T10:01:37.4928976Z     https://osv.dev/vulnerability/EEF-CVE-2026-8468
+make-all	UNKNOWN STEP	2026-09-24T10:01:37.4929415Z 
+make-all	UNKNOWN STEP	2026-09-24T10:01:37.4929590Z     EEF-CVE-2026-56814 (MEDIUM)
+make-all	UNKNOWN STEP	2026-09-24T10:01:37.4929888Z     aka: CVE-2026-56814, GHSA-95qv-c9g9-rm63
+make-all	UNKNOWN STEP	2026-09-24T10:01:37.4930707Z     Plug: multipart :length limit is not charged for part headers, enabling unbounded temp-file creation (denial of service)
+make-all	UNKNOWN STEP	2026-09-24T10:01:37.4931657Z     https://osv.dev/vulnerability/EEF-CVE-2026-56814
+make-all	UNKNOWN STEP	2026-09-24T10:01:37.4932102Z 
+make-all	UNKNOWN STEP	2026-09-24T10:01:37.4932696Z     EEF-CVE-2026-56813 (LOW)
+make-all	UNKNOWN STEP	2026-09-24T10:01:37.4933086Z     aka: CVE-2026-56813, GHSA-wpmj-jh88-rpgm
+make-all	UNKNOWN STEP	2026-09-24T10:01:37.4933713Z     Cookie attribute injection in Plug.Conn.Cookies.encode/2
+make-all	UNKNOWN STEP	2026-09-24T10:01:37.4934387Z     https://osv.dev/vulnerability/EEF-CVE-2026-56813
+make-all	UNKNOWN STEP	2026-09-24T10:01:37.4934860Z   plug_crypto 2.1.1
+make-all	UNKNOWN STEP	2026-09-24T10:01:37.4935148Z   postgrex 0.22.3 VULNERABLE!
+make-all	UNKNOWN STEP	2026-09-24T10:01:37.4935495Z     EEF-CVE-2026-66838 (MEDIUM)
+make-all	UNKNOWN STEP	2026-09-24T10:01:37.4935991Z     aka: CVE-2026-66838, GHSA-3gww-3f36-2388
+make-all	UNKNOWN STEP	2026-09-24T10:01:37.4936653Z     SQL injection via the :comment option in Postgrex.stream/4
+make-all	UNKNOWN STEP	2026-09-24T10:01:37.4937322Z     https://osv.dev/vulnerability/EEF-CVE-2026-66838
+make-all	UNKNOWN STEP	2026-09-24T10:01:37.4937879Z   req 0.5.17 VULNERABLE!
+make-all	UNKNOWN STEP	2026-09-24T10:01:37.4938199Z     EEF-CVE-2026-49756 (LOW)
+make-all	UNKNOWN STEP	2026-09-24T10:01:37.4938966Z     aka: CVE-2026-49756, GHSA-px9f-whj3-246m
+make-all	UNKNOWN STEP	2026-09-24T10:01:37.4939806Z     Multipart form-data header injection in Req via unescaped name/filename/content_type
+make-all	UNKNOWN STEP	2026-09-24T10:01:37.4940788Z     https://osv.dev/vulnerability/EEF-CVE-2026-49756
+make-all	UNKNOWN STEP	2026-09-24T10:01:37.4941108Z 
+make-all	UNKNOWN STEP	2026-09-24T10:01:37.4941217Z     EEF-CVE-2026-49755 (HIGH)
+make-all	UNKNOWN STEP	2026-09-24T10:01:37.4941722Z     aka: CVE-2026-49755, GHSA-655f-mp8p-96gv
+make-all	UNKNOWN STEP	2026-09-24T10:01:37.4942480Z     Decompression bomb DoS in Req via auto-decoded archive and compressed response bodies
+make-all	UNKNOWN STEP	2026-09-24T10:01:37.4943652Z     https://osv.dev/vulnerability/EEF-CVE-2026-49755
+make-all	UNKNOWN STEP	2026-09-24T10:01:37.4944242Z   solid 1.2.2
+make-all	UNKNOWN STEP	2026-09-24T10:01:37.4944606Z   telemetry 1.3.0
+make-all	UNKNOWN STEP	2026-09-24T10:01:37.4945020Z   thousand_island 1.4.3
+make-all	UNKNOWN STEP	2026-09-24T10:01:37.4945437Z   websock 0.5.3
+make-all	UNKNOWN STEP	2026-09-24T10:01:37.4945713Z   websock_adapter 0.5.9
+make-all	UNKNOWN STEP	2026-09-24T10:01:37.4945926Z   yamerl 0.10.0
+make-all	UNKNOWN STEP	2026-09-24T10:01:37.4946171Z   yaml_elixir 2.12.0
+make-all	UNKNOWN STEP	2026-09-24T10:01:37.5198971Z Found packages with security advisories, see above for details
+make-all	UNKNOWN STEP	2026-09-24T10:01:37.5240276Z All dependencies have been fetched
+make-all	UNKNOWN STEP	2026-09-24T10:01:37.5375392Z mix dialyzer --format short
+make-all	UNKNOWN STEP	2026-09-24T10:01:38.1887501Z Finding suitable PLTs
+make-all	UNKNOWN STEP	2026-09-24T10:01:38.1888605Z Checking PLT...
+make-all	UNKNOWN STEP	2026-09-24T10:01:38.2253858Z [:asn1, :bandit, :compiler, :crypto, :date_time_parser, :db_connection, :decimal, :ecto, :eex, :elixir, :finch, :hpax, :jason, :kernel, :logger, :mime, :mint, :mix, :nimble_options, :nimble_pool, :phoenix, :phoenix_html, :phoenix_live_view, :phoenix_pubsub, :phoenix_template, :plug, :plug_crypto, :postgrex, :public_key, :req, :solid, :ssl, :stdlib, :symphony_elixir, :telemetry, :thousand_island, :websock, :websock_adapter, :yamerl, :yaml_elixir]
+make-all	UNKNOWN STEP	2026-09-24T10:01:38.2257511Z PLT is up to date!
+make-all	UNKNOWN STEP	2026-09-24T10:01:38.2258637Z No :ignore_warnings opt specified in mix.exs and default does not exist.
+make-all	UNKNOWN STEP	2026-09-24T10:01:38.2259666Z 
+make-all	UNKNOWN STEP	2026-09-24T10:01:38.2301274Z Starting Dialyzer
+make-all	UNKNOWN STEP	2026-09-24T10:01:38.2302440Z [
+make-all	UNKNOWN STEP	2026-09-24T10:01:38.2303268Z   check_plt: false,
+make-all	UNKNOWN STEP	2026-09-24T10:01:38.2304381Z   init_plt: ~c"/home/runner/work/symphony/symphony/elixir/_build/dev/dialyxir_erlang-28.5_elixir-1.19.5_deps-dev.plt",
+make-all	UNKNOWN STEP	2026-09-24T10:01:38.2306093Z   files: [~c"/home/runner/work/symphony/symphony/elixir/_build/dev/lib/symphony_elixir/ebin/Elixir.SymphonyElixirWeb.Router.Helpers.beam",
+make-all	UNKNOWN STEP	2026-09-24T10:01:38.2307955Z    ~c"/home/runner/work/symphony/symphony/elixir/_build/dev/lib/symphony_elixir/ebin/Elixir.SymphonyElixir.GitPreflightCommand.beam",
+make-all	UNKNOWN STEP	2026-09-24T10:01:38.2309805Z    ~c"/home/runner/work/symphony/symphony/elixir/_build/dev/lib/symphony_elixir/ebin/Elixir.SymphonyElixir.GitCredentialEnvironment.beam",
+make-all	UNKNOWN STEP	2026-09-24T10:01:38.2311613Z    ~c"/home/runner/work/symphony/symphony/elixir/_build/dev/lib/symphony_elixir/ebin/Elixir.SymphonyElixir.WorkflowStore.State.beam",
+make-all	UNKNOWN STEP	2026-09-24T10:01:38.2313529Z    ~c"/home/runner/work/symphony/symphony/elixir/_build/dev/lib/symphony_elixir/ebin/symphony_runtime_receipt_writer.beam",
+make-all	UNKNOWN STEP	2026-09-24T10:01:38.2314503Z    ...],
+make-all	UNKNOWN STEP	2026-09-24T10:01:38.2314808Z   ...
+make-all	UNKNOWN STEP	2026-09-24T10:01:38.2315116Z ]
+make-all	UNKNOWN STEP	2026-09-24T10:01:46.9209932Z Total errors: 0, Skipped: 0, Unnecessary Skips: 0
+make-all	UNKNOWN STEP	2026-09-24T10:01:46.9251053Z done in 0m8.68s
+make-all	UNKNOWN STEP	2026-09-24T10:01:46.9252104Z done (passed successfully)
+make-all	UNKNOWN STEP	2026-09-24T10:01:46.9366671Z make[1]: Leaving directory '/home/runner/work/symphony/symphony/elixir'
+make-all	UNKNOWN STEP	2026-09-24T10:01:47.0003692Z Post job cleanup.
+make-all	UNKNOWN STEP	2026-09-24T10:01:47.1144643Z Cache hit occurred on the primary key Linux-mix-1816208a485d567dae4a4528015d9b4210f6e29a85f58136e8a0ed69d5e17a89, not saving cache.
+make-all	UNKNOWN STEP	2026-09-24T10:01:47.1146370Z (node:21777) [DEP0040] DeprecationWarning: The `punycode` module is deprecated. Please use a userland alternative instead.
+make-all	UNKNOWN STEP	2026-09-24T10:01:47.1147661Z (Use `node --trace-deprecation ...` to show where the warning was created)
+make-all	UNKNOWN STEP	2026-09-24T10:01:47.1276925Z Post job cleanup.
+make-all	UNKNOWN STEP	2026-09-24T10:01:47.2133602Z [command]/usr/bin/git version
+make-all	UNKNOWN STEP	2026-09-24T10:01:47.2178483Z git version 2.55.0
+make-all	UNKNOWN STEP	2026-09-24T10:01:47.2217623Z Temporarily overriding HOME='/home/runner/work/_temp/74485653-3213-465c-aef7-867687170a95' before making global git config changes
+make-all	UNKNOWN STEP	2026-09-24T10:01:47.2219230Z Adding repository directory to the temporary git global config as a safe directory
+make-all	UNKNOWN STEP	2026-09-24T10:01:47.2224475Z [command]/usr/bin/git config --global --add safe.directory /home/runner/work/symphony/symphony
+make-all	UNKNOWN STEP	2026-09-24T10:01:47.2264645Z [command]/usr/bin/git config --local --name-only --get-regexp core\.sshCommand
+make-all	UNKNOWN STEP	2026-09-24T10:01:47.2303522Z [command]/usr/bin/git submodule foreach --recursive sh -c "git config --local --name-only --get-regexp 'core\.sshCommand' && git config --local --unset-all 'core.sshCommand' || :"
+make-all	UNKNOWN STEP	2026-09-24T10:01:47.2567774Z [command]/usr/bin/git config --local --name-only --get-regexp http\.https\:\/\/github\.com\/\.extraheader
+make-all	UNKNOWN STEP	2026-09-24T10:01:47.2604006Z http.https://github.com/.extraheader
+make-all	UNKNOWN STEP	2026-09-24T10:01:47.2623161Z [command]/usr/bin/git config --local --unset-all http.https://github.com/.extraheader
+make-all	UNKNOWN STEP	2026-09-24T10:01:47.2654062Z [command]/usr/bin/git submodule foreach --recursive sh -c "git config --local --name-only --get-regexp 'http\.https\:\/\/github\.com\/\.extraheader' && git config --local --unset-all 'http.https://github.com/.extraheader' || :"
+make-all	UNKNOWN STEP	2026-09-24T10:01:47.2915694Z [command]/usr/bin/git config --local --name-only --get-regexp ^includeIf\.gitdir:
+make-all	UNKNOWN STEP	2026-09-24T10:01:47.2960883Z [command]/usr/bin/git submodule foreach --recursive git config --local --show-origin --name-only --get-regexp remote.origin.url
+make-all	UNKNOWN STEP	2026-09-24T10:01:47.3359828Z Cleaning up orphan processes
+make-all	UNKNOWN STEP	2026-09-24T10:01:47.3763024Z ##[warning]Node.js 20 is deprecated. The following actions target Node.js 20 but are being forced to run on Node.js 24: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830, actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5, jdx/mise-action@5228313ee0372e111a38da051671ca30fc5a96db. For more information see: https://github.blog/changelog/2025-09-19-deprecation-of-node-20-on-github-actions-runners/

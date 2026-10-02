@@ -1,0 +1,63 @@
+RUN 1
+Running ExUnit with seed: 350817, max_cases: 40
+Excluding tags: [:test]
+Including tags: [location: {"test/symphony_elixir/runtime_notifier_test.exs", 12}]
+
+
+
+  1) test delivers the fixed restart-limit event as one JSON line on stdin (SymphonyElixir.RuntimeNotifierTest)
+     test/symphony_elixir/runtime_notifier_test.exs:12
+     match (=) failed
+     code:  assert :ok = RuntimeNotifier.notify_restart_limit(config, event)
+     left:  :ok
+     right: {:error, :notification_failed}
+     stacktrace:
+       test/symphony_elixir/runtime_notifier_test.exs:18: anonymous fn/1 in SymphonyElixir.RuntimeNotifierTest."test delivers the fixed restart-limit event as one JSON line on stdin"/1
+       test/symphony_elixir/runtime_notifier_test.exs:576: SymphonyElixir.RuntimeNotifierTest.with_runtime_root/1
+       test/symphony_elixir/runtime_notifier_test.exs:13: (test)
+
+
+Finished in 0.4 seconds (0.00s async, 0.4s sync)
+1 test, 1 failure (23 excluded)
+RUN 2
+Running ExUnit with seed: 350817, max_cases: 40
+Excluding tags: [:test]
+Including tags: [location: {"test/symphony_elixir/runtime_notifier_test.exs", 12}]
+
+
+
+  1) test delivers the fixed restart-limit event as one JSON line on stdin (SymphonyElixir.RuntimeNotifierTest)
+     test/symphony_elixir/runtime_notifier_test.exs:12
+     match (=) failed
+     code:  assert :ok = RuntimeNotifier.notify_restart_limit(config, event)
+     left:  :ok
+     right: {:error, :notification_failed}
+     stacktrace:
+       test/symphony_elixir/runtime_notifier_test.exs:18: anonymous fn/1 in SymphonyElixir.RuntimeNotifierTest."test delivers the fixed restart-limit event as one JSON line on stdin"/1
+       test/symphony_elixir/runtime_notifier_test.exs:576: SymphonyElixir.RuntimeNotifierTest.with_runtime_root/1
+       test/symphony_elixir/runtime_notifier_test.exs:13: (test)
+
+
+Finished in 0.5 seconds (0.00s async, 0.5s sync)
+1 test, 1 failure (23 excluded)
+RUN 3
+Running ExUnit with seed: 350817, max_cases: 40
+Excluding tags: [:test]
+Including tags: [location: {"test/symphony_elixir/runtime_notifier_test.exs", 12}]
+
+
+
+  1) test delivers the fixed restart-limit event as one JSON line on stdin (SymphonyElixir.RuntimeNotifierTest)
+     test/symphony_elixir/runtime_notifier_test.exs:12
+     match (=) failed
+     code:  assert :ok = RuntimeNotifier.notify_restart_limit(config, event)
+     left:  :ok
+     right: {:error, :notification_failed}
+     stacktrace:
+       test/symphony_elixir/runtime_notifier_test.exs:18: anonymous fn/1 in SymphonyElixir.RuntimeNotifierTest."test delivers the fixed restart-limit event as one JSON line on stdin"/1
+       test/symphony_elixir/runtime_notifier_test.exs:576: SymphonyElixir.RuntimeNotifierTest.with_runtime_root/1
+       test/symphony_elixir/runtime_notifier_test.exs:13: (test)
+
+
+Finished in 0.4 seconds (0.00s async, 0.4s sync)
+1 test, 1 failure (23 excluded)

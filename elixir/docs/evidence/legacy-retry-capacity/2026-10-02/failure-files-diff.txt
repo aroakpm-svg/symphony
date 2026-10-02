@@ -1,0 +1,6 @@
+base..result changed files:
+elixir/docs/legacy_retry_capacity_acceptance.md
+elixir/lib/symphony_elixir/orchestrator.ex
+elixir/test/symphony_elixir/core_test.exs
+
+failure-path diff (empty means identical):

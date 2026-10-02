@@ -1,0 +1,19 @@
+captured_at=2026-10-02T14:57:34+08:00
+distribution=AROAK-Han-WSL
+whoami=aroak-han
+uname=Linux KEN-AROAK 6.18.33.2-microsoft-standard-WSL2 #1 SMP PREEMPT_DYNAMIC Thu Jun 18 21:54:43 UTC 2026 x86_64 x86_64 x86_64 GNU/Linux
+nproc=20
+mise=2026.7.17 linux-x64 (2026-07-30)
+Erlang/OTP 28 [erts-16.4] [source] [64-bit] [smp:20:20] [ds:20:20:10] [async-threads:1] [jit:ns]
+
+Elixir 1.19.5 (compiled with Erlang/OTP 28)
+head=078e3a767e9ecfe0396524389a6dbf3b1635ba15
+tree=6776395ea983e83ee76e8a6e0d0ef404930d6d0b
+branch=codex/t1-r1-legacy-retry-capacity
+pwsh=
+powershell.exe=/mnt/c/WINDOWS/System32/WindowsPowerShell/v1.0/powershell.exe
+
+sh=/usr/bin/sh
+timeout=/usr/bin/timeout
+base64=/usr/bin/base64
+secret_handling=all test commands invoked with business secret variables removed by env -u; no values inspected or printed

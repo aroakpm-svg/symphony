@@ -1,0 +1,277 @@
+Cover compiling modules ...
+warning: the following files do not match any of the configured `:test_load_filters` / `:test_ignore_filters`:
+
+test/support/claim_service_postgres_harness.exs
+
+This might indicate a typo in a test file name (for example, using "foo_tests.exs" instead of "foo_test.exs").
+
+See the configuration for `:test_pattern` under `mix help test` for more information.
+
+Running ExUnit with seed: 448744, max_cases: 1
+
+............................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................******..
+
+  1) test delivers the fixed restart-limit event as one JSON line on stdin (SymphonyElixir.RuntimeNotifierTest)
+     test/symphony_elixir/runtime_notifier_test.exs:12
+     match (=) failed
+     code:  assert :ok = RuntimeNotifier.notify_restart_limit(config, event)
+     left:  :ok
+     right: {:error, :notification_failed}
+     stacktrace:
+       test/symphony_elixir/runtime_notifier_test.exs:18: anonymous fn/1 in SymphonyElixir.RuntimeNotifierTest."test delivers the fixed restart-limit event as one JSON line on stdin"/1
+       test/symphony_elixir/runtime_notifier_test.exs:576: SymphonyElixir.RuntimeNotifierTest.with_runtime_root/1
+       test/symphony_elixir/runtime_notifier_test.exs:13: (test)
+
+
+
+  2) test timeout terminates notifier descendants before clearing the retry claim (SymphonyElixir.RuntimeNotifierTest)
+     test/symphony_elixir/runtime_notifier_test.exs:550
+     match (=) failed
+     code:  assert {:error, :notification_timeout} =
+              RuntimeNotifier.notify_restart_limit(
+                config(root, descendant_timeout_command(marker_path), notification_timeout_ms: 100),
+                event(root, "epoch-descendant-timeout")
+              )
+     left:  {:error, :notification_timeout}
+     right: {:error, :notification_failed}
+     stacktrace:
+       test/symphony_elixir/runtime_notifier_test.exs:554: anonymous fn/1 in SymphonyElixir.RuntimeNotifierTest."test timeout terminates notifier descendants before clearing the retry claim"/1
+       test/symphony_elixir/runtime_notifier_test.exs:576: SymphonyElixir.RuntimeNotifierTest.with_runtime_root/1
+       test/symphony_elixir/runtime_notifier_test.exs:551: (test)
+
+
+
+  3) test accepts a maximum-combination RuntimeHealth receipt at exact field boundaries (SymphonyElixir.RuntimeNotifierTest)
+     test/symphony_elixir/runtime_notifier_test.exs:318
+     match (=) failed
+     code:  assert :ok =
+              RuntimeNotifier.notify_restart_limit(
+                config(runtime_root, success_command(output_path)),
+                notification_event(receipt_path, epoch)
+              )
+     left:  :ok
+     right: {:error, :notification_failed}
+     stacktrace:
+       test/symphony_elixir/runtime_notifier_test.exs:324: anonymous fn/4 in SymphonyElixir.RuntimeNotifierTest."test accepts a maximum-combination RuntimeHealth receipt at exact field boundaries"/1
+       test/symphony_elixir/runtime_notifier_test.exs:673: SymphonyElixir.RuntimeNotifierTest.with_runtime_health_receipt/3
+       test/symphony_elixir/runtime_notifier_test.exs:321: (test)
+
+....
+
+  4) test verified non-zero termination clears the claim and permits one safe retry (SymphonyElixir.RuntimeNotifierTest)
+     test/symphony_elixir/runtime_notifier_test.exs:522
+     ** (File.Error) could not read file "/tmp/symphony-runtime-notifier-13763/claim-observed.txt": no such file or directory
+     code: with_runtime_root(fn root ->
+     stacktrace:
+       (elixir 1.19.5) lib/file.ex:435: File.read!/1
+       test/symphony_elixir/runtime_notifier_test.exs:534: anonymous fn/1 in SymphonyElixir.RuntimeNotifierTest."test verified non-zero termination clears the claim and permits one safe retry"/1
+       test/symphony_elixir/runtime_notifier_test.exs:576: SymphonyElixir.RuntimeNotifierTest.with_runtime_root/1
+       test/symphony_elixir/runtime_notifier_test.exs:523: (test)
+
+
+
+  5) test distinct epochs deliver independently (SymphonyElixir.RuntimeNotifierTest)
+     test/symphony_elixir/runtime_notifier_test.exs:211
+     match (=) failed
+     code:  assert :ok = RuntimeNotifier.notify_restart_limit(config, event(root, "epoch-one"))
+     left:  :ok
+     right: {:error, :notification_failed}
+     stacktrace:
+       test/symphony_elixir/runtime_notifier_test.exs:216: anonymous fn/1 in SymphonyElixir.RuntimeNotifierTest."test distinct epochs deliver independently"/1
+       test/symphony_elixir/runtime_notifier_test.exs:576: SymphonyElixir.RuntimeNotifierTest.with_runtime_root/1
+       test/symphony_elixir/runtime_notifier_test.exs:212: (test)
+
+.
+
+  6) test same receiver and epoch replay is idempotent (SymphonyElixir.RuntimeNotifierTest)
+     test/symphony_elixir/runtime_notifier_test.exs:80
+     match (=) failed
+     code:  assert :ok = RuntimeNotifier.notify_restart_limit(config, event)
+     left:  :ok
+     right: {:error, :notification_failed}
+     stacktrace:
+       test/symphony_elixir/runtime_notifier_test.exs:86: anonymous fn/1 in SymphonyElixir.RuntimeNotifierTest."test same receiver and epoch replay is idempotent"/1
+       test/symphony_elixir/runtime_notifier_test.exs:576: SymphonyElixir.RuntimeNotifierTest.with_runtime_root/1
+       test/symphony_elixir/runtime_notifier_test.exs:81: (test)
+
+.
+
+  7) test accepts a RuntimeHealth receipt after offset clock normalization (SymphonyElixir.RuntimeNotifierTest)
+     test/symphony_elixir/runtime_notifier_test.exs:339
+     match (=) failed
+     code:  assert :ok =
+              RuntimeNotifier.notify_restart_limit(
+                config(runtime_root, success_command(output_path)),
+                notification_event(receipt_path, epoch)
+              )
+     left:  :ok
+     right: {:error, :notification_failed}
+     stacktrace:
+       test/symphony_elixir/runtime_notifier_test.exs:346: anonymous fn/3 in SymphonyElixir.RuntimeNotifierTest."test accepts a RuntimeHealth receipt after offset clock normalization"/1
+       test/symphony_elixir/runtime_notifier_test.exs:673: SymphonyElixir.RuntimeNotifierTest.with_runtime_health_receipt/3
+       test/symphony_elixir/runtime_notifier_test.exs:340: (test)
+
+....
+
+  8) test never returns, logs, or prints notification command output (SymphonyElixir.RuntimeNotifierTest)
+     test/symphony_elixir/runtime_notifier_test.exs:224
+     Assertion failed, no matching message after 100ms
+     Showing 3 of 3 messages in the mailbox
+     code: assert_receive {:result, :ok}
+     mailbox:
+       pattern: {:result, :ok}
+       value:   {:result, {:error, :notification_failed}}
+
+       pattern: {:result, :ok}
+       value:   {:error_output, ""}
+
+       pattern: {:result, :ok}
+       value:   {:output, ""}
+     stacktrace:
+       test/symphony_elixir/runtime_notifier_test.exs:244: anonymous fn/1 in SymphonyElixir.RuntimeNotifierTest."test never returns, logs, or prints notification command output"/1
+       test/symphony_elixir/runtime_notifier_test.exs:576: SymphonyElixir.RuntimeNotifierTest.with_runtime_root/1
+       test/symphony_elixir/runtime_notifier_test.exs:225: (test)
+
+
+
+  9) test times out without recording delivery (SymphonyElixir.RuntimeNotifierTest)
+     test/symphony_elixir/runtime_notifier_test.exs:46
+     match (=) failed
+     code:  assert {:error, :notification_timeout} =
+              RuntimeNotifier.notify_restart_limit(config, event(root, "epoch-timeout"))
+     left:  {:error, :notification_timeout}
+     right: {:error, :notification_failed}
+     stacktrace:
+       test/symphony_elixir/runtime_notifier_test.exs:50: anonymous fn/1 in SymphonyElixir.RuntimeNotifierTest."test times out without recording delivery"/1
+       test/symphony_elixir/runtime_notifier_test.exs:576: SymphonyElixir.RuntimeNotifierTest.with_runtime_root/1
+       test/symphony_elixir/runtime_notifier_test.exs:47: (test)
+
+
+
+ 10) test concurrent receiver and epoch calls reserve before the notification side effect (SymphonyElixir.RuntimeNotifierTest)
+     test/symphony_elixir/runtime_notifier_test.exs:484
+     Assertion with == failed
+     code:  assert Enum.count(results, &(&1 == :ok)) == 1
+     left:  0
+     right: 1
+     stacktrace:
+       test/symphony_elixir/runtime_notifier_test.exs:497: anonymous fn/1 in SymphonyElixir.RuntimeNotifierTest."test concurrent receiver and epoch calls reserve before the notification side effect"/1
+       test/symphony_elixir/runtime_notifier_test.exs:576: SymphonyElixir.RuntimeNotifierTest.with_runtime_root/1
+       test/symphony_elixir/runtime_notifier_test.exs:485: (test)
+
+
+
+ 11) test accepts the watchdog restart attempt on the shared RuntimeHealth receipt (SymphonyElixir.RuntimeNotifierTest)
+     test/symphony_elixir/runtime_notifier_test.exs:358
+     match (=) failed
+     code:  assert :ok =
+              RuntimeNotifier.notify_restart_limit(
+                config(runtime_root, success_command(output_path)),
+                notification_event(receipt_path, epoch)
+              )
+     left:  :ok
+     right: {:error, :notification_failed}
+     stacktrace:
+       test/symphony_elixir/runtime_notifier_test.exs:365: anonymous fn/3 in SymphonyElixir.RuntimeNotifierTest."test accepts the watchdog restart attempt on the shared RuntimeHealth receipt"/1
+       test/symphony_elixir/runtime_notifier_test.exs:673: SymphonyElixir.RuntimeNotifierTest.with_runtime_health_receipt/3
+       test/symphony_elixir/runtime_notifier_test.exs:359: (test)
+
+....................***...........************************......**....................................................................***.............................................................................................................................................spawn: Could not cd to /tmp/symphony-workspace-preflight-missing-cleanup-25666/MT-PREFLIGHT-MISSING-CLEANUP
+...................................................................................................................................................................................................................................................................................................................................................................................................hint: Using 'master' as the name for the initial branch. This default branch name
+hint: is subject to change. To configure the initial branch name to use in all
+hint: of your new repositories, which will suppress this warning, call:
+hint: 
+hint: 	git config --global init.defaultBranch <name>
+hint: 
+hint: Names commonly chosen instead of 'master' are 'main', 'trunk' and
+hint: 'development'. The just-created branch can be renamed via this command:
+hint: 
+hint: 	git branch -m <name>
+......................................................................................................
+Finished in 117.5 seconds (12.9s async, 104.6s sync)
+1320 tests, 11 failures, 38 skipped
+
+Generating cover results ...
+
+| Percentage | Module                                             |
+|------------|----------------------------------------------------|
+|    100.00% | Inspect.SymphonyElixir.Orchestrator.State          |
+|    100.00% | Mix.Tasks.PrBody.Check                             |
+|    100.00% | Mix.Tasks.Specs.Check                              |
+|    100.00% | Mix.Tasks.Workspace.BeforeRemove                   |
+|    100.00% | SymphonyElixir                                     |
+|    100.00% | SymphonyElixir.AdmissionGate                       |
+|    100.00% | SymphonyElixir.AgentRunner.TurnContext             |
+|    100.00% | SymphonyElixir.ClaimConnection                     |
+|    100.00% | SymphonyElixir.Codex.BrokerLaunchLock              |
+|    100.00% | SymphonyElixir.CodexAuthHome                       |
+|    100.00% | SymphonyElixir.CodexExecutionInputs                |
+|    100.00% | SymphonyElixir.Config.Schema                       |
+|    100.00% | SymphonyElixir.Config.Schema.Agent                 |
+|    100.00% | SymphonyElixir.Config.Schema.Claim                 |
+|    100.00% | SymphonyElixir.Config.Schema.Codex                 |
+|    100.00% | SymphonyElixir.Config.Schema.Hooks                 |
+|    100.00% | SymphonyElixir.Config.Schema.Landing               |
+|    100.00% | SymphonyElixir.Config.Schema.Observability         |
+|    100.00% | SymphonyElixir.Config.Schema.Polling               |
+|    100.00% | SymphonyElixir.Config.Schema.ProjectProfilesType   |
+|    100.00% | SymphonyElixir.Config.Schema.ReviewConvergence     |
+|    100.00% | SymphonyElixir.Config.Schema.Server                |
+|    100.00% | SymphonyElixir.Config.Schema.StringOrMap           |
+|    100.00% | SymphonyElixir.Config.Schema.Tracker               |
+|    100.00% | SymphonyElixir.Config.Schema.Worker                |
+|    100.00% | SymphonyElixir.Config.Schema.Workspace             |
+|    100.00% | SymphonyElixir.CoreSupervisor                      |
+|    100.00% | SymphonyElixir.DispatchCandidate                   |
+|    100.00% | SymphonyElixir.FindingDisposition                  |
+|    100.00% | SymphonyElixir.GitBranchResolver                   |
+|    100.00% | SymphonyElixir.GitBranchResolver.CanonicalEvidence |
+|    100.00% | SymphonyElixir.GitBranchResolver.Checkout          |
+|    100.00% | SymphonyElixir.GitBranchResolver.Failure           |
+|    100.00% | SymphonyElixir.GitBranchResolver.Receipt           |
+|    100.00% | SymphonyElixir.GitCheckoutPreflight                |
+|    100.00% | SymphonyElixir.GitCredentialEnvironment            |
+|    100.00% | SymphonyElixir.GitHubAppCredentialSource           |
+|    100.00% | SymphonyElixir.GitHubAuthorityClient               |
+|    100.00% | SymphonyElixir.GitHubCredentialResolver            |
+|    100.00% | SymphonyElixir.GitHubCredentialResolver.Credential |
+|    100.00% | SymphonyElixir.GitHubResponse                      |
+|    100.00% | SymphonyElixir.GitPreflightCommand                 |
+|    100.00% | SymphonyElixir.HandoffReceipt                      |
+|    100.00% | SymphonyElixir.HandoffReceipt.Store                |
+|    100.00% | SymphonyElixir.Linear.Issue                        |
+|    100.00% | SymphonyElixir.Linear.Issue.StackedBase            |
+|    100.00% | SymphonyElixir.MergeReadyCandidate                 |
+|    100.00% | SymphonyElixir.MergeReadyEvidence                  |
+|    100.00% | SymphonyElixir.MultiProjectPoll                    |
+|    100.00% | SymphonyElixir.PatchAuthorization                  |
+|    100.00% | SymphonyElixir.PathSafety                          |
+|    100.00% | SymphonyElixir.ProjectExecutionContext             |
+|    100.00% | SymphonyElixir.ProjectProfiles                     |
+|    100.00% | SymphonyElixir.PromptBuilder                       |
+|    100.00% | SymphonyElixir.ProtectedPath                       |
+|    100.00% | SymphonyElixir.ReadinessGate                       |
+|    100.00% | SymphonyElixir.ReadinessGate.Failure               |
+|    100.00% | SymphonyElixir.ReadinessGate.Receipt               |
+|    100.00% | SymphonyElixir.RepositoryBootstrap                 |
+|    100.00% | SymphonyElixir.RepositorySource                    |
+|    100.00% | SymphonyElixir.ReviewConvergence                   |
+|    100.00% | SymphonyElixir.ReviewIdentity                      |
+|    100.00% | SymphonyElixir.ReviewSettlement                    |
+|    100.00% | SymphonyElixir.ReviewSettlementReceipt             |
+|    100.00% | SymphonyElixir.RuntimeReceiptContract              |
+|    100.00% | SymphonyElixir.SSH                                 |
+|    100.00% | SymphonyElixir.ScopeContract                       |
+|    100.00% | SymphonyElixir.SecretSafety                        |
+|    100.00% | SymphonyElixir.SubprocessEnvironment               |
+|    100.00% | SymphonyElixir.Workflow                            |
+|    100.00% | SymphonyElixir.WorkflowStore                       |
+|    100.00% | SymphonyElixir.WorkflowStore.State                 |
+|    100.00% | SymphonyElixir.Workspace.PrivateHomeCapability     |
+|    100.00% | SymphonyElixir.Workspace.PrivateHomeOperation      |
+|    100.00% | SymphonyElixir.Workspace.ReadinessState            |
+|    100.00% | SymphonyElixirWeb.ObservabilityPubSub              |
+|------------|----------------------------------------------------|
+|    100.00% | Total                                              |
+
+Generated HTML coverage results in "cover" directory
