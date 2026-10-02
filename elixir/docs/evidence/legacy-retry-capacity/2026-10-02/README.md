@@ -35,7 +35,7 @@ This is an environment/test-fixture portability blocker, not a regression in the
 
 Single root-cause hypothesis: the fixed 2.5-second performance tests exceed their budget under the current WSL scheduler/load, not because of the T1-R1 diff.
 
-- The two tests pass together under coverage in 1.3 seconds when isolated; the partial command exits 1 only because it cannot meet the repository-wide 100% coverage threshold.
+- The two tests pass together under coverage in 1.3 seconds when isolated; the outer wrapper reported exit 1 because the partial run did not meet the repository-wide 100% coverage threshold. The historical native exit code was not captured separately.
 - The result's full coverage run at `max_cases=1` has no ScopeContract timeout and retains the same eleven RuntimeNotifier failures; see `result-cover-max-cases-1.log.gz`.
 - The local default is `max_cases=40`; the persisted result run had one ScopeContract timeout and the fixed-base run had two.
 - The existing fixed-base GitHub Actions run used `max_cases=8` and passed. A local result run at eight still had one ScopeContract timeout, showing this WSL remains slower than that runner.
