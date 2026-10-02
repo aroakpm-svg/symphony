@@ -16,80 +16,80 @@
   "commands": [
     {
       "id": "red-temporary-revert",
-      "version": "078e3a767e9ecfe0396524389a6dbf3b1635ba15 plus red-temporary-revert.patch",
+      "version": "078e3a767e9ecfe0396524389a6dbf3b1635ba15 plus red-temporary-revert.patch.gz",
       "command": "mise exec -- mix test test/symphony_elixir/core_test.exs:1999 --seed 350817",
       "exitCode": 1,
-      "output": "red-temporary-revert.log"
+      "output": "red-temporary-revert.log.gz"
     },
     {
       "id": "green-result",
       "version": "078e3a767e9ecfe0396524389a6dbf3b1635ba15",
       "command": "mise exec -- mix test test/symphony_elixir/core_test.exs:1999 --seed 350817",
       "exitCode": 0,
-      "output": "green-result.log"
+      "output": "green-result.log.gz"
     },
     {
       "id": "retained-owner",
       "version": "078e3a767e9ecfe0396524389a6dbf3b1635ba15",
       "command": "mise exec -- mix test test/symphony_elixir/multi_project_dispatch_test.exs:1196 --seed 350817",
       "exitCode": 0,
-      "output": "retained-owner.log"
+      "output": "retained-owner.log.gz"
     },
     {
       "id": "targeted",
       "version": "078e3a767e9ecfe0396524389a6dbf3b1635ba15",
       "command": "mise exec -- mix test test/symphony_elixir/core_test.exs test/symphony_elixir/multi_project_dispatch_test.exs test/symphony_elixir/project_profiles_test.exs --seed 350817",
       "exitCode": 0,
-      "output": "targeted.log"
+      "output": "targeted.log.gz"
     },
     {
       "id": "format",
       "version": "078e3a767e9ecfe0396524389a6dbf3b1635ba15",
       "command": "mise exec -- mix format --check-formatted",
       "exitCode": 0,
-      "output": "format.log"
+      "output": "format.log.gz"
     },
     {
       "id": "specs",
       "version": "078e3a767e9ecfe0396524389a6dbf3b1635ba15",
       "command": "mise exec -- mix specs.check",
       "exitCode": 0,
-      "output": "specs.log"
+      "output": "specs.log.gz"
     },
     {
       "id": "lint",
       "version": "078e3a767e9ecfe0396524389a6dbf3b1635ba15",
       "command": "mise exec -- mix lint",
       "exitCode": 0,
-      "output": "lint.log"
+      "output": "lint.log.gz"
     },
     {
       "id": "dialyzer",
       "version": "078e3a767e9ecfe0396524389a6dbf3b1635ba15",
       "command": "mise exec -- make dialyzer",
       "exitCode": 0,
-      "output": "dialyzer.log"
+      "output": "dialyzer.log.gz"
     },
     {
       "id": "result-make-all",
       "version": "078e3a767e9ecfe0396524389a6dbf3b1635ba15",
       "command": "mise exec -- make all",
       "exitCode": 1,
-      "output": "result-make-all.log"
+      "output": "result-make-all.log.gz"
     },
     {
       "id": "base-make-all",
       "version": "8066b60d1b2db390566925423619c04f8cf8319b",
       "command": "mise exec -- make all",
       "exitCode": 1,
-      "output": "base-make-all.log"
+      "output": "base-make-all.log.gz"
     },
     {
       "id": "runtime-notifier-minimal-repro",
       "version": "078e3a767e9ecfe0396524389a6dbf3b1635ba15",
       "command": "mise exec -- mix test test/symphony_elixir/runtime_notifier_test.exs:12 --seed 350817",
       "exitCodes": [1, 1, 1],
-      "output": "runtime-notifier-repro.log"
+      "output": "runtime-notifier-repro.log.gz"
     },
     {
       "id": "scope-isolated-cover",
@@ -97,21 +97,21 @@
       "command": "mise exec -- mix test --cover test/symphony_elixir/scope_contract_test.exs:950 test/symphony_elixir/scope_contract_test.exs:1320 --seed 448744",
       "exitCode": 1,
       "testResult": "2 tests, 0 failures; command exits 1 only because the intentionally partial run does not meet the global 100% coverage threshold",
-      "output": "scope-isolated-cover.log"
+      "output": "scope-isolated-cover.log.gz"
     },
     {
       "id": "result-cover-max-cases-1",
       "version": "078e3a767e9ecfe0396524389a6dbf3b1635ba15",
       "command": "mise exec -- mix test --cover --max-cases 1 --seed 448744",
       "exitCode": 1,
-      "output": "result-cover-max-cases-1.log"
+      "output": "result-cover-max-cases-1.log.gz"
     },
     {
       "id": "result-cover-ci-concurrency",
       "version": "078e3a767e9ecfe0396524389a6dbf3b1635ba15",
       "command": "mise exec -- mix test --cover --max-cases 8 --seed 60679",
       "exitCode": 1,
-      "output": "result-cover-ci-concurrency.log"
+      "output": "result-cover-ci-concurrency.log.gz"
     },
     {
       "id": "base-github-ci",
@@ -119,7 +119,7 @@
       "command": "GitHub Actions make-all run 35984520643",
       "exitCode": 0,
       "url": "https://github.com/aroakpm-svg/symphony/actions/runs/35984520643",
-      "output": "base-github-ci.log",
+      "output": "base-github-ci.log.gz",
       "metadata": "base-github-ci.json"
     }
   ]

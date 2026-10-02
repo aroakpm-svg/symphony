@@ -1,9 +1,0 @@
-specs.check: all public functions have @spec or exemption
-Checking 168 source files (this might take a while) ...
-
-Please report incorrect results: https://github.com/rrrene/credo/issues
-
-Analysis took 8.1 seconds (0.2s to load, 7.9s running 69 checks on 168 files)
-4605 mods/funs, found no issues.
-
-Use `mix credo explain` to explain issues, `mix credo --help` for options.

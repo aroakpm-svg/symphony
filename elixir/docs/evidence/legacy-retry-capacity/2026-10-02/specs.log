@@ -1,1 +1,0 @@
-specs.check: all public functions have @spec or exemption
