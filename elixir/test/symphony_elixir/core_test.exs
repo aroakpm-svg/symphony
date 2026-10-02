@@ -1996,6 +1996,40 @@ defmodule SymphonyElixir.CoreTest do
     assert Orchestrator.select_worker_host_for_test(state, "worker-a") == "worker-a"
   end
 
+  test "legacy retry capacity includes workers pending cleanup" do
+    in_progress = %Issue{id: "issue-a", identifier: "ARO-A", title: "A", state: "In Progress"}
+    todo = %Issue{id: "issue-a", identifier: "ARO-A", title: "A", state: "Todo"}
+    candidate = %Issue{id: "issue-b", identifier: "ARO-B", title: "B", state: "In Progress"}
+
+    cases = [
+      {"same state pending cleanup", 2, 1, %{}, %{"issue-a" => %{issue: in_progress}}, false},
+      {"different state pending cleanup", 2, 1, %{}, %{"issue-a" => %{issue: todo}}, true},
+      {"completed cleanup releases slot", 2, 1, %{}, %{}, true},
+      {"global capacity is full", 1, 2, %{}, %{"issue-a" => %{issue: todo}}, false},
+      {"same issue is counted once", 3, 2, %{"issue-a" => %{issue: in_progress}}, %{"issue-a" => %{issue: in_progress}}, true},
+      {"running worker fills state capacity", 2, 1, %{"issue-a" => %{issue: in_progress}}, %{}, false}
+    ]
+
+    for {name, global_limit, state_limit, running, pending_cleanup, expected} <- cases do
+      write_workflow_file!(Workflow.workflow_file_path(),
+        tracker_kind: "memory",
+        max_concurrent_agents: global_limit,
+        max_concurrent_agents_by_state: %{"in progress" => state_limit}
+      )
+
+      assert :ok = WorkflowStore.force_reload()
+
+      state = %Orchestrator.State{
+        max_concurrent_agents: global_limit,
+        running: running,
+        pending_cleanup: pending_cleanup
+      }
+
+      assert Orchestrator.legacy_retry_slots_available_for_test(candidate, state) == expected,
+             name
+    end
+  end
+
   defp assert_due_after(due_at_ms, scheduled_from_ms, min_delay_ms, max_delay_ms) do
     delay_ms = due_at_ms - scheduled_from_ms
 

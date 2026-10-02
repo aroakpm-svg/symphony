@@ -1374,6 +1374,12 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   @doc false
+  @spec legacy_retry_slots_available_for_test(Issue.t(), term()) :: boolean()
+  def legacy_retry_slots_available_for_test(%Issue{} = issue, %State{} = state) do
+    dispatch_slots_available?(issue, state)
+  end
+
+  @doc false
   @spec revalidate_issue_for_dispatch_for_test(Issue.t(), ([String.t()] -> term())) ::
           {:ok, Issue.t()} | {:skip, Issue.t() | :missing} | {:error, term()}
   def revalidate_issue_for_dispatch_for_test(%Issue{} = issue, issue_fetcher)
@@ -4050,7 +4056,7 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   defp dispatch_slots_available?(%Issue{} = issue, %State{} = state) do
-    available_slots(state) > 0 and state_slots_available?(issue, state.running)
+    available_slots(state) > 0 and state_slots_available?(issue, active_workers(state))
   end
 
   defp apply_codex_token_delta(
