@@ -1,0 +1,261 @@
+{
+  "kind": "baseline advisory reconciliation against candidate lock; not live deployment evidence",
+  "sourceSnapshot": "docs/automation/evidence/t1-r1-security-advisories-2026-10-02.json",
+  "baselineAdvisoryCount": 36,
+  "candidateLockSha256": "bda3ff24770d33baeaE942e0c865936f487cdd46a5bc0045b005a7f376a9b5c8",
+  "candidateAuditExitCode": 0,
+  "rows": [
+    {
+      "id": "EEF-CVE-2026-42788",
+      "package": "bandit",
+      "oldVersion": "1.10.3",
+      "candidateVersion": "1.12.5",
+      "hexAuditCandidateResult": "not_reported_after_upgrade"
+    },
+    {
+      "id": "EEF-CVE-2026-39805",
+      "package": "bandit",
+      "oldVersion": "1.10.3",
+      "candidateVersion": "1.12.5",
+      "hexAuditCandidateResult": "not_reported_after_upgrade"
+    },
+    {
+      "id": "EEF-CVE-2026-39807",
+      "package": "bandit",
+      "oldVersion": "1.10.3",
+      "candidateVersion": "1.12.5",
+      "hexAuditCandidateResult": "not_reported_after_upgrade"
+    },
+    {
+      "id": "EEF-CVE-2026-39804",
+      "package": "bandit",
+      "oldVersion": "1.10.3",
+      "candidateVersion": "1.12.5",
+      "hexAuditCandidateResult": "not_reported_after_upgrade"
+    },
+    {
+      "id": "EEF-CVE-2026-42786",
+      "package": "bandit",
+      "oldVersion": "1.10.3",
+      "candidateVersion": "1.12.5",
+      "hexAuditCandidateResult": "not_reported_after_upgrade"
+    },
+    {
+      "id": "EEF-CVE-2026-39806",
+      "package": "bandit",
+      "oldVersion": "1.10.3",
+      "candidateVersion": "1.12.5",
+      "hexAuditCandidateResult": "not_reported_after_upgrade"
+    },
+    {
+      "id": "EEF-CVE-2026-39803",
+      "package": "bandit",
+      "oldVersion": "1.10.3",
+      "candidateVersion": "1.12.5",
+      "hexAuditCandidateResult": "not_reported_after_upgrade"
+    },
+    {
+      "id": "EEF-CVE-2026-74836",
+      "package": "bandit",
+      "oldVersion": "1.10.3",
+      "candidateVersion": "1.12.5",
+      "hexAuditCandidateResult": "not_reported_after_upgrade"
+    },
+    {
+      "id": "EEF-CVE-2026-75484",
+      "package": "bandit",
+      "oldVersion": "1.10.3",
+      "candidateVersion": "1.12.5",
+      "hexAuditCandidateResult": "not_reported_after_upgrade"
+    },
+    {
+      "id": "EEF-CVE-2026-32686",
+      "package": "decimal",
+      "oldVersion": "2.3.0",
+      "candidateVersion": "3.1.1",
+      "hexAuditCandidateResult": "not_reported_after_upgrade"
+    },
+    {
+      "id": "EEF-CVE-2026-58226",
+      "package": "hpax",
+      "oldVersion": "1.0.3",
+      "candidateVersion": "1.0.4",
+      "hexAuditCandidateResult": "not_reported_after_upgrade"
+    },
+    {
+      "id": "EEF-CVE-2026-92106",
+      "package": "lazy_html",
+      "oldVersion": "0.1.10",
+      "candidateVersion": "0.1.13",
+      "hexAuditCandidateResult": "not_reported_after_upgrade"
+    },
+    {
+      "id": "EEF-CVE-2026-82672",
+      "package": "mint",
+      "oldVersion": "1.7.1",
+      "candidateVersion": "1.10.2",
+      "hexAuditCandidateResult": "not_reported_after_upgrade"
+    },
+    {
+      "id": "EEF-CVE-2026-49754",
+      "package": "mint",
+      "oldVersion": "1.7.1",
+      "candidateVersion": "1.10.2",
+      "hexAuditCandidateResult": "not_reported_after_upgrade"
+    },
+    {
+      "id": "EEF-CVE-2026-48861",
+      "package": "mint",
+      "oldVersion": "1.7.1",
+      "candidateVersion": "1.10.2",
+      "hexAuditCandidateResult": "not_reported_after_upgrade"
+    },
+    {
+      "id": "EEF-CVE-2026-48862",
+      "package": "mint",
+      "oldVersion": "1.7.1",
+      "candidateVersion": "1.10.2",
+      "hexAuditCandidateResult": "not_reported_after_upgrade"
+    },
+    {
+      "id": "EEF-CVE-2026-49753",
+      "package": "mint",
+      "oldVersion": "1.7.1",
+      "candidateVersion": "1.10.2",
+      "hexAuditCandidateResult": "not_reported_after_upgrade"
+    },
+    {
+      "id": "EEF-CVE-2026-91043",
+      "package": "mint",
+      "oldVersion": "1.7.1",
+      "candidateVersion": "1.10.2",
+      "hexAuditCandidateResult": "not_reported_after_upgrade"
+    },
+    {
+      "id": "EEF-CVE-2026-58229",
+      "package": "mint",
+      "oldVersion": "1.7.1",
+      "candidateVersion": "1.10.2",
+      "hexAuditCandidateResult": "not_reported_after_upgrade"
+    },
+    {
+      "id": "EEF-CVE-2026-92103",
+      "package": "mint",
+      "oldVersion": "1.7.1",
+      "candidateVersion": "1.10.2",
+      "hexAuditCandidateResult": "not_reported_after_upgrade"
+    },
+    {
+      "id": "EEF-CVE-2026-94194",
+      "package": "mint",
+      "oldVersion": "1.7.1",
+      "candidateVersion": "1.10.2",
+      "hexAuditCandidateResult": "not_reported_after_upgrade"
+    },
+    {
+      "id": "EEF-CVE-2026-59246",
+      "package": "mint",
+      "oldVersion": "1.7.1",
+      "candidateVersion": "1.10.2",
+      "hexAuditCandidateResult": "not_reported_after_upgrade"
+    },
+    {
+      "id": "EEF-CVE-2026-56810",
+      "package": "mint",
+      "oldVersion": "1.7.1",
+      "candidateVersion": "1.10.2",
+      "hexAuditCandidateResult": "not_reported_after_upgrade"
+    },
+    {
+      "id": "EEF-CVE-2026-82728",
+      "package": "mint",
+      "oldVersion": "1.7.1",
+      "candidateVersion": "1.10.2",
+      "hexAuditCandidateResult": "not_reported_after_upgrade"
+    },
+    {
+      "id": "EEF-CVE-2026-59249",
+      "package": "mint",
+      "oldVersion": "1.7.1",
+      "candidateVersion": "1.10.2",
+      "hexAuditCandidateResult": "not_reported_after_upgrade"
+    },
+    {
+      "id": "EEF-CVE-2026-56811",
+      "package": "phoenix",
+      "oldVersion": "1.8.4",
+      "candidateVersion": "1.8.9",
+      "hexAuditCandidateResult": "not_reported_after_upgrade"
+    },
+    {
+      "id": "EEF-CVE-2026-32689",
+      "package": "phoenix",
+      "oldVersion": "1.8.4",
+      "candidateVersion": "1.8.9",
+      "hexAuditCandidateResult": "not_reported_after_upgrade"
+    },
+    {
+      "id": "EEF-CVE-2026-56812",
+      "package": "phoenix",
+      "oldVersion": "1.8.4",
+      "candidateVersion": "1.8.9",
+      "hexAuditCandidateResult": "not_reported_after_upgrade"
+    },
+    {
+      "id": "EEF-CVE-2026-64941",
+      "package": "phoenix_live_view",
+      "oldVersion": "1.1.25",
+      "candidateVersion": "1.1.33",
+      "hexAuditCandidateResult": "not_reported_after_upgrade"
+    },
+    {
+      "id": "EEF-CVE-2026-54892",
+      "package": "plug",
+      "oldVersion": "1.19.1",
+      "candidateVersion": "1.19.5",
+      "hexAuditCandidateResult": "not_reported_after_upgrade"
+    },
+    {
+      "id": "EEF-CVE-2026-8468",
+      "package": "plug",
+      "oldVersion": "1.19.1",
+      "candidateVersion": "1.19.5",
+      "hexAuditCandidateResult": "not_reported_after_upgrade"
+    },
+    {
+      "id": "EEF-CVE-2026-56813",
+      "package": "plug",
+      "oldVersion": "1.19.1",
+      "candidateVersion": "1.19.5",
+      "hexAuditCandidateResult": "not_reported_after_upgrade"
+    },
+    {
+      "id": "EEF-CVE-2026-56814",
+      "package": "plug",
+      "oldVersion": "1.19.1",
+      "candidateVersion": "1.19.5",
+      "hexAuditCandidateResult": "not_reported_after_upgrade"
+    },
+    {
+      "id": "EEF-CVE-2026-66838",
+      "package": "postgrex",
+      "oldVersion": "0.22.3",
+      "candidateVersion": "0.22.4",
+      "hexAuditCandidateResult": "not_reported_after_upgrade"
+    },
+    {
+      "id": "EEF-CVE-2026-49756",
+      "package": "req",
+      "oldVersion": "0.5.17",
+      "candidateVersion": "0.6.3",
+      "hexAuditCandidateResult": "not_reported_after_upgrade"
+    },
+    {
+      "id": "EEF-CVE-2026-49755",
+      "package": "req",
+      "oldVersion": "0.5.17",
+      "candidateVersion": "0.6.3",
+      "hexAuditCandidateResult": "not_reported_after_upgrade"
+    }
+  ]
+}
