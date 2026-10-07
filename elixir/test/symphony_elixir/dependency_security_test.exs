@@ -1,6 +1,21 @@
 defmodule SymphonyElixir.DependencySecurityTest do
   use ExUnit.Case, async: true
 
+  alias SymphonyElixir.GitHubAuthorityClient
+  alias SymphonyElixir.GitHubCredentialResolver.Credential
+
+  @github_actor "aroak-symphony[bot]"
+  @github_token "dependency-security-loopback-token"
+  @github_profile %{
+    key: "central-brain",
+    linear_project_id: "d0acfb71-f68c-4a9f-8a1a-477265d3c3ec",
+    repository: "aroakpm-svg/aroak-central-brain",
+    canonical_branch: "main",
+    workspace_namespace: "central-brain",
+    credential_ref: "github-central-brain",
+    environment: "local_non_production"
+  }
+
   test "Decimal rejects an exponent above its default bound" do
     assert :error == Decimal.parse("1e6145")
     assert :error == Decimal.cast("1e6145")
@@ -92,6 +107,111 @@ defmodule SymphonyElixir.DependencySecurityTest do
 
     assert {:error, %Req.TransportError{}} =
              Req.get(url: url, retry: false, receive_timeout: 50)
+  end
+
+  test "GitHub authority adapter rejects malformed JSON over real Req transport" do
+    {url, server} = serve_once(200, "{broken", [{"Content-Type", "application/json"}])
+
+    assert {:error, reason} = verify_github_authority(url)
+    assert reason in [:github_unavailable, :github_response_invalid]
+    assert_receive {:adapter_request, "https://api.github.com/graphql"}
+    refute_receive {:adapter_request, _other_url}
+    assert_receive {:request, ^server, _request}
+  end
+
+  test "GitHub authority adapter rejects compressed JSON instead of treating it as authority" do
+    compressed = :zlib.gzip(~s({"data":{"viewer":{"login":"aroak-symphony[bot]"}}}))
+
+    {url, server} =
+      serve_once(200, compressed, [
+        {"Content-Type", "application/json"},
+        {"Content-Encoding", "gzip"}
+      ])
+
+    assert {:error, :github_unavailable} = verify_github_authority(url)
+    assert_receive {:adapter_request, "https://api.github.com/graphql"}
+    refute_receive {:adapter_request, _other_url}
+    assert_receive {:request, ^server, _request}
+  end
+
+  test "GitHub authority adapter never forwards its Authorization header across a redirect" do
+    {target_url, target_server} = serve_once(200, "private", [])
+    {source_url, source_server} = serve_once(302, "", [{"Location", target_url}])
+
+    assert {:error, :github_unavailable} = verify_github_authority(source_url)
+    assert_receive {:request, ^source_server, request}
+    assert request =~ "Bearer #{@github_token}"
+    refute_receive {:request, ^target_server, _request}, 100
+  end
+
+  @tag timeout: 5_000
+  test "bounded worker confirms termination of a synthetic busy loop" do
+    assert {:timeout, :killed, pid} = run_bounded(fn -> busy_loop() end)
+    refute Process.alive?(pid)
+  end
+
+  test "bounded worker returns a small Decimal boundary result" do
+    assert {:ok, :error} = run_bounded(fn -> Decimal.parse("1e6145") end)
+  end
+
+  defp run_bounded(fun) do
+    parent = self()
+
+    {pid, monitor} =
+      :erlang.spawn_opt(
+        fn ->
+          receive do
+            :run -> send(parent, {:bounded_result, self(), fun.()})
+          end
+        end,
+        [:monitor, {:max_heap_size, %{size: 1_000_000, kill: true}}]
+      )
+
+    assert {:max_heap_size, %{size: 1_000_000, kill: true}} =
+             Process.info(pid, :max_heap_size)
+
+    send(pid, :run)
+
+    receive do
+      {:bounded_result, ^pid, value} ->
+        Process.demonitor(monitor, [:flush])
+        {:ok, value}
+
+      {:DOWN, ^monitor, :process, ^pid, reason} ->
+        {:exit, reason}
+    after
+      1_000 ->
+        Process.exit(pid, :kill)
+
+        receive do
+          {:DOWN, ^monitor, :process, ^pid, :killed} -> {:timeout, :killed, pid}
+          {:DOWN, ^monitor, :process, ^pid, reason} -> {:timeout, reason, pid}
+        after
+          3_000 -> {:error, :stop_unknown, pid}
+        end
+    end
+  end
+
+  defp busy_loop, do: busy_loop()
+
+  defp verify_github_authority(url) do
+    parent = self()
+
+    credential = %Credential{
+      credential_ref: @github_profile.credential_ref,
+      token: @github_token,
+      expires_at: nil
+    }
+
+    request_fun = fn request ->
+      send(parent, {:adapter_request, Keyword.fetch!(request, :url)})
+      request |> Keyword.put(:url, url) |> Req.request()
+    end
+
+    GitHubAuthorityClient.verify(@github_profile, credential,
+      expected_actor: @github_actor,
+      request_fun: request_fun
+    )
   end
 
   defp serve_once(status, body, headers, delay_ms \\ 0) do
