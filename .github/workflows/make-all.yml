@@ -29,6 +29,9 @@ jobs:
           cache: true
           working_directory: elixir
 
+      - name: Pin Hex audit version
+        run: mix local.hex 2.5.1 --force
+
       - name: Cache deps and build
         uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:

@@ -775,6 +775,13 @@ See [`docs/aro_286_acceptance.md`](docs/aro_286_acceptance.md) for failure and t
 make all
 ```
 
+The quality gate runs `make security` after dependency setup and before the build. It uses
+Hex 2.5.1 `mix hex.audit` and fails when the lock has a known advisory or retired package,
+the registry cannot be checked online, or Hex advisory ignores are configured. The CI job
+installs that Hex version before `make all`. A clean audit is a dependency check; it does
+not assess application exposure or replace the tests below. For the candidate lock and
+recorded limitations, see [security dependency acceptance](docs/security_dependency_acceptance.md).
+
 ### Pull-request scope contract lint
 
 PR descriptions must use the structured `Scope Contract` in

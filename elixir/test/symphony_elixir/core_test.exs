@@ -2132,6 +2132,40 @@ defmodule SymphonyElixir.CoreTest do
     end
   end
 
+  test "prompt builder preserves small decimal arithmetic through workflow filters" do
+    write_workflow_file!(Workflow.workflow_file_path(),
+      prompt: "Ticket {{ issue.identifier }} amount={{ '1.20' | plus: '0.05' | round: 2 }}"
+    )
+
+    issue = %Issue{
+      identifier: "MT-DECIMAL",
+      title: "Check number formatting",
+      description: "Use the workflow filter path",
+      state: "Todo",
+      url: "https://example.org/issues/MT-DECIMAL",
+      labels: []
+    }
+
+    assert PromptBuilder.build_prompt(issue) == "Ticket MT-DECIMAL amount=1.25"
+  end
+
+  test "prompt builder rejects an unknown workflow filter" do
+    write_workflow_file!(Workflow.workflow_file_path(),
+      prompt: "Ticket {{ issue.identifier | unavailable_filter }}"
+    )
+
+    issue = %Issue{
+      identifier: "MT-FILTER",
+      title: "Check strict filters",
+      description: "An unknown filter must not be ignored",
+      state: "Todo",
+      url: "https://example.org/issues/MT-FILTER",
+      labels: []
+    }
+
+    assert_raise Solid.RenderError, fn -> PromptBuilder.build_prompt(issue) end
+  end
+
   test "prompt builder surfaces invalid template content with prompt context" do
     write_workflow_file!(Workflow.workflow_file_path(), prompt: "{% if issue.identifier %}")
 
